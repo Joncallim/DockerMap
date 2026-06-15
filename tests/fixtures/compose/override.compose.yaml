@@ -1,0 +1,11 @@
+services:
+  api:
+    volumes:
+      - type: bind
+        source: ./override-config
+        target: /workspace/config
+        read_only: true
+
+  worker:
+    environment:
+      WORKER_MODE: fixture

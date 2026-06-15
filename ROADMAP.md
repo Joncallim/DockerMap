@@ -26,15 +26,15 @@ Validation performed on the merged primitive code:
 - `npm install` completed successfully.
 - `npm run typecheck` passes across the TypeScript workspaces.
 - `npm audit --omit=dev` reports 0 production vulnerabilities after updating the lockfile.
-- `npm audit` still reports 2 high-severity development dependency findings through `vite` and `esbuild`; npm says the remaining automated fix requires a breaking Vite upgrade.
-- Rust build and test commands could not run in this environment because `cargo` is not installed.
+- `npm audit` reports 0 vulnerabilities after the Vite 8 upgrade.
+- `npm run build` passes across the TypeScript workspaces.
+- `Cargo.lock` is generated for the Rust workspace.
 
 Important review findings:
 
-- The repo should commit `Cargo.lock` once a Rust toolchain is available. DockerMap contains application binaries, so ignoring the lockfile makes daemon builds less reproducible.
-- There is no CI yet, so the passing TypeScript check is local only and Rust is currently unverified.
+- A CI template now covers TypeScript audit/typecheck/build and Rust format/lint/test. Publishing it to `.github/workflows/` requires GitHub `workflow` scope.
 - Runtime contracts are duplicated between TypeScript and Rust. The project needs a single source of truth or contract generation before the API surface grows.
-- The Python prototype should be archived, moved under an explicit `legacy/` or `prototypes/` directory, or removed after feature parity is confirmed.
+- The Python prototype has been moved under `legacy/python-prototype`; remove it after useful behavior is migrated.
 - The active product currently observes Docker runtime state; it does not yet parse or edit Docker Compose path mappings, which is the core promise implied by "Visualise and Edit Docker Paths".
 - Docker socket access is read-oriented, but it is still privileged. The daemon should keep binding to loopback by default and document Docker socket risk before any mutation work.
 
@@ -68,35 +68,33 @@ The product should optimize for confidence: visual clarity, reversible edits, va
 
 ### Core Modules
 
-- `dockermap.sources`: discover Compose files, Dockerfiles, running containers, and project roots.
-- `dockermap.parsers`: parse Compose YAML, Dockerfile path instructions, Docker inspect JSON, and `.env` substitutions.
-- `dockermap.model`: represent services, mounts, volumes, host paths, container paths, and unresolved references.
-- `dockermap.graph`: build a path relationship graph with typed nodes and edges.
-- `dockermap.validation`: detect missing host paths, invalid container paths, collisions, read-only/write mode conflicts, and risky edits.
-- `dockermap.editing`: apply path mapping edits through structured document updates and generate previews.
-- `dockermap.ui`: render graph/table views and edit workflows.
-- `dockermap.cli`: provide scriptable scan, validate, export, and edit commands.
+- `crates/dockermap-core`: represent services, mounts, volumes, host paths, container paths, graph relationships, diagnostics, and unresolved references.
+- `crates/dockermap-daemon`: discover Docker runtime state, parse Compose/Dockerfile inputs, validate path mappings, and expose read-only HTTP endpoints.
+- `packages/contracts`: publish TypeScript API contracts generated from or validated against Rust fixtures.
+- `apps/api`: adapt daemon endpoints for browser clients, SSE heartbeats, and future auth/session policy.
+- `apps/web`: render graph, table, diagnostics, and diff-preview workflows.
+- Future CLI package or daemon subcommand: provide scriptable scan, validate, export, and dry-run edit commands.
 
 ### Suggested Stack
 
-- Python package managed with `pyproject.toml`.
-- `typer` or `argparse` for CLI commands.
-- `pydantic` or dataclasses for the domain model.
-- `ruamel.yaml` for round-trip Compose editing if formatting preservation matters.
-- `pytest` for unit and fixture tests.
-- A web UI only after the CLI and model are stable. If the UI becomes primary, consider FastAPI plus a lightweight frontend.
+- Rust for Docker access, Compose/path parsing, validation, graph derivation, and future edit planning.
+- Node/Express as the browser-facing API layer while the daemon remains local and loopback-bound.
+- React/Vite for the current UI.
+- TypeScript contracts generated from Rust schemas or checked by shared serialized fixtures before the API grows.
+- Round-trip YAML handling for Compose edits once mutation work begins.
+- Rust unit/fixture tests plus TypeScript typecheck/build and browser tests for critical UI paths.
 
 ## Roadmap
 
 ### Phase 0: Foundation And Baseline Hardening
 
 - Keep the React + Node.js + Rust monorepo as the active implementation path.
-- Decide the fate of the Python prototype: migrate useful logic, then move it to `legacy/` or remove it.
-- Add GitHub Actions for `npm ci`, TypeScript typecheck, web build, Rust format/build/test, and dependency audit.
+- Move the Python prototype to `legacy/python-prototype`, then remove it after useful behavior is migrated.
+- Add a GitHub Actions template for `npm ci`, TypeScript typecheck, web build, Rust format/lint/test, and dependency audit. Publish it under `.github/workflows/` once GitHub auth has `workflow` scope.
 - Generate and commit `Cargo.lock`.
-- Add Rust toolchain metadata, for example `rust-toolchain.toml`.
+- Add Rust toolchain metadata.
 - Add sample Docker Compose fixtures covering bind mounts, named volumes, relative paths, environment variables, read-only mounts, and multiple files.
-- Resolve the remaining dev-only Vite/esbuild audit findings through an intentional Vite upgrade.
+- Resolve the Vite/esbuild audit findings through an intentional Vite 8 upgrade.
 - Add a short architecture note that names Rust core/daemon as the Docker source of truth and TypeScript contracts as API consumers.
 
 ### Phase 1: Read-Only Map
