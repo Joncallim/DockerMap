@@ -1,0 +1,6 @@
+[workspace]
+members = [
+  "dockermap-core",
+  "dockermap-daemon"
+]
+resolver = "2"

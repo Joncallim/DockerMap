@@ -1,0 +1,22 @@
+{
+  "name": "dockermap-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @dockermap/web",
+    "dev:api": "npm run dev --workspace @dockermap/api",
+    "dev:daemon": "cargo run -p dockermap-daemon --manifest-path crates/Cargo.toml",
+    "dev:stack": "./scripts/run-dev-stack.sh",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build:rust": "cargo build --manifest-path crates/Cargo.toml",
+    "test:rust": "cargo test --manifest-path crates/Cargo.toml"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
