@@ -2,14 +2,41 @@
 
 ## Current Codebase Review
 
-DockerMap currently contains a placeholder Python entry point and a minimal README:
+Initial review found a placeholder Python entry point and a minimal README:
 
 - `main.py` exists but contains no implementation yet.
 - `README.md` defines the project name and intent: "Visualise and Edit Docker Paths".
 - There are no dependencies, package metadata, tests, CI workflows, architecture docs, Docker fixtures, or user interface assets yet.
 - The repository is clean against `origin/main` before this roadmap change.
 
-This means the next work should establish the product contract and safety boundaries before building features. DockerMap is likely to touch host paths, container paths, bind mounts, named volumes, and possibly Docker Compose files, so the project should treat parsing accuracy and edit safety as core product requirements rather than implementation details.
+After merging the existing primitive work on `main`, the active codebase is now a React + Node.js + Rust monorepo with the older Python/FastAPI prototype retained as migration reference. DockerMap is likely to touch host paths, container paths, bind mounts, named volumes, and eventually Docker Compose files, so the project should treat parsing accuracy and edit safety as core product requirements rather than implementation details.
+
+## Second-Pass Review
+
+The current implementation is a useful read-only prototype, but it is still early and split across multiple generations of the product:
+
+- `apps/web` implements the React/Vite interface for dashboard, containers, images, networks, volumes, logs, and container detail.
+- `apps/api` implements a Node/Express browser-facing API that proxies the Rust daemon and exposes an SSE heartbeat.
+- `crates/dockermap-core` owns the Rust contracts, mock snapshot, graph derivation, image derivation, and mock log generation.
+- `crates/dockermap-daemon` reads Docker through `bollard`, serves cached inventory endpoints, and falls back to mock data when Docker is unavailable.
+- `dockermap/` and `main.py` are now legacy Python prototype code and should not remain an equal implementation path for long.
+
+Validation performed on the merged primitive code:
+
+- `npm install` completed successfully.
+- `npm run typecheck` passes across the TypeScript workspaces.
+- `npm audit --omit=dev` reports 0 production vulnerabilities after updating the lockfile.
+- `npm audit` still reports 2 high-severity development dependency findings through `vite` and `esbuild`; npm says the remaining automated fix requires a breaking Vite upgrade.
+- Rust build and test commands could not run in this environment because `cargo` is not installed.
+
+Important review findings:
+
+- The repo should commit `Cargo.lock` once a Rust toolchain is available. DockerMap contains application binaries, so ignoring the lockfile makes daemon builds less reproducible.
+- There is no CI yet, so the passing TypeScript check is local only and Rust is currently unverified.
+- Runtime contracts are duplicated between TypeScript and Rust. The project needs a single source of truth or contract generation before the API surface grows.
+- The Python prototype should be archived, moved under an explicit `legacy/` or `prototypes/` directory, or removed after feature parity is confirmed.
+- The active product currently observes Docker runtime state; it does not yet parse or edit Docker Compose path mappings, which is the core promise implied by "Visualise and Edit Docker Paths".
+- Docker socket access is read-oriented, but it is still privileged. The daemon should keep binding to loopback by default and document Docker socket risk before any mutation work.
 
 ## Product Vision
 
@@ -61,25 +88,30 @@ The product should optimize for confidence: visual clarity, reversible edits, va
 
 ## Roadmap
 
-### Phase 0: Foundation
+### Phase 0: Foundation And Baseline Hardening
 
-- Convert the repository into an installable Python project.
-- Add `pyproject.toml`, package directory, linting, formatting, and test setup.
-- Expand the README with scope, setup, and early usage examples.
+- Keep the React + Node.js + Rust monorepo as the active implementation path.
+- Decide the fate of the Python prototype: migrate useful logic, then move it to `legacy/` or remove it.
+- Add GitHub Actions for `npm ci`, TypeScript typecheck, web build, Rust format/build/test, and dependency audit.
+- Generate and commit `Cargo.lock`.
+- Add Rust toolchain metadata, for example `rust-toolchain.toml`.
 - Add sample Docker Compose fixtures covering bind mounts, named volumes, relative paths, environment variables, read-only mounts, and multiple files.
-- Add GitHub Actions for tests and linting.
+- Resolve the remaining dev-only Vite/esbuild audit findings through an intentional Vite upgrade.
+- Add a short architecture note that names Rust core/daemon as the Docker source of truth and TypeScript contracts as API consumers.
 
 ### Phase 1: Read-Only Map
 
+- Keep the current Docker runtime inventory experience stable.
 - Implement Compose file discovery from the current directory and explicit file paths.
 - Parse services, bind mounts, named volumes, anonymous volumes, mount modes, and source file locations.
 - Resolve relative host paths against the correct Compose file/project directory.
 - Build a typed graph model.
-- Add CLI commands:
+- Add CLI or daemon commands:
   - `dockermap scan`
   - `dockermap validate`
   - `dockermap export --format json`
 - Add diagnostics for unresolved environment variables and unsupported mount syntax.
+- Correlate Compose declarations with observed Docker runtime state.
 
 ### Phase 2: Validation And Safety
 
