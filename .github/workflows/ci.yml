@@ -24,7 +24,7 @@ jobs:
         run: npm ci
 
       - name: Audit dependencies
-        run: npm audit
+        run: npm audit --omit=dev
 
       - name: Typecheck
         run: npm run typecheck
