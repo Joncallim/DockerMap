@@ -6,3 +6,4 @@ coverage
 *.log
 .turbo
 target
+crates/Cargo.lock
