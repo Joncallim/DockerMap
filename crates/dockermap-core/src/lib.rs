@@ -1,3 +1,10 @@
+pub mod compose;
+
+pub use compose::discovery::{discover_compose_files, discover_with_overrides};
+pub use compose::parser::parse_compose_file;
+pub use compose::resolver::resolve_mounts;
+pub use compose::{ComposeDiagnostic, ComposeFile, ComposeMountDeclaration, ComposeService};
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
