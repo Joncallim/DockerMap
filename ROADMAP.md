@@ -1,657 +1,562 @@
 # DockerMap Roadmap
 
-## Product Vision
+## Vision
 
-DockerMap helps developers understand and safely navigate Docker infrastructure — not just containers and volumes, but the **full network topology**: which services talk to which, what domains route to what, which containers are reachable over VPN, and how everything connects.
+DockerMap helps developers understand and safely manage Docker environments by making
+**networking the primary insight layer**. Unlike generic container monitors, DockerMap
+focuses on the *relationships* between services — Docker networks, bind mounts, named
+volumes, reverse-proxy domain routing, and VPN mesh (Tailscale/Headscale) connectivity
+— and exposes all of this through a stable, versioned API that external dashboards
+(Homepage, Grafana, custom scripts) can consume.
 
-The product answers four questions clearly:
+The three questions DockerMap should always answer clearly:
 
-1. What containers, networks, volumes, and host paths exist and how are they connected?
-2. Which host paths, bind mounts, and named volumes are declared in Compose files — and are they correct?
-3. How is traffic actually routed to containers (reverse proxy domains, Tailscale VPN, exposed ports)?
-4. What will change if a path or configuration is edited?
-
-**USP over generic Docker monitors:** DockerMap's differentiator is the **networking layer** — Docker internal topology, reverse-proxy domain mapping (Traefik, NGINX Proxy Manager, Caddy), Tailscale/Headscale VPN peer correlation, and reverse DNS resolution. Most Docker monitors show you containers; DockerMap shows you the full network map of how those containers connect to the world.
-
-DockerMap also exposes a stable, documented external API so its data can feed into other dashboards (e.g., [Homepage](https://gethomepage.dev/)), monitoring stacks, and scripts — without needing a separate Docker monitoring tool.
-
----
-
-## Target Users
-
-- Developers maintaining Docker Compose environments who need to understand service dependencies and path mappings.
-- Homelab operators running Traefik/NPM reverse proxies and Tailscale VPNs who want a single map of everything.
-- Teams standardizing Compose files across services who need validation before editing.
-- External dashboards (Homepage, Grafana, custom scripts) that want a lightweight Docker inventory API.
+1. What host paths, container paths, named volumes, and Compose-file declarations exist,
+   and how are they connected?
+2. How do services communicate — which Docker networks, which domains, which Tailscale
+   peers?
+3. What will change if I edit a mount or routing rule, and is that change safe?
 
 ---
 
 ## Guiding Principles
 
-- **Read first, edit second.** Every mutation requires a diff preview and explicit confirmation.
-- **Networking is the map.** IPs, subnets, hostnames, domains, and VPN peers are first-class data — not footnotes.
-- **Open API.** The daemon and BFF expose versioned, documented, token-authenticated endpoints consumable by third-party dashboards.
-- **Preserve user formatting** when editing YAML. Isolate formatting changes when not feasible.
-- **Treat path edits as potentially destructive.** Always back up, always show a diff.
-
----
-
-## Architecture
-
-```
-Docker Engine ──────────────────────────────┐
-                                            ▼
-Tailscale Daemon (optional) ──── Rust Daemon (Axum, bollard) [4100]
-                                            │
-                                            ▼
-                                 Node/Express BFF [4000]
-                                 (proxy, SSE, auth, CORS)
-                                            │
-                               ┌────────────┴────────────┐
-                               ▼                         ▼
-                        React Web UI [3233]     External Consumers
-                                             (Homepage, scripts, etc.)
-```
-
-- `crates/dockermap-core` — domain model, Compose parser, graph derivation, validation rules, edit planner
-- `crates/dockermap-daemon` — Axum HTTP server, bollard Docker integration, Tailscale detection, caching
-- `apps/api` — Express BFF: proxies daemon, adds SSE heartbeat, handles CORS/auth for browser + external access
-- `apps/web` — React/Vite UI: graph, inventory, diagnostics, diff preview
-- `packages/contracts` — TypeScript types mirroring Rust contracts
+- **Read first, edit second.** Every mutation requires a diff preview and explicit
+  confirmation.
+- **Networking is the USP.** Surface Docker network topology, reverse-proxy domains,
+  Tailscale/Headscale peers, and reverse DNS — things other monitors ignore.
+- **API-first.** Every insight available in the UI must be available via a versioned,
+  documented REST endpoint for external dashboard integration.
+- **Confidence before writes.** Validation, dry-run, backup, and rollback guidance must
+  exist before any Compose file is modified.
+- **Structured parsers, not string edits.** Use typed YAML and Compose parsers; never
+  perform regex-based file edits.
+- **Opt-in exposure.** The daemon binds loopback by default. External access is explicitly
+  configured, requires an API token, and is documented as privileged.
 
 ---
 
 ## Current Status
 
-### ✅ Phase 0: Foundation (Complete)
+### ✅ Phase 0 — Foundation (Done)
 
-- React/Vite frontend (port 3233), Express BFF (port 4000), Rust Axum daemon (port 4100)
-- Rust toolchain pinned at 1.88.0, `Cargo.lock` committed
-- `dockermap-core` with domain model, `derive_images`, `derive_graph`, `mock_logs`, mock snapshot
-- `dockermap-daemon` using bollard with mock fallback when Docker is unavailable
-- Seven React pages: Dashboard, Containers, ContainerDetail, Images, Networks, Volumes, Logs
-- `@dockermap/contracts` TypeScript types
-- SSE heartbeat via `/api/events/stream`, global search, live refresh
-- CI template at `docs/ci/github-actions-ci.yml`
-- Vite 8 upgrade, zero production audit vulnerabilities
-- Docker Compose fixtures at `tests/fixtures/compose/`
+- Monorepo: React/Vite frontend (port 3233), Express BFF (port 4000), Rust Axum daemon
+  (port 4100)
+- Rust toolchain pinned at 1.88.0; `Cargo.lock` committed
+- `dockermap-core` crate: domain model, mock snapshot, `derive_images`, `derive_graph`,
+  `mock_logs`
+- `dockermap-daemon`: bollard integration, mock fallback when Docker unavailable
+- Seven React pages: Dashboard, Containers, ContainerDetail, Images, Networks, Volumes,
+  Logs
+- `@dockermap/contracts` TypeScript types mirroring Rust structs
+- SSE heartbeat for live refresh; global search with 250 ms debounce
+- CI template at `docs/ci/github-actions-ci.yml` (not yet published)
+- Compose test fixtures at `tests/fixtures/compose/`
 - Architecture docs: `ARCHITECTURE.md`, `PAGE_LOGIC.md`
+- Vite 8, zero production audit vulnerabilities
 
-### 🔄 Phase 1: In Progress
+### 🔄 Phase 1 — Partially Done
 
-Working:
-- Docker runtime inventory (containers, images, networks, volumes, logs) via bollard ✅
-- All read-only API endpoints ✅
-- Graph derivation (nodes + edges) ✅
-- Mock data fallback ✅
+**Working:** Docker runtime inventory (containers, images, networks, volumes, logs), all
+read-only API endpoints, React UI with routing, SSE live refresh, mock fallback, graph
+derivation.
 
-Not yet done:
-- Compose file parsing and path resolution ❌
-- Frontend component splitting (all 709 lines in `App.tsx`) ❌
-- Table sorting and advanced filtering ❌
-- Clickable graph nodes ❌
-- CI published to `.github/workflows/` ❌
-- Contract compatibility tests ❌
-- Python legacy prototype removal ❌
+**Not yet done:** Compose file parsing, CLI commands, frontend component splitting
+(all 709 lines in `App.tsx`), table sorting, advanced filters, clickable graph nodes,
+container labels/ports, log level filter, live tail, contract generation.
 
 ---
 
-## Phase 1: Read-Only Map Completion
+## Roadmap
 
-> The four streams below can run fully concurrently.
+Work within each phase is split into **concurrent streams**. Streams within a phase are
+independent and can be assigned to different developers or worked in parallel. Sequential
+dependencies within a stream are noted explicitly.
 
-### Stream A — Rust: Compose Parsing
+---
 
-**A1. Define Compose domain types in `dockermap-core`**
-- `ComposeFile`, `ComposeService`, `ComposeMountDeclaration` (bind/named/anonymous/tmpfs discriminated union)
-- `ComposeProject` top-level aggregate, `ComposeDiagnostic` with severity enum
-- All types `Serialize/Deserialize` with `serde(rename_all = "camelCase")`
+### Phase 1 — Read-Only Map Completion
 
-**A2. Implement Compose YAML parser**
-- Add `serde_yaml` and `walkdir` dependencies
-- Parse `services.<name>.volumes[]` in both short-form (`./src:/app:ro`) and long-form (`type: bind, source:, target:, read_only:`)
-- Parse top-level `volumes:` for named volume declarations
-- Parse `depends_on` (list and long-form with `condition:`)
-- File: `crates/dockermap-core/src/compose/parser.rs`
+> **Goal:** Complete the read-only inventory experience and add Compose file awareness.
 
-**A3. Relative path resolution**
-- Resolve `./src` against the Compose file's directory (not CWD)
-- Handle `../` traversal, tracking for validation later
-- Expand `${VAR:-default}` and `${VAR}` — substitute known env vars, emit `ComposeDiagnostic(Warning)` for unresolved ones
-- Store raw source value and resolved absolute path in `ComposeMountDeclaration`
-- File: `crates/dockermap-core/src/compose/resolver.rs`
+#### Stream A — Rust: Compose Parsing (sequential within stream)
 
-**A4. Compose file discovery**
-- Scan for `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`, `compose.yaml`
-- Accept explicit file path list or root directory
-- Respect `node_modules/` exclusions via `walkdir` filters
-- File: `crates/dockermap-core/src/compose/discovery.rs`
+**A1. Add Compose domain types to `dockermap-core`**
+- `ComposeFile`, `ComposeService`, `ComposeMountDeclaration` (discriminated union of
+  `BindMount`, `NamedVolume`, `AnonymousVolume`), `ComposeProject`, `ComposeDiagnostic`
+- All types derive `Serialize/Deserialize` with `rename_all = "camelCase"`
+- File: new `crates/dockermap-core/src/compose/mod.rs`
 
-**A5. Override file merging**
-- Merge `docker-compose.override.yml` alongside base file per Compose spec (volumes lists append, maps merge)
-- Test against `tests/fixtures/compose/override.compose.yaml`
+**A2. Implement YAML parser** _(depends on A1)_
+- Parse `services.<name>.volumes[]` in both short form (`./src:/app:ro`) and long form
+  (`type: bind`, `source:`, `target:`, `read_only:`)
+- Parse top-level `volumes:` keys; `depends_on` in list and condition forms
+- Emit `ComposeDiagnostic` for unrecognised fields rather than silently discarding
+- Add `serde_yaml = "0.9"` to `Cargo.toml`
+- Unit tests for every syntax form in `tests/fixtures/compose/path-mapping.compose.yaml`
 
-**A6. Runtime correlation**
-- Match `ComposeMountDeclaration` to `ContainerRecord` instances by `com.docker.compose.service` label
-- Track matched vs missing vs extra mounts (seeds Phase 5 drift detection)
-- File: `crates/dockermap-core/src/compose/correlation.rs`
+**A3. Path resolution** _(depends on A2)_
+- Resolve relative host paths against the Compose file's own directory
+- Expand `${VAR:-default}` and `${VAR}` with env substitution; emit
+  `ComposeDiagnostic(Warning)` for unresolved references
+- Store both raw source value and resolved absolute path on each mount declaration
 
-**A7. Compose daemon endpoints**
+**A4. Compose file discovery** _(depends on A1)_
+- Walk directories for `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`,
+  `compose.yaml` using the `walkdir` crate
+- Detect override files; support explicit `-f` path argument
+- Respect `.dockerignore` and `node_modules/` exclusions
+
+**A5. Override file merging** _(depends on A2, A4)_
+- Merge services per Compose spec: volumes append, environment maps merge, image replaces
+- Test with `tests/fixtures/compose/override.compose.yaml`
+
+**A6. Compose ↔ runtime correlation** _(depends on A2, existing bollard integration)_
+- Match Compose service names to containers via `com.docker.compose.service` label
+- Produce `MountCorrelation { declared_source, runtime_source, status }` for each mount
+- Store on `ContainerRecord` or return from a dedicated endpoint
+
+**A7. Daemon Compose endpoints** _(depends on A1–A5)_
 - `GET /daemon/compose/files` — discovered files with parse status
-- `GET /daemon/compose/mounts` — all resolved mounts across all files
-- `GET /daemon/compose/projects` — top-level aggregates
+- `GET /daemon/compose/mounts` — all resolved mount declarations
+- `GET /daemon/compose/projects` — top-level project aggregates
 
-**A8. Extend `ContainerRecord` with bind mounts**
-- bollard currently only extracts named volume names from `container.mounts`
-- Also capture bind mounts: `mount.typ == MountTypeEnum::BIND` with host path + container path
-- Add `bind_mounts: Vec<BindMount>` to `ContainerRecord`
+**A8. Cursor-based log pagination** _(independent — do any time)_
+- Accept `cursor` and `limit` query params in `GET /daemon/logs`
+- Return opaque base64 cursor in `LogsResponse.nextCursor`
 
-**A9. BFF proxy + contract extension**
-- Proxy new compose endpoints through `apps/api`
-- Add `ComposeFile`, `ComposeService`, `ResolvedMount`, `ComposeDiagnostic` to `packages/contracts/src/index.ts`
+#### Stream B — Node/Express: Proxies & Contract Hardening
 
----
+**B1. Proxy new Compose endpoints through `apps/api`** _(depends on A7)_
+- Add `/api/compose/files`, `/api/compose/mounts`, `/api/compose/projects`
+- Add mock fallback responses seeded from fixture data
 
-### Stream B — Node/Express: API Hardening
+**B2. Contract compatibility tests**
+- Serialize Rust mock snapshot to JSON in a `#[test]`; write to
+  `tests/fixtures/snapshots/mock-snapshot.json`
+- Add a TypeScript test in `packages/contracts` that loads the JSON and validates it
+  against each interface
+- Prevents silent drift between Rust and TypeScript types
 
-**B1. Cursor-based log pagination**
-- Accept `cursor` and `limit` query params on `GET /daemon/logs`
-- Return `nextCursor` as opaque base64 token
-- Update `LogsResponse` contract
+**B3. Add Compose types to `@dockermap/contracts`**
+- Mirror `ComposeMountDeclaration`, `ComposeFile`, `ComposeProject`, `ComposeDiagnostic`
 
-**B2. Individual resource detail endpoints**
-- `GET /daemon/images/:imageRef` — single image with full tag list, size, created date
-- `GET /daemon/networks/:id` — network with IPAM, subnet, gateway, attachability
-- `GET /daemon/volumes/:name` — volume with mountpoint, driver options, labels
+**B4. Individual resource detail endpoints**
+- `GET /daemon/images/:imageRef` — full tag list, size, created date, using containers
+- `GET /daemon/networks/:id` — IPAM config, subnet, gateway, attachability
+- `GET /daemon/volumes/:name` — mountpoint, driver options, labels
 
-**B3. Contract compatibility tests**
-- Serialize mock snapshot in Rust `#[test]`, write to `tests/fixtures/snapshots/mock-snapshot.json`
-- Add Vitest test in `packages/contracts` that parses the JSON and validates every TypeScript interface
-- Catches Rust ↔ TypeScript drift automatically
+**B5. Publish CI workflow**
+- Copy `docs/ci/github-actions-ci.yml` → `.github/workflows/ci.yml`
+- Trigger on every push and pull request
 
-**B4. Remove Python legacy**
-- Delete `legacy/python-prototype/`
-- Remove references from README and docs
+**B6. Remove Python legacy**
+- Delete `legacy/python-prototype/`; update `ARCHITECTURE.md`
 
----
+#### Stream C — Frontend: Component Decomposition (sequential within stream)
 
-### Stream C — Frontend: Component Decomposition
+> Highest-urgency frontend task — blocks all of Stream D.
 
-> This is the highest-priority frontend task — every other frontend feature is blocked until `App.tsx` is split.
+**C1–C5. Split `App.tsx` (709 lines) into separate files**
+- Extract hooks → `apps/web/src/hooks/` (`useApiResource`, `useDaemonHeartbeat`,
+  `useSearchParamState`)
+- Extract utilities → `apps/web/src/utils/` (`api.ts`, `format.ts`)
+- Extract primitives → `apps/web/src/components/` (`StatePanel`, `EmptyPanel`, `KpiCard`,
+  `InfoCard`, `GraphNodeCard`)
+- Extract pages → `apps/web/src/pages/` (one file per page)
+- Reduce `App.tsx` to under 80 lines (imports + `AppShell` + `<Routes>`)
+- Zero behaviour change; `npm run typecheck` must pass after each step
 
-**C1. Extract hooks** → `apps/web/src/hooks/`
-- `useApiResource.ts`, `useDaemonHeartbeat.ts`, `useSearchParamState.ts`
+#### Stream D — Frontend: Feature Gaps (depends on C5; sub-tasks are parallel)
 
-**C2. Extract utilities** → `apps/web/src/utils/`
-- `api.ts` (API_BASE, apiUrl, fetchJson), `format.ts` (formatTime)
+**D1. Table sorting** — `sort` + `dir` query params on all list pages (name, status,
+image, age, count); add sort direction indicator.
 
-**C3. Extract UI primitives** → `apps/web/src/components/`
-- `StatePanel.tsx`, `EmptyPanel.tsx`, `KpiCard.tsx`, `InfoCard.tsx`, `GraphNodeCard.tsx`
+**D2. Advanced filtering** — containers: network/image/stack pills; images: in-use/unused/
+dangling; networks: driver, empty; volumes: attached/unattached.
 
-**C4. Extract pages** → `apps/web/src/pages/`
-- One file per page: Dashboard, Containers, ContainerDetail, Images, Networks, Volumes, Logs, NotFound
+**D3. Clickable graph nodes** — container nodes → `/containers/:name`; network nodes →
+`/networks?network=id`; volume nodes → `/volumes?volume=name`.
 
-**C5. Reduce App.tsx to shell + routing**
-- Target: under 80 lines — imports, `AppShell`, `<Routes>`, export
+**D4. Container detail enrichment** — labels key/value table, formatted port bindings,
+volume section, restart policy.
 
-**C6. Verify** — `npm run typecheck` passes, all pages render correctly in both modes
+**D5. Networks page: IPAM detail** — show subnet, gateway, and per-member container IPs.
 
----
+**D6. Volumes page: driver & mountpoint** — show driver, mountpoint, scope; mark
+unattached volumes as prune candidates.
 
-### Stream D — Frontend: Feature Gaps (depends on C5)
+**D7. Logs: level filter, live tail, pagination** — level dropdown, auto-scroll toggle,
+"Load more" cursor button (requires B stream cursor pagination).
 
-Each sub-task is independent and can be parallelised across team members:
+**D8. Compose UI** _(depends on B1)_ — new `/compose` page: discovered files, mount
+table (host path → container path → service → file:line), named vs bind visual coding.
 
-**D1. Table sorting** — sort by name/status/image/age on Containers; name/driver on Networks; name/attached on Volumes. Use `sort` and `dir` URL params.
+**D9. Dashboard: search-aware graph** — dim nodes that don't match `q`; highlight matches.
 
-**D2. Container page advanced filtering** — filter pills for network, image, stack (compose service label)
+#### Phase 1 Verification
 
-**D3. Image page filtering** — In use / Unused / Dangling filter pills
-
-**D4. Network page filtering** — driver (bridge/overlay/host), internal/public, empty networks
-
-**D5. Volume page filtering** — Attached / Unattached filter; mark unattached as prune candidates
-
-**D6. Container detail: labels + formatted ports** — key/value table for labels; `host:port → container:port/proto` formatting
-
-**D7. Network detail: IPAM data** — show subnet, gateway, container IPs within each network
-
-**D8. Volume detail** — show mountpoint, driver, scope
-
-**D9. Clickable graph nodes** — navigate to `/containers/:name`, `/networks?network=id`, `/volumes?volume=name` on click
-
-**D10. Dashboard search integration** — dim graph nodes that don't match `q=` search param
-
-**D11. Logs: level filter + live tail** — level dropdown (All/Info/Warn/Error); live tail toggle with auto-scroll
-
-**D12. Logs: pagination UI** — "Load more" using `nextCursor` from B1
-
----
-
-### Stream E — Infrastructure
-
-**E1. Publish CI workflow** — copy `docs/ci/github-actions-ci.yml` to `.github/workflows/ci.yml`
-
-**E2. Add Vitest** — add to `apps/web` and `packages/contracts`; wire `npm run test` into CI
-
-**E3. Security documentation** — `docs/SECURITY.md`: Docker socket risk, loopback binding rationale, mutation prerequisites
-
----
-
-### Phase 1 Verification
-
-- [ ] `cargo test` passes including new Compose parser unit tests covering all four mount syntaxes from fixture
+- [ ] `cargo test` passes, including new Compose parser unit tests
 - [ ] `npm run typecheck` passes across all workspaces
-- [ ] `App.tsx` is under 100 lines
-- [ ] `GET /api/compose/mounts` returns resolved absolute paths for fixture files
-- [ ] All graph nodes are clickable and navigate correctly
-- [ ] Containers, Images, Networks, Volumes pages all have working sort controls
-- [ ] CI runs on every push and passes
+- [ ] `App.tsx` under 100 lines
+- [ ] `GET /api/compose/files` returns discovered files when daemon starts from repo root
+- [ ] Containers, Images, Networks, Volumes pages have sort controls
+- [ ] Graph nodes are clickable and navigate correctly
+- [ ] CI workflow runs on every PR
 
 ---
 
-## Phase 1.5: Networking USP & External API
+### Phase 1.5 — Networking USP & External API
 
-> This is a core differentiator phase. Runs concurrently with Phase 2.
-> Goal: make DockerMap the best tool for understanding how containers connect to the world.
+> **Goal:** Differentiate DockerMap from generic Docker monitors. Surface Docker network
+> topology, reverse-proxy domain routing, and Tailscale/Headscale VPN connectivity.
+> Expose everything via a versioned, documented REST API for external dashboard
+> integration. Runs **concurrently with Phase 2**.
 
-### Stream A — External API Exposure
+#### Stream A — External API Exposure
 
-**A1. Configurable bind address**
-- Add `DOCKERMAP_DAEMON_BIND` env var (default `127.0.0.1:4100`, can be `0.0.0.0:4100`)
-- Add `DOCKERMAP_API_TOKEN` to gate external access with `Authorization: Bearer <token>` middleware in the Express BFF
-- Add `DOCKERMAP_CORS_ORIGINS` env var (comma-separated allowed origins) for browser-based external access
-- Document all env vars in `README.md` and `SECURITY.md`
+**A1. Configurable bind address & CORS**
+- `DOCKERMAP_BIND_ADDR` env var (default `127.0.0.1:4100`; set `0.0.0.0:4100` for
+  external)
+- `DOCKERMAP_API_TOKEN` → Bearer token auth middleware on the Express BFF for all
+  non-health endpoints
+- `DOCKERMAP_CORS_ORIGINS` env var (comma-separated allowed origins)
+- Add to `SECURITY.md`: risks of external binding, Docker socket privileges
 
-**A2. API versioning**
-- Prefix all routes with `/api/v1/` (keep `/api/` aliases for backwards compat)
-- Add `X-DockerMap-Version` response header
-- Protects external integrations from silent breaking changes
+**A2. OpenAPI documentation**
+- Hand-crafted `docs/openapi.yaml` covering all v1 read-only endpoints (params, response
+  schemas, error codes)
+- Serve `GET /api/openapi.json` from the Express BFF
+- Serve `GET /api/docs` using `swagger-ui-dist` for browser-accessible Swagger UI
 
-**A3. OpenAPI specification**
-- Add `utoipa` crate to generate OpenAPI 3.1 from Rust handler annotations, or handcraft `docs/openapi.yaml`
-- Serve `GET /api/openapi.json` from the BFF
-- Serve `GET /api/docs` with embedded Swagger UI (via `swagger-ui-dist` npm package)
-- All read-only endpoints fully documented with request params, response schemas, error codes
+**A3. API versioning**
+- Prefix all routes with `/api/v1/` (keep unversioned `/api/` as alias)
+- Add `X-DockerMap-Version` response header on every response
+- Add `GET /api/v1/status` (no auth): `{ version, uptime_seconds, docker_reachable,
+  compose_files_found, mode }`
 
 **A4. Homepage-compatible widget endpoint**
-- [Homepage](https://gethomepage.dev/) supports custom JSON API service widgets
-- Add `GET /api/widgets/homepage` returning:
-  ```json
-  {
-    "containers": { "running": 5, "stopped": 1, "total": 6 },
-    "images": 8,
-    "networks": 3,
-    "volumes": 2,
-    "status": "ok"
-  }
-  ```
-- Document widget configuration in `README.md`
+- `GET /api/widgets/homepage` (no auth): `{ status, containers: { running, stopped,
+  total }, networks: N, images: N, errors: N }`
+- Document Homepage widget config in README (URL, title, icon)
 
-**A5. Rate limiting and uptime monitoring support**
-- Add `express-rate-limit`: 100 req/min per IP on all read endpoints
-- `GET /api/health` always returns 200 without auth (for uptime monitors like Uptime Kuma)
-- Add `GET /api/v1/status` with `{ version, uptime_seconds, docker_reachable, compose_files_found, tailscale_detected }`
+**A5. Rate limiting**
+- Add `express-rate-limit`: 120 req/min per IP on read endpoints; 10 req/min on future
+  mutation endpoints
 
----
+#### Stream B — Docker Network Deep Dive
 
-### Stream B — Docker Network Topology Enrichment
-
-**B1. Container IPs per network**
-- Pull IPAM data from bollard network inspect: subnet, gateway, IP range
-- Add `container_ip: string` to each network membership in `ContainerRecord`
+**B1. IPAM enrichment in network records**
+- Pull `Ipam.Config[].Subnet`, `Gateway`, `IPRange` from bollard network inspect
 - Add `ipam: { subnet, gateway, ip_range }` to `NetworkRecord`
-- Networks page: show each member container with its assigned IP
+- Add `container_ip: string` to each container's network membership entry
+- Networks page: show each member container with its IP inside that network
 
-**B2. Gateway container detection**
-- Detect containers that span multiple networks (multi-homed containers are usually reverse proxies or API gateways)
-- Derive `role: "gateway" | "service" | "database" | "cache" | "proxy"` from: network membership count, image name patterns (`nginx`, `traefik`, `caddy`, `postgres`, `redis`, `mongo`)
-- Surface gateway nodes differently in Dashboard graph (larger, different shape/color)
+**B2. Cross-network gateway detection**
+- Detect containers that span ≥ 2 networks → candidate gateway/proxy containers
+- Infer `role: "gateway" | "service" | "database" | "cache"` from network membership
+  + image name heuristics (`nginx`, `traefik`, `caddy`, `postgres`, `redis`, etc.)
+- Dashboard graph: render gateway-role containers with a distinct visual treatment
 
 **B3. Port exposure map**
-- Extend `ContainerRecord.ports` with `host_ip`, `host_port`, `container_port`, `protocol`, `publicly_exposed: bool`
-- `publicly_exposed = true` when `host_ip == "0.0.0.0"` or `"::"`
-- Add "Exposed to Host" section on Dashboard: table of all publicly exposed ports
-- Add port search: `GET /api/containers?port=443` returns containers exposing that port
+- Extend `ContainerRecord.ports` to include `host_ip`, `host_port`, `container_port`,
+  `protocol`, `publicly_exposed` (`host_ip == "0.0.0.0"` or `"::"`)
+- `GET /daemon/ports` — all publicly exposed ports across all containers
+- Dashboard: "Exposed Ports" summary table; add port-based search
 
 **B4. Reverse proxy label parsing**
+- Parse Traefik labels: `traefik.http.routers.<name>.rule=Host(\`domain\`)`,
+  `traefik.http.services.<name>.loadbalancer.server.port`
+- Parse Nginx Proxy Manager labels; parse Caddy labels
+- New type `ProxyRoute { domain, container_name, port, tls, provider }`
+- `GET /daemon/proxy-routes` endpoint
+- New `/domains` page: domain → container → port table; TLS indicator
+- Container detail: "Domains" section listing all routes pointing to that container
 
-Scan container labels for routing rules from common reverse proxies:
+**B5. Reverse DNS resolution**
+- For each container IP (from IPAM), perform PTR lookup via `trust-dns-resolver` or
+  system resolver
+- Cache with 5-minute TTL
+- Show `resolved_hostname` alongside IP in Networks page and container detail
 
-- **Traefik**: `traefik.http.routers.<name>.rule=Host(\`domain.com\`)` → extract domain
-- **NGINX Proxy Manager**: `nginx-proxy=domain.com` / `VIRTUAL_HOST=domain.com`
-- **Caddy**: `caddy=domain.com` label
-- Produce `ProxyRoute { domain, container_name, container_port, tls: bool, provider: "traefik" | "npm" | "caddy" | "nginx-proxy" }`
-- `GET /daemon/proxy-routes` endpoint returning all detected routes
-- New `/domains` page: domain → container mapping table with TLS badge and provider icon
-- Container detail: "Routes to this container" section listing detected domains
-
-**B5. Reverse DNS for container IPs**
-- For each container IP (from IPAM enrichment), perform PTR record lookup via `trust-dns-resolver` or system resolver
-- Cache results with 5-minute TTL
-- Add `resolved_hostname?: string` to network membership data
-- Show in Networks page alongside IP; show in Container detail
-
----
-
-### Stream C — Tailscale / Headscale Integration
+#### Stream C — Tailscale / Headscale Integration
 
 **C1. Tailscale status detection**
-- Check if `tailscaled` is running via the Tailscale local API socket (`/var/run/tailscale/tailscaled.sock`) or by spawning `tailscale status --json`
-- Parse peer list: `{ NodeKey, DNSName, TailscaleIPs, Online, Tags, ExitNode }`
-- Cache with 30s TTL
-- Graceful no-op when Tailscale is not present (no errors, feature simply absent)
+- Attempt connection to Tailscale local API socket
+  (`/var/run/tailscale/tailscaled.sock`)
+- Parse peer list: `NodeKey`, `DNSName`, `TailscaleIPs`, `Online`, `Tags`
+- Cache with 30-second TTL
+- Graceful no-op when Tailscale not present
 
 **C2. Container ↔ Tailscale peer correlation**
-Match peers to containers by:
-1. Container label `tailscale.hostname` or `tailscale.ip`
-2. Container name matching Tailscale DNS name (e.g., `my-app` matches `my-app.tail12345.ts.net`)
-3. Container using `tsnet` (has `TS_AUTHKEY` in environment)
-
-Produce `TailscaleCorrelation { peer_name, tailscale_ips, magic_dns, container_name, online, tags }`
+- Match peers to containers by label (`tailscale.hostname` / `tailscale.ip`), container
+  name matching Tailscale DNS name, or presence of `TS_AUTHKEY` env var
+- Produce `TailscaleRecord { peer_name, tailscale_ip, container_name, online, tags }`
 
 **C3. Headscale support**
 - Accept `DOCKERMAP_HEADSCALE_URL` and `DOCKERMAP_HEADSCALE_API_KEY` env vars
-- Query Headscale REST API `GET /api/v1/machine` for machine list
-- Same correlation logic as C2
+- Query `GET /api/v1/machine` on the Headscale server; same correlation logic as C2
 
-**C4. Tailscale API endpoints**
-- `GET /daemon/tailscale/peers` — all peers with container correlation
-- `GET /daemon/tailscale/status` — connectivity status, exit node, online count
+**C4. Tailscale/Headscale daemon endpoints**
+- `GET /daemon/tailscale/peers` — peers with container correlation
+- `GET /daemon/tailscale/status` — overall connectivity, exit node, online count
 
 **C5. Tailscale UI**
-- Dashboard: "VPN Reachable" section listing Tailscale-accessible containers with their MagicDNS names
-- Container detail: Tailscale badge showing Tailscale IP and MagicDNS hostname (if correlated)
-- New `/tailscale` page (only rendered when Tailscale detected): peer list with container links, tags, online status, exit node indicator
-- Networks page: show Tailscale IPs alongside Docker IPs
+- Dashboard: "VPN-accessible containers" section (hidden when Tailscale not detected)
+- Container detail: Tailscale badge + Tailscale IP when peer is correlated
+- New `/tailscale` page: peer list, online status, ACL tags, container links
+- Graceful "Tailscale not detected" empty state
 
----
-
-### Stream D — Network Visualization Upgrade
+#### Stream D — Network Visualization Upgrade
 
 **D1. Graph view selector**
-- Dashboard graph gains a view toggle: "Topology" | "Networks" | "VPN"
-- **Topology**: existing container/network/volume graph
-- **Networks**: containers arranged by network, IPs shown on nodes, gateway containers highlighted
-- **VPN**: Tailscale network map (peers as nodes, containers correlated, online/offline state)
+- Dashboard: toggle between "Docker Topology", "Network View", "Domain View",
+  "VPN/Tailscale View"
+- Docker Topology: existing container/network/volume graph
+- Network View: containers grouped by Docker network; IPs shown; gateway containers
+  highlighted
+- Domain View: reverse-proxy routes as nodes; domain → container → port flow
+- VPN View: Tailscale/Headscale peers mapped to containers (shown only when VPN detected)
 
-**D2. Force-directed graph layout**
-- Replace the current CSS grid "graph" with a true spatial layout using `d3-force` or `@xyflow/react`
-- Container nodes: color by status (running=green, stopped=grey, error=red)
-- Network nodes: teal, volume nodes: amber
-- SVG edges with arrowheads: solid for `connected_to`, dashed for `mounts`
-- Zoom/pan support, reset button
-- Click node → detail page
+**D2. Replace CSS-grid graph with force-directed layout**
+- Install `d3-force` or `@xyflow/react`
+- Render nodes at computed positions with SVG edges
+- Container nodes: colour by status; network nodes: teal; volume nodes: amber; domain
+  nodes: purple; VPN nodes: green
+- Zoom/pan; click to navigate; hover tooltip with status summary
 
----
+#### Phase 1.5 Verification
 
-### Phase 1.5 Verification
-
-- [ ] `GET /api/v1/status` accessible from another machine when `DOCKERMAP_DAEMON_BIND=0.0.0.0:4100`
-- [ ] `GET /api/widgets/homepage` returns correct JSON structure for Homepage widget config
-- [ ] `GET /api/docs` renders Swagger UI with all read-only endpoints documented
-- [ ] Networks page shows container IPs per network (not just names)
-- [ ] At least Traefik label parser extracts domain → container mappings from a test fixture
-- [ ] `/domains` page lists detected proxy routes
-- [ ] Tailscale: when detected, `/tailscale` page shows peers; container detail shows badge
-- [ ] Tailscale: when absent, no errors emitted — graceful degraded state
-
----
-
-## Phase 2: Validation & Diagnostics
-
-> Depends on: Phase 1 Compose parsing (A1–A6). Runs concurrently with Phase 1.5.
-
-### Stream A — Rust Validation Engine
-
-Define a `ValidationRule` trait with `fn check(&self, project: &ComposeProject) -> Vec<ComposeDiagnostic>`. Implement as independent structs — one per rule, each independently testable.
-
-**A1. `MissingHostPath`** — `fs::metadata(resolved_source)` check for bind mounts. Emit `Error`.
-
-**A2. `DuplicateContainerTarget`** — detect two mounts in the same service sharing a container path. Emit `Error`.
-
-**A3. `AmbiguousRelativePath`** — warn when resolved path traverses above the project directory. Emit `Warning`.
-
-**A4. `ReadWriteMismatch`** — declared `read_only: false` but host path is not writable. Emit `Warning`.
-
-**A5. `PathTraversal`** — resolved path escapes configured `projectRoot` policy. Emit `Error`.
-
-**A6. `UnresolvedEnvVar`** — `${VAR}` with no default, not in env. Emit `Error`.
-
-**A7. `ProxyRouteConflict`** — two containers claim the same domain in their reverse proxy labels. Emit `Error`.
-
-**A8. Diagnostics endpoint**
-- `GET /daemon/compose/validate` → `{ diagnostics: Diagnostic[], summary: { errors, warnings, info } }`
-- Machine-readable: suitable for CI `fail-on-error` scripts
-
-**A9. Malformed fixture tests**
-- `tests/fixtures/compose/invalid/` with: missing-path.yml, duplicate-target.yml, traversal.yml, unresolved-var.yml
-- `#[test]` for each rule asserting correct severity and kind
+- [ ] `GET /api/v1/status` returns 200 from a different host when bind addr is `0.0.0.0`
+- [ ] `GET /api/widgets/homepage` returns expected structure; documented in README
+- [ ] `GET /api/docs` renders Swagger UI covering all read-only endpoints
+- [ ] Networks page shows per-member container IPs
+- [ ] Gateway-role containers are visually distinct in the graph
+- [ ] Traefik label parser correctly extracts domains from test fixtures
+- [ ] `/domains` page renders detected proxy routes
+- [ ] If Tailscale present: `/tailscale` page and container badges work
+- [ ] If Tailscale absent: no errors; graceful empty state shown
 
 ---
 
-### Stream B — Diagnostics UI
+### Phase 2 — Validation & Diagnostics
 
-**B1. Diagnostics page** — new `/diagnostics` route; table grouped by severity; filter by severity/file/rule
+> **Goal:** Make DockerMap a trusted audit tool.
+> **Prerequisite:** Phase 1 Compose parsing (A1–A3) complete.
+> Streams run concurrently.
 
-**B2. Inline badges** — severity count badge on nav items; error outline on graph nodes with diagnostics
+#### Stream A — Rust Validation Engine
 
-**B3. Dashboard KPI card** — fifth KPI card: "N errors, M warnings" from validation
+**A1. `ValidationRule` trait in `dockermap-core`**
+- `fn check(&self, project: &ComposeProject) -> Vec<ComposeDiagnostic>`
+- One concrete struct per rule; independently testable
 
-**B4. Export** — "Export JSON" button on diagnostics page; `GET /api/diagnostics?format=json` machine-readable output
+**A2. Validation rules** (each can be a separate PR)
+- `MissingHostPath` — `fs::metadata(host_path)` check → `Error`
+- `DuplicateContainerTarget` — two mounts same `target` per service → `Error`
+- `AmbiguousRelativePath` — `../..` traversal above project root → `Warning`
+- `ReadWriteMismatch` — declared `read_only: false` but host path unwritable → `Warning`
+- `PathTraversal` — escapes configured `projectRoot` policy → `Error`
+- `UnresolvedEnvVar` — `${VAR}` with no default and not in env → `Error`
+
+**A3. Severity model & machine-readable output**
+- `Severity` enum: `Info | Warning | Error | Blocked`
+- `GET /daemon/compose/validate` → `{ rules, diagnostics, summary: { errors, warnings,
+  info } }`
+
+**A4. Malformed fixture tests**
+- Add `tests/fixtures/compose/invalid/` with: missing path, duplicate target, unresolved
+  var, path traversal
+- `#[test]` for each asserting expected severity and kind
+
+#### Stream B — API & UI for Diagnostics
+
+**B1.** Proxy `GET /api/compose/validate`; add mock response.
+
+**B2.** Add `/diagnostics` page: severity-grouped table, filter by severity/file/rule.
+
+**B3.** Severity count badges on nav items; error outline on graph nodes with issues.
+
+**B4.** Fifth KPI card on Dashboard: total errors and warnings from validation.
+
+**B5.** `GET /api/diagnostics?format=json` for CI consumption; "Export JSON" button in UI.
+
+#### Stream C — Security & Docs
+
+**C1. `SECURITY.md`** — threat model: host path exposure, symlink traversal, Docker
+socket risk, edit permissions, external API exposure risks.
+
+#### Phase 2 Verification
+
+- [ ] Each validation rule has a passing and a failing test
+- [ ] `GET /api/compose/validate` returns structured JSON matching contracts type
+- [ ] Diagnostics page renders and groups by severity
+- [ ] `Blocked` severity prevents editing (enforced in Phase 3)
 
 ---
 
-### Stream C — Security & Docs
+### Phase 3 — Editing Workflow
 
-**C1. Threat model** — `docs/SECURITY.md`: host path exposure, symlink traversal, Docker socket risk, edit permissions, external API binding risks
+> **Goal:** Safe, reversible Compose file editing with diff preview.
+> **Prerequisite:** Phase 2 complete. `Blocked` diagnostics must gate all writes.
+> **Security:** Mutation endpoints require `DOCKERMAP_EDITS_ENABLED=true` flag and API
+> token auth.
 
----
+#### Stream A — Rust Edit Engine (sequential within stream)
 
-### Phase 2 Verification
+**A1. YAML round-trip parsing**
+- Parse with `serde_yaml::Value` (generic, preserves structure) rather than typed structs
+- Round-trip test: parse → re-serialize → must match input byte-for-byte (ignoring
+  trailing whitespace)
+- Use `similar` crate for unified diff generation
 
-- [ ] Each validation rule has tests for passing and failing cases
-- [ ] `/api/compose/validate` returns structured JSON matching contracts
-- [ ] Diagnostics page renders, groups by severity, filters correctly
-- [ ] `Blocked` diagnostic correctly gates the editing workflow in Phase 3
-- [ ] `ProxyRouteConflict` detects duplicate domain in test fixture
-
----
-
-## Phase 3: Editing Workflow
-
-> Depends on: Phase 2 complete. Mutation endpoints are feature-flagged behind `DOCKERMAP_EDITS_ENABLED=true`.
-
-### Stream A — Rust Edit Engine
-
-**A1. `EditPlan` and `PlannedEdit` types**
-- `PlannedEdit { file, line, old_value, new_value, description }`
-- `EditPlan { edits, validation_passed, blocking_diagnostics, diff_unified }`
-- `EditResult { applied, backup_path, rollback_command, error }`
-
-**A2. YAML round-trip edit**
-- Parse Compose file to `serde_yaml::Value` (not typed struct) to preserve comments and key ordering
-- Navigate to target field, swap value, re-serialize
-- Generate unified diff using `similar` crate
-- Return `EditPlan` without touching the filesystem
+**A2. Dry-run edit plan**
+- `EditRequest { file, service, mount_index, new_source?, new_target?, new_mode? }`
+- Run all Phase 2 validation checks on the proposed state
+- Return 400 if any `Blocked` diagnostic; otherwise return `EditPlan { diff_lines,
+  validation_result }`
 
 **A3. Write with backup**
-- Copy original to `<filename>.dockermap.bak` in same directory before any write
-- Atomic write: write to temp file, rename to target
-- Return `EditResult` with backup path and rollback command
+- Copy original to `<filename>.dockermap.bak` in same directory
+- Write new content to temp file; atomic rename
+- Git-aware warning: if file has uncommitted changes, add `Warning` to `EditPlan`
+- Return `EditResult { backup_path, rollback_command, applied_at }`
 
-**A4. Git-aware safety check**
-- Before applying: `git status --porcelain <file>` — if uncommitted changes exist, add `Warning` to `EditPlan`
-- Never block the edit on git state, only warn
+#### Stream B — Mutation API
 
-**A5. Daemon edit endpoints (feature-flagged)**
-- `POST /daemon/compose/plan-edit` body `{ file, service, mountIndex, newSource? }` → `EditPlan`
-- `POST /daemon/compose/apply-edit` body `{ planId, confirm: true }` → `EditResult`
-- Both return `403` if `DOCKERMAP_EDITS_ENABLED != "true"`
+**B1. `POST /daemon/compose/plan-edit`** — requires feature flag; returns `EditPlan`
 
----
+**B2. `POST /daemon/compose/apply-edit`** — body `{ plan_id, confirm: true }`; returns
+`EditResult`; max 1 concurrent write (mutex)
 
-### Stream B — Mutation API
+**B3. BFF proxy** — proxy mutation routes; log each apply to an audit log file with
+timestamp and summary
 
-**B1. Proxy edit endpoints through BFF** — add auth middleware stub (Bearer token check)
+#### Stream C — Frontend Edit UI
 
-**B2. Audit log** — append each apply to `apps/api/src/audit.log`: timestamp, file changed, what changed
+**C1. Edit action on mount rows** — "Change path" opens diff preview modal
 
----
+**C2. Diff viewer component** — colour-coded `+`/`-` lines; no third-party renderer
+needed
 
-### Stream C — Diff Preview UI
+**C3. Confirmation flow** — "Apply" sends apply-edit; toast on success/failure; shows
+backup path
 
-**C1. Diff viewer component** — parse unified diff string, render `+`/`-` lines color-coded (green/red). Keep simple — no third-party diff renderer needed.
+#### Phase 3 Verification
 
-**C2. Edit panel** — "Change path" action on mount rows in ContainerDetail and Diagnostics pages; opens modal with text input and "Preview" button
-
-**C3. Confirmation flow** — show diff preview, "Apply" button calls `apply-edit`, success/failure toast, refetch data
-
----
-
-### Phase 3 Verification
-
-- [ ] Dry-run produces valid unified diff for every mount type in fixture
-- [ ] Write creates `.dockermap.bak` and correctly modifies the original
-- [ ] Edit endpoints return `403` when `DOCKERMAP_EDITS_ENABLED` is unset
-- [ ] `Blocked` diagnostic prevents `apply-edit` from executing
-- [ ] Diff viewer renders for single-line and multi-line changes
+- [ ] Dry-run returns valid unified diff for all mount types in fixture
+- [ ] Write creates `.dockermap.bak`; original is correctly modified
+- [ ] Editing endpoints return 403 without feature flag
+- [ ] `Blocked` diagnostics prevent apply
+- [ ] No write occurs without explicit "Apply" click after diff review
 
 ---
 
-## Phase 4: Visual & UX Polish
+### Phase 4 — Visual & UX Polish
 
-> Can begin concurrently with Phase 2/3 on non-overlapping work.
+> **Goal:** Delightful, demo-ready interface with E2E test coverage.
+> **Can begin concurrently with Phase 3.**
 
-### Stream A — Graph Upgrade (depends on Phase 1.5 D2)
+**Theme toggle** — dark/light; persisted to `localStorage`; CSS custom property override.
 
-**A1. Force-directed layout** — D3-force or React Flow replacing the CSS grid graph
+**Keyboard shortcuts** — `g/c/i/n/v/l` for nav; `/` to focus search; `?` for cheatsheet.
 
-**A2. Node type styling** — containers (status-color), networks (teal), volumes (amber), gateways (larger)
+**Force-directed graph** — replace CSS-grid with D3 or React Flow spatial layout (can
+reuse work from Phase 1.5 Stream D2).
 
-**A3. Edge styling** — `connected_to` solid, `mounts` dashed, arrowheads
+**Accessibility** — `aria-label` and `role` on all interactive elements; axe-core audit.
 
-**A4. Graph view selector** — Topology / Networks / VPN toggle from Phase 1.5 D1
+**Playwright E2E tests**
+- Install `@playwright/test`; target mock stack
+- Smoke tests: dashboard KPIs, containers filter, detail navigation, logs filter
+- Navigation cross-page tests per `PAGE_LOGIC.md` cross-page rules
+- Add Playwright job to CI workflow
 
-**A5. Zoom/pan** — built-in from graph library + reset button
+#### Phase 4 Verification
 
----
-
-### Stream B — Theme & Accessibility
-
-**B1. Theme toggle** — dark/light mode via `.theme-light` CSS class on `<html>`; persist to `localStorage`; respect `prefers-color-scheme` as default
-
-**B2. Keyboard shortcuts** — `g/c/i/n/v/l` for pages, `/` for search, `Escape` to clear, `?` for cheatsheet
-
-**B3. ARIA labels** — `aria-label` and `role` on all interactive elements; run axe-core check
-
----
-
-### Stream C — E2E Tests
-
-**C1. Add Playwright** — `@playwright/test` targeting `http://127.0.0.1:3233` with mock API active
-
-**C2. Smoke tests** — Dashboard KPI cards; Containers search; graph node click → detail; Logs service filter
-
-**C3. Cross-page navigation tests** — all "Cross-Page Rules" from `PAGE_LOGIC.md`
-
-**C4. Wire into CI** — add Playwright job to `github-actions-ci.yml` running against mock stack
-
----
-
-### Phase 4 Verification
-
-- [ ] Graph renders spatially (not CSS grid) with SVG edges
 - [ ] Theme toggle persists across reload
+- [ ] Graph renders with spatial layout and SVG edges
 - [ ] All interactive elements have accessible labels
-- [ ] Playwright smoke tests pass in CI against mock stack
-- [ ] Keyboard shortcut `g` navigates to Dashboard, `l` to Logs
+- [ ] Playwright suite passes in CI
 
 ---
 
-## Phase 5: Runtime Enrichment
+### Phase 5 — Runtime Enrichment
 
-> Depends on: Phase 1 (bind_mounts field, correlation). Can run concurrently with Phase 3.
+> **Goal:** Live metrics and drift detection.
+> **Prerequisite:** Phase 1 complete (specifically bind mount field on `ContainerRecord`
+> and Compose ↔ runtime correlation).
 
-### Stream A — Container Metrics
+#### Stream A — Container Metrics
 
-**A1. bollard stats polling** — background task calling `stats()` (one-shot, non-streaming) per running container every 5s; store in separate `metrics` cache
+**A1.** Background task polling bollard `stats()` every 5 seconds per running container;
+store `ContainerMetrics { cpu_percent, memory_mb, memory_limit_mb }` in cache.
 
-**A2. `ContainerMetrics` type** — `{ container_name, cpu_percent, memory_mb, memory_limit_mb, timestamp }`
+**A2.** `GET /daemon/containers/:name/metrics` endpoint.
 
-**A3. Metrics endpoint** — `GET /daemon/containers/:name/metrics`
+**A3.** CPU and memory bars in ContainerDetail UI; `sort=cpu`/`sort=memory` on Containers
+page.
 
-**A4. Metrics in ContainerDetail** — CPU bar + memory bar; auto-refresh on heartbeat tick
+#### Stream B — Drift Detection
 
-**A5. Sort by CPU/memory** — enable `sort=cpu` and `sort=memory` on Containers page
+**B1.** Compare `ContainerRecord.bind_mounts` (actual bollard data) against
+`ComposeMountDeclaration` per service → `DriftReport { matched, only_in_compose,
+only_in_runtime }`.
 
----
+**B2.** `GET /daemon/compose/drift` endpoint.
 
-### Stream B — Drift Detection
+**B3.** Drift badge on ContainerDetail; Drift section on Diagnostics page.
 
-**B1. Drift comparison** — compare `ContainerRecord.bind_mounts` (runtime) vs `ComposeMountDeclaration` (declared); produce `DriftReport { matched, only_in_compose, only_in_runtime }`
+#### Phase 5 Verification
 
-**B2. Drift endpoint** — `GET /daemon/compose/drift`
-
-**B3. Drift indicators** — Drift badge on ContainerDetail; Drift section in Diagnostics page
-
----
-
-### Phase 5 Verification
-
-- [ ] CPU and memory render in ContainerDetail and update on refresh
-- [ ] Drift report identifies a Compose-declared volume not mounted in running container
-- [ ] Metrics endpoint returns `200` for running containers, `404` for non-existent
+- [ ] Metrics render in ContainerDetail and update on heartbeat
+- [ ] Drift report correctly identifies a mount declared but not mounted
+- [ ] Drift badge appears on affected containers
 
 ---
 
-## Phase 6: Collaboration & Release
+### Phase 6 — Collaboration & Release
 
-> Depends on: Phases 1–5 substantially complete.
+> **Prerequisite:** Phases 1–5 largely complete.
 
-**6.1. Saved reports** — `GET /api/v1/report?format=json|html` generating static report of all diagnostics + mounts + drift; fail CI if any `Error` severity diagnostic exists
+**CLI package** — add `crates/dockermap-cli` with `clap`: `scan`, `validate`, `export`,
+`report` subcommands.
 
-**6.2. CLI package** — `crates/dockermap-cli` with `clap` subcommands: `scan`, `validate`, `export --format json`, `report --output report.html`, `edit --dry-run`
+**Saved reports** — `GET /api/v1/report?format=json|html` for CI artifact consumption;
+fail CI if any `Error` severity diagnostic.
 
-**6.3. Release workflow** — `.github/workflows/release.yml` on `v*` tags; build `dockermap-daemon` + `dockermap-cli` for linux-x86_64, linux-aarch64, macos-aarch64; publish as GitHub Release assets
+**Release workflow** — `.github/workflows/release.yml` triggered on `v*` tags; build
+daemon + CLI binaries for linux-x86_64, linux-aarch64, macos-aarch64; publish as GitHub
+Release assets.
 
-**6.4. Changelog** — `CHANGELOG.md` following Keep a Changelog; `git-cliff` or manual process
+**Changelog** — `CHANGELOG.md` in Keep a Changelog format; document every breaking API
+change.
+
+**npm publish for contracts** — add `publishConfig.access: public` to
+`packages/contracts`; publish on release.
 
 ---
 
-## Stretch Goals
+## Backlog / Stretch Goals
 
-### High Priority
+Ordered by expected value. No hard phase gate unless noted.
 
-**S1. Contract generation** — replace manually mirrored `packages/contracts/src/index.ts` with generated code via `typeshare` or `schemars` + `typescript-type-def`. Add `cargo run -p generate-contracts` step to CI that fails if generated output differs from committed output.
-
-**S2. Compose override merging UI** — show merged view of volumes per service, tooltip showing which file each declaration originates from
-
-**S3. `.env` interpolation** — parse `.env` files, substitute into `${VAR}` references, warn on missing or unused variables
-
-**S4. Dockerfile path extraction** — parse `WORKDIR`, `COPY`, and `VOLUME` from Dockerfiles referenced by `build.context`; correlate with Compose mount declarations
-
-### Medium Priority
-
-**S5. Export to Mermaid/Graphviz** — `GET /api/v1/graph?format=mermaid` and `?format=dot` for embedding in docs/wikis
-
-**S6. Named volume lifecycle hints** — detect volumes in Docker not referenced in any Compose file (prune candidates); detect Compose-declared volumes never created
-
-**S7. Webhook / push notifications** — `POST /api/v1/webhooks` to register a URL; push `{ event: "container_stopped", container_name }` events to external systems (e.g., Homepage refresh triggers)
-
-**S8. Integration tests with temporary Docker project** — spin up fixture Compose project via `docker compose up -d`, run daemon against it, assert zero drift; opt-in via `DOCKERMAP_INTEGRATION_TESTS=true`
-
-### Lower Priority
-
-**S9. Path normalization for Windows/WSL** — `C:\Users\...` → `/mnt/c/...` conversion; `cfg(target_os)` branches in path resolver
-
-**S10. Policy file** — `.dockermap.yml` defining `allowed_host_roots: ["/data"]`; `PathTraversal` rule checks against this list
-
-**S11. "Explain this mount" command** — `POST /api/v1/explain` takes a mount declaration, returns plain-English explanation (natural integration point for Claude API via `claude-sonnet-4-6`)
-
-**S12. Desktop wrapper (Tauri)** — native app wrapping the web UI; system tray, auto-start; only after core product is stable
-
-**S13. Multi-project view** — scan multiple project directories; cross-project volume sharing detection; global host map
+| Priority | Item | Notes |
+|---|---|---|
+| High | Contract generation | Replace manual TypeScript mirror with `typeshare` or `schemars` + TS emit; add CI diff check |
+| High | `.env` interpolation | Load `.env`, substitute `${VAR}` in Compose before parsing; warn on missing vars |
+| High | Compose override merging UI | Show merged service view with per-field source annotations |
+| Medium | Dockerfile path extraction | Parse `WORKDIR`, `COPY`, `VOLUME` from Dockerfiles; correlate with Compose `build:` context |
+| Medium | Export to Mermaid / Graphviz | `GET /api/v1/graph?format=mermaid|dot`; useful for README/wiki embedding |
+| Medium | Integration tests with live Docker | `DOCKERMAP_INTEGRATION_TESTS=true` job; spin up fixture Compose project, assert on output |
+| Medium | Policy file for allowed host roots | `.dockermap.policy.yaml`: `allowedHostRoots: [...]`; `PathTraversal` rule checks against it |
+| Low | Path normalization (Windows/WSL/macOS) | `C:\Users\...` → `/mnt/c/...` in WSL; macOS Docker Desktop path translation |
+| Low | Named volume lifecycle hints | Detect compose-declared volumes never created; Docker volumes not referenced in any file |
+| Low | "Explain this mount" AI command | `POST /api/v1/explain`; plain-English explanation of a mount/volume; Claude API integration |
+| Low | Multi-project view | Scan multiple project directories; detect cross-project volume sharing |
+| Low | Desktop wrapper (Tauri) | Only after core product is stable; native tray, auto-start |
+| Low | AdGuard / Pi-hole DNS awareness | Query local DNS server for container hostname records; surface in network view |
+| Low | WireGuard peer mapping | Similar to Tailscale but via `wg show` output parsing |
 
 ---
 
@@ -661,74 +566,66 @@ Define a `ValidationRule` trait with `fn check(&self, project: &ComposeProject) 
 Phase 0 (done)
   │
   ▼
-Phase 1 (parallel: A Compose parsing, B API hardening, C frontend split, D features, E infra)
+Phase 1 ──────────────── concurrent ─────────────── Phase 1.5
+  Stream A (Rust compose parsing)                    Stream A (external API)
+  Stream B (Node proxies + contracts)                Stream B (network deep dive)
+  Stream C (App.tsx decomposition)                   Stream C (Tailscale/Headscale)
+  Stream D (frontend features)        ◄─────────── Stream D (graph upgrade)
   │
-  ├──► Phase 1.5 (parallel with Phase 2: networking USP + external API)
-  │      Stream A: External API exposure
-  │      Stream B: Docker network enrichment
-  │      Stream C: Tailscale/Headscale
-  │      Stream D: Graph visualization
+  ▼
+Phase 2 (validation)  ────────── concurrent ─────── Phase 4 (polish + E2E)
+  Stream A (Rust rules)                              Theme, keyboard, Playwright
+  Stream B (diagnostics UI)
+  Stream C (security docs)
   │
-  ├──► Phase 2 (parallel with 1.5: validation + diagnostics)
-  │      │
-  │      ▼
-  │    Phase 3 (editing workflow — gates on Phase 2)
+  ▼
+Phase 3 (editing)  ─────────── concurrent ──────── Phase 5 (metrics + drift)
+  Stream A (Rust edit engine)                       Stream A (bollard stats)
+  Stream B (mutation API)                           Stream B (drift detection)
+  Stream C (diff preview UI)
   │
-  ├──► Phase 4 (polish — gates on Phase 1 C5; otherwise parallel with 2/3)
-  │
-  ├──► Phase 5 (runtime enrichment — gates on Phase 1 A8/A6)
-  │
-  └──► Phase 6 (release — gates on Phases 1–5)
-         │
-         ▼
-       Stretch Goals (most independent of phase gates)
+  ▼
+Phase 6 (CLI + release)
 ```
 
-**Critical paths within Phase 1:**
+**Critical path within Phase 1:**
+`C1→C2→C3→C4→C5` (App.tsx decomposition) must complete before Stream D. Stream A
+(Compose parsing) is the foundation for Phases 2, 3, and 5 — start it in parallel with
+Stream C.
 
-- `C1 → C2 → C3 → C4 → C5` (frontend decomposition) must complete before any Stream D work
-- `A1 → A2 → A3` (Compose types → parser → resolver) before A4–A9
-- Streams A, B, C, E are fully parallel with each other
+**Highest-leverage first actions today:**
+1. Split `App.tsx` (unblocks all frontend feature work)
+2. Add Compose domain types to `dockermap-core` (unblocks everything downstream)
+3. Publish CI workflow to `.github/workflows/` (gives automated verification on every PR)
 
-**The two highest-leverage starting points:**
-1. **Frontend: C1–C5** (App.tsx decomposition) — unblocks all frontend feature work
-2. **Rust: A1–A3** (Compose domain types + parser + resolver) — unblocks all downstream phases
+---
+
+## Security & Reliability Priorities
+
+- Do not write to Compose files without showing a diff and requiring explicit confirmation.
+- External API binding (`0.0.0.0`) requires explicit env var opt-in and an API token.
+- Docker socket access is privileged; document the risk before each release.
+- Never silently ignore unsupported Compose syntax; emit structured diagnostics.
+- Do not follow symlinks for path validation unless behaviour is explicitly specified.
+- Validate path edits against project root policy when configured.
+- Rate-limit external API access; treat every unauthenticated request as untrusted.
+- Add regression fixtures for every supported Compose syntax form.
 
 ---
 
 ## MVP Definition of Done
 
 A user can:
-- Run DockerMap against a Docker Compose project and see all bind mounts and named volumes with resolved absolute paths
-- See which containers are running, which networks they're connected to, and which domains (via reverse proxy labels) route to them
-- See validation diagnostics for missing paths and duplicate targets
-- Export the full inventory as JSON
-- Access the API from an external dashboard (Homepage widget configured and working)
-- Not trigger any file write without first seeing a diff preview
 
-Supporting: CI passes, fixture tests pass, setup is documented, no production audit vulnerabilities.
+1. Run DockerMap against a Compose project and see all detected bind mounts, named
+   volumes, and exposed ports in the UI.
+2. See which domains (Traefik/NPM labels) route to which containers.
+3. See container IPs within each Docker network.
+4. Get validation diagnostics for missing host paths and duplicate container targets.
+5. Hit `GET /api/v1/status` and `GET /api/widgets/homepage` from another machine (with
+   `DOCKERMAP_BIND_ADDR=0.0.0.0` set) and embed the data in a Homepage dashboard.
+6. Preview a Compose path change as a unified diff before applying it.
+7. Export diagnostics as JSON for CI integration.
 
----
-
-## Security & Reliability Commitments
-
-- Do not write to Compose files without showing a diff and requiring explicit confirmation
-- Do not follow symlinks for path validation unless behavior is explicit
-- Treat Docker socket access as privileged — document the risk clearly
-- Keep daemon on loopback by default; external binding requires explicit opt-in and token auth
-- Validate path edits against `projectRoot` before writing
-- Never silently swallow parse errors — surface them as diagnostics
-- Add regression fixtures for every supported Compose syntax
-- Mutation endpoints (`DOCKERMAP_EDITS_ENABLED`) disabled by default
-
----
-
-## Previous Review Notes
-
-The codebase review identified these technical debts to address within Phase 1:
-
-- Runtime contracts are duplicated between TypeScript and Rust — address with contract compatibility tests (Phase 1 B3) and eventually contract generation (Stretch S1)
-- Python prototype at `legacy/python-prototype/` is retained only as migration reference — remove in Phase 1 B4
-- CI template exists but is unpublished — publish in Phase 1 E1
-- `App.tsx` at 709 lines is the largest maintenance risk in the frontend — decompose in Phase 1 C1–C5
-- Docker socket access is currently read-only — maintain this until Phase 3 safety model is complete
+The project has CI, fixture tests, documented setup, and no edit command writes changes
+without a dry-run preview.
