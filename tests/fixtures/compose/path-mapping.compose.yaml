@@ -1,0 +1,39 @@
+services:
+  api:
+    image: python:3.12-slim
+    working_dir: /workspace
+    command: python -m http.server 8080
+    env_file:
+      - .env
+    environment:
+      DATA_ROOT: ${DATA_ROOT:-./data}
+    volumes:
+      - type: bind
+        source: ./src
+        target: /workspace/src
+      - type: bind
+        source: ${DATA_ROOT:-./data}
+        target: /workspace/data
+      - type: volume
+        source: api-cache
+        target: /workspace/.cache
+      - ./config:/workspace/config:ro
+    ports:
+      - "8080:8080"
+
+  worker:
+    image: alpine:3.21
+    command: sh -c "while true; do sleep 60; done"
+    depends_on:
+      - api
+    volumes:
+      - ../shared:/srv/shared
+      - logs:/var/log/dockermap
+      - type: bind
+        source: ./readonly
+        target: /srv/readonly
+        read_only: true
+
+volumes:
+  api-cache:
+  logs:

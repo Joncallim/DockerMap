@@ -6,16 +6,18 @@ use axum::{
     Json, Router,
 };
 use bollard::{
-    container::{ListContainersOptions, LogOutput, LogsOptions},
+    container::LogOutput,
     models::{ContainerSummary, VolumeListResponse},
-    network::ListNetworksOptions,
-    volume::ListVolumesOptions,
+    query_parameters::{
+        ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder,
+        LogsOptionsBuilder,
+    },
     Docker,
 };
 use dockermap_core::{
     derive_graph, derive_images, mock_logs, mock_snapshot, unix_timestamp_millis, ContainerRecord,
-    DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogEntry, LogsResponse, NetworkRecord,
-    RuntimeMode, VolumeRecord,
+    DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogEntry, LogsResponse,
+    NetworkRecord, RuntimeMode, VolumeRecord,
 };
 use futures_util::stream::StreamExt;
 use serde::Deserialize;
@@ -90,7 +92,7 @@ async fn main() {
         .await
         .expect("daemon listener should bind");
 
-    println!("dockermap-daemon listening on http://{}", address);
+    println!("dockermap-daemon listening on http://{address}");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -150,7 +152,8 @@ async fn collect_snapshot() -> DaemonCache {
             }
             Err(error) => {
                 let mut cache = DaemonCache::mock();
-                cache.health.message = Some(format!("Docker read failed, serving mock data: {error}"));
+                cache.health.message =
+                    Some(format!("Docker read failed, serving mock data: {error}"));
                 cache
             }
         },
@@ -176,29 +179,30 @@ impl DockerCollector {
     async fn collect_snapshot(&self) -> Result<DockerSnapshot, String> {
         let containers = self
             .client
-            .list_containers(Some(ListContainersOptions::<String> {
-                all: true,
-                ..Default::default()
-            }))
+            .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build()))
             .await
             .map_err(|error| format!("list_containers failed: {error}"))?;
 
         let networks = self
             .client
-            .list_networks(None::<ListNetworksOptions<String>>)
+            .list_networks(Some(ListNetworksOptionsBuilder::new().build()))
             .await
             .map_err(|error| format!("list_networks failed: {error}"))?;
 
         let volumes = self
             .client
-            .list_volumes(None::<ListVolumesOptions<String>>)
+            .list_volumes(Some(ListVolumesOptionsBuilder::new().build()))
             .await
             .map_err(|error| format!("list_volumes failed: {error}"))?;
 
         Ok(build_snapshot(containers, networks, volumes))
     }
 
-    async fn collect_logs(&self, service: Option<&str>, query: Option<&str>) -> Result<LogsResponse, String> {
+    async fn collect_logs(
+        &self,
+        service: Option<&str>,
+        query: Option<&str>,
+    ) -> Result<LogsResponse, String> {
         let service = match service {
             Some(service) if !service.is_empty() => service,
             _ => return Ok(mock_logs(&mock_snapshot(), service, query)),
@@ -206,14 +210,15 @@ impl DockerCollector {
 
         let mut stream = self.client.logs(
             service,
-            Some(LogsOptions::<String> {
-                follow: false,
-                stdout: true,
-                stderr: true,
-                tail: "100".into(),
-                timestamps: false,
-                ..Default::default()
-            }),
+            Some(
+                LogsOptionsBuilder::new()
+                    .follow(false)
+                    .stdout(true)
+                    .stderr(true)
+                    .tail("100")
+                    .timestamps(false)
+                    .build(),
+            ),
         );
 
         let mut entries = Vec::new();
@@ -225,7 +230,9 @@ impl DockerCollector {
                 LogOutput::StdOut { message }
                 | LogOutput::StdErr { message }
                 | LogOutput::Console { message }
-                | LogOutput::StdIn { message } => String::from_utf8_lossy(&message).trim().to_string(),
+                | LogOutput::StdIn { message } => {
+                    String::from_utf8_lossy(&message).trim().to_string()
+                }
             };
 
             if message.is_empty() {
@@ -479,7 +486,11 @@ async fn get_logs(
                 message,
             })?
     } else {
-        mock_logs(&cache.snapshot, query.service.as_deref(), query.q.as_deref())
+        mock_logs(
+            &cache.snapshot,
+            query.service.as_deref(),
+            query.q.as_deref(),
+        )
     };
 
     Ok(Json(response))

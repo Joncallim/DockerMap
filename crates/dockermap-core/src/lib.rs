@@ -233,7 +233,12 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 name: "data".into(),
                 driver: "bridge".into(),
                 internal: true,
-                members: vec!["api".into(), "worker".into(), "postgres".into(), "redis".into()],
+                members: vec![
+                    "api".into(),
+                    "worker".into(),
+                    "postgres".into(),
+                    "redis".into(),
+                ],
             },
         ],
         volumes: vec![
@@ -324,10 +329,7 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
         let mut mapping: BTreeMap<&str, Vec<&VolumeRecord>> = BTreeMap::new();
         for volume in &snapshot.volumes {
             for attached in &volume.attached_to {
-                mapping
-                    .entry(attached.as_str())
-                    .or_default()
-                    .push(volume);
+                mapping.entry(attached.as_str()).or_default().push(volume);
             }
         }
         mapping
@@ -354,10 +356,12 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
 
         for dependency in &container.depends_on {
             let dependency_name = dependency.strip_prefix("container_").unwrap_or(dependency);
-            let target = container_by_name
-                .get(dependency_name)
-                .copied()
-                .or_else(|| snapshot.containers.iter().find(|item| item.id == *dependency));
+            let target = container_by_name.get(dependency_name).copied().or_else(|| {
+                snapshot
+                    .containers
+                    .iter()
+                    .find(|item| item.id == *dependency)
+            });
 
             if let Some(target) = target {
                 edges.push(GraphEdge {
@@ -372,7 +376,11 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
     GraphResponse { nodes, edges }
 }
 
-pub fn mock_logs(snapshot: &DockerSnapshot, service: Option<&str>, query: Option<&str>) -> LogsResponse {
+pub fn mock_logs(
+    snapshot: &DockerSnapshot,
+    service: Option<&str>,
+    query: Option<&str>,
+) -> LogsResponse {
     let mut entries = Vec::new();
     let now = unix_timestamp_millis();
     let filter = query.map(|value| value.to_ascii_lowercase());
@@ -395,7 +403,10 @@ pub fn mock_logs(snapshot: &DockerSnapshot, service: Option<&str>, query: Option
             ),
             (
                 LogLevel::Warn,
-                format!("{} waiting on dependencies {:?}", container.name, container.depends_on),
+                format!(
+                    "{} waiting on dependencies {:?}",
+                    container.name, container.depends_on
+                ),
             ),
         ];
 
@@ -446,7 +457,10 @@ mod tests {
             .iter()
             .find(|image| image.image == "python:3.11-slim")
             .expect("python image should exist");
-        assert_eq!(python.containers, vec!["api".to_string(), "worker".to_string()]);
+        assert_eq!(
+            python.containers,
+            vec!["api".to_string(), "worker".to_string()]
+        );
     }
 
     #[test]
@@ -455,7 +469,10 @@ mod tests {
         let graph = derive_graph(&snapshot);
         assert_eq!(graph.nodes.len(), 10);
         assert!(graph.edges.iter().any(|edge| edge.target == "network_data"));
-        assert!(graph.edges.iter().any(|edge| edge.target == "volume_postgres_data"));
+        assert!(graph
+            .edges
+            .iter()
+            .any(|edge| edge.target == "volume_postgres_data"));
     }
 
     #[test]
