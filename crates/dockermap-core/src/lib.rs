@@ -1,3 +1,15 @@
+pub mod compose;
+
+pub use compose::discovery::{
+    discover_compose_files as discover_compose_files_deep, discover_with_overrides,
+};
+pub use compose::parser::parse_compose_file as parse_compose_file_document;
+pub use compose::resolver::resolve_mounts;
+pub use compose::{
+    ComposeDiagnostic as ComposeDocumentDiagnostic, ComposeFile as ComposeDocument,
+    ComposeMountDeclaration, ComposeService as ComposeDocumentService,
+};
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
