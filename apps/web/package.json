@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --project tsconfig.json && vite build",
     "typecheck": "tsc --project tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@dockermap/contracts": "0.1.0",
