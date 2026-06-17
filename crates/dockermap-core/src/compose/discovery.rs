@@ -111,34 +111,32 @@ fn find_override_for(base: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// Returns the repo root (two levels above `crates/dockermap-core`).
-    fn repo_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent() // crates/
-            .unwrap()
-            .parent() // repo root
-            .unwrap()
-            .to_path_buf()
-    }
-
     #[test]
     fn test_discover_fixtures() {
-        let root = repo_root();
-        let files = discover_compose_files(&root);
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let compose = dir.path().join("docker-compose.yaml");
+        std::fs::write(&compose, "services:\n  app:\n    image: alpine\n").unwrap();
+
+        let nested = dir.path().join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let nested_compose = nested.join("compose.yml");
+        std::fs::write(&nested_compose, "services:\n  api:\n    image: alpine\n").unwrap();
+
+        let files = discover_compose_files(dir.path());
 
         assert!(
             !files.is_empty(),
             "should discover at least one compose file"
         );
-
-        // The legacy prototype ships a standard docker-compose.yaml that the
-        // discovery walk should find.
-        let has_legacy = files
-            .iter()
-            .any(|p| p.to_string_lossy().contains("docker-compose.yaml"));
         assert!(
-            has_legacy,
-            "should find at least one docker-compose.yaml; found: {files:?}"
+            files.contains(&compose),
+            "should find docker-compose.yaml; found: {files:?}"
+        );
+        assert!(
+            files.contains(&nested_compose),
+            "should find nested compose.yml; found: {files:?}"
         );
 
         // None of the results should be inside skipped directories.
@@ -158,9 +156,21 @@ mod tests {
 
     #[test]
     fn test_discover_with_overrides() {
-        let root = repo_root();
-        let pairs = discover_with_overrides(&root);
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let base = dir.path().join("docker-compose.yml");
+        std::fs::write(&base, "services:\n  app:\n    image: alpine\n").unwrap();
+        let override_file = dir.path().join("docker-compose.override.yml");
+        std::fs::write(
+            &override_file,
+            "services:\n  app:\n    environment:\n      - DEBUG=1\n",
+        )
+        .unwrap();
+
+        let pairs = discover_with_overrides(dir.path());
         assert!(!pairs.is_empty(), "should discover at least one base file");
+        assert_eq!(pairs[0], (base, Some(override_file)));
     }
 
     #[test]
