@@ -265,6 +265,82 @@ pub struct ComposeEditPlan {
     pub will_write: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeProviderKind {
+    Docker,
+    Compose,
+    Systemd,
+    ScheduledJob,
+    Pm2,
+    Tmux,
+    Process,
+    Network,
+    Kubernetes,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeNodeKind {
+    Container,
+    DockerNetwork,
+    DockerVolume,
+    SystemdService,
+    ScheduledJob,
+    Pm2App,
+    TmuxSession,
+    Process,
+    NetworkListener,
+    OrchestratorWorkload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeRelationshipKind {
+    ConnectedTo,
+    Mounts,
+    Manages,
+    Exposes,
+    Owns,
+    RelatedTo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeMapNode {
+    pub id: String,
+    pub provider: RuntimeProviderKind,
+    #[serde(rename = "type")]
+    pub kind: RuntimeNodeKind,
+    pub label: String,
+    pub status: Option<String>,
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeMapEdge {
+    pub source: String,
+    pub target: String,
+    pub relationship: RuntimeRelationshipKind,
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeMapDiagnostic {
+    pub provider: RuntimeProviderKind,
+    pub severity: DiagnosticSeverity,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeMap {
+    pub nodes: Vec<RuntimeMapNode>,
+    pub edges: Vec<RuntimeMapEdge>,
+    pub diagnostics: Vec<RuntimeMapDiagnostic>,
+    #[serde(rename = "lastUpdated")]
+    pub last_updated: u64,
+}
+
 pub fn mock_snapshot() -> DockerSnapshot {
     DockerSnapshot {
         containers: vec![
@@ -502,6 +578,120 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
     }
 
     GraphResponse { nodes, edges }
+}
+
+pub fn derive_runtime_map(
+    snapshot: &DockerSnapshot,
+    mut nodes: Vec<RuntimeMapNode>,
+    mut edges: Vec<RuntimeMapEdge>,
+    diagnostics: Vec<RuntimeMapDiagnostic>,
+) -> RuntimeMap {
+    for container in &snapshot.containers {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("image".into(), container.image.clone());
+        metadata.insert("role".into(), container.role.clone());
+        if !container.ports.is_empty() {
+            metadata.insert("ports".into(), container.ports.join(","));
+        }
+
+        nodes.push(RuntimeMapNode {
+            id: format!("docker_container_{}", sanitize_id(&container.id)),
+            provider: RuntimeProviderKind::Docker,
+            kind: RuntimeNodeKind::Container,
+            label: container.name.clone(),
+            status: Some(container.status.clone()),
+            metadata,
+        });
+
+        for network_id in &container.networks {
+            edges.push(RuntimeMapEdge {
+                source: format!("docker_container_{}", sanitize_id(&container.id)),
+                target: format!("docker_network_{}", sanitize_id(network_id)),
+                relationship: RuntimeRelationshipKind::ConnectedTo,
+                metadata: BTreeMap::new(),
+            });
+        }
+
+        for port in &container.ports {
+            let listener_id = format!("network_listener_{}", sanitize_id(port));
+            let mut metadata = BTreeMap::new();
+            metadata.insert("port".into(), port.clone());
+            nodes.push(RuntimeMapNode {
+                id: listener_id.clone(),
+                provider: RuntimeProviderKind::Network,
+                kind: RuntimeNodeKind::NetworkListener,
+                label: port.clone(),
+                status: Some("listening".into()),
+                metadata,
+            });
+            edges.push(RuntimeMapEdge {
+                source: format!("docker_container_{}", sanitize_id(&container.id)),
+                target: listener_id,
+                relationship: RuntimeRelationshipKind::Exposes,
+                metadata: BTreeMap::new(),
+            });
+        }
+    }
+
+    for network in &snapshot.networks {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("driver".into(), network.driver.clone());
+        metadata.insert("internal".into(), network.internal.to_string());
+        nodes.push(RuntimeMapNode {
+            id: format!("docker_network_{}", sanitize_id(&network.id)),
+            provider: RuntimeProviderKind::Docker,
+            kind: RuntimeNodeKind::DockerNetwork,
+            label: network.name.clone(),
+            status: None,
+            metadata,
+        });
+    }
+
+    for volume in &snapshot.volumes {
+        nodes.push(RuntimeMapNode {
+            id: format!("docker_volume_{}", sanitize_id(&volume.id)),
+            provider: RuntimeProviderKind::Docker,
+            kind: RuntimeNodeKind::DockerVolume,
+            label: volume.name.clone(),
+            status: None,
+            metadata: BTreeMap::new(),
+        });
+
+        for attached in &volume.attached_to {
+            if let Some(container) = snapshot
+                .containers
+                .iter()
+                .find(|container| container.name == *attached)
+            {
+                edges.push(RuntimeMapEdge {
+                    source: format!("docker_container_{}", sanitize_id(&container.id)),
+                    target: format!("docker_volume_{}", sanitize_id(&volume.id)),
+                    relationship: RuntimeRelationshipKind::Mounts,
+                    metadata: BTreeMap::new(),
+                });
+            }
+        }
+    }
+
+    nodes.sort_by(|left, right| left.id.cmp(&right.id));
+    nodes.dedup_by(|left, right| left.id == right.id);
+    edges.sort_by(|left, right| {
+        left.source
+            .cmp(&right.source)
+            .then(left.target.cmp(&right.target))
+    });
+    edges.dedup_by(|left, right| {
+        left.source == right.source
+            && left.target == right.target
+            && left.relationship == right.relationship
+    });
+
+    RuntimeMap {
+        nodes,
+        edges,
+        diagnostics,
+        last_updated: snapshot.last_updated,
+    }
 }
 
 pub fn mock_logs(
@@ -1439,6 +1629,27 @@ mod tests {
         let logs = mock_logs(&snapshot, Some("api"), Some("python"));
         assert!(logs.entries.iter().all(|entry| entry.container == "api"));
         assert!(!logs.entries.is_empty());
+    }
+
+    #[test]
+    fn derives_runtime_map_from_docker_snapshot() {
+        let snapshot = mock_snapshot();
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+
+        assert!(runtime_map
+            .nodes
+            .iter()
+            .any(|node| node.provider == RuntimeProviderKind::Docker
+                && node.kind == RuntimeNodeKind::Container
+                && node.label == "api"));
+        assert!(runtime_map
+            .nodes
+            .iter()
+            .any(|node| node.kind == RuntimeNodeKind::DockerNetwork));
+        assert!(runtime_map
+            .edges
+            .iter()
+            .any(|edge| edge.relationship == RuntimeRelationshipKind::ConnectedTo));
     }
 
     #[test]

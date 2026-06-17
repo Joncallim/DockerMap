@@ -13,6 +13,7 @@ import type {
   ImageRecord,
   LogsResponse,
   NetworkRecord,
+  RuntimeMap,
   VolumeRecord
 } from "@dockermap/contracts";
 import {
@@ -180,6 +181,56 @@ function getMockResponse<T>(path: string): T {
 
   if (path === "/daemon/graph") {
     return mockGraph as T;
+  }
+
+  if (path === "/daemon/runtime/map") {
+    const nodes = [
+      ...mockContainers.map((container) => ({
+        id: `docker_container_${container.id}`,
+        provider: "docker" as const,
+        type: "container" as const,
+        label: container.name,
+        status: container.status,
+        metadata: {
+          image: container.image,
+          role: container.role,
+          ports: container.ports.join(",")
+        }
+      })),
+      ...mockNetworks.map((network) => ({
+        id: `docker_network_${network.id}`,
+        provider: "docker" as const,
+        type: "docker_network" as const,
+        label: network.name,
+        status: null,
+        metadata: {
+          driver: network.driver,
+          internal: String(network.internal)
+        }
+      })),
+      ...mockVolumes.map((volume) => ({
+        id: `docker_volume_${volume.id}`,
+        provider: "docker" as const,
+        type: "docker_volume" as const,
+        label: volume.name,
+        status: null,
+        metadata: {}
+      }))
+    ];
+
+    const runtimeMap: RuntimeMap = {
+      nodes,
+      edges: [],
+      diagnostics: [
+        {
+          provider: "other",
+          severity: "warning",
+          message: "Runtime map is using Node mock fallback"
+        }
+      ],
+      lastUpdated: mockSnapshot.lastUpdated ?? Date.now()
+    };
+    return runtimeMap as T;
   }
 
   if (path === "/daemon/containers") {
@@ -431,6 +482,14 @@ app.get("/api/snapshot", async (_req, res) => {
 app.get("/api/graph", async (_req, res) => {
   try {
     res.json(await fetchDaemon<GraphResponse>("/daemon/graph"));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+app.get("/api/runtime/map", async (_req, res) => {
+  try {
+    res.json(await fetchDaemon<RuntimeMap>("/daemon/runtime/map"));
   } catch (error) {
     sendError(res, error);
   }

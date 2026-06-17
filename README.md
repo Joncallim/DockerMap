@@ -55,10 +55,12 @@ Key routes:
 - web dashboard: `http://127.0.0.1:3233`
 - node health: `http://127.0.0.1:4000/api/health`
 - node snapshot: `http://127.0.0.1:4000/api/snapshot`
+- node runtime map: `http://127.0.0.1:4000/api/runtime/map`
 - node compose scan: `http://127.0.0.1:4000/api/compose/scan?file=compose.yaml`
 - node compose graph: `http://127.0.0.1:4000/api/compose/graph?file=compose.yaml`
 - node compose edit plan: `http://127.0.0.1:4000/api/compose/edit-plan?file=compose.yaml&service=api&mount=0&source=./app`
 - rust daemon health: `http://127.0.0.1:4100/daemon/health`
+- rust runtime map: `http://127.0.0.1:4100/daemon/runtime/map`
 - rust compose scan: `http://127.0.0.1:4100/daemon/compose/scan?file=compose.yaml`
 - rust compose graph: `http://127.0.0.1:4100/daemon/compose/graph?file=compose.yaml`
 - rust compose edit plan: `http://127.0.0.1:4100/daemon/compose/edit-plan?file=compose.yaml&service=api&mount=0&source=./app`
@@ -93,6 +95,7 @@ The UI/UX design language lives in [DESIGN.md](DESIGN.md) and [docs/DESIGN_LANGU
 - `apps/api` is now a browser-facing BFF that proxies the Rust daemon and exposes SSE heartbeat updates.
 - `crates/dockermap-core` owns shared domain models, graph derivation, image derivation, and mock log generation.
 - `crates/dockermap-daemon` now runs as an HTTP daemon with health, snapshot, graph, inventory, and logs endpoints.
+- The daemon exposes a unified runtime map for visualization that combines Docker resources with discovered systemd services, scheduled jobs, PM2 apps, tmux sessions, and listening sockets when available.
 - The daemon exposes a read-only Compose scan endpoint for discovered Compose files or explicit files under `DOCKERMAP_PROJECT_ROOT`.
 - The daemon and API expose a dry-run Compose edit-plan endpoint that returns a diff and never writes files.
 - The Rust daemon binary also supports headless `scan`, `validate`, and `export --format json` commands.

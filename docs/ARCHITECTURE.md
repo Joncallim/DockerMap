@@ -23,6 +23,23 @@ Docker engine -> dockermap-daemon -> apps/api -> apps/web
 
 The Rust model is currently mirrored manually in `packages/contracts`. Before the API grows, the project should either generate TypeScript contracts from Rust schemas or add contract compatibility tests that compare serialized Rust fixtures with TypeScript expectations.
 
+## Runtime Map
+
+`GET /daemon/runtime/map` is the backend's provider-neutral JSON graph for visualization. `apps/api` proxies it as `GET /api/runtime/map`.
+
+The map is read-only and currently contains:
+
+- Docker containers, networks, volumes, and exposed/listening ports.
+- systemd services from `systemctl list-units` when systemd is available.
+- scheduled jobs from `/etc/crontab`, `/etc/cron.d/*`, and the current user's `crontab -l` when readable.
+- PM2 apps from `pm2 jlist` when PM2 is installed.
+- tmux sessions from `tmux list-sessions` when tmux is installed and reachable.
+- listening sockets from `/proc/net/tcp` and `/proc/net/tcp6` on Linux.
+
+Optional providers fail softly with diagnostics instead of making the map endpoint fail. Provider commands are fixed read-only invocations, not user-supplied shell commands.
+
+Kubernetes and other orchestrators should plug into this same model as additional providers, not replace the local Docker/host model. Kubernetes support should be opt-in because it needs kubeconfig or in-cluster credentials, namespace scoping, and RBAC permissions. A safe first Kubernetes provider should read namespaces, pods, services, deployments, ingress objects, persistent volume claims, and selected labels/owner references, then map them to `orchestrator_workload` nodes and edges.
+
 ## Docker Access
 
 The daemon binds to loopback by default and only reads Docker state today. Docker socket access is still privileged, so mutation endpoints should not be added until the project has explicit authorization, dry-run previews, audit logging, and rollback guidance.

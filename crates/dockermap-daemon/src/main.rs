@@ -15,11 +15,12 @@ use bollard::{
     Docker,
 };
 use dockermap_core::{
-    derive_compose_graph, derive_graph, derive_images, discover_compose_files, mock_logs,
-    mock_snapshot, plan_compose_mount_edit, scan_compose_files, unix_timestamp_millis,
-    ComposeDiagnostic, ComposeEditPlan, ComposeGraph, ComposeScan, ContainerRecord, DockerSnapshot,
-    GraphResponse, HealthResponse, HealthState, LogEntry, LogsResponse, NetworkRecord, RuntimeMode,
-    VolumeRecord,
+    derive_compose_graph, derive_graph, derive_images, derive_runtime_map, discover_compose_files,
+    mock_logs, mock_snapshot, plan_compose_mount_edit, scan_compose_files, unix_timestamp_millis,
+    ComposeDiagnostic, ComposeEditPlan, ComposeGraph, ComposeScan, ContainerRecord,
+    DiagnosticSeverity, DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogEntry,
+    LogsResponse, NetworkRecord, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapNode, RuntimeMode,
+    RuntimeNodeKind, RuntimeProviderKind, VolumeRecord,
 };
 use futures_util::stream::StreamExt;
 use serde::Deserialize;
@@ -28,6 +29,7 @@ use std::{
     fs,
     net::{IpAddr, SocketAddr},
     path::{Component, Path as StdPath, PathBuf},
+    process::Command,
     sync::Arc,
     time::Duration,
 };
@@ -112,6 +114,7 @@ async fn main() {
         .route("/daemon/health", get(get_health))
         .route("/daemon/snapshot", get(get_snapshot))
         .route("/daemon/graph", get(get_graph))
+        .route("/daemon/runtime/map", get(get_runtime_map))
         .route("/daemon/containers", get(get_containers))
         .route("/daemon/containers/{name}", get(get_container))
         .route("/daemon/images", get(get_images))
@@ -452,6 +455,380 @@ fn build_snapshot(
     }
 }
 
+fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
+    let mut nodes = Vec::new();
+    let edges = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    collect_network_listeners(&mut nodes, &mut diagnostics);
+    collect_systemd_services(&mut nodes, &mut diagnostics);
+    collect_scheduled_jobs(&mut nodes, &mut diagnostics);
+    collect_pm2_apps(&mut nodes, &mut diagnostics);
+    collect_tmux_sessions(&mut nodes, &mut diagnostics);
+
+    derive_runtime_map(snapshot, nodes, edges, diagnostics)
+}
+
+fn collect_systemd_services(
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    let output = match Command::new("systemctl")
+        .args([
+            "list-units",
+            "--type=service",
+            "--all",
+            "--no-legend",
+            "--no-pager",
+            "--plain",
+        ])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            push_provider_diagnostic(
+                diagnostics,
+                RuntimeProviderKind::Systemd,
+                DiagnosticSeverity::Info,
+                format!("systemd discovery skipped: {error}"),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Systemd,
+            DiagnosticSeverity::Warning,
+            "systemd discovery command failed".into(),
+        );
+        return;
+    }
+
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let parts = line.split_whitespace().collect::<Vec<_>>();
+        if parts.len() < 4 {
+            continue;
+        }
+        let unit = parts[0];
+        let active = parts[2];
+        let sub = parts[3];
+        let description = parts
+            .get(4..)
+            .map(|items| items.join(" "))
+            .unwrap_or_default();
+        let mut metadata = BTreeMap::new();
+        metadata.insert("unit".into(), unit.into());
+        metadata.insert("subState".into(), sub.into());
+        if !description.is_empty() {
+            metadata.insert("description".into(), description);
+        }
+        nodes.push(RuntimeMapNode {
+            id: format!("systemd_service_{}", sanitize_runtime_id(unit)),
+            provider: RuntimeProviderKind::Systemd,
+            kind: RuntimeNodeKind::SystemdService,
+            label: unit.trim_end_matches(".service").into(),
+            status: Some(active.into()),
+            metadata,
+        });
+    }
+}
+
+fn collect_scheduled_jobs(
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    let mut job_sources = Vec::new();
+    read_cron_file(StdPath::new("/etc/crontab"), &mut job_sources);
+
+    if let Ok(entries) = fs::read_dir("/etc/cron.d") {
+        for entry in entries.flatten() {
+            read_cron_file(&entry.path(), &mut job_sources);
+        }
+    }
+
+    match Command::new("crontab").arg("-l").output() {
+        Ok(output) if output.status.success() => {
+            for (index, line) in String::from_utf8_lossy(&output.stdout).lines().enumerate() {
+                if let Some(command) = cron_command(line, true) {
+                    job_sources.push(("user crontab".into(), index + 1, command));
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(error) => push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::ScheduledJob,
+            DiagnosticSeverity::Info,
+            format!("user crontab discovery skipped: {error}"),
+        ),
+    }
+
+    for (source, line, command) in job_sources {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("source".into(), source.clone());
+        metadata.insert("line".into(), line.to_string());
+        metadata.insert("command".into(), command.clone());
+        nodes.push(RuntimeMapNode {
+            id: format!(
+                "scheduled_job_{}_{}",
+                sanitize_runtime_id(&source),
+                sanitize_runtime_id(&format!("{line}_{command}"))
+            ),
+            provider: RuntimeProviderKind::ScheduledJob,
+            kind: RuntimeNodeKind::ScheduledJob,
+            label: command,
+            status: Some("scheduled".into()),
+            metadata,
+        });
+    }
+}
+
+fn read_cron_file(path: &StdPath, jobs: &mut Vec<(String, usize, String)>) {
+    let Ok(content) = fs::read_to_string(path) else {
+        return;
+    };
+    for (index, line) in content.lines().enumerate() {
+        if let Some(command) = cron_command(line, false) {
+            jobs.push((path.display().to_string(), index + 1, command));
+        }
+    }
+}
+
+fn cron_command(line: &str, user_crontab: bool) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    if trimmed.starts_with('@') {
+        return trimmed
+            .split_once(char::is_whitespace)
+            .map(|(_, command)| command.trim().to_string())
+            .filter(|command| !command.is_empty());
+    }
+
+    let fields = trimmed.split_whitespace().collect::<Vec<_>>();
+    let command_start = if user_crontab { 5 } else { 6 };
+    if fields.len() <= command_start {
+        return None;
+    }
+    Some(fields[command_start..].join(" "))
+}
+
+fn collect_pm2_apps(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<RuntimeMapDiagnostic>) {
+    let output = match Command::new("pm2").arg("jlist").output() {
+        Ok(output) => output,
+        Err(error) => {
+            push_provider_diagnostic(
+                diagnostics,
+                RuntimeProviderKind::Pm2,
+                DiagnosticSeverity::Info,
+                format!("PM2 discovery skipped: {error}"),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Pm2,
+            DiagnosticSeverity::Warning,
+            "PM2 discovery command failed".into(),
+        );
+        return;
+    }
+
+    let Ok(apps) = serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout) else {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Pm2,
+            DiagnosticSeverity::Warning,
+            "PM2 discovery returned invalid JSON".into(),
+        );
+        return;
+    };
+
+    for app in apps {
+        let id = value_to_string(app.get("pm_id")).unwrap_or_else(|| "unknown".into());
+        let env = app.get("pm2_env").unwrap_or(&serde_json::Value::Null);
+        let name = env
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| app.get("name").and_then(serde_json::Value::as_str))
+            .unwrap_or("pm2-app");
+        let status = env
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let mut metadata = BTreeMap::new();
+        if let Some(cwd) = env.get("pm_cwd").and_then(serde_json::Value::as_str) {
+            metadata.insert("cwd".into(), cwd.into());
+        }
+        if let Some(script) = env.get("pm_exec_path").and_then(serde_json::Value::as_str) {
+            metadata.insert("script".into(), script.into());
+        }
+        if let Some(restarts) = env.get("restart_time").and_then(serde_json::Value::as_i64) {
+            metadata.insert("restartCount".into(), restarts.to_string());
+        }
+        nodes.push(RuntimeMapNode {
+            id: format!("pm2_app_{}", sanitize_runtime_id(&id)),
+            provider: RuntimeProviderKind::Pm2,
+            kind: RuntimeNodeKind::Pm2App,
+            label: name.into(),
+            status,
+            metadata,
+        });
+    }
+}
+
+fn collect_tmux_sessions(
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    let output = match Command::new("tmux")
+        .args([
+            "list-sessions",
+            "-F",
+            "#{session_id}\t#{session_name}\t#{session_attached}\t#{session_windows}",
+        ])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            push_provider_diagnostic(
+                diagnostics,
+                RuntimeProviderKind::Tmux,
+                DiagnosticSeverity::Info,
+                format!("tmux discovery skipped: {error}"),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        return;
+    }
+
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let parts = line.split('\t').collect::<Vec<_>>();
+        if parts.len() < 4 {
+            continue;
+        }
+        let mut metadata = BTreeMap::new();
+        metadata.insert("sessionId".into(), parts[0].into());
+        metadata.insert("windows".into(), parts[3].into());
+        nodes.push(RuntimeMapNode {
+            id: format!("tmux_session_{}", sanitize_runtime_id(parts[0])),
+            provider: RuntimeProviderKind::Tmux,
+            kind: RuntimeNodeKind::TmuxSession,
+            label: parts[1].into(),
+            status: Some(
+                if parts[2] == "0" {
+                    "detached"
+                } else {
+                    "attached"
+                }
+                .into(),
+            ),
+            metadata,
+        });
+    }
+}
+
+fn collect_network_listeners(
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let Ok(content) = fs::read_to_string(path) else {
+            push_provider_diagnostic(
+                diagnostics,
+                RuntimeProviderKind::Network,
+                DiagnosticSeverity::Info,
+                format!("network listener discovery skipped for {path}"),
+            );
+            continue;
+        };
+        for line in content.lines().skip(1) {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 10 || fields[3] != "0A" {
+                continue;
+            }
+            let Some((address, port)) = parse_proc_net_local_address(fields[1]) else {
+                continue;
+            };
+            let mut metadata = BTreeMap::new();
+            metadata.insert("address".into(), address.clone());
+            metadata.insert("port".into(), port.to_string());
+            metadata.insert("socketInode".into(), fields[9].into());
+            nodes.push(RuntimeMapNode {
+                id: format!(
+                    "network_listener_{}_{}",
+                    sanitize_runtime_id(&address),
+                    port
+                ),
+                provider: RuntimeProviderKind::Network,
+                kind: RuntimeNodeKind::NetworkListener,
+                label: format!("{address}:{port}"),
+                status: Some("listening".into()),
+                metadata,
+            });
+        }
+    }
+}
+
+fn parse_proc_net_local_address(value: &str) -> Option<(String, u16)> {
+    let (raw_address, raw_port) = value.split_once(':')?;
+    let port = u16::from_str_radix(raw_port, 16).ok()?;
+    let address = if raw_address.len() == 8 {
+        let bytes = (0..4)
+            .filter_map(|index| u8::from_str_radix(&raw_address[index * 2..index * 2 + 2], 16).ok())
+            .collect::<Vec<_>>();
+        if bytes.len() != 4 {
+            return None;
+        }
+        format!("{}.{}.{}.{}", bytes[3], bytes[2], bytes[1], bytes[0])
+    } else {
+        raw_address.to_ascii_lowercase()
+    };
+    Some((address, port))
+}
+
+fn value_to_string(value: Option<&serde_json::Value>) -> Option<String> {
+    match value {
+        Some(serde_json::Value::String(value)) => Some(value.clone()),
+        Some(serde_json::Value::Number(value)) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn push_provider_diagnostic(
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+    provider: RuntimeProviderKind,
+    severity: DiagnosticSeverity,
+    message: String,
+) {
+    diagnostics.push(RuntimeMapDiagnostic {
+        provider,
+        severity,
+        message,
+    });
+}
+
+fn sanitize_runtime_id(value: &str) -> String {
+    let mut output = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            output.push(character.to_ascii_lowercase());
+        } else {
+            output.push('_');
+        }
+    }
+    output.trim_matches('_').to_string()
+}
+
 async fn get_health(State(state): State<AppState>) -> Json<HealthResponse> {
     let cache = state.cache.read().await;
     Json(cache.health.clone())
@@ -465,6 +842,14 @@ async fn get_snapshot(State(state): State<AppState>) -> Json<DockerSnapshot> {
 async fn get_graph(State(state): State<AppState>) -> Json<GraphResponse> {
     let cache = state.cache.read().await;
     Json(derive_graph(&cache.snapshot))
+}
+
+async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
+    let cache = state.cache.read().await;
+    let snapshot = cache.snapshot.clone();
+    drop(cache);
+
+    Json(collect_runtime_map(&snapshot))
 }
 
 async fn get_containers(State(state): State<AppState>) -> Json<serde_json::Value> {

@@ -152,6 +152,67 @@ export interface ComposeEditPlan {
   willWrite: boolean;
 }
 
+export type RuntimeProviderKind =
+  | "docker"
+  | "compose"
+  | "systemd"
+  | "scheduled_job"
+  | "pm2"
+  | "tmux"
+  | "process"
+  | "network"
+  | "kubernetes"
+  | "other";
+
+export type RuntimeNodeKind =
+  | "container"
+  | "docker_network"
+  | "docker_volume"
+  | "systemd_service"
+  | "scheduled_job"
+  | "pm2_app"
+  | "tmux_session"
+  | "process"
+  | "network_listener"
+  | "orchestrator_workload";
+
+export type RuntimeRelationshipKind =
+  | "connected_to"
+  | "mounts"
+  | "manages"
+  | "exposes"
+  | "owns"
+  | "related_to";
+
+export interface RuntimeMapNode {
+  id: string;
+  provider: RuntimeProviderKind;
+  type: RuntimeNodeKind;
+  label: string;
+  status: string | null;
+  metadata: Record<string, string>;
+}
+
+export interface RuntimeMapEdge {
+  source: string;
+  target: string;
+  relationship: RuntimeRelationshipKind;
+  metadata: Record<string, string>;
+}
+
+export interface RuntimeMapDiagnostic {
+  provider: RuntimeProviderKind;
+  severity: DiagnosticSeverity;
+  message: string;
+}
+
+export interface RuntimeMap {
+  nodes: RuntimeMapNode[];
+  edges: RuntimeMapEdge[];
+  diagnostics: RuntimeMapDiagnostic[];
+  lastUpdated: number;
+}
+
 export interface HealthResponse {
   status: HealthState;
   mode: RuntimeMode;
