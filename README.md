@@ -95,7 +95,7 @@ The UI/UX design language lives in [DESIGN.md](DESIGN.md) and [docs/DESIGN_LANGU
 - `apps/api` is now a browser-facing BFF that proxies the Rust daemon and exposes SSE heartbeat updates.
 - `crates/dockermap-core` owns shared domain models, graph derivation, image derivation, and mock log generation.
 - `crates/dockermap-daemon` now runs as an HTTP daemon with health, snapshot, graph, inventory, and logs endpoints.
-- The daemon exposes a unified runtime map for visualization that combines Docker resources with discovered systemd services, scheduled jobs, PM2 apps, tmux sessions, and listening sockets when available.
+- The daemon exposes a unified runtime map for visualization that combines Docker resources with discovered systemd services, scheduled jobs, PM2 apps, tmux sessions, listening sockets, Tailscale/Headscale nodes, reverse proxy markers, and local DNS markers when available.
 - The daemon exposes a read-only Compose scan endpoint for discovered Compose files or explicit files under `DOCKERMAP_PROJECT_ROOT`.
 - The daemon and API expose a dry-run Compose edit-plan endpoint that returns a diff and never writes files.
 - The Rust daemon binary also supports headless `scan`, `validate`, and `export --format json` commands.

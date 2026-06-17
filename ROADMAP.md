@@ -564,8 +564,17 @@ separately.
 supervisor. List sessions, windows, panes, attached state, and commands conservatively;
 avoid pane scrollback by default because it can contain secrets.
 
+**Tailnet provider** — discover Tailscale through `tailscale status --json` and Headscale
+through `headscale nodes list --output json`; map peer DNS names, online state, and
+tailnet IPs without requiring control-plane mutation access.
+
+**Reverse proxy and local DNS providers** — classify common proxy/DNS infrastructure from
+fixed config paths plus Docker container names/images: nginx, Nginx Proxy Manager,
+Traefik, Caddy, HAProxy, Envoy, Apache httpd, Cloudflare Tunnel, frp, Pi-hole, AdGuard
+Home, dnsmasq, Unbound, CoreDNS, and Technitium DNS.
+
 **Other providers** — evaluate Supervisor, launchd, cron, and SSH remote collection after
-PM2 and systemd prove the model.
+PM2, systemd, and networking providers prove the model.
 
 ---
 
@@ -584,6 +593,9 @@ Ordered by expected value. No hard phase gate unless noted.
 | Medium | Policy file for allowed host roots | `.dockermap.policy.yaml`: `allowedHostRoots: [...]`; `PathTraversal` rule checks against it |
 | Medium | PM2 read-only provider | Process metadata, logs, restart counts, cwd/script mapping; no env exposure by default |
 | Medium | systemd read-only provider | Unit files, service state, exec commands, restart policy, journal availability |
+| Medium | Tailscale / Headscale provider | Tailnet peers, DNS names, online state, and tailnet IPs |
+| Medium | Reverse proxy classifier | nginx, NPM, Traefik, Caddy, HAProxy, Envoy, Apache, Cloudflare Tunnel, frp |
+| Medium | Local DNS classifier | Pi-hole, AdGuard Home, dnsmasq, Unbound, CoreDNS, Technitium DNS |
 | Low | Path normalization (Windows/WSL/macOS) | `C:\Users\...` → `/mnt/c/...` in WSL; macOS Docker Desktop path translation |
 | Low | Named volume lifecycle hints | Detect compose-declared volumes never created; Docker volumes not referenced in any file |
 | Low | "Explain this mount" AI command | `POST /api/v1/explain`; plain-English explanation of a mount/volume; Claude API integration |

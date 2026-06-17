@@ -19,8 +19,8 @@ use dockermap_core::{
     mock_logs, mock_snapshot, plan_compose_mount_edit, scan_compose_files, unix_timestamp_millis,
     ComposeDiagnostic, ComposeEditPlan, ComposeGraph, ComposeScan, ContainerRecord,
     DiagnosticSeverity, DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogEntry,
-    LogsResponse, NetworkRecord, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapNode, RuntimeMode,
-    RuntimeNodeKind, RuntimeProviderKind, VolumeRecord,
+    LogsResponse, NetworkRecord, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode,
+    RuntimeMode, RuntimeNodeKind, RuntimeProviderKind, RuntimeRelationshipKind, VolumeRecord,
 };
 use futures_util::stream::StreamExt;
 use serde::Deserialize;
@@ -457,16 +457,421 @@ fn build_snapshot(
 
 fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
     let mut nodes = Vec::new();
-    let edges = Vec::new();
+    let mut edges = Vec::new();
     let mut diagnostics = Vec::new();
 
     collect_network_listeners(&mut nodes, &mut diagnostics);
+    collect_network_infrastructure(snapshot, &mut nodes, &mut edges, &mut diagnostics);
     collect_systemd_services(&mut nodes, &mut diagnostics);
     collect_scheduled_jobs(&mut nodes, &mut diagnostics);
     collect_pm2_apps(&mut nodes, &mut diagnostics);
     collect_tmux_sessions(&mut nodes, &mut diagnostics);
 
     derive_runtime_map(snapshot, nodes, edges, diagnostics)
+}
+
+fn collect_network_infrastructure(
+    snapshot: &DockerSnapshot,
+    nodes: &mut Vec<RuntimeMapNode>,
+    edges: &mut Vec<RuntimeMapEdge>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    collect_tailscale(nodes, diagnostics);
+    collect_headscale(nodes, diagnostics);
+    collect_network_config_markers(nodes);
+    collect_network_containers(snapshot, nodes, edges);
+}
+
+fn collect_tailscale(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<RuntimeMapDiagnostic>) {
+    let output = match Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            push_provider_diagnostic(
+                diagnostics,
+                RuntimeProviderKind::Tailscale,
+                DiagnosticSeverity::Info,
+                format!("Tailscale discovery skipped: {error}"),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Tailscale,
+            DiagnosticSeverity::Warning,
+            "Tailscale status command failed".into(),
+        );
+        return;
+    }
+
+    let Ok(status) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Tailscale,
+            DiagnosticSeverity::Warning,
+            "Tailscale status returned invalid JSON".into(),
+        );
+        return;
+    };
+
+    if let Some(self_node) = status.get("Self") {
+        push_tailnet_node(nodes, RuntimeProviderKind::Tailscale, "self", self_node);
+    }
+
+    if let Some(peers) = status.get("Peer").and_then(serde_json::Value::as_object) {
+        for (id, peer) in peers {
+            push_tailnet_node(nodes, RuntimeProviderKind::Tailscale, id, peer);
+        }
+    }
+}
+
+fn collect_headscale(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<RuntimeMapDiagnostic>) {
+    let output = match Command::new("headscale")
+        .args(["nodes", "list", "--output", "json"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            push_provider_diagnostic(
+                diagnostics,
+                RuntimeProviderKind::Headscale,
+                DiagnosticSeverity::Info,
+                format!("Headscale discovery skipped: {error}"),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Headscale,
+            DiagnosticSeverity::Warning,
+            "Headscale nodes command failed".into(),
+        );
+        return;
+    }
+
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Headscale,
+            DiagnosticSeverity::Warning,
+            "Headscale nodes command returned invalid JSON".into(),
+        );
+        return;
+    };
+
+    let nodes_json = value
+        .as_array()
+        .cloned()
+        .or_else(|| {
+            value
+                .get("nodes")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+        })
+        .unwrap_or_default();
+
+    for node in nodes_json {
+        let id = node
+            .get("id")
+            .and_then(value_to_string_ref)
+            .or_else(|| node.get("machineKey").and_then(value_to_string_ref))
+            .unwrap_or_else(|| "headscale-node".into());
+        push_tailnet_node(nodes, RuntimeProviderKind::Headscale, &id, &node);
+    }
+}
+
+fn push_tailnet_node(
+    nodes: &mut Vec<RuntimeMapNode>,
+    provider: RuntimeProviderKind,
+    fallback_id: &str,
+    value: &serde_json::Value,
+) {
+    let label = value
+        .get("DNSName")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.get("HostName").and_then(serde_json::Value::as_str))
+        .or_else(|| value.get("givenName").and_then(serde_json::Value::as_str))
+        .or_else(|| value.get("name").and_then(serde_json::Value::as_str))
+        .unwrap_or(fallback_id)
+        .trim_end_matches('.')
+        .to_string();
+    let online = value
+        .get("Online")
+        .and_then(serde_json::Value::as_bool)
+        .or_else(|| value.get("online").and_then(serde_json::Value::as_bool));
+    let mut metadata = BTreeMap::new();
+    if let Some(addresses) = value
+        .get("TailscaleIPs")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| {
+            value
+                .get("ipAddresses")
+                .and_then(serde_json::Value::as_array)
+        })
+    {
+        let ips = addresses
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+        if !ips.is_empty() {
+            metadata.insert("ips".into(), ips.join(","));
+        }
+    }
+    if let Some(user) = value
+        .get("User")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.get("user").and_then(serde_json::Value::as_str))
+    {
+        metadata.insert("user".into(), user.into());
+    }
+
+    let provider_id = match provider {
+        RuntimeProviderKind::Tailscale => "tailscale",
+        RuntimeProviderKind::Headscale => "headscale",
+        _ => "tailnet",
+    };
+    nodes.push(RuntimeMapNode {
+        id: format!("{provider_id}_node_{}", sanitize_runtime_id(&label)),
+        provider,
+        kind: RuntimeNodeKind::TailnetNode,
+        label,
+        status: online.map(|value| if value { "online" } else { "offline" }.into()),
+        metadata,
+    });
+}
+
+fn collect_network_config_markers(nodes: &mut Vec<RuntimeMapNode>) {
+    for marker in reverse_proxy_markers() {
+        if path_exists(marker.path) {
+            let mut metadata = BTreeMap::new();
+            metadata.insert("source".into(), marker.path.into());
+            metadata.insert("product".into(), marker.product.into());
+            nodes.push(RuntimeMapNode {
+                id: format!(
+                    "reverse_proxy_config_{}_{}",
+                    sanitize_runtime_id(marker.product),
+                    sanitize_runtime_id(marker.path)
+                ),
+                provider: RuntimeProviderKind::ReverseProxy,
+                kind: RuntimeNodeKind::ReverseProxy,
+                label: marker.product.into(),
+                status: Some("configured".into()),
+                metadata,
+            });
+        }
+    }
+
+    for marker in local_dns_markers() {
+        if path_exists(marker.path) {
+            let mut metadata = BTreeMap::new();
+            metadata.insert("source".into(), marker.path.into());
+            metadata.insert("product".into(), marker.product.into());
+            nodes.push(RuntimeMapNode {
+                id: format!(
+                    "local_dns_config_{}_{}",
+                    sanitize_runtime_id(marker.product),
+                    sanitize_runtime_id(marker.path)
+                ),
+                provider: RuntimeProviderKind::LocalDns,
+                kind: RuntimeNodeKind::LocalDnsResolver,
+                label: marker.product.into(),
+                status: Some("configured".into()),
+                metadata,
+            });
+        }
+    }
+}
+
+fn collect_network_containers(
+    snapshot: &DockerSnapshot,
+    nodes: &mut Vec<RuntimeMapNode>,
+    edges: &mut Vec<RuntimeMapEdge>,
+) {
+    for container in &snapshot.containers {
+        let haystack = format!(
+            "{} {} {}",
+            container.name.to_ascii_lowercase(),
+            container.image.to_ascii_lowercase(),
+            container.role.to_ascii_lowercase()
+        );
+        if let Some(product) = classify_reverse_proxy(&haystack) {
+            push_network_container_node(
+                nodes,
+                edges,
+                container,
+                RuntimeProviderKind::ReverseProxy,
+                RuntimeNodeKind::ReverseProxy,
+                product,
+            );
+        }
+        if let Some(product) = classify_local_dns(&haystack) {
+            push_network_container_node(
+                nodes,
+                edges,
+                container,
+                RuntimeProviderKind::LocalDns,
+                RuntimeNodeKind::LocalDnsResolver,
+                product,
+            );
+        }
+        if haystack.contains("tailscale") || haystack.contains("tailscaled") {
+            push_network_container_node(
+                nodes,
+                edges,
+                container,
+                RuntimeProviderKind::Tailscale,
+                RuntimeNodeKind::TailnetNode,
+                "Tailscale",
+            );
+        }
+        if haystack.contains("headscale") {
+            push_network_container_node(
+                nodes,
+                edges,
+                container,
+                RuntimeProviderKind::Headscale,
+                RuntimeNodeKind::TailnetNode,
+                "Headscale",
+            );
+        }
+    }
+}
+
+fn push_network_container_node(
+    nodes: &mut Vec<RuntimeMapNode>,
+    edges: &mut Vec<RuntimeMapEdge>,
+    container: &ContainerRecord,
+    provider: RuntimeProviderKind,
+    kind: RuntimeNodeKind,
+    product: &str,
+) {
+    let id = format!(
+        "{}_container_{}",
+        sanitize_runtime_id(product),
+        sanitize_runtime_id(&container.id)
+    );
+    let mut metadata = BTreeMap::new();
+    metadata.insert("product".into(), product.into());
+    metadata.insert("container".into(), container.name.clone());
+    metadata.insert("image".into(), container.image.clone());
+    nodes.push(RuntimeMapNode {
+        id: id.clone(),
+        provider,
+        kind,
+        label: format!("{product}: {}", container.name),
+        status: Some(container.status.clone()),
+        metadata,
+    });
+    edges.push(RuntimeMapEdge {
+        source: id,
+        target: format!("docker_container_{}", sanitize_runtime_id(&container.id)),
+        relationship: RuntimeRelationshipKind::RelatedTo,
+        metadata: BTreeMap::new(),
+    });
+}
+
+struct NetworkMarker {
+    product: &'static str,
+    path: &'static str,
+}
+
+fn reverse_proxy_markers() -> &'static [NetworkMarker] {
+    &[
+        NetworkMarker {
+            product: "nginx",
+            path: "/etc/nginx/nginx.conf",
+        },
+        NetworkMarker {
+            product: "Caddy",
+            path: "/etc/caddy/Caddyfile",
+        },
+        NetworkMarker {
+            product: "Traefik",
+            path: "/etc/traefik/traefik.yml",
+        },
+        NetworkMarker {
+            product: "HAProxy",
+            path: "/etc/haproxy/haproxy.cfg",
+        },
+        NetworkMarker {
+            product: "Envoy",
+            path: "/etc/envoy/envoy.yaml",
+        },
+        NetworkMarker {
+            product: "Apache httpd",
+            path: "/etc/apache2/apache2.conf",
+        },
+    ]
+}
+
+fn local_dns_markers() -> &'static [NetworkMarker] {
+    &[
+        NetworkMarker {
+            product: "Pi-hole",
+            path: "/etc/pihole/setupVars.conf",
+        },
+        NetworkMarker {
+            product: "dnsmasq",
+            path: "/etc/dnsmasq.d",
+        },
+        NetworkMarker {
+            product: "Unbound",
+            path: "/etc/unbound",
+        },
+        NetworkMarker {
+            product: "CoreDNS",
+            path: "/etc/coredns/Corefile",
+        },
+        NetworkMarker {
+            product: "AdGuard Home",
+            path: "/opt/adguardhome/conf/AdGuardHome.yaml",
+        },
+    ]
+}
+
+fn classify_reverse_proxy(value: &str) -> Option<&'static str> {
+    [
+        ("nginx-proxy-manager", "Nginx Proxy Manager"),
+        ("jc21/nginx-proxy-manager", "Nginx Proxy Manager"),
+        ("traefik", "Traefik"),
+        ("caddy", "Caddy"),
+        ("haproxy", "HAProxy"),
+        ("envoy", "Envoy"),
+        ("nginx", "nginx"),
+        ("apache", "Apache httpd"),
+        ("httpd", "Apache httpd"),
+        ("cloudflared", "Cloudflare Tunnel"),
+        ("frps", "frp"),
+        ("frpc", "frp"),
+    ]
+    .into_iter()
+    .find_map(|(needle, product)| value.contains(needle).then_some(product))
+}
+
+fn classify_local_dns(value: &str) -> Option<&'static str> {
+    [
+        ("pihole", "Pi-hole"),
+        ("pi-hole", "Pi-hole"),
+        ("adguard", "AdGuard Home"),
+        ("dnsmasq", "dnsmasq"),
+        ("unbound", "Unbound"),
+        ("coredns", "CoreDNS"),
+        ("technitium", "Technitium DNS"),
+    ]
+    .into_iter()
+    .find_map(|(needle, product)| value.contains(needle).then_some(product))
+}
+
+fn path_exists(path: &str) -> bool {
+    StdPath::new(path).exists()
 }
 
 fn collect_systemd_services(
@@ -800,6 +1205,14 @@ fn value_to_string(value: Option<&serde_json::Value>) -> Option<String> {
     match value {
         Some(serde_json::Value::String(value)) => Some(value.clone()),
         Some(serde_json::Value::Number(value)) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn value_to_string_ref(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
         _ => None,
     }
 }

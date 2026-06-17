@@ -35,6 +35,10 @@ The map is read-only and currently contains:
 - PM2 apps from `pm2 jlist` when PM2 is installed.
 - tmux sessions from `tmux list-sessions` when tmux is installed and reachable.
 - listening sockets from `/proc/net/tcp` and `/proc/net/tcp6` on Linux.
+- Tailscale peers from `tailscale status --json` when Tailscale is installed and authenticated.
+- Headscale nodes from `headscale nodes list --output json` when Headscale is installed and readable.
+- reverse proxy markers from common configs and Docker images/names, including nginx, Nginx Proxy Manager, Traefik, Caddy, HAProxy, Envoy, Apache httpd, Cloudflare Tunnel, and frp.
+- local DNS markers from common configs and Docker images/names, including Pi-hole, AdGuard Home, dnsmasq, Unbound, CoreDNS, and Technitium DNS.
 
 Optional providers fail softly with diagnostics instead of making the map endpoint fail. Provider commands are fixed read-only invocations, not user-supplied shell commands.
 

@@ -158,6 +158,9 @@ Make expansion provider-based:
 - `pm2`: apps, script path, cwd, env file, status, restart count, ports if detectable, logs.
 - `systemd`: services, unit files, working directories, exec commands, restart policy, logs via journald.
 - `tmux`: sessions, windows, panes, commands, attached/detached state.
+- `tailscale` / `headscale`: tailnet peers, online state, DNS names, and tailnet IPs.
+- `reverse_proxy`: nginx, Nginx Proxy Manager, Traefik, Caddy, HAProxy, Envoy, Apache httpd, Cloudflare Tunnel, and frp markers.
+- `local_dns`: Pi-hole, AdGuard Home, dnsmasq, Unbound, CoreDNS, and Technitium DNS markers.
 - later: Supervisor, launchd, cron, Docker contexts, SSH remotes.
 
 ### Recommended Expansion Order
