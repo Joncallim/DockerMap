@@ -1,7 +1,11 @@
 import cors from "cors";
 import express from "express";
+import helmet from "helmet";
 import type {
   ApiError,
+  ComposeEditPlan,
+  ComposeGraph,
+  ComposeScan,
   ContainerRecord,
   DockerSnapshot,
   GraphResponse,
@@ -21,13 +25,92 @@ import {
 } from "./mockData.js";
 
 const app = express();
-const port = Number(process.env.PORT ?? 4000);
-const daemonBaseUrl = process.env.DOCKERMAP_DAEMON_URL ?? "http://127.0.0.1:4100";
+const port = readPort(process.env.PORT, 4000);
+const daemonBaseUrl = readDaemonBaseUrl(process.env.DOCKERMAP_DAEMON_URL ?? "http://127.0.0.1:4100");
 const allowMockFallback = process.env.DOCKERMAP_ALLOW_MOCK === "true";
-const pollIntervalMs = Number(process.env.DOCKERMAP_SSE_INTERVAL_MS ?? 2000);
+const exposeErrorDetails = process.env.DOCKERMAP_EXPOSE_ERROR_DETAILS === "true";
+const pollIntervalMs = readBoundedNumber(process.env.DOCKERMAP_SSE_INTERVAL_MS, 2_000, 1_000, 30_000);
+const allowedOrigins = readAllowedOrigins(
+  process.env.DOCKERMAP_ALLOWED_ORIGINS ?? "http://127.0.0.1:3233,http://localhost:3233",
+);
+const maxQueryLength = 256;
+const maxContainerNameLength = 128;
+const maxComposeFiles = 8;
+const maxComposeFileLength = 512;
 
-app.use(cors());
-app.use(express.json());
+function readPort(value: string | undefined, fallback: number) {
+  const port = Number(value ?? fallback);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`Invalid PORT value: ${value}`);
+  }
+  return port;
+}
+
+function readBoundedNumber(value: string | undefined, fallback: number, min: number, max: number) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+function readDaemonBaseUrl(value: string) {
+  const parsed = new URL(value);
+  const allowRemoteDaemon = process.env.DOCKERMAP_ALLOW_REMOTE_DAEMON === "true";
+  const loopbackHosts = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("DOCKERMAP_DAEMON_URL must use http or https");
+  }
+
+  if (!allowRemoteDaemon && !loopbackHosts.has(parsed.hostname)) {
+    throw new Error("DOCKERMAP_DAEMON_URL must be loopback unless DOCKERMAP_ALLOW_REMOTE_DAEMON=true");
+  }
+
+  parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function readAllowedOrigins(value: string) {
+  return value
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .map((origin) => {
+      if (origin === "*") {
+        throw new Error("DOCKERMAP_ALLOWED_ORIGINS must list explicit origins; wildcard is not allowed");
+      }
+
+      const parsed = new URL(origin);
+      if (!["http:", "https:"].includes(parsed.protocol)) {
+        throw new Error(`DOCKERMAP_ALLOWED_ORIGINS contains unsupported origin: ${origin}`);
+      }
+      if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+        throw new Error(`DOCKERMAP_ALLOWED_ORIGINS must contain origins only, not paths: ${origin}`);
+      }
+
+      return parsed.origin;
+    });
+}
+
+app.disable("x-powered-by");
+app.use(helmet({ strictTransportSecurity: false }));
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
+    methods: ["GET", "HEAD"],
+    optionsSuccessStatus: 204
+  }),
+);
+app.use(express.json({ limit: "16kb" }));
 
 class HttpError extends Error {
   constructor(
@@ -49,11 +132,11 @@ async function fetchDaemon<T>(path: string, init?: RequestInit): Promise<T> {
     });
 
     if (!response.ok) {
-      const details = await response.text();
+      const details = exposeErrorDetails ? (await response.text()).slice(0, 2_000) : undefined;
       throw new HttpError(response.status, {
         code: `daemon_${response.status}`,
         message: `Daemon request failed for ${path}`,
-        details
+        ...(details ? { details } : {})
       });
     }
 
@@ -70,7 +153,7 @@ async function fetchDaemon<T>(path: string, init?: RequestInit): Promise<T> {
     throw new HttpError(502, {
       code: "daemon_unavailable",
       message: `Unable to reach DockerMap daemon at ${daemonBaseUrl}`,
-      details: error instanceof Error ? error.message : String(error)
+      ...(exposeErrorDetails ? { details: error instanceof Error ? error.message : String(error) } : {})
     });
   } finally {
     clearTimeout(timeout);
@@ -143,6 +226,41 @@ function getMockResponse<T>(path: string): T {
     } as T;
   }
 
+  if (path.startsWith("/daemon/compose/scan")) {
+    return {
+      files: [],
+      projectRoot: process.cwd(),
+      services: [],
+      mounts: [],
+      diagnostics: [
+        {
+          id: "compose_mock_unavailable",
+          severity: "warning",
+          message: "Compose scanning is unavailable while Node mock fallback is active",
+          origin: {
+            file: process.cwd(),
+            service: null,
+            field: "files"
+          }
+        }
+      ]
+    } as T;
+  }
+
+  if (path.startsWith("/daemon/compose/graph")) {
+    return {
+      nodes: [],
+      edges: []
+    } as T;
+  }
+
+  if (path.startsWith("/daemon/compose/edit-plan")) {
+    throw new HttpError(503, {
+      code: "compose_edit_plan_unavailable",
+      message: "Compose edit planning requires the Rust daemon"
+    });
+  }
+
   throw new HttpError(500, {
     code: "unknown_mock_path",
     message: `No mock response for ${path}`
@@ -155,16 +273,17 @@ function sendError(res: express.Response, error: unknown) {
     return;
   }
 
+  console.error(error);
   res.status(500).json({
     code: "internal_error",
-    message: error instanceof Error ? error.message : "Unexpected API failure"
+    message: "Unexpected API failure"
   } satisfies ApiError);
 }
 
 function buildLogsPath(query: express.Request["query"]) {
   const params = new URLSearchParams();
-  const service = typeof query.service === "string" ? query.service : "";
-  const q = typeof query.q === "string" ? query.q : "";
+  const service = readOptionalQueryString(query.service, "service", maxQueryLength);
+  const q = readOptionalQueryString(query.q, "q", maxQueryLength);
 
   if (service) {
     params.set("service", service);
@@ -176,6 +295,107 @@ function buildLogsPath(query: express.Request["query"]) {
 
   const suffix = params.toString();
   return suffix ? `/daemon/logs?${suffix}` : "/daemon/logs";
+}
+
+function buildComposeScanPath(query: express.Request["query"]) {
+  const params = new URLSearchParams();
+  const files = Array.isArray(query.file) ? query.file : query.file ? [query.file] : [];
+  const normalizedFiles: string[] = [];
+
+  if (files.length > maxComposeFiles) {
+    throw new HttpError(400, {
+      code: "too_many_compose_files",
+      message: `Compose scan accepts at most ${maxComposeFiles} files`
+    });
+  }
+
+  for (const file of files) {
+    if (typeof file !== "string" || !file.trim()) {
+      throw new HttpError(400, {
+        code: "invalid_compose_file",
+        message: "Compose scan file query values must be non-empty strings"
+      });
+    }
+    const normalized = file.trim();
+    if (normalized.length > maxComposeFileLength || normalized.includes("\0")) {
+      throw new HttpError(400, {
+        code: "invalid_compose_file",
+        message: `Compose scan file query values must be ${maxComposeFileLength} characters or fewer`
+      });
+    }
+    normalizedFiles.push(normalized);
+  }
+
+  if (normalizedFiles.length > 0) {
+    params.set("file", normalizedFiles.join(","));
+  }
+
+  const suffix = params.toString();
+  return suffix ? `/daemon/compose/scan?${suffix}` : "/daemon/compose/scan";
+}
+
+function buildComposeEditPlanPath(query: express.Request["query"]) {
+  const params = new URLSearchParams();
+  const file = readRequiredQueryString(query.file, "file", maxComposeFileLength);
+  const service = readRequiredQueryString(query.service, "service", maxQueryLength);
+  const mount = readRequiredQueryString(query.mount, "mount", 16);
+  const source = readOptionalQueryString(query.source, "source", maxComposeFileLength);
+  const target = readOptionalQueryString(query.target, "target", maxComposeFileLength);
+
+  if (!/^\d+$/.test(mount)) {
+    throw new HttpError(400, {
+      code: "invalid_query",
+      message: "Query parameter mount must be a zero-based integer"
+    });
+  }
+
+  params.set("file", file);
+  params.set("service", service);
+  params.set("mount", mount);
+
+  if (source) {
+    params.set("source", source);
+  }
+
+  if (target) {
+    params.set("target", target);
+  }
+
+  return `/daemon/compose/edit-plan?${params.toString()}`;
+}
+
+function readOptionalQueryString(value: unknown, name: string, maxLength: number) {
+  if (value === undefined) {
+    return "";
+  }
+
+  if (typeof value !== "string") {
+    throw new HttpError(400, {
+      code: "invalid_query",
+      message: `Query parameter ${name} must be a string`
+    });
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length > maxLength || trimmed.includes("\0")) {
+    throw new HttpError(400, {
+      code: "invalid_query",
+      message: `Query parameter ${name} must be ${maxLength} characters or fewer`
+    });
+  }
+
+  return trimmed;
+}
+
+function readRequiredQueryString(value: unknown, name: string, maxLength: number) {
+  const parsed = readOptionalQueryString(value, name, maxLength);
+  if (!parsed) {
+    throw new HttpError(400, {
+      code: "invalid_query",
+      message: `Query parameter ${name} is required`
+    });
+  }
+  return parsed;
 }
 
 app.get("/health", async (_req, res) => {
@@ -226,8 +446,9 @@ app.get("/api/containers", async (_req, res) => {
 
 app.get("/api/containers/:name", async (req, res) => {
   try {
+    const name = readRequiredQueryString(req.params.name, "name", maxContainerNameLength);
     res.json(
-      await fetchDaemon<ContainerRecord>(`/daemon/containers/${encodeURIComponent(req.params.name)}`),
+      await fetchDaemon<ContainerRecord>(`/daemon/containers/${encodeURIComponent(name)}`),
     );
   } catch (error) {
     sendError(res, error);
@@ -266,6 +487,30 @@ app.get("/api/logs", async (req, res) => {
   }
 });
 
+app.get("/api/compose/scan", async (req, res) => {
+  try {
+    res.json(await fetchDaemon<ComposeScan>(buildComposeScanPath(req.query)));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+app.get("/api/compose/graph", async (req, res) => {
+  try {
+    res.json(await fetchDaemon<ComposeGraph>(buildComposeScanPath(req.query).replace("/scan", "/graph")));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+app.get("/api/compose/edit-plan", async (req, res) => {
+  try {
+    res.json(await fetchDaemon<ComposeEditPlan>(buildComposeEditPlanPath(req.query)));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
 app.get("/api/events/stream", async (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -283,7 +528,7 @@ app.get("/api/events/stream", async (req, res) => {
           ? error.body
           : {
               code: "stream_error",
-              message: error instanceof Error ? error.message : "Unknown stream error"
+              message: "Live stream failed"
             };
       res.write(`event: error\n`);
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -299,6 +544,28 @@ app.get("/api/events/stream", async (req, res) => {
   });
 });
 
-app.listen(port, () => {
+app.use((_req, res) => {
+  res.status(404).json({
+    code: "not_found",
+    message: "Route not found"
+  } satisfies ApiError);
+});
+
+app.use(
+  (
+    error: unknown,
+    _req: express.Request,
+    res: express.Response,
+    _next: express.NextFunction,
+  ) => {
+    sendError(res, error);
+  },
+);
+
+const server = app.listen(port, "127.0.0.1", () => {
   console.log(`@dockermap/api listening on http://127.0.0.1:${port}`);
 });
+
+server.requestTimeout = 10_000;
+server.headersTimeout = 11_000;
+server.keepAliveTimeout = 5_000;

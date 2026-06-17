@@ -73,6 +73,85 @@ export interface LogsResponse {
   nextCursor: string | null;
 }
 
+export type ComposeMountKind = "bind" | "named_volume" | "anonymous_volume" | "unsupported";
+export type DiagnosticSeverity = "info" | "warning" | "error" | "blocked";
+
+export interface ComposeFileOrigin {
+  file: string;
+  service: string | null;
+  field: string;
+}
+
+export interface ComposeDiagnostic {
+  id: string;
+  severity: DiagnosticSeverity;
+  message: string;
+  origin: ComposeFileOrigin;
+}
+
+export interface ComposeMount {
+  id: string;
+  service: string;
+  kind: ComposeMountKind;
+  source: string | null;
+  resolvedSource: string | null;
+  target: string;
+  readOnly: boolean;
+  origin: ComposeFileOrigin;
+}
+
+export interface ComposeService {
+  name: string;
+  image: string | null;
+  dependsOn: string[];
+}
+
+export interface ComposeScan {
+  files: string[];
+  projectRoot: string;
+  services: ComposeService[];
+  mounts: ComposeMount[];
+  diagnostics: ComposeDiagnostic[];
+}
+
+export type ComposeNodeKind =
+  | "service"
+  | "host_path"
+  | "container_path"
+  | "named_volume"
+  | "anonymous_volume";
+export type ComposeRelationshipKind = "declares_mount" | "mounted_at";
+
+export interface ComposeGraphNode {
+  id: string;
+  type: ComposeNodeKind;
+  label: string;
+}
+
+export interface ComposeGraphEdge {
+  source: string;
+  target: string;
+  relationship: ComposeRelationshipKind;
+}
+
+export interface ComposeGraph {
+  nodes: ComposeGraphNode[];
+  edges: ComposeGraphEdge[];
+}
+
+export interface ComposeEditPlan {
+  file: string;
+  service: string;
+  mountId: string;
+  originalSource: string | null;
+  originalTarget: string;
+  newSource: string | null;
+  newTarget: string | null;
+  unifiedDiff: string;
+  diagnostics: ComposeDiagnostic[];
+  willWrite: boolean;
+}
+
 export interface HealthResponse {
   status: HealthState;
   mode: RuntimeMode;

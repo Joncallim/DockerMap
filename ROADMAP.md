@@ -17,6 +17,12 @@ The three questions DockerMap should always answer clearly:
    peers?
 3. What will change if I edit a mount or routing rule, and is that change safe?
 
+Market research in `docs/MARKET_RESEARCH.md` supports keeping the initial wedge narrow:
+Docker Compose persistence and path confusion show stronger demand than another broad
+container dashboard. Expansion into PM2, systemd, tmux, Supervisor, and similar
+persistent runtimes is possible, but should happen through read-only providers under a
+broader "persistent runtime map" model.
+
 ---
 
 ## Guiding Principles
@@ -537,6 +543,32 @@ change.
 
 ---
 
+### Phase 7 — Persistent Runtime Providers
+
+> **Prerequisite:** Docker/Compose mapping is stable enough that non-Docker providers can
+> share the same graph and diagnostics model.
+
+**Provider interface** — define a read-only provider contract for non-Docker persistent
+runtimes: identity, status, working directory, ports where detectable, log handles,
+config file origins, and safe graph edges.
+
+**PM2 provider** — ingest structured PM2 process metadata first. Map app name, script,
+cwd, status, restart count, interpreter, log paths, and detectable ports. Do not expose
+environment variables by default.
+
+**systemd provider** — ingest service units, working directories, exec commands, restart
+policy, enabled/running state, and journal availability. Handle system and user services
+separately.
+
+**tmux provider** — treat tmux as a later session inventory source, not a process
+supervisor. List sessions, windows, panes, attached state, and commands conservatively;
+avoid pane scrollback by default because it can contain secrets.
+
+**Other providers** — evaluate Supervisor, launchd, cron, and SSH remote collection after
+PM2 and systemd prove the model.
+
+---
+
 ## Backlog / Stretch Goals
 
 Ordered by expected value. No hard phase gate unless noted.
@@ -550,6 +582,8 @@ Ordered by expected value. No hard phase gate unless noted.
 | Medium | Export to Mermaid / Graphviz | `GET /api/v1/graph?format=mermaid|dot`; useful for README/wiki embedding |
 | Medium | Integration tests with live Docker | `DOCKERMAP_INTEGRATION_TESTS=true` job; spin up fixture Compose project, assert on output |
 | Medium | Policy file for allowed host roots | `.dockermap.policy.yaml`: `allowedHostRoots: [...]`; `PathTraversal` rule checks against it |
+| Medium | PM2 read-only provider | Process metadata, logs, restart counts, cwd/script mapping; no env exposure by default |
+| Medium | systemd read-only provider | Unit files, service state, exec commands, restart policy, journal availability |
 | Low | Path normalization (Windows/WSL/macOS) | `C:\Users\...` → `/mnt/c/...` in WSL; macOS Docker Desktop path translation |
 | Low | Named volume lifecycle hints | Detect compose-declared volumes never created; Docker volumes not referenced in any file |
 | Low | "Explain this mount" AI command | `POST /api/v1/explain`; plain-English explanation of a mount/volume; Claude API integration |
@@ -557,6 +591,7 @@ Ordered by expected value. No hard phase gate unless noted.
 | Low | Desktop wrapper (Tauri) | Only after core product is stable; native tray, auto-start |
 | Low | AdGuard / Pi-hole DNS awareness | Query local DNS server for container hostname records; surface in network view |
 | Low | WireGuard peer mapping | Similar to Tailscale but via `wg show` output parsing |
+| Low | tmux session inventory provider | Sessions/windows/panes only; avoid pane content by default |
 
 ---
 

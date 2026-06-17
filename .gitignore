@@ -8,3 +8,4 @@ coverage
 target
 crates/Cargo.lock
 .claude/
+.codex/

@@ -1,0 +1,54 @@
+:root {
+  color-scheme: dark;
+
+  --font-ui: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
+
+  --bg: #070a0d;
+  --bg-grid: rgba(255, 255, 255, 0.03);
+  --panel: rgba(18, 25, 31, 0.88);
+  --panel-strong: rgba(12, 17, 22, 0.96);
+  --panel-soft: rgba(24, 34, 41, 0.86);
+  --panel-raised: rgba(20, 29, 35, 0.94);
+  --stroke: rgba(141, 237, 236, 0.12);
+  --stroke-strong: rgba(141, 237, 236, 0.22);
+
+  --ink: #f6faf9;
+  --ink-soft: #d5e4e9;
+  --muted: #91a3ac;
+  --muted-deep: #6f848d;
+
+  --teal: #8dedec;
+  --teal-strong: #47c8c8;
+  --green: #8af3a1;
+  --amber: #ffbf47;
+  --coral: #ff8d78;
+  --red: #ff5f6d;
+
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-panel: 12px;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-7: 1.75rem;
+  --space-8: 2rem;
+
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --shadow-teal: 0 0 0 1px rgba(141, 237, 236, 0.06), 0 0 30px rgba(71, 200, 200, 0.08);
+  --shadow-green: 0 0 0 1px rgba(138, 243, 161, 0.08), 0 0 30px rgba(138, 243, 161, 0.08);
+  --shadow-coral: 0 0 0 1px rgba(255, 141, 120, 0.08), 0 0 30px rgba(255, 141, 120, 0.08);
+
+  --focus-ring: 0 0 0 3px rgba(141, 237, 236, 0.28);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --duration-fast: 160ms;
+  --duration-standard: 220ms;
+}
