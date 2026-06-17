@@ -23,10 +23,6 @@ Docker engine -> dockermap-daemon -> apps/api -> apps/web
 
 The Rust model is currently mirrored manually in `packages/contracts`. Before the API grows, the project should either generate TypeScript contracts from Rust schemas or add contract compatibility tests that compare serialized Rust fixtures with TypeScript expectations.
 
-## Legacy Prototype
-
-The previous Python/FastAPI prototype lives in `legacy/python-prototype`. It is retained only as a migration reference. New feature work should target the active monorepo unless a specific piece of legacy behavior is being migrated.
-
 ## Docker Access
 
 The daemon binds to loopback by default and only reads Docker state today. Docker socket access is still privileged, so mutation endpoints should not be added until the project has explicit authorization, dry-run previews, audit logging, and rollback guidance.
