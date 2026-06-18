@@ -50,6 +50,7 @@ viewers, the API is effectively public. The proxy must protect the human-facing 
 ## Nginx Shape
 
 This is a starting point, not a complete production config.
+There is also a deployable template at `deploy/nginx/dockermap.conf`.
 
 ```nginx
 server {

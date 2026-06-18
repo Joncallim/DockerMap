@@ -1,0 +1,24 @@
+[Unit]
+Description=DockerMap Rust daemon
+Documentation=https://github.com/Joncallim/DockerMap
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dockermap
+Group=dockermap
+SupplementaryGroups=docker
+WorkingDirectory=/opt/dockermap
+EnvironmentFile=/etc/dockermap/dockermap.env
+ExecStart=/opt/dockermap/crates/target/release/dockermap-daemon
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/dockermap
+
+[Install]
+WantedBy=multi-user.target

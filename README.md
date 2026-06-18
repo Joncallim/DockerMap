@@ -130,6 +130,7 @@ header when it forwards `/api/*` requests to `127.0.0.1:4000`. See
 More background:
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 - [docs/TESTING_PLAN.md](docs/TESTING_PLAN.md)
 - [docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)
 - [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)

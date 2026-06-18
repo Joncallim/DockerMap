@@ -1,0 +1,24 @@
+[Unit]
+Description=DockerMap Node API
+Documentation=https://github.com/Joncallim/DockerMap
+After=network-online.target dockermap-daemon.service
+Wants=network-online.target
+Requires=dockermap-daemon.service
+
+[Service]
+Type=simple
+User=dockermap
+Group=dockermap
+WorkingDirectory=/opt/dockermap
+EnvironmentFile=/etc/dockermap/dockermap.env
+ExecStart=/usr/bin/npm run start:api
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/dockermap
+
+[Install]
+WantedBy=multi-user.target
