@@ -63,8 +63,19 @@ pub struct ContainerRecord {
     pub role: String,
     pub networks: Vec<String>,
     pub ports: Vec<String>,
+    pub mounts: Vec<ContainerMount>,
     #[serde(rename = "dependsOn")]
     pub depends_on: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContainerMount {
+    pub id: String,
+    pub kind: ComposeMountKind,
+    pub source: Option<String>,
+    pub target: String,
+    #[serde(rename = "readOnly")]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,6 +215,7 @@ pub struct ComposeMount {
 pub struct ComposeService {
     pub name: String,
     pub image: Option<String>,
+    pub environment: BTreeMap<String, String>,
     #[serde(rename = "dependsOn")]
     pub depends_on: Vec<String>,
 }
@@ -215,7 +227,32 @@ pub struct ComposeScan {
     pub project_root: String,
     pub services: Vec<ComposeService>,
     pub mounts: Vec<ComposeMount>,
+    pub correlations: Vec<MountCorrelation>,
     pub diagnostics: Vec<ComposeDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MountCorrelationStatus {
+    Matched,
+    Missing,
+    Extra,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MountCorrelation {
+    pub id: String,
+    pub service: String,
+    pub container: Option<String>,
+    #[serde(rename = "composeMountId")]
+    pub compose_mount_id: Option<String>,
+    pub kind: ComposeMountKind,
+    pub target: String,
+    #[serde(rename = "declaredSource")]
+    pub declared_source: Option<String>,
+    #[serde(rename = "runtimeSource")]
+    pub runtime_source: Option<String>,
+    pub status: MountCorrelationStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -371,6 +408,7 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 role: "edge proxy".into(),
                 networks: vec!["network_edge".into(), "network_app".into()],
                 ports: vec!["3233:80/tcp".into()],
+                mounts: Vec::new(),
                 depends_on: vec!["container_api".into()],
             },
             ContainerRecord {
@@ -378,9 +416,25 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 name: "api".into(),
                 image: "python:3.11-slim".into(),
                 status: "running".into(),
-                role: "api service".into(),
+                role: "api".into(),
                 networks: vec!["network_app".into(), "network_data".into()],
                 ports: vec!["3233:3233/tcp".into()],
+                mounts: vec![
+                    ContainerMount {
+                        id: "container_api:/workspace/src:/srv/dockermap/src".into(),
+                        kind: ComposeMountKind::Bind,
+                        source: Some("/srv/dockermap/src".into()),
+                        target: "/workspace/src".into(),
+                        read_only: false,
+                    },
+                    ContainerMount {
+                        id: "container_api:/workspace/.cache:api-cache".into(),
+                        kind: ComposeMountKind::NamedVolume,
+                        source: Some("api-cache".into()),
+                        target: "/workspace/.cache".into(),
+                        read_only: false,
+                    },
+                ],
                 depends_on: vec!["container_db".into(), "container_cache".into()],
             },
             ContainerRecord {
@@ -388,9 +442,16 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 name: "worker".into(),
                 image: "python:3.11-slim".into(),
                 status: "running".into(),
-                role: "background jobs".into(),
+                role: "worker".into(),
                 networks: vec!["network_app".into(), "network_data".into()],
                 ports: vec![],
+                mounts: vec![ContainerMount {
+                    id: "container_worker:/var/log/dockermap:logs".into(),
+                    kind: ComposeMountKind::NamedVolume,
+                    source: Some("logs".into()),
+                    target: "/var/log/dockermap".into(),
+                    read_only: false,
+                }],
                 depends_on: vec!["container_db".into(), "container_cache".into()],
             },
             ContainerRecord {
@@ -401,6 +462,13 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 role: "primary database".into(),
                 networks: vec!["network_data".into()],
                 ports: vec!["5432:5432/tcp".into()],
+                mounts: vec![ContainerMount {
+                    id: "container_db:/var/lib/postgresql/data:postgres_data".into(),
+                    kind: ComposeMountKind::NamedVolume,
+                    source: Some("postgres_data".into()),
+                    target: "/var/lib/postgresql/data".into(),
+                    read_only: false,
+                }],
                 depends_on: vec![],
             },
             ContainerRecord {
@@ -411,6 +479,7 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 role: "cache and queue broker".into(),
                 networks: vec!["network_data".into()],
                 ports: vec!["6379:6379/tcp".into()],
+                mounts: Vec::new(),
                 depends_on: vec![],
             },
         ],
@@ -775,7 +844,7 @@ pub fn mock_logs(
 
 pub fn discover_compose_files(project_root: impl AsRef<Path>) -> Vec<PathBuf> {
     let root = project_root.as_ref();
-    [
+    let base_files = [
         "compose.yaml",
         "compose.yml",
         "docker-compose.yaml",
@@ -784,7 +853,15 @@ pub fn discover_compose_files(project_root: impl AsRef<Path>) -> Vec<PathBuf> {
     .into_iter()
     .map(|name| root.join(name))
     .filter(|path| path.is_file())
-    .collect()
+    .collect::<Vec<_>>();
+
+    let mut files = Vec::new();
+    for base_file in base_files {
+        let overrides = compose_override_candidates(&base_file);
+        files.push(base_file);
+        files.extend(overrides.into_iter().filter(|path| path.is_file()));
+    }
+    files
 }
 
 pub fn scan_compose_files(
@@ -800,6 +877,7 @@ pub fn scan_compose_files(
         project_root: display_path(project_root),
         services: Vec::new(),
         mounts: Vec::new(),
+        correlations: Vec::new(),
         diagnostics: Vec::new(),
     };
 
@@ -831,8 +909,88 @@ pub fn scan_compose_files(
         parse_compose_file(file, &content, &mut scan);
     }
 
+    coalesce_compose_services(&mut scan);
     validate_compose_scan(&mut scan);
     Ok(scan)
+}
+
+pub fn correlate_compose_runtime(
+    scan: &ComposeScan,
+    snapshot: &DockerSnapshot,
+) -> Vec<MountCorrelation> {
+    let mut correlations = Vec::new();
+    let mut matched_runtime_mounts = BTreeSet::new();
+
+    for mount in &scan.mounts {
+        let containers = snapshot
+            .containers
+            .iter()
+            .filter(|container| container_matches_service(container, &mount.service))
+            .collect::<Vec<_>>();
+
+        let match_result = containers.iter().find_map(|container| {
+            container
+                .mounts
+                .iter()
+                .find(|runtime_mount| mounts_match(mount, runtime_mount))
+                .map(|runtime_mount| (*container, runtime_mount))
+        });
+
+        if let Some((container, runtime_mount)) = match_result {
+            matched_runtime_mounts.insert(runtime_mount.id.clone());
+            correlations.push(MountCorrelation {
+                id: format!("matched:{}", mount.id),
+                service: mount.service.clone(),
+                container: Some(container.name.clone()),
+                compose_mount_id: Some(mount.id.clone()),
+                kind: mount.kind.clone(),
+                target: mount.target.clone(),
+                declared_source: declared_mount_source(mount),
+                runtime_source: runtime_mount.source.clone(),
+                status: MountCorrelationStatus::Matched,
+            });
+        } else {
+            correlations.push(MountCorrelation {
+                id: format!("missing:{}", mount.id),
+                service: mount.service.clone(),
+                container: containers.first().map(|container| container.name.clone()),
+                compose_mount_id: Some(mount.id.clone()),
+                kind: mount.kind.clone(),
+                target: mount.target.clone(),
+                declared_source: declared_mount_source(mount),
+                runtime_source: None,
+                status: MountCorrelationStatus::Missing,
+            });
+        }
+    }
+
+    for service in &scan.services {
+        for container in snapshot
+            .containers
+            .iter()
+            .filter(|container| container_matches_service(container, &service.name))
+        {
+            for runtime_mount in &container.mounts {
+                if matched_runtime_mounts.contains(&runtime_mount.id) {
+                    continue;
+                }
+                correlations.push(MountCorrelation {
+                    id: format!("extra:{}:{}", container.id, runtime_mount.id),
+                    service: service.name.clone(),
+                    container: Some(container.name.clone()),
+                    compose_mount_id: None,
+                    kind: runtime_mount.kind.clone(),
+                    target: runtime_mount.target.clone(),
+                    declared_source: None,
+                    runtime_source: runtime_mount.source.clone(),
+                    status: MountCorrelationStatus::Extra,
+                });
+            }
+        }
+    }
+
+    correlations.sort_by(|left, right| left.id.cmp(&right.id));
+    correlations
 }
 
 pub fn derive_compose_graph(scan: &ComposeScan) -> ComposeGraph {
@@ -1125,10 +1283,12 @@ fn parse_compose_file(file: &Path, content: &str, scan: &mut ComposeScan) {
         let image = mapping_get(service_value, "image")
             .and_then(|value| value.as_str())
             .map(str::to_string);
+        let environment = parse_environment(mapping_get(service_value, "environment"));
         let depends_on = parse_depends_on(mapping_get(service_value, "depends_on"));
         scan.services.push(ComposeService {
             name: service_name.to_string(),
             image,
+            environment,
             depends_on,
         });
 
@@ -1280,6 +1440,31 @@ fn parse_short_mount(
     })
 }
 
+fn coalesce_compose_services(scan: &mut ComposeScan) {
+    let mut services_by_name: BTreeMap<String, ComposeService> = BTreeMap::new();
+
+    for service in scan.services.drain(..) {
+        services_by_name
+            .entry(service.name.clone())
+            .and_modify(|existing| {
+                if service.image.is_some() {
+                    existing.image = service.image.clone();
+                }
+                for (key, value) in &service.environment {
+                    existing.environment.insert(key.clone(), value.clone());
+                }
+                for dependency in &service.depends_on {
+                    if !existing.depends_on.contains(dependency) {
+                        existing.depends_on.push(dependency.clone());
+                    }
+                }
+            })
+            .or_insert(service);
+    }
+
+    scan.services = services_by_name.into_values().collect();
+}
+
 fn validate_compose_scan(scan: &mut ComposeScan) {
     let mut targets_by_service: BTreeMap<(String, String), Vec<ComposeFileOrigin>> =
         BTreeMap::new();
@@ -1386,6 +1571,36 @@ fn validate_compose_scan(scan: &mut ComposeScan) {
     }
 }
 
+fn mounts_match(compose_mount: &ComposeMount, runtime_mount: &ContainerMount) -> bool {
+    compose_mount.kind == runtime_mount.kind
+        && compose_mount.target == runtime_mount.target
+        && match compose_mount.kind {
+            ComposeMountKind::Bind | ComposeMountKind::NamedVolume => {
+                declared_mount_source(compose_mount) == runtime_mount.source
+            }
+            ComposeMountKind::AnonymousVolume => true,
+            ComposeMountKind::Unsupported => false,
+        }
+}
+
+fn declared_mount_source(mount: &ComposeMount) -> Option<String> {
+    match mount.kind {
+        ComposeMountKind::Bind => mount
+            .resolved_source
+            .clone()
+            .or_else(|| mount.source.clone()),
+        ComposeMountKind::NamedVolume => mount.source.clone(),
+        ComposeMountKind::AnonymousVolume | ComposeMountKind::Unsupported => mount.source.clone(),
+    }
+}
+
+fn container_matches_service(container: &ContainerRecord, service: &str) -> bool {
+    container.role == service
+        || container.name == service
+        || container.name.ends_with(&format!("_{service}_1"))
+        || container.name.ends_with(&format!("-{service}-1"))
+}
+
 fn parse_depends_on(value: Option<&yaml_serde::Value>) -> Vec<String> {
     match value {
         Some(yaml_serde::Value::Sequence(items)) => items
@@ -1397,6 +1612,34 @@ fn parse_depends_on(value: Option<&yaml_serde::Value>) -> Vec<String> {
             .filter_map(|item| item.as_str().map(str::to_string))
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+fn parse_environment(value: Option<&yaml_serde::Value>) -> BTreeMap<String, String> {
+    match value {
+        Some(yaml_serde::Value::Mapping(mapping)) => mapping
+            .iter()
+            .filter_map(|(key, value)| Some((key.as_str()?.to_string(), scalar_to_string(value)?)))
+            .collect(),
+        Some(yaml_serde::Value::Sequence(items)) => items
+            .iter()
+            .filter_map(|item| {
+                let entry = item.as_str()?;
+                let (key, value) = entry.split_once('=').unwrap_or((entry, ""));
+                Some((key.to_string(), value.to_string()))
+            })
+            .collect(),
+        _ => BTreeMap::new(),
+    }
+}
+
+fn scalar_to_string(value: &yaml_serde::Value) -> Option<String> {
+    match value {
+        yaml_serde::Value::String(value) => Some(value.clone()),
+        yaml_serde::Value::Bool(value) => Some(value.to_string()),
+        yaml_serde::Value::Number(value) => Some(value.to_string()),
+        yaml_serde::Value::Null => Some(String::new()),
+        _ => None,
     }
 }
 
@@ -1521,6 +1764,26 @@ fn origin(file: &Path, service: Option<&str>, field: &str) -> ComposeFileOrigin 
         service: service.map(str::to_string),
         field: field.to_string(),
     }
+}
+
+fn compose_override_candidates(base: &Path) -> Vec<PathBuf> {
+    let Some(file_name) = base.file_name().and_then(|value| value.to_str()) else {
+        return Vec::new();
+    };
+    let Some(parent) = base.parent() else {
+        return Vec::new();
+    };
+
+    let names = if file_name.starts_with("docker-compose") {
+        [
+            "docker-compose.override.yml",
+            "docker-compose.override.yaml",
+        ]
+    } else {
+        ["compose.override.yml", "compose.override.yaml"]
+    };
+
+    names.into_iter().map(|name| parent.join(name)).collect()
 }
 
 fn display_path(path: &Path) -> String {
@@ -1672,6 +1935,28 @@ mod tests {
     }
 
     #[test]
+    fn contract_fixtures_deserialize_into_rust_types() {
+        let snapshot: DockerSnapshot = read_contract_fixture("mock-snapshot.json");
+        let compose_scan: ComposeScan = read_contract_fixture("compose-scan.json");
+        let compose_graph: ComposeGraph = read_contract_fixture("compose-graph.json");
+        let runtime_map: RuntimeMap = read_contract_fixture("runtime-map.json");
+
+        assert_eq!(
+            snapshot.containers[0].mounts[0].kind,
+            ComposeMountKind::Bind
+        );
+        assert_eq!(
+            compose_scan.correlations[0].status,
+            MountCorrelationStatus::Matched
+        );
+        assert_eq!(
+            compose_graph.edges[0].relationship,
+            ComposeRelationshipKind::DeclaresMount
+        );
+        assert_eq!(runtime_map.nodes[0].provider, RuntimeProviderKind::Docker);
+    }
+
+    #[test]
     fn scans_compose_fixture_mounts_and_diagnostics() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
@@ -1719,6 +2004,7 @@ services:
             project_root: display_path(&root),
             services: Vec::new(),
             mounts: Vec::new(),
+            correlations: Vec::new(),
             diagnostics: Vec::new(),
         };
         parse_compose_file(&file, yaml, &mut scan);
@@ -1780,6 +2066,101 @@ services:
     }
 
     #[test]
+    fn coalesces_compose_override_services() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("tests/fixtures/compose");
+        let base = root.join("path-mapping.compose.yaml");
+        let override_file = root.join("override.compose.yaml");
+        let scan = scan_compose_files(&root, &[base, override_file]).expect("fixtures should scan");
+
+        assert_eq!(scan.services.len(), 2);
+        let api = scan
+            .services
+            .iter()
+            .find(|service| service.name == "api")
+            .expect("api service should exist once");
+        assert_eq!(api.image.as_deref(), Some("python:3.12-slim"));
+        assert!(scan.mounts.iter().any(|mount| {
+            mount.service == "api"
+                && mount.target == "/workspace/config"
+                && mount.read_only
+                && mount.origin.file.ends_with("override.compose.yaml")
+        }));
+        let worker = scan
+            .services
+            .iter()
+            .find(|service| service.name == "worker")
+            .expect("worker service should exist once");
+        assert_eq!(
+            worker.environment.get("WORKER_MODE").map(String::as_str),
+            Some("fixture")
+        );
+    }
+
+    #[test]
+    fn correlates_compose_mounts_with_runtime_mounts() {
+        let root = tempfile::TempDir::new().expect("temp dir should be created");
+        let source_dir = root.path().join("src");
+        std::fs::create_dir_all(&source_dir).expect("source dir should be created");
+        let file = root.path().join("compose.yaml");
+        std::fs::write(
+            &file,
+            r#"
+services:
+  api:
+    image: alpine
+    volumes:
+      - ./src:/app/src
+"#,
+        )
+        .expect("compose fixture should be written");
+
+        let scan =
+            scan_compose_files(root.path(), std::slice::from_ref(&file)).expect("scan should pass");
+        let snapshot = DockerSnapshot {
+            containers: vec![ContainerRecord {
+                id: "runtime-api".into(),
+                name: "api".into(),
+                image: "alpine".into(),
+                status: "running".into(),
+                role: "api".into(),
+                networks: Vec::new(),
+                ports: Vec::new(),
+                mounts: vec![
+                    ContainerMount {
+                        id: "runtime-api:/app/src".into(),
+                        kind: ComposeMountKind::Bind,
+                        source: Some(display_path(&source_dir)),
+                        target: "/app/src".into(),
+                        read_only: false,
+                    },
+                    ContainerMount {
+                        id: "runtime-api:/tmp/cache".into(),
+                        kind: ComposeMountKind::AnonymousVolume,
+                        source: None,
+                        target: "/tmp/cache".into(),
+                        read_only: false,
+                    },
+                ],
+                depends_on: Vec::new(),
+            }],
+            images: Vec::new(),
+            networks: Vec::new(),
+            volumes: Vec::new(),
+            last_updated: 1,
+        };
+
+        let correlations = correlate_compose_runtime(&scan, &snapshot);
+        assert!(correlations.iter().any(
+            |item| item.status == MountCorrelationStatus::Matched && item.target == "/app/src"
+        ));
+        assert!(correlations.iter().any(
+            |item| item.status == MountCorrelationStatus::Extra && item.target == "/tmp/cache"
+        ));
+    }
+
+    #[test]
     fn plans_bind_mount_edit_without_writing() {
         let file = PathBuf::from("/tmp/compose.yaml");
         let content = r#"
@@ -1793,6 +2174,7 @@ services:
             project_root: "/tmp".into(),
             services: Vec::new(),
             mounts: Vec::new(),
+            correlations: Vec::new(),
             diagnostics: Vec::new(),
         };
         parse_compose_file(&file, content, &mut scan);
@@ -1829,6 +2211,7 @@ services:
             project_root: "/tmp".into(),
             services: Vec::new(),
             mounts: Vec::new(),
+            correlations: Vec::new(),
             diagnostics: Vec::new(),
         };
         parse_compose_file(&file, content, &mut scan);
@@ -1860,6 +2243,7 @@ services:
             project_root: "/tmp".into(),
             services: Vec::new(),
             mounts: Vec::new(),
+            correlations: Vec::new(),
             diagnostics: Vec::new(),
         };
         parse_compose_file(&file, content, &mut scan);
@@ -1872,5 +2256,14 @@ services:
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.id == "edit_original_source_not_found"));
+    }
+
+    fn read_contract_fixture<T: serde::de::DeserializeOwned>(name: &str) -> T {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("tests/fixtures/contracts")
+            .join(name);
+        let content = std::fs::read_to_string(&path).expect("contract fixture should be readable");
+        serde_json::from_str(&content).expect("contract fixture should deserialize")
     }
 }

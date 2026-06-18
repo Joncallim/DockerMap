@@ -7,7 +7,7 @@ use axum::{
 };
 use bollard::{
     container::LogOutput,
-    models::{ContainerSummary, VolumeListResponse},
+    models::{ContainerSummary, MountPoint, MountPointTypeEnum, VolumeListResponse},
     query_parameters::{
         ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder,
         LogsOptionsBuilder,
@@ -15,12 +15,13 @@ use bollard::{
     Docker,
 };
 use dockermap_core::{
-    derive_compose_graph, derive_graph, derive_images, derive_runtime_map, discover_compose_files,
-    mock_logs, mock_snapshot, plan_compose_mount_edit, scan_compose_files, unix_timestamp_millis,
-    ComposeDiagnostic, ComposeEditPlan, ComposeGraph, ComposeScan, ContainerRecord,
-    DiagnosticSeverity, DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogEntry,
-    LogsResponse, NetworkRecord, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode,
-    RuntimeMode, RuntimeNodeKind, RuntimeProviderKind, RuntimeRelationshipKind, VolumeRecord,
+    correlate_compose_runtime, derive_compose_graph, derive_graph, derive_images,
+    derive_runtime_map, discover_compose_files, mock_logs, mock_snapshot, plan_compose_mount_edit,
+    scan_compose_files, unix_timestamp_millis, ComposeDiagnostic, ComposeEditPlan, ComposeGraph,
+    ComposeMountKind, ComposeScan, ContainerMount, ContainerRecord, DiagnosticSeverity,
+    DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogEntry, LogsResponse,
+    NetworkRecord, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode, RuntimeMode,
+    RuntimeNodeKind, RuntimeProviderKind, RuntimeRelationshipKind, VolumeRecord,
 };
 use futures_util::stream::StreamExt;
 use serde::Deserialize;
@@ -356,6 +357,7 @@ fn build_snapshot(
                 }
             }
         }
+        let mounts = collect_container_mounts(&id, container.mounts.as_deref());
 
         let depends_on = container
             .labels
@@ -400,6 +402,7 @@ fn build_snapshot(
                     }
                 })
                 .collect(),
+            mounts,
             depends_on,
         });
     }
@@ -453,6 +456,49 @@ fn build_snapshot(
         volumes: volume_records,
         last_updated: unix_timestamp_millis(),
     }
+}
+
+fn collect_container_mounts(
+    container_id: &str,
+    mounts: Option<&[MountPoint]>,
+) -> Vec<ContainerMount> {
+    mounts
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|mount| {
+            let target = mount.destination.clone()?;
+            let kind = match mount.typ {
+                Some(MountPointTypeEnum::BIND) => ComposeMountKind::Bind,
+                Some(MountPointTypeEnum::VOLUME) if mount.name.is_some() => {
+                    ComposeMountKind::NamedVolume
+                }
+                Some(MountPointTypeEnum::VOLUME) => ComposeMountKind::AnonymousVolume,
+                _ => ComposeMountKind::Unsupported,
+            };
+            let source = match kind {
+                ComposeMountKind::Bind => mount.source.clone(),
+                ComposeMountKind::NamedVolume => {
+                    mount.name.clone().or_else(|| mount.source.clone())
+                }
+                ComposeMountKind::AnonymousVolume => None,
+                ComposeMountKind::Unsupported => {
+                    mount.source.clone().or_else(|| mount.name.clone())
+                }
+            };
+
+            Some(ContainerMount {
+                id: format!(
+                    "{container_id}:{}:{}",
+                    target,
+                    source.as_deref().unwrap_or("anonymous")
+                ),
+                kind,
+                source,
+                target,
+                read_only: mount.rw.map(|rw| !rw).unwrap_or(false),
+            })
+        })
+        .collect()
 }
 
 fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
@@ -1352,9 +1398,13 @@ async fn get_logs(
 }
 
 async fn get_compose_scan(
+    State(state): State<AppState>,
     Query(query): Query<ComposeScanQuery>,
 ) -> Result<Json<ComposeScan>, ApiError> {
-    Ok(Json(scan_compose_query(query).await?))
+    let mut scan = scan_compose_query(query).await?;
+    let cache = state.cache.read().await;
+    scan.correlations = correlate_compose_runtime(&scan, &cache.snapshot);
+    Ok(Json(scan))
 }
 
 async fn get_compose_graph(

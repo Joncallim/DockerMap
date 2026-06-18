@@ -22,6 +22,6 @@ echo "[dockermap] starting node api on http://127.0.0.1:4000"
 npm run dev:api &
 
 echo "[dockermap] starting react web on http://127.0.0.1:3233"
-npm run dev:web -- --host 127.0.0.1 &
+npm --workspace @dockermap/web run dev -- --host 127.0.0.1 &
 
 wait

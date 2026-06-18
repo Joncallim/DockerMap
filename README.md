@@ -1,78 +1,57 @@
 # DockerMap
 
-DockerMap now runs as a React + Node.js + Rust monorepo for a single-host, read/observe-first Docker graph experience.
+DockerMap is a local web app for understanding one Docker host. It shows containers,
+networks, volumes, logs, and Docker Compose mount paths in one place. It is read-first:
+today it can inspect files and show dry-run diffs, but it does not write Compose files.
 
-## Monorepo Layout
+## What It Helps With
+
+- See which containers, networks, volumes, and ports exist on a host.
+- See which Compose services declare bind mounts and named volumes.
+- Compare Compose-declared mounts with the mounts Docker is actually running.
+- Spot common problems, such as missing host folders or duplicate container mount paths.
+- Preview a Compose mount path change as a diff before any write feature exists.
+
+## Project Layout
 
 ```text
-apps/
-  web/        React + Vite frontend shell
-  api/        Node.js + Express API
-packages/
-  contracts/  Shared TypeScript contracts
-crates/
-  dockermap-core/   Rust domain crate
-  dockermap-daemon/ Rust Docker integration service
-docs/
-  ARCHITECTURE.md   Active stack and data-flow notes
-  ci/               GitHub Actions template pending workflow-scope publish
-legacy/
-  python-prototype/ Earlier FastAPI prototype kept for reference
-tests/
-  fixtures/         Compose fixtures for path-mapping work
+apps/web          React + Vite browser app
+apps/api          Node + Express browser-facing API
+packages/contracts Shared TypeScript response types
+crates/dockermap-core Rust models, Compose parsing, graph logic
+crates/dockermap-daemon Rust HTTP daemon that reads Docker and Compose data
+docs              Architecture, proxy, safety, and planning notes
+tests/fixtures    Compose and API contract examples
 ```
 
-## Run The Stack
+## Run Locally
 
-Install workspace dependencies:
+Install JavaScript dependencies:
 
 ```bash
 npm install
 ```
 
-Run everything together:
+Run the daemon, API, and web app together:
 
 ```bash
 npm run dev:stack
 ```
 
-Or run each service separately:
+Default local URLs:
 
-```bash
-npm run dev:daemon
-npm run dev:api
-npm run dev:web -- --host 127.0.0.1
-```
+- Web app: `http://127.0.0.1:3233`
+- Node API: `http://127.0.0.1:4000`
+- Rust daemon: `http://127.0.0.1:4100`
 
-Default dev ports:
+Useful API routes:
 
-- web: `http://127.0.0.1:3233`
-- api: `http://127.0.0.1:4000`
-- daemon: `http://127.0.0.1:4100`
-
-Key routes:
-
-- web dashboard: `http://127.0.0.1:3233`
-- node health: `http://127.0.0.1:4000/api/health`
-- node snapshot: `http://127.0.0.1:4000/api/snapshot`
-- node runtime map: `http://127.0.0.1:4000/api/runtime/map`
-- node compose scan: `http://127.0.0.1:4000/api/compose/scan?file=compose.yaml`
-- node compose graph: `http://127.0.0.1:4000/api/compose/graph?file=compose.yaml`
-- node compose edit plan: `http://127.0.0.1:4000/api/compose/edit-plan?file=compose.yaml&service=api&mount=0&source=./app`
-- rust daemon health: `http://127.0.0.1:4100/daemon/health`
-- rust runtime map: `http://127.0.0.1:4100/daemon/runtime/map`
-- rust compose scan: `http://127.0.0.1:4100/daemon/compose/scan?file=compose.yaml`
-- rust compose graph: `http://127.0.0.1:4100/daemon/compose/graph?file=compose.yaml`
-- rust compose edit plan: `http://127.0.0.1:4100/daemon/compose/edit-plan?file=compose.yaml&service=api&mount=0&source=./app`
-
-Rust workspace commands:
-
-```bash
-npm run fmt:rust
-npm run lint:rust
-npm run build:rust
-npm run test:rust
-```
+- `GET /api/health`
+- `GET /api/snapshot`
+- `GET /api/runtime/map`
+- `GET /api/compose/scan?file=compose.yaml`
+- `GET /api/compose/graph?file=compose.yaml`
+- `GET /api/compose/edit-plan?file=compose.yaml&service=api&mount=0&source=./app`
 
 Headless Compose commands:
 
@@ -82,23 +61,65 @@ cargo run -p dockermap-daemon --manifest-path crates/Cargo.toml -- validate --fi
 cargo run -p dockermap-daemon --manifest-path crates/Cargo.toml -- export --format json --file tests/fixtures/compose/path-mapping.compose.yaml
 ```
 
-The CI template in `docs/ci/github-actions-ci.yml` covers TypeScript audit/typecheck/build and Rust format/lint/test. Publishing it to `.github/workflows/` requires GitHub `workflow` scope. The Rust toolchain is pinned in `rust-toolchain.toml`.
+## Local Rust Toolchain
 
-Architecture notes live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-The current pre-GUI backend build report lives in [BUILD_SUMMARY.md](BUILD_SUMMARY.md).
-Market research and persistent-runtime expansion notes live in [docs/MARKET_RESEARCH.md](docs/MARKET_RESEARCH.md).
-The UI/UX design language lives in [DESIGN.md](DESIGN.md) and [docs/DESIGN_LANGUAGE.md](docs/DESIGN_LANGUAGE.md).
+The repo pins Rust `1.88.0` in `rust-toolchain.toml`. The checked-in lockfile requires a
+new enough Cargo, so use rustup or make sure your shell uses the pinned toolchain.
+
+In this workspace, Rust 1.88.0 is available under `~/.cargo/bin`. If your shell still
+finds an older system Cargo first, run commands like this:
+
+```bash
+PATH="$HOME/.cargo/bin:$PATH" cargo test -p dockermap-core --manifest-path crates/Cargo.toml
+```
+
+## Checks
+
+These match the GitHub Actions workflow:
+
+```bash
+npm ci
+npm audit --omit=dev
+npm run typecheck
+npm run build
+PATH="$HOME/.cargo/bin:$PATH" cargo fmt --manifest-path crates/Cargo.toml --all -- --check
+PATH="$HOME/.cargo/bin:$PATH" cargo clippy --manifest-path crates/Cargo.toml --all-targets -- -D warnings
+PATH="$HOME/.cargo/bin:$PATH" cargo test -p dockermap-core --manifest-path crates/Cargo.toml
+```
+
+## Optional API Token
+
+For local development, the Node API does not require a token unless
+`DOCKERMAP_API_TOKEN` is set.
+
+When the API is exposed through a reverse proxy, set a token:
+
+```bash
+DOCKERMAP_API_TOKEN="replace-with-a-long-random-value"
+```
+
+Then every route except `/health` and `/api/health` requires:
+
+```text
+Authorization: Bearer replace-with-a-long-random-value
+```
+
+For a review UI, prefer a reverse proxy that keeps the token server-side and injects the
+header when it forwards `/api/*` requests to `127.0.0.1:4000`. See
+[docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md).
 
 ## Current Status
 
-- `apps/web` now renders stitched read-only product routes for dashboard, containers, images, networks, volumes, and logs.
-- `apps/api` is now a browser-facing BFF that proxies the Rust daemon and exposes SSE heartbeat updates.
-- `crates/dockermap-core` owns shared domain models, graph derivation, image derivation, and mock log generation.
-- `crates/dockermap-daemon` now runs as an HTTP daemon with health, snapshot, graph, inventory, and logs endpoints.
-- The daemon exposes a unified runtime map for visualization that combines Docker resources with discovered systemd services, scheduled jobs, PM2 apps, tmux sessions, listening sockets, Tailscale/Headscale nodes, reverse proxy markers, and local DNS markers when available.
-- The daemon exposes a read-only Compose scan endpoint for discovered Compose files or explicit files under `DOCKERMAP_PROJECT_ROOT`.
-- The daemon and API expose a dry-run Compose edit-plan endpoint that returns a diff and never writes files.
-- The Rust daemon binary also supports headless `scan`, `validate`, and `export --format json` commands.
-- The daemon auto-detects Docker and falls back to mock mode when `docker.sock` is unavailable.
-- The older Python prototype now lives under `legacy/python-prototype` as migration reference and is no longer the active implementation path.
-- Compose path-mapping fixtures live under `tests/fixtures/compose`.
+- The web app has pages for dashboard, containers, images, networks, volumes, logs, and Compose.
+- The daemon reads Docker when available and falls back to mock data when Docker is unavailable.
+- Compose scanning discovers base files plus adjacent override files.
+- Compose scans now include runtime mount checks: matched, missing, and extra.
+- Rust and TypeScript share API contract fixtures under `tests/fixtures/contracts`.
+- CI runs TypeScript audit/typecheck/build and Rust format/lint/core tests.
+
+More background:
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)
+- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)
+- [ROADMAP.md](ROADMAP.md)

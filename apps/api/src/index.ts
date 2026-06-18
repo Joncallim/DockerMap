@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
@@ -28,6 +29,7 @@ import {
 const app = express();
 const port = readPort(process.env.PORT, 4000);
 const daemonBaseUrl = readDaemonBaseUrl(process.env.DOCKERMAP_DAEMON_URL ?? "http://127.0.0.1:4100");
+const apiToken = readApiToken(process.env.DOCKERMAP_API_TOKEN);
 const allowMockFallback = process.env.DOCKERMAP_ALLOW_MOCK === "true";
 const exposeErrorDetails = process.env.DOCKERMAP_EXPOSE_ERROR_DETAILS === "true";
 const pollIntervalMs = readBoundedNumber(process.env.DOCKERMAP_SSE_INTERVAL_MS, 2_000, 1_000, 30_000);
@@ -96,6 +98,46 @@ function readAllowedOrigins(value: string) {
     });
 }
 
+function readApiToken(value: string | undefined) {
+  if (value === undefined) {
+    return null;
+  }
+
+  const token = value.trim();
+  if (!token) {
+    throw new Error("DOCKERMAP_API_TOKEN must not be empty when set");
+  }
+  return token;
+}
+
+function tokenMatches(received: string, expected: string) {
+  const receivedBuffer = Buffer.from(received);
+  const expectedBuffer = Buffer.from(expected);
+  return receivedBuffer.length === expectedBuffer.length && timingSafeEqual(receivedBuffer, expectedBuffer);
+}
+
+function isPublicRoute(req: express.Request) {
+  return req.method === "OPTIONS" || req.path === "/health" || req.path === "/api/health";
+}
+
+function requireBearerToken(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!apiToken || isPublicRoute(req)) {
+    next();
+    return;
+  }
+
+  const [scheme, token = ""] = (req.get("authorization") ?? "").split(/\s+/, 2);
+  if (scheme !== "Bearer" || !tokenMatches(token, apiToken)) {
+    res.status(401).json({
+      code: "unauthorized",
+      message: "A valid Bearer token is required for this DockerMap API route"
+    } satisfies ApiError);
+    return;
+  }
+
+  next();
+}
+
 app.disable("x-powered-by");
 app.use(helmet({ strictTransportSecurity: false }));
 app.use(
@@ -112,6 +154,7 @@ app.use(
   }),
 );
 app.use(express.json({ limit: "16kb" }));
+app.use(requireBearerToken);
 
 class HttpError extends Error {
   constructor(
@@ -283,6 +326,7 @@ function getMockResponse<T>(path: string): T {
       projectRoot: process.cwd(),
       services: [],
       mounts: [],
+      correlations: [],
       diagnostics: [
         {
           id: "compose_mock_unavailable",

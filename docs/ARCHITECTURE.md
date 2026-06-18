@@ -21,7 +21,9 @@ Docker engine -> dockermap-daemon -> apps/api -> apps/web
                  dockermap-core
 ```
 
-The Rust model is currently mirrored manually in `packages/contracts`. Before the API grows, the project should either generate TypeScript contracts from Rust schemas or add contract compatibility tests that compare serialized Rust fixtures with TypeScript expectations.
+The Rust model is currently mirrored manually in `packages/contracts`. To keep those two
+sides honest, shared JSON examples live in `tests/fixtures/contracts`. Rust tests
+deserialize them, and TypeScript tests import the same files.
 
 ## Runtime Map
 
@@ -46,12 +48,30 @@ Kubernetes and other orchestrators should plug into this same model as additiona
 
 ## Docker Access
 
-The daemon binds to loopback by default and only reads Docker state today. Docker socket access is still privileged, so mutation endpoints should not be added until the project has explicit authorization, dry-run previews, audit logging, and rollback guidance.
+The daemon binds to loopback by default and only reads Docker state today. Docker socket
+access is still powerful, so mutation endpoints should not be added until the project has
+explicit authorization, dry-run previews, audit logging, and rollback guidance.
+
+The Node API can require `DOCKERMAP_API_TOKEN`. When the token is set, every route except
+`/health` and `/api/health` requires an `Authorization: Bearer ...` header.
 
 ## Compose Scanning
 
-`crates/dockermap-core` owns the typed Compose scan model for services, mounts, file origins, diagnostics, a derived path-map graph, and dry-run edit plans. The daemon exposes this through `GET /daemon/compose/scan`, `GET /daemon/compose/graph`, and `GET /daemon/compose/edit-plan`; `apps/api` proxies them at `GET /api/compose/scan`, `GET /api/compose/graph`, and `GET /api/compose/edit-plan`.
+`crates/dockermap-core` owns the typed Compose scan model for services, mounts,
+environment values, file origins, diagnostics, runtime mount checks, a derived path-map
+graph, and dry-run edit plans. The daemon exposes this through
+`GET /daemon/compose/scan`, `GET /daemon/compose/graph`, and
+`GET /daemon/compose/edit-plan`; `apps/api` proxies them at `GET /api/compose/scan`,
+`GET /api/compose/graph`, and `GET /api/compose/edit-plan`.
 
-By default, scanning discovers standard Compose filenames under `DOCKERMAP_PROJECT_ROOT` or the daemon working directory. Explicit `file` query values are resolved only under that project root, parent traversal is rejected, and symlinked paths are not followed during request validation. The endpoint is read-only and reports diagnostics for unsupported syntax, unresolved variables, duplicate mount targets, invalid container targets, missing bind sources, and symlink bind sources.
+By default, scanning discovers standard Compose filenames plus adjacent override files
+under `DOCKERMAP_PROJECT_ROOT` or the daemon working directory. Explicit `file` query
+values are resolved only under that project root, parent traversal is rejected, and
+symlinked paths are not followed during request validation. The endpoint is read-only and
+reports diagnostics for unsupported syntax, unresolved variables, duplicate mount targets,
+invalid container targets, missing bind sources, and symlink bind sources.
+
+Runtime mount checks compare what Compose declares with what Docker is actually running.
+Each check is marked `matched`, `missing`, or `extra`.
 
 Edit planning is also read-only. It accepts a Compose file, service, mount index, and proposed source/target values, then returns diagnostics and a unified diff with `willWrite: false`.

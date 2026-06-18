@@ -1,0 +1,18 @@
+{
+  "nodes": [
+    {
+      "id": "docker_container_container_api",
+      "provider": "docker",
+      "type": "container",
+      "label": "api",
+      "status": "running",
+      "metadata": {
+        "image": "python:3.12-slim",
+        "role": "api"
+      }
+    }
+  ],
+  "edges": [],
+  "diagnostics": [],
+  "lastUpdated": 1710000000000
+}

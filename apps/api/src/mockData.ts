@@ -17,6 +17,7 @@ export const snapshot: DockerSnapshot = {
       role: "edge proxy",
       networks: ["network_edge", "network_app"],
       ports: ["3233:80/tcp"],
+      mounts: [],
       dependsOn: ["container_api"]
     },
     {
@@ -24,9 +25,25 @@ export const snapshot: DockerSnapshot = {
       name: "api",
       image: "python:3.11-slim",
       status: "running",
-      role: "api service",
+      role: "api",
       networks: ["network_app", "network_data"],
       ports: ["3233:3233/tcp"],
+      mounts: [
+        {
+          id: "container_api:/workspace/src:/srv/dockermap/src",
+          kind: "bind",
+          source: "/srv/dockermap/src",
+          target: "/workspace/src",
+          readOnly: false
+        },
+        {
+          id: "container_api:/workspace/.cache:api-cache",
+          kind: "named_volume",
+          source: "api-cache",
+          target: "/workspace/.cache",
+          readOnly: false
+        }
+      ],
       dependsOn: ["container_db", "container_cache"]
     },
     {
@@ -34,9 +51,18 @@ export const snapshot: DockerSnapshot = {
       name: "worker",
       image: "python:3.11-slim",
       status: "running",
-      role: "background jobs",
+      role: "worker",
       networks: ["network_app", "network_data"],
       ports: [],
+      mounts: [
+        {
+          id: "container_worker:/var/log/dockermap:logs",
+          kind: "named_volume",
+          source: "logs",
+          target: "/var/log/dockermap",
+          readOnly: false
+        }
+      ],
       dependsOn: ["container_db", "container_cache"]
     },
     {
@@ -47,6 +73,15 @@ export const snapshot: DockerSnapshot = {
       role: "primary database",
       networks: ["network_data"],
       ports: ["5432:5432/tcp"],
+      mounts: [
+        {
+          id: "container_db:/var/lib/postgresql/data:postgres_data",
+          kind: "named_volume",
+          source: "postgres_data",
+          target: "/var/lib/postgresql/data",
+          readOnly: false
+        }
+      ],
       dependsOn: []
     },
     {
@@ -57,6 +92,7 @@ export const snapshot: DockerSnapshot = {
       role: "cache and queue broker",
       networks: ["network_data"],
       ports: ["6379:6379/tcp"],
+      mounts: [],
       dependsOn: []
     }
   ],

@@ -14,22 +14,27 @@ otherwise independent.
 ### ✅ Done (Phase 0)
 - Monorepo: React/Vite (3233), Express API (4000), Rust Axum daemon (4100)
 - Rust toolchain pinned, `Cargo.lock` committed
-- CI template at `docs/ci/github-actions-ci.yml` (not yet published)
+- CI workflow published at `.github/workflows/ci.yml`
 - Compose test fixtures at `tests/fixtures/compose/`
 - Architecture + PAGE_LOGIC documentation; Vite 8, 0 audit vulnerabilities
 
 ### 🔄 In Progress (Phase 1)
 - Docker runtime inventory (containers, images, networks, volumes, logs) via bollard ✅
 - All read-only API endpoints exposed ✅
-- React UI: 7 pages with SSE live refresh, global search, graph derivation ✅
-- Compose file parsing ❌ · CLI commands ❌ · Frontend component splitting ❌
+- React UI: 8 pages with SSE live refresh, global search, graph derivation ✅
+- Frontend component split ✅ · Compose scan/graph/edit-plan endpoints ✅ · CLI scan/validate/export ✅
+- Compose/runtime correlation ✅ · Override merge semantics ✅ · Contract compatibility tests ✅
 - Table sorting ❌ · Advanced filters ❌ · Clickable graph nodes ❌
 - Log level filter / live tail ❌ · Log pagination UI ❌
-- Contract compatibility tests ❌ · Python legacy prototype not removed ❌
 
 ---
 
 ## Phase 1 — Read-Only Map Completion
+
+> Current state: component decomposition, Compose parsing/resolution/discovery,
+> scan/graph/edit-plan endpoints, contract types, CLI commands, and the first Compose UI
+> route are in place. Compose scans also compare declared mounts with runtime mounts.
+> Remaining Phase 1 work is mostly list UX, log UX, and deeper resource detail pages.
 
 ### Stream A — Rust: Compose Parsing _(sequential within stream)_
 
@@ -55,22 +60,22 @@ otherwise independent.
 - Produce `ResolvedMount { host_path (absolute), container_path, mode, source_file, source_line }`
 - New file: `crates/dockermap-core/src/compose/resolver.rs`
 
-**A4. Compose ↔ Runtime Correlation** _(depends on A2, A3 + existing bollard integration)_
+**A4. Compose ↔ Runtime Correlation** ✅
 - Match Compose service names to containers via `com.docker.compose.service` label
 - Produce `MountCorrelation { declared_source, runtime_source, status: matched|missing|extra }`
-- New file: `crates/dockermap-core/src/compose/correlation.rs`
+- Implemented in the active core scan model in `crates/dockermap-core/src/lib.rs`
 
-**A5. Override File Merging** _(depends on A2, A4)_
+**A5. Override File Merging** ✅
 - Merge `docker-compose.override.yml` per Compose spec (volumes append, env maps merge,
   image replaces)
 - Test with `tests/fixtures/compose/override.compose.yaml`
 
-**A6. Daemon Compose Endpoints** _(depends on A1–A5)_
-- `GET /daemon/compose/files` — discovered files with parse status
-- `GET /daemon/compose/services` — parsed services with resolved mounts
-- `GET /daemon/compose/mounts` — all mounts (bind + named volume)
-- `GET /daemon/compose/projects` — top-level project aggregates
-- File: `crates/dockermap-daemon/src/main.rs` (add routes)
+**A6. Daemon Compose Endpoints** ✅
+- Delivered: `GET /daemon/compose/scan`, `GET /daemon/compose/graph`,
+  `GET /daemon/compose/edit-plan`
+- Optional later split endpoints: files, services, mounts, and project aggregates if the
+  UI needs narrower payloads
+- File: `crates/dockermap-daemon/src/main.rs`
 
 **A7. Log Pagination** _(independent — do any time)_
 - Add `cursor` and `limit` query params to `GET /daemon/logs`
@@ -81,39 +86,39 @@ otherwise independent.
 
 ### Stream B — Node/Express: Proxies & Contract Hardening
 
-**B1. Proxy Compose endpoints** _(depends on A6)_
-- Add `/api/compose/files`, `/api/compose/mounts`, `/api/compose/projects` to
+**B1. Proxy Compose endpoints** ✅
+- Delivered `/api/compose/scan`, `/api/compose/graph`, and `/api/compose/edit-plan` in
   `apps/api/src/index.ts`
-- Add mock fallback responses seeded from fixture data
+- Mock fallback returns safe empty Compose responses when the daemon is unavailable
 
-**B2. Contract compatibility tests**
-- In `crates/dockermap-core`, serialize mock snapshot to JSON in a `#[test]`; write to
-  `tests/fixtures/snapshots/mock-snapshot.json`
-- In `packages/contracts`, load JSON and validate against each TypeScript interface
-- New file: `packages/contracts/src/compatibility.test.ts`
+**B2. Contract compatibility tests** ✅
+- Shared JSON examples live in `tests/fixtures/contracts`
+- Rust deserializes the fixtures in `dockermap-core` tests
+- TypeScript imports the same fixtures in `packages/contracts/src/compatibility.test.ts`
 - Prevents silent drift between Rust renames and TypeScript consumers
 
-**B3. Add Compose types to `@dockermap/contracts`**
-- Mirror `ComposeMountDeclaration`, `ComposeFile`, `ComposeProject`, `ComposeDiagnostic`
+**B3. Add Compose types to `@dockermap/contracts`** ✅
+- Mirrors the active scan, graph, diagnostics, mount, service, and edit-plan response
+  shapes consumed by the API and web app
 
 **B4. Individual resource detail endpoints**
 - `GET /daemon/images/:imageRef` — full tag list, size, created date, using containers
 - `GET /daemon/networks/:id` — IPAM config, subnet, gateway, attachability
 - `GET /daemon/volumes/:name` — mountpoint, driver options, labels
 
-**B5. Publish CI workflow**
-- Copy `docs/ci/github-actions-ci.yml` → `.github/workflows/ci.yml`
+**B5. Keep CI workflow healthy**
+- Source of truth: `.github/workflows/ci.yml`
 - Trigger: `push` (all branches) + `pull_request`
+- Keep local scripts and CI steps aligned for TypeScript, Rust format/lint, and tests
 
-**B6. Remove Python legacy**
-- Delete `legacy/python-prototype/`; update `ARCHITECTURE.md`
+**B6. Python legacy removed**
+- Keep README and architecture docs pointed at the React + Node.js + Rust stack only
 
 ---
 
-### Stream C — Frontend: Component Decomposition _(sequential — highest urgency)_
+### Stream C — Frontend: Component Decomposition ✅
 
-> Must complete before Stream D. Zero behaviour change; `npm run typecheck` must pass
-> after every step.
+> Complete; Stream D feature work is unblocked.
 
 **C1. Extract hooks** → `apps/web/src/hooks/`
 - `useApiResource.ts`, `useDaemonHeartbeat.ts`, `useSearchParamState.ts`
@@ -179,8 +184,8 @@ drift detection in Phase 5.
 - [ ] `cargo test` passes including new Compose parser unit tests
 - [ ] `npm run typecheck` passes across all workspaces
 - [ ] `App.tsx` under 100 lines
-- [ ] `GET /api/compose/files` returns discovered files when daemon starts from repo root
-- [ ] `GET /api/compose/mounts` returns resolved absolute host paths
+- [ ] `GET /api/compose/scan` returns discovered files and resolved mount paths
+- [ ] `GET /api/compose/graph` returns service, source, and target path nodes
 - [ ] All list pages have sort controls
 - [ ] Graph nodes are clickable and navigate correctly
 - [ ] CI runs on every PR
@@ -194,13 +199,24 @@ drift detection in Phase 5.
 
 ### Stream A — External API Exposure
 
-**A1. Configurable bind address & auth**
-- `DOCKERMAP_BIND_ADDR` env var — default `127.0.0.1:4100`; set `0.0.0.0:4100` for
-  external exposure
+**A1. Configurable exposure & auth** ✅
+- `DOCKERMAP_DAEMON_HOST` and `DOCKERMAP_DAEMON_PORT` control daemon binding; non-loopback
+  daemon binding also requires `DOCKERMAP_ALLOW_REMOTE_DAEMON=true`
 - `DOCKERMAP_API_TOKEN` — Bearer token middleware on Express BFF for all non-health
   endpoints
-- `DOCKERMAP_CORS_ORIGINS` — comma-separated allowed origins
-- Document risks in `docs/SECURITY.md`
+- `DOCKERMAP_ALLOWED_ORIGINS` — comma-separated allowed origins for the Express BFF
+- Document risks in `docs/THREAT_MODEL.md` and `docs/REVERSE_PROXY.md`
+
+**A1.5. VPS-hosted review UI**
+- Build `apps/web` with `VITE_API_BASE_URL` pointing at the public BFF origin.
+- Serve `apps/web/dist` behind HTTPS on the VPS reverse proxy.
+- Expose only the Express BFF publicly; keep the Rust daemon loopback/private unless
+  remote daemon access is explicitly required.
+- Require `DOCKERMAP_API_TOKEN` for all non-health BFF routes before opening firewall or
+  proxy access to the internet.
+- Set CORS to the review UI origin only; no wildcard origins.
+- Purpose: interface/dashboard review, comments, and read-only inspection. Compose writes
+  remain unavailable until the Phase 3 edit confirmation flow exists.
 
 **A2. OpenAPI documentation**
 - `docs/openapi.yaml` covering all v1 read-only endpoints (params, schemas, error codes)
@@ -306,7 +322,7 @@ drift detection in Phase 5.
 
 ### Phase 1.5 Verification
 
-- [ ] `GET /api/v1/status` returns 200 from a different host with `DOCKERMAP_BIND_ADDR=0.0.0.0`
+- [ ] `GET /api/v1/status` returns 200 through an authenticated reverse proxy
 - [ ] `GET /api/widgets/homepage` returns expected JSON; documented in README
 - [ ] `GET /api/docs` renders Swagger UI covering all read-only endpoints
 - [ ] Networks page shows per-member container IPs
@@ -363,8 +379,8 @@ Vec<ComposeDiagnostic>`; one concrete struct per rule.
 
 ### Stream C — Security Docs
 
-**C1. `docs/SECURITY.md`** — threat model: host path exposure, symlink traversal, Docker
-socket risk, external API risks.
+**C1. Security docs** — keep `docs/THREAT_MODEL.md` and `docs/REVERSE_PROXY.md` current
+for host path exposure, symlink traversal, Docker socket risk, and external API risks.
 
 ---
 
@@ -540,8 +556,8 @@ for linux-x86_64, linux-aarch64, macos-aarch64; publish as Release assets with c
 | 1-A | `crates/dockermap-daemon/src/main.rs` | Add compose routes |
 | 1-B | `apps/api/src/index.ts` | Proxy compose endpoints; add v1 prefix |
 | 1-B | `packages/contracts/src/index.ts` | Add compose types |
-| 1-C | `apps/web/src/App.tsx` | Split into hooks/, utils/, components/, pages/ |
-| 1-E | `.github/workflows/ci.yml` | Publish CI workflow |
+| 1-C | `apps/web/src/` | Componentized hooks/, utils/, components/, pages/ |
+| 1-E | `.github/workflows/ci.yml` | Keep CI workflow aligned with local scripts |
 | 1.5-A | `apps/api/src/index.ts` | Auth middleware, CORS, rate limiting, versioned routes |
 | 1.5-A | `docs/openapi.yaml` | OpenAPI spec |
 | 1.5-B | `crates/dockermap-core/src/` | Add network enrichment, proxy route parsing |

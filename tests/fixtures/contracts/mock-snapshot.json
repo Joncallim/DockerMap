@@ -1,0 +1,54 @@
+{
+  "containers": [
+    {
+      "id": "container_api",
+      "name": "api",
+      "image": "python:3.12-slim",
+      "status": "running",
+      "role": "api",
+      "networks": ["network_app"],
+      "ports": ["8080:8080/tcp"],
+      "mounts": [
+        {
+          "id": "container_api:/workspace/src:/srv/dockermap/src",
+          "kind": "bind",
+          "source": "/srv/dockermap/src",
+          "target": "/workspace/src",
+          "readOnly": false
+        },
+        {
+          "id": "container_api:/workspace/.cache:api-cache",
+          "kind": "named_volume",
+          "source": "api-cache",
+          "target": "/workspace/.cache",
+          "readOnly": false
+        }
+      ],
+      "dependsOn": ["container_db"]
+    }
+  ],
+  "images": [
+    {
+      "image": "python:3.12-slim",
+      "containers": ["api"],
+      "status": "running"
+    }
+  ],
+  "networks": [
+    {
+      "id": "network_app",
+      "name": "app",
+      "driver": "bridge",
+      "internal": false,
+      "members": ["api"]
+    }
+  ],
+  "volumes": [
+    {
+      "id": "api-cache",
+      "name": "api-cache",
+      "attachedTo": ["api"]
+    }
+  ],
+  "lastUpdated": 1710000000000
+}

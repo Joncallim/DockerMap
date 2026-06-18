@@ -1,0 +1,31 @@
+{
+  "nodes": [
+    {
+      "id": "compose_service_api",
+      "type": "service",
+      "label": "api"
+    },
+    {
+      "id": "compose_host_path_srv_dockermap_src",
+      "type": "host_path",
+      "label": "/srv/dockermap/src"
+    },
+    {
+      "id": "compose_container_path_api_workspace_src",
+      "type": "container_path",
+      "label": "api:/workspace/src"
+    }
+  ],
+  "edges": [
+    {
+      "source": "compose_service_api",
+      "target": "compose_container_path_api_workspace_src",
+      "relationship": "declares_mount"
+    },
+    {
+      "source": "compose_host_path_srv_dockermap_src",
+      "target": "compose_container_path_api_workspace_src",
+      "relationship": "mounted_at"
+    }
+  ]
+}

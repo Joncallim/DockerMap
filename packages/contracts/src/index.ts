@@ -28,7 +28,16 @@ export interface ContainerRecord {
   role: string;
   networks: string[];
   ports: string[];
+  mounts: ContainerMount[];
   dependsOn: string[];
+}
+
+export interface ContainerMount {
+  id: string;
+  kind: ComposeMountKind;
+  source: string | null;
+  target: string;
+  readOnly: boolean;
 }
 
 export interface ImageRecord {
@@ -103,6 +112,7 @@ export interface ComposeMount {
 export interface ComposeService {
   name: string;
   image: string | null;
+  environment: Record<string, string>;
   dependsOn: string[];
 }
 
@@ -111,7 +121,22 @@ export interface ComposeScan {
   projectRoot: string;
   services: ComposeService[];
   mounts: ComposeMount[];
+  correlations: MountCorrelation[];
   diagnostics: ComposeDiagnostic[];
+}
+
+export type MountCorrelationStatus = "matched" | "missing" | "extra";
+
+export interface MountCorrelation {
+  id: string;
+  service: string;
+  container: string | null;
+  composeMountId: string | null;
+  kind: ComposeMountKind;
+  target: string;
+  declaredSource: string | null;
+  runtimeSource: string | null;
+  status: MountCorrelationStatus;
 }
 
 export type ComposeNodeKind =

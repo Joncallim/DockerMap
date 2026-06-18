@@ -52,11 +52,11 @@ broader "persistent runtime map" model.
 - `dockermap-core` crate: domain model, mock snapshot, `derive_images`, `derive_graph`,
   `mock_logs`
 - `dockermap-daemon`: bollard integration, mock fallback when Docker unavailable
-- Seven React pages: Dashboard, Containers, ContainerDetail, Images, Networks, Volumes,
-  Logs
+- Eight React pages: Dashboard, Containers, ContainerDetail, Images, Networks, Volumes,
+  Logs, Compose
 - `@dockermap/contracts` TypeScript types mirroring Rust structs
 - SSE heartbeat for live refresh; global search with 250 ms debounce
-- CI template at `docs/ci/github-actions-ci.yml` (not yet published)
+- CI workflow published at `.github/workflows/ci.yml`
 - Compose test fixtures at `tests/fixtures/compose/`
 - Architecture docs: `ARCHITECTURE.md`, `PAGE_LOGIC.md`
 - Vite 8, zero production audit vulnerabilities
@@ -65,11 +65,12 @@ broader "persistent runtime map" model.
 
 **Working:** Docker runtime inventory (containers, images, networks, volumes, logs), all
 read-only API endpoints, React UI with routing, SSE live refresh, mock fallback, graph
-derivation.
+derivation, Compose scan/graph/edit-plan endpoints, headless Compose CLI commands, and a
+first Compose UI route.
 
-**Not yet done:** Compose file parsing, CLI commands, frontend component splitting
-(all 709 lines in `App.tsx`), table sorting, advanced filters, clickable graph nodes,
-container labels/ports, log level filter, live tail, contract generation.
+**Not yet done:** table sorting, advanced filters, clickable graph nodes, richer container
+detail pages, log level filter, live tail, log pagination UI, API versioning, OpenAPI
+docs, and Homepage/Grafana-style widget endpoints.
 
 ---
 
@@ -84,16 +85,20 @@ dependencies within a stream are noted explicitly.
 ### Phase 1 — Read-Only Map Completion
 
 > **Goal:** Complete the read-only inventory experience and add Compose file awareness.
+> Current state: component decomposition, Compose parsing/resolution/discovery,
+> scan/graph/edit-plan endpoints, contract types, CLI commands, and the first Compose UI
+> route are in place. Compose scans also compare declared mounts with runtime mounts.
+> Remaining Phase 1 work is mostly list UX, log UX, and deeper resource detail pages.
 
-#### Stream A — Rust: Compose Parsing (sequential within stream)
+#### Stream A — Rust: Compose Parsing And Correlation
 
-**A1. Add Compose domain types to `dockermap-core`**
+**A1. Add Compose domain types to `dockermap-core`** ✅
 - `ComposeFile`, `ComposeService`, `ComposeMountDeclaration` (discriminated union of
   `BindMount`, `NamedVolume`, `AnonymousVolume`), `ComposeProject`, `ComposeDiagnostic`
 - All types derive `Serialize/Deserialize` with `rename_all = "camelCase"`
 - File: new `crates/dockermap-core/src/compose/mod.rs`
 
-**A2. Implement YAML parser** _(depends on A1)_
+**A2. Implement YAML parser** ✅
 - Parse `services.<name>.volumes[]` in both short form (`./src:/app:ro`) and long form
   (`type: bind`, `source:`, `target:`, `read_only:`)
 - Parse top-level `volumes:` keys; `depends_on` in list and condition forms
@@ -101,31 +106,32 @@ dependencies within a stream are noted explicitly.
 - Add `serde_yaml = "0.9"` to `Cargo.toml`
 - Unit tests for every syntax form in `tests/fixtures/compose/path-mapping.compose.yaml`
 
-**A3. Path resolution** _(depends on A2)_
+**A3. Path resolution** ✅
 - Resolve relative host paths against the Compose file's own directory
 - Expand `${VAR:-default}` and `${VAR}` with env substitution; emit
   `ComposeDiagnostic(Warning)` for unresolved references
 - Store both raw source value and resolved absolute path on each mount declaration
 
-**A4. Compose file discovery** _(depends on A1)_
+**A4. Compose file discovery** ✅
 - Walk directories for `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`,
   `compose.yaml` using the `walkdir` crate
 - Detect override files; support explicit `-f` path argument
 - Respect `.dockerignore` and `node_modules/` exclusions
 
-**A5. Override file merging** _(depends on A2, A4)_
+**A5. Override file merging** ✅
 - Merge services per Compose spec: volumes append, environment maps merge, image replaces
 - Test with `tests/fixtures/compose/override.compose.yaml`
 
-**A6. Compose ↔ runtime correlation** _(depends on A2, existing bollard integration)_
+**A6. Compose ↔ runtime correlation** ✅
 - Match Compose service names to containers via `com.docker.compose.service` label
 - Produce `MountCorrelation { declared_source, runtime_source, status }` for each mount
 - Store on `ContainerRecord` or return from a dedicated endpoint
 
-**A7. Daemon Compose endpoints** _(depends on A1–A5)_
-- `GET /daemon/compose/files` — discovered files with parse status
-- `GET /daemon/compose/mounts` — all resolved mount declarations
-- `GET /daemon/compose/projects` — top-level project aggregates
+**A7. Daemon Compose endpoints** ✅
+- Delivered: `GET /daemon/compose/scan`, `GET /daemon/compose/graph`,
+  `GET /daemon/compose/edit-plan`
+- Optional later split endpoints: files, mounts, and project aggregates if the UI needs
+  narrower payloads
 
 **A8. Cursor-based log pagination** _(independent — do any time)_
 - Accept `cursor` and `limit` query params in `GET /daemon/logs`
@@ -133,37 +139,38 @@ dependencies within a stream are noted explicitly.
 
 #### Stream B — Node/Express: Proxies & Contract Hardening
 
-**B1. Proxy new Compose endpoints through `apps/api`** _(depends on A7)_
-- Add `/api/compose/files`, `/api/compose/mounts`, `/api/compose/projects`
-- Add mock fallback responses seeded from fixture data
+**B1. Proxy Compose endpoints through `apps/api`** ✅
+- Delivered: `/api/compose/scan`, `/api/compose/graph`, `/api/compose/edit-plan`
+- Mock fallback preserves safe empty Compose responses when the daemon is unavailable
 
-**B2. Contract compatibility tests**
-- Serialize Rust mock snapshot to JSON in a `#[test]`; write to
-  `tests/fixtures/snapshots/mock-snapshot.json`
-- Add a TypeScript test in `packages/contracts` that loads the JSON and validates it
-  against each interface
-- Prevents silent drift between Rust and TypeScript types
+**B2. Contract compatibility tests** ✅
+- Shared JSON examples live in `tests/fixtures/contracts`
+- Rust deserializes the fixtures in `dockermap-core` tests
+- TypeScript imports the same fixtures in `packages/contracts/src/compatibility.test.ts`
+- This catches silent drift between Rust responses and TypeScript consumers
 
-**B3. Add Compose types to `@dockermap/contracts`**
-- Mirror `ComposeMountDeclaration`, `ComposeFile`, `ComposeProject`, `ComposeDiagnostic`
+**B3. Add Compose types to `@dockermap/contracts`** ✅
+- Mirrors the active scan, graph, diagnostics, mount, service, and edit-plan response
+  shapes consumed by the API and web app
 
 **B4. Individual resource detail endpoints**
 - `GET /daemon/images/:imageRef` — full tag list, size, created date, using containers
 - `GET /daemon/networks/:id` — IPAM config, subnet, gateway, attachability
 - `GET /daemon/volumes/:name` — mountpoint, driver options, labels
 
-**B5. Publish CI workflow**
-- Copy `docs/ci/github-actions-ci.yml` → `.github/workflows/ci.yml`
+**B5. Keep CI workflow healthy**
+- Source of truth: `.github/workflows/ci.yml`
 - Trigger on every push and pull request
+- Keep local scripts and CI steps aligned
 
-**B6. Remove Python legacy**
-- Delete `legacy/python-prototype/`; update `ARCHITECTURE.md`
+**B6. Python legacy removed**
+- Keep README and architecture docs pointed at the React + Node.js + Rust stack only
 
-#### Stream C — Frontend: Component Decomposition (sequential within stream)
+#### Stream C — Frontend: Component Decomposition ✅
 
-> Highest-urgency frontend task — blocks all of Stream D.
+> Complete; Stream D feature work is unblocked.
 
-**C1–C5. Split `App.tsx` (709 lines) into separate files**
+**C1–C5. Split `App.tsx` into separate files**
 - Extract hooks → `apps/web/src/hooks/` (`useApiResource`, `useDaemonHeartbeat`,
   `useSearchParamState`)
 - Extract utilities → `apps/web/src/utils/` (`api.ts`, `format.ts`)
@@ -205,7 +212,7 @@ table (host path → container path → service → file:line), named vs bind vi
 - [ ] `cargo test` passes, including new Compose parser unit tests
 - [ ] `npm run typecheck` passes across all workspaces
 - [ ] `App.tsx` under 100 lines
-- [ ] `GET /api/compose/files` returns discovered files when daemon starts from repo root
+- [ ] `GET /api/compose/scan` returns discovered files when daemon starts from repo root
 - [ ] Containers, Images, Networks, Volumes pages have sort controls
 - [ ] Graph nodes are clickable and navigate correctly
 - [ ] CI workflow runs on every PR
@@ -221,13 +228,14 @@ table (host path → container path → service → file:line), named vs bind vi
 
 #### Stream A — External API Exposure
 
-**A1. Configurable bind address & CORS**
-- `DOCKERMAP_BIND_ADDR` env var (default `127.0.0.1:4100`; set `0.0.0.0:4100` for
-  external)
+**A1. Configurable bind address, CORS, and token auth** ✅
+- `DOCKERMAP_DAEMON_HOST` and `DOCKERMAP_DAEMON_PORT` control daemon binding;
+  non-loopback daemon binding also requires `DOCKERMAP_ALLOW_REMOTE_DAEMON=true`
 - `DOCKERMAP_API_TOKEN` → Bearer token auth middleware on the Express BFF for all
   non-health endpoints
-- `DOCKERMAP_CORS_ORIGINS` env var (comma-separated allowed origins)
-- Add to `SECURITY.md`: risks of external binding, Docker socket privileges
+- `DOCKERMAP_ALLOWED_ORIGINS` env var (comma-separated allowed origins)
+- Keep `docs/THREAT_MODEL.md` and `docs/REVERSE_PROXY.md` current for external binding,
+  Docker socket, proxy, and auth risks
 
 **A2. OpenAPI documentation**
 - Hand-crafted `docs/openapi.yaml` covering all v1 read-only endpoints (params, response
@@ -389,8 +397,9 @@ table (host path → container path → service → file:line), named vs bind vi
 
 #### Stream C — Security & Docs
 
-**C1. `SECURITY.md`** — threat model: host path exposure, symlink traversal, Docker
-socket risk, edit permissions, external API exposure risks.
+**C1. Security docs** — keep `docs/THREAT_MODEL.md` and `docs/REVERSE_PROXY.md`
+current for host path exposure, symlink traversal, Docker socket risk, edit permissions,
+and external API exposure risks.
 
 #### Phase 2 Verification
 
@@ -636,14 +645,21 @@ Phase 6 (CLI + release)
 ```
 
 **Critical path within Phase 1:**
-`C1→C2→C3→C4→C5` (App.tsx decomposition) must complete before Stream D. Stream A
-(Compose parsing) is the foundation for Phases 2, 3, and 5 — start it in parallel with
-Stream C.
+The backend can now parse Compose files, include adjacent override files, compare declared
+mounts with runtime mounts, and protect the BFF with a bearer token. The main near-term
+work is product polish: sortable tables, clearer detail pages, log controls, API
+versioning, and simple dashboard/widget endpoints.
+
+**VPS-hosted test UI path:** a review-only UI can now be hosted behind a reverse proxy.
+Keep the Rust daemon private, expose only the Node browser-facing API through the proxy,
+set `DOCKERMAP_API_TOKEN`, restrict `DOCKERMAP_ALLOWED_ORIGINS` to the review UI origin,
+and serve the Vite production build behind HTTPS. Do not publish the raw local dev stack
+directly to the internet.
 
 **Highest-leverage first actions today:**
-1. Split `App.tsx` (unblocks all frontend feature work)
-2. Add Compose domain types to `dockermap-core` (unblocks everything downstream)
-3. Publish CI workflow to `.github/workflows/` (gives automated verification on every PR)
+1. Add sortable/filterable list views for containers, images, networks, volumes, and logs
+2. Add API versioning plus a small `/api/v1/status` endpoint
+3. Add OpenAPI docs and a Homepage-compatible widget endpoint
 
 ---
 
@@ -669,8 +685,8 @@ A user can:
 2. See which domains (Traefik/NPM labels) route to which containers.
 3. See container IPs within each Docker network.
 4. Get validation diagnostics for missing host paths and duplicate container targets.
-5. Hit `GET /api/v1/status` and `GET /api/widgets/homepage` from another machine (with
-   `DOCKERMAP_BIND_ADDR=0.0.0.0` set) and embed the data in a Homepage dashboard.
+5. Hit `GET /api/v1/status` and `GET /api/widgets/homepage` from another machine through
+   an authenticated reverse proxy and embed the data in a Homepage dashboard.
 6. Preview a Compose path change as a unified diff before applying it.
 7. Export diagnostics as JSON for CI integration.
 

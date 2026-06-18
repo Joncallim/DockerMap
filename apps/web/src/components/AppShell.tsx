@@ -9,6 +9,7 @@ import ImagesPage from "../pages/ImagesPage";
 import NetworksPage from "../pages/NetworksPage";
 import VolumesPage from "../pages/VolumesPage";
 import LogsPage from "../pages/LogsPage";
+import ComposePage from "../pages/ComposePage";
 import NotFoundPage from "../pages/NotFoundPage";
 
 const navigation = [
@@ -17,7 +18,8 @@ const navigation = [
   { path: "/images", label: "Images" },
   { path: "/networks", label: "Networks" },
   { path: "/volumes", label: "Volumes" },
-  { path: "/logs", label: "Logs" }
+  { path: "/logs", label: "Logs" },
+  { path: "/compose", label: "Compose" }
 ] as const;
 
 export default function AppShell() {
@@ -39,7 +41,8 @@ export default function AppShell() {
       } else {
         next.delete("q");
       }
-      navigate(`${location.pathname}?${next.toString()}`, { replace: true });
+      const query = next.toString();
+      navigate(query ? `${location.pathname}?${query}` : location.pathname, { replace: true });
     }, 250);
 
     return () => {
@@ -97,7 +100,7 @@ export default function AppShell() {
               value={draftQuery}
               onChange={(event) => setDraftQuery(event.target.value)}
               className="search-input"
-              placeholder="Search services, images, networks, volumes"
+              placeholder="Search services, images, networks, volumes, paths"
             />
             <Link className="ghost-button" to="/logs">
               Open Logs
@@ -114,6 +117,7 @@ export default function AppShell() {
             <Route path="/networks" element={<NetworksPage heartbeat={health?.lastUpdated ?? 0} />} />
             <Route path="/volumes" element={<VolumesPage heartbeat={health?.lastUpdated ?? 0} />} />
             <Route path="/logs" element={<LogsPage heartbeat={health?.lastUpdated ?? 0} />} />
+            <Route path="/compose" element={<ComposePage heartbeat={health?.lastUpdated ?? 0} />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </main>

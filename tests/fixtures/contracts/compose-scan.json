@@ -1,0 +1,44 @@
+{
+  "files": ["/srv/dockermap/compose.yaml"],
+  "projectRoot": "/srv/dockermap",
+  "services": [
+    {
+      "name": "api",
+      "image": "python:3.12-slim",
+      "environment": {
+        "DATA_ROOT": "./data"
+      },
+      "dependsOn": ["db"]
+    }
+  ],
+  "mounts": [
+    {
+      "id": "/srv/dockermap/compose.yaml:api:0",
+      "service": "api",
+      "kind": "bind",
+      "source": "./src",
+      "resolvedSource": "/srv/dockermap/src",
+      "target": "/workspace/src",
+      "readOnly": false,
+      "origin": {
+        "file": "/srv/dockermap/compose.yaml",
+        "service": "api",
+        "field": "services.api.volumes[0]"
+      }
+    }
+  ],
+  "correlations": [
+    {
+      "id": "matched:/srv/dockermap/compose.yaml:api:0",
+      "service": "api",
+      "container": "api",
+      "composeMountId": "/srv/dockermap/compose.yaml:api:0",
+      "kind": "bind",
+      "target": "/workspace/src",
+      "declaredSource": "/srv/dockermap/src",
+      "runtimeSource": "/srv/dockermap/src",
+      "status": "matched"
+    }
+  ],
+  "diagnostics": []
+}
