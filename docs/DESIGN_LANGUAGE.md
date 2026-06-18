@@ -14,13 +14,16 @@ Use this project-local skill for future DockerMap UI work.
 
 ## Product Interpretation
 
-DockerMap is a local, security-sensitive operational tool. Its design should prioritize:
+DockerMap is a local, security-sensitive operational tool for Docker and nearby host
+runtimes. Its design should prioritize:
 
 - Scanability over persuasion.
 - Provenance over decoration.
 - Diff confidence over speed-to-click.
 - Explicit risk over optimistic UI.
 - Local trust boundaries over cloud/SaaS polish.
+- One-host runtime awareness across Docker, Compose, PM2, systemd, cron, tmux,
+  Tailscale/Headscale, reverse proxies, and local DNS.
 
 ## Aesthetic Route
 
@@ -68,7 +71,7 @@ Use for edit plans.
 
 - Unified diff format.
 - No write action until a later explicit confirmation design exists.
-- Sticky summary showing `willWrite: false` in current pre-GUI build.
+- Sticky summary showing `willWrite: false` while DockerMap remains read-first.
 
 ### Runtime Health
 
@@ -89,5 +92,5 @@ When GUI work begins, start with:
 1. Compose map route.
 2. Diagnostics table.
 3. Edit-plan diff preview.
-4. Runtime inventory refinements.
+4. Runtime inventory refinements for Docker and non-Docker runtime signals.
 5. Reverse-proxy/deployment status view.

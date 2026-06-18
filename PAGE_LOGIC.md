@@ -2,7 +2,8 @@
 
 ## Shared Model
 
-- Keep one canonical resource store derived from the Docker snapshot.
+- Keep one canonical resource store derived from the Docker snapshot and the read-only
+  runtime map.
 - Split the data flow into:
   1. raw Docker snapshot
   2. normalized resource store
@@ -15,6 +16,9 @@
   - `volumes.byId`
   - `logs.byContainerId`
   - `metrics.byContainerId`
+  - `runtime.nodes.byId`
+  - `runtime.edges`
+  - `runtime.diagnostics`
   - derived edges for container-to-container, container-to-network, and container-to-volume
 
 ## Routes
@@ -26,6 +30,8 @@
 - `/networks`
 - `/volumes`
 - `/logs`
+- `/runtime` or a dashboard runtime panel for PM2, systemd, cron, tmux, tailnet, proxy,
+  DNS, and listening-port signals
 
 Use query params for page state:
 
@@ -63,6 +69,8 @@ Use query params for page state:
 - Clicking a node should open container detail.
 - KPI cards should derive from the current filtered state.
 - Search should filter graph nodes, summary overlays, and KPI totals together.
+- Runtime-map signals should appear as read-only context, not as controls that imply
+  DockerMap can restart or edit those services.
 
 ### Containers
 
@@ -139,7 +147,7 @@ Use query params for page state:
 - `GET /volumes/{name}`
 - `GET /logs?service=&cursor=`
 
-Future mutation endpoints:
+Future write endpoints:
 
 - `POST /containers/{name}/start`
 - `POST /containers/{name}/stop`
@@ -162,4 +170,4 @@ Future mutation endpoints:
 3. Add query-param parsing for filters and sorting.
 4. Make graph nodes and summary chips route-aware and clickable.
 5. Add real log filtering and streaming behavior.
-6. Add mutations after read-only navigation and drill-down are stable.
+6. Add write actions only after read-only navigation and drill-down are stable.

@@ -11,21 +11,28 @@ otherwise independent.
 
 ## Current Status
 
-### ✅ Done (Phase 0)
+### Done (Phase 0)
 - Monorepo: React/Vite (3233), Express API (4000), Rust Axum daemon (4100)
 - Rust toolchain pinned, `Cargo.lock` committed
 - CI workflow published at `.github/workflows/ci.yml`
 - Compose test fixtures at `tests/fixtures/compose/`
-- Architecture + PAGE_LOGIC documentation; Vite 8, 0 audit vulnerabilities
+- Architecture + `PAGE_LOGIC.md` documentation; Vite 8, 0 audit vulnerabilities
 
-### 🔄 In Progress (Phase 1)
-- Docker runtime inventory (containers, images, networks, volumes, logs) via bollard ✅
-- All read-only API endpoints exposed ✅
-- React UI: 8 pages with SSE live refresh, global search, graph derivation ✅
-- Frontend component split ✅ · Compose scan/graph/edit-plan endpoints ✅ · CLI scan/validate/export ✅
-- Compose/runtime correlation ✅ · Override merge semantics ✅ · Contract compatibility tests ✅
-- Table sorting ❌ · Advanced filters ❌ · Clickable graph nodes ❌
-- Log level filter / live tail ❌ · Log pagination UI ❌
+### In Progress (Phase 1)
+- Docker runtime inventory via bollard is working: containers, images, networks, volumes,
+  logs, and mounts.
+- The runtime map also reads PM2 apps, systemd services, cron jobs, tmux sessions,
+  listening sockets, Tailscale/Headscale nodes, reverse-proxy markers, and local DNS
+  markers when those tools are available on the host.
+- All current read-only API endpoints are exposed.
+- React UI has pages for dashboard, containers, container detail, images, networks,
+  volumes, logs, and Compose.
+- Frontend component split, Compose scan/graph/edit-plan endpoints, CLI
+  scan/validate/export, Compose/runtime correlation, override merge semantics, and
+  contract compatibility tests are done.
+- Still to build: table sorting, advanced filters, clickable graph nodes, log level
+  filter, live tail, and log pagination UI.
+- Testing plan: see [`docs/TESTING_PLAN.md`](TESTING_PLAN.md).
 
 ---
 
@@ -60,17 +67,17 @@ otherwise independent.
 - Produce `ResolvedMount { host_path (absolute), container_path, mode, source_file, source_line }`
 - New file: `crates/dockermap-core/src/compose/resolver.rs`
 
-**A4. Compose ↔ Runtime Correlation** ✅
+**A4. Compose to Runtime Correlation** Done
 - Match Compose service names to containers via `com.docker.compose.service` label
 - Produce `MountCorrelation { declared_source, runtime_source, status: matched|missing|extra }`
 - Implemented in the active core scan model in `crates/dockermap-core/src/lib.rs`
 
-**A5. Override File Merging** ✅
+**A5. Override File Merging** Done
 - Merge `docker-compose.override.yml` per Compose spec (volumes append, env maps merge,
   image replaces)
 - Test with `tests/fixtures/compose/override.compose.yaml`
 
-**A6. Daemon Compose Endpoints** ✅
+**A6. Daemon Compose Endpoints** Done
 - Delivered: `GET /daemon/compose/scan`, `GET /daemon/compose/graph`,
   `GET /daemon/compose/edit-plan`
 - Optional later split endpoints: files, services, mounts, and project aggregates if the
@@ -86,18 +93,18 @@ otherwise independent.
 
 ### Stream B — Node/Express: Proxies & Contract Hardening
 
-**B1. Proxy Compose endpoints** ✅
+**B1. Proxy Compose endpoints** Done
 - Delivered `/api/compose/scan`, `/api/compose/graph`, and `/api/compose/edit-plan` in
   `apps/api/src/index.ts`
 - Mock fallback returns safe empty Compose responses when the daemon is unavailable
 
-**B2. Contract compatibility tests** ✅
+**B2. Contract compatibility tests** Done
 - Shared JSON examples live in `tests/fixtures/contracts`
 - Rust deserializes the fixtures in `dockermap-core` tests
 - TypeScript imports the same fixtures in `packages/contracts/src/compatibility.test.ts`
 - Prevents silent drift between Rust renames and TypeScript consumers
 
-**B3. Add Compose types to `@dockermap/contracts`** ✅
+**B3. Add Compose types to `@dockermap/contracts`** Done
 - Mirrors the active scan, graph, diagnostics, mount, service, and edit-plan response
   shapes consumed by the API and web app
 
@@ -116,7 +123,7 @@ otherwise independent.
 
 ---
 
-### Stream C — Frontend: Component Decomposition ✅
+### Stream C — Frontend: Component Decomposition Done
 
 > Complete; Stream D feature work is unblocked.
 
@@ -168,51 +175,68 @@ table (host path → container path → service → file:line), named vs bind vi
 
 ### Stream E — Infrastructure _(independent of all other streams)_
 
-**E1. Add Vitest** to `@dockermap/web` and `@dockermap/contracts`; wire `npm run test`.
+**E1. Add Vitest** Done
+- `@dockermap/web` and `@dockermap/contracts` both have test scripts.
+- `npm test` runs workspace tests.
+- The contracts package includes an active compatibility test against shared fixtures.
 
-**E2. TypeScript strict audit** — ensure `strict: true` in all `tsconfig.json`s; fix
-`any` casts in `apps/api/src/index.ts`.
+**E2. TypeScript strict audit** Done
+- `strict: true` is enabled through the shared TypeScript config and workspace builds.
 
-**E3. Extend `ContainerRecord` with bind mounts field** — in bollard collection, capture
-`mount.typ == BIND` entries as `bind_mounts: Vec<BindMount>` on `ContainerRecord`; seeds
-drift detection in Phase 5.
+**E3. Runtime mount capture** Done
+- `ContainerRecord.mounts` captures runtime mounts, including bind mounts, and seeds
+  Compose/runtime drift detection.
+
+**E4. Testing plan** Done
+- `docs/TESTING_PLAN.md` explains automated checks, local smoke tests, token-auth checks,
+  reverse-proxy review checks, and current test gaps.
 
 ---
 
 ### Phase 1 Verification
 
-- [ ] `cargo test` passes including new Compose parser unit tests
-- [ ] `npm run typecheck` passes across all workspaces
-- [ ] `App.tsx` under 100 lines
-- [ ] `GET /api/compose/scan` returns discovered files and resolved mount paths
-- [ ] `GET /api/compose/graph` returns service, source, and target path nodes
-- [ ] All list pages have sort controls
-- [ ] Graph nodes are clickable and navigate correctly
-- [ ] CI runs on every PR
+Covered now:
+
+- `cargo test -p dockermap-core` covers Compose parser tests, override merging,
+  runtime correlation, edit planning, and shared contract fixtures.
+- `npm run typecheck`, `npm run build`, and `npm test` cover TypeScript workspaces and
+  shared contract compatibility.
+- `App.tsx` is under 100 lines.
+- `GET /api/compose/scan` returns discovered files and resolved mount paths.
+- `GET /api/compose/graph` returns service, source, and target path nodes.
+- CI runs on push and pull request.
+
+Remaining:
+
+- All list pages need sort controls.
+- Graph nodes need click navigation.
+- Browser end-to-end tests are not wired yet.
 
 ---
 
-## Phase 1.5 — Networking USP & External API
+## Phase 1.5 — Runtime Map, Networking, And External API
 
-> Runs **concurrently with Phase 2**. Differentiates DockerMap from generic container
-> monitors and enables embedding in external dashboards (Homepage, Grafana, scripts).
+> Runs **concurrently with Phase 2**. Makes DockerMap more than a container list by
+> mapping PM2 apps, systemd services, cron jobs, tmux sessions, listening ports,
+> Tailscale/Headscale, reverse proxies, local DNS, and Docker network topology. Also
+> enables embedding in external dashboards such as Homepage, Grafana, and scripts.
 
 ### Stream A — External API Exposure
 
-**A1. Configurable exposure & auth** ✅
+**A1. Configurable exposure & auth** Done
 - `DOCKERMAP_DAEMON_HOST` and `DOCKERMAP_DAEMON_PORT` control daemon binding; non-loopback
   daemon binding also requires `DOCKERMAP_ALLOW_REMOTE_DAEMON=true`
-- `DOCKERMAP_API_TOKEN` — Bearer token middleware on Express BFF for all non-health
+- `DOCKERMAP_API_TOKEN` — Bearer token middleware on the Express Node API for all non-health
   endpoints
-- `DOCKERMAP_ALLOWED_ORIGINS` — comma-separated allowed origins for the Express BFF
+- `DOCKERMAP_ALLOWED_ORIGINS` — comma-separated allowed origins for the Express Node API
 - Document risks in `docs/THREAT_MODEL.md` and `docs/REVERSE_PROXY.md`
 
 **A1.5. VPS-hosted review UI**
-- Build `apps/web` with `VITE_API_BASE_URL` pointing at the public BFF origin.
+- Build `apps/web` with `VITE_API_BASE_URL` pointing at the public Node API origin.
 - Serve `apps/web/dist` behind HTTPS on the VPS reverse proxy.
-- Expose only the Express BFF publicly; keep the Rust daemon loopback/private unless
+- Expose only the Express Node API publicly; keep the Rust daemon loopback/private unless
   remote daemon access is explicitly required.
-- Require `DOCKERMAP_API_TOKEN` for all non-health BFF routes before opening firewall or
+- Require `DOCKERMAP_API_TOKEN` for all non-health Node API routes before opening firewall or
   proxy access to the internet.
 - Set CORS to the review UI origin only; no wildcard origins.
 - Purpose: interface/dashboard review, comments, and read-only inspection. Compose writes
@@ -220,7 +244,7 @@ drift detection in Phase 5.
 
 **A2. OpenAPI documentation**
 - `docs/openapi.yaml` covering all v1 read-only endpoints (params, schemas, error codes)
-- `GET /api/openapi.json` from Express BFF
+- `GET /api/openapi.json` from Express Node API
 - `GET /api/docs` serving Swagger UI via `swagger-ui-dist`
 
 **A3. API versioning**
@@ -236,7 +260,17 @@ drift detection in Phase 5.
 
 **A5. Rate limiting**
 - `express-rate-limit`: 120 req/min per IP on read endpoints; 10 req/min on future
-  mutation endpoints
+  write endpoints
+
+### Stream A.5 — Current Runtime Map Providers
+
+**A.5.1. Host runtime provider pass** Done
+- `GET /daemon/runtime/map` now includes read-only providers for systemd, cron, PM2,
+  tmux, listening sockets, Tailscale, Headscale, reverse-proxy markers, local DNS
+  markers, and Docker-derived graph nodes.
+- `GET /api/runtime/map` proxies that provider-neutral graph to the browser.
+- Provider commands are fixed read-only invocations and return diagnostics instead of
+  failing the whole map when a tool is absent.
 
 ---
 
@@ -278,17 +312,24 @@ drift detection in Phase 5.
 
 ### Stream C — Tailscale / Headscale Integration
 
-**C1. Tailscale status detection**
-- Connect to `/var/run/tailscale/tailscaled.sock` (Tailscale local API)
-- Parse peer list: `NodeKey`, `DNSName`, `TailscaleIPs`, `Online`, `Tags`
-- Cache 30-second TTL; graceful no-op when Tailscale absent
+**C1. Base Tailscale and Headscale discovery** Done
+- `GET /daemon/runtime/map` reads `tailscale status --json` when Tailscale is available.
+- `GET /daemon/runtime/map` reads `headscale nodes list --output json` when Headscale is
+  available.
+- Missing tools produce diagnostics instead of failing the whole runtime map.
+
+**C1.5. Tailnet provider enrichment**
+- Optionally switch to `/var/run/tailscale/tailscaled.sock` for richer Tailscale metadata.
+- Parse peer list details such as `NodeKey`, `DNSName`, `TailscaleIPs`, `Online`, and
+  `Tags`.
+- Cache with a 30-second TTL.
 
 **C2. Container ↔ peer correlation**
 - Match by: container label `tailscale.hostname`/`tailscale.ip`, container name matching
   Tailscale DNS name, or `TS_AUTHKEY` env var presence
 - Type: `TailscaleRecord { peer_name, tailscale_ip, container_name, online, tags }`
 
-**C3. Headscale support**
+**C3. Headscale API enrichment**
 - `DOCKERMAP_HEADSCALE_URL` + `DOCKERMAP_HEADSCALE_API_KEY` env vars
 - Query `GET /api/v1/machine`; same correlation logic as C2
 
@@ -322,6 +363,8 @@ drift detection in Phase 5.
 
 ### Phase 1.5 Verification
 
+- [ ] `GET /api/runtime/map` returns Docker nodes and either provider nodes or clear
+  diagnostics for PM2, systemd, cron, tmux, Tailscale/Headscale, proxy, DNS, and ports
 - [ ] `GET /api/v1/status` returns 200 through an authenticated reverse proxy
 - [ ] `GET /api/widgets/homepage` returns expected JSON; documented in README
 - [ ] `GET /api/docs` renders Swagger UI covering all read-only endpoints
@@ -396,7 +439,7 @@ for host path exposure, symlink traversal, Docker socket risk, and external API 
 ## Phase 3 — Editing Workflow
 
 > **Prerequisite:** Phase 2 complete. `Blocked` diagnostics must gate writes.
-> Mutation endpoints require `DOCKERMAP_EDITS_ENABLED=true` flag + API token.
+> Write endpoints require `DOCKERMAP_EDITS_ENABLED=true` flag + API token.
 
 ### Stream A — Rust Edit Engine _(sequential within stream)_
 
@@ -424,14 +467,14 @@ for host path exposure, symlink traversal, Docker socket risk, and external API 
 
 ---
 
-### Stream B — Mutation API
+### Stream B — Write API
 
 **B1.** `POST /daemon/compose/edit/preview` (feature-flagged) → `EditPlan` with diff
 
 **B2.** `POST /daemon/compose/edit/apply` body `{ plan_id, confirm: true }` →
 `ApplyResult { backup_path, applied_at, rollback_command }`; max 1 concurrent write
 
-**B3.** BFF proxy for mutation routes; append each apply to `apps/api/src/audit.log`
+**B3.** Node API proxy for write routes; append each apply to `apps/api/src/audit.log`
 
 ---
 
@@ -483,7 +526,7 @@ Docker is unreachable.
 
 ## Phase 5 — Runtime Enrichment
 
-> **Prerequisite:** Phase 1 complete (bind mount field + correlation).
+> **Prerequisite:** Phase 1 complete (runtime mount capture + correlation).
 
 ### Stream A — Container Metrics
 
@@ -499,8 +542,9 @@ New file: `crates/dockermap-daemon/src/metrics.rs`
 
 ### Stream B — Drift Detection
 
-**B1.** Compare `ContainerRecord.bind_mounts` (bollard) vs `ComposeMountDeclaration` per
-service → `DriftReport { matched, only_in_compose, only_in_runtime }`.
+**B1.** Compare `ContainerRecord.mounts` (bollard runtime data) vs
+`ComposeMountDeclaration` per service → `DriftReport { matched, only_in_compose,
+only_in_runtime }`.
 
 **B2.** `GET /daemon/compose/drift`
 
@@ -565,6 +609,6 @@ for linux-x86_64, linux-aarch64, macos-aarch64; publish as Release assets with c
 | 2-A | `crates/dockermap-core/src/validation/` | New module: rules, severity, diagnostic output |
 | 2-B | `apps/web/src/pages/DiagnosticsPage.tsx` | New page |
 | 3-A | `crates/dockermap-core/src/editing/` | New module: planner, diff, writer |
-| 3-B | `crates/dockermap-daemon/src/main.rs` | Add mutation routes (feature-flagged) |
+| 3-B | `crates/dockermap-daemon/src/main.rs` | Add write routes (feature-flagged) |
 | 5-A | `crates/dockermap-daemon/src/metrics.rs` | New: bollard stats polling |
 | 6 | `crates/dockermap-cli/` | New crate |

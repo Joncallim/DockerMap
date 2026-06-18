@@ -37,7 +37,7 @@ control the host.
 Protections:
 
 - DockerMap only reads Docker state today.
-- DockerMap has no container, image, network, volume, or file mutation endpoints.
+- DockerMap has no container, image, network, volume, or file write endpoints.
 - Logs are read only for containers in the current snapshot.
 
 ### Compose Edits

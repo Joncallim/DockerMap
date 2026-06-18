@@ -1,6 +1,9 @@
 # DockerMap Design Language
 
-DockerMap should feel like a local operations instrument: precise, inspectable, and calm under pressure. The interface is not a marketing surface. It is a workbench for understanding Docker paths before anyone edits them.
+DockerMap should feel like a local operations instrument: precise, inspectable, and calm
+under pressure. The interface is not a marketing surface. It is a workbench for
+understanding Docker paths and nearby host runtimes before anyone edits files or changes
+services.
 
 ## Design Direction
 
@@ -10,6 +13,8 @@ Personality:
 - Industrial, local-first, technical, and trustworthy.
 - Dense enough for repeated use, but not noisy.
 - Clear about risk, provenance, and what will or will not write.
+- Aware of one host as a whole: Docker, Compose, PM2, systemd, cron, tmux, tailnet,
+  reverse-proxy, DNS, and port signals should feel connected.
 
 Signature move:
 - **Mapline rails**: thin routed lines, coordinate labels, and terminal-like path tags that make host path to container path relationships feel inspectable.
@@ -58,7 +63,8 @@ Motion:
 
 ## Screen Families
 
-- Runtime inventory: dense tables, graph rails, health strips, and filter rows.
+- Runtime inventory: dense tables, graph rails, health strips, and filter rows for
+  containers, services, jobs, sessions, tailnet nodes, proxies, DNS, and ports.
 - Compose map: service to host/container path graph, diagnostics list, and file origin panel.
 - Edit preview: unified diff, diagnostics, confirmation gate, rollback note.
 - Logs: streaming rows with service/source markers and query state.

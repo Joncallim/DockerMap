@@ -1,10 +1,14 @@
-# DockerMap Pre-GUI Backend Build Summary
+# DockerMap Backend And Runtime Map Build Summary
 
 ## Executive Summary
 
-DockerMap has been advanced through the backend-focused roadmap phases before GUI implementation. The active stack remains React placeholder UI, Node/Express browser-facing API, and Rust core/daemon as the source of truth.
+DockerMap has been advanced through the backend-focused roadmap phases and now has a
+working React UI, a Node/Express browser-facing API, and a Rust core/daemon as the source
+of truth.
 
-This build adds secure read-only Compose scanning, path-map graph derivation, machine-readable diagnostics, and dry-run edit planning. No GUI work was performed, and no endpoint writes Compose files.
+This build adds secure read-only Compose scanning, path-map graph derivation,
+machine-readable diagnostics, dry-run edit planning, bearer-token API auth, and a
+provider-based runtime map. No endpoint writes Compose files or changes running services.
 
 ## Backend Capabilities Added
 
@@ -27,6 +31,15 @@ This build adds secure read-only Compose scanning, path-map graph derivation, ma
   - `scan`
   - `validate`
   - `export --format json`
+- Runtime map providers:
+  - Docker containers, networks, volumes, and listening ports
+  - PM2 apps
+  - systemd services
+  - cron and `/etc/cron.d` jobs
+  - tmux sessions
+  - Tailscale and Headscale nodes
+  - reverse-proxy markers
+  - local DNS markers
 
 ## Security Hardening
 
@@ -48,11 +61,13 @@ This build adds secure read-only Compose scanning, path-map graph derivation, ma
 
 ### Phase 0: Foundation And Baseline Hardening
 
-Complete except for publishing the CI template into `.github/workflows/`, which still depends on GitHub workflow-scope credentials.
+Complete. The active CI workflow is published at `.github/workflows/ci.yml`.
 
 ### Phase 1: Read-Only Map
 
-Implemented the backend read-only map foundation: Compose scan, diagnostics, typed graph, explicit file scanning, and HTTP JSON export. Dedicated CLI packaging remains future work.
+Implemented the backend read-only map foundation: Compose scan, diagnostics, typed graph,
+explicit file scanning, runtime-map providers, and HTTP JSON export. Dedicated CLI
+packaging remains future work.
 
 ### Phase 2: Validation And Safety
 
@@ -77,6 +92,7 @@ The final verification suite run for this build:
 - `npm run typecheck`
 - `npm run build`
 - `npm audit`
+- `npm test`
 
 Smoke-tested endpoints against `tests/fixtures/compose`:
 
@@ -87,11 +103,11 @@ Smoke-tested endpoints against `tests/fixtures/compose`:
 - overlong query rejection
 - JSON 404 behavior
 
-## Remaining Pre-GUI Work
+## Remaining Work
 
-- Publish CI template when credentials allow.
 - Add a dedicated CLI package or binary alias named `dockermap`; the daemon binary already supports `scan`, `validate`, and `export --format json`.
 - Implement round-trip YAML editing before any write endpoint is introduced.
-- Add deeper Compose override merge support.
+- Add a browser page or dashboard section dedicated to PM2, systemd, cron, tmux,
+  Tailscale/Headscale, proxy, DNS, and port signals.
 - Add runtime mount mode capture for read-only/write mismatch diagnostics.
 - Add proxied path-prefix smoke tests before documenting production exposure as supported.

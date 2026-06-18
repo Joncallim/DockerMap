@@ -1,24 +1,29 @@
 # DockerMap Architecture
 
-DockerMap is a read-first Docker inventory and path-mapping app. The active implementation is the React + Node.js + Rust monorepo.
+DockerMap is a read-first local runtime inventory and path-mapping app. Docker and
+Docker Compose are the deepest providers today, and the same runtime map also includes
+host signals such as PM2, systemd, cron, tmux, listening ports, Tailscale/Headscale,
+reverse proxies, and local DNS tools when they are present.
 
 ## Active Components
 
 - `apps/web`: React/Vite interface for graph, inventory, and log views.
 - `apps/api`: Express browser-facing API. It adapts browser requests to daemon endpoints and owns SSE heartbeat polling.
-- `crates/dockermap-core`: Rust domain model and derivation logic. This is the canonical runtime model for Docker resources.
-- `crates/dockermap-daemon`: Rust HTTP daemon. It talks to Docker through `bollard`, caches snapshots, and falls back to mock data when Docker is unavailable.
+- `crates/dockermap-core`: Rust domain model and derivation logic. This is the canonical runtime model for Docker and host runtime resources.
+- `crates/dockermap-daemon`: Rust HTTP daemon. It talks to Docker through `bollard`,
+  reads host runtime signals with fixed read-only commands, caches snapshots, and falls
+  back to mock data when Docker is unavailable.
 - `packages/contracts`: TypeScript API contracts consumed by the web and API workspaces.
 
 ## Source Of Truth
 
-Runtime Docker data flows from the Rust daemon outward:
+Runtime data flows from the Rust daemon outward:
 
 ```text
-Docker engine -> dockermap-daemon -> apps/api -> apps/web
-                         |
-                         v
-                 dockermap-core
+Docker, Compose, and host runtime signals -> dockermap-daemon -> apps/api -> apps/web
+                                                   |
+                                                   v
+                                           dockermap-core
 ```
 
 The Rust model is currently mirrored manually in `packages/contracts`. To keep those two
@@ -48,9 +53,10 @@ Kubernetes and other orchestrators should plug into this same model as additiona
 
 ## Docker Access
 
-The daemon binds to loopback by default and only reads Docker state today. Docker socket
-access is still powerful, so mutation endpoints should not be added until the project has
-explicit authorization, dry-run previews, audit logging, and rollback guidance.
+The daemon binds to loopback by default and only reads host and Docker state today.
+Docker socket access is still powerful, so write endpoints should not be added until the
+project has explicit authorization, dry-run previews, audit logging, and rollback
+guidance.
 
 The Node API can require `DOCKERMAP_API_TOKEN`. When the token is set, every route except
 `/health` and `/api/health` requires an `Authorization: Bearer ...` header.

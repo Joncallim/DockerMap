@@ -1,14 +1,18 @@
 # DockerMap
 
-DockerMap is a local web app for understanding one Docker host. It shows containers,
-networks, volumes, logs, and Docker Compose mount paths in one place. It is read-first:
-today it can inspect files and show dry-run diffs, but it does not write Compose files.
+DockerMap is a local web app for understanding one self-hosted machine. It maps Docker
+and Compose in depth, and it also reads nearby runtime signals such as PM2 apps, systemd
+services, cron jobs, tmux sessions, listening ports, Tailscale/Headscale nodes, reverse
+proxies, and local DNS tools. It is read-first: today it can inspect files and show
+dry-run diffs, but it does not write Compose files or change running services.
 
 ## What It Helps With
 
 - See which containers, networks, volumes, and ports exist on a host.
 - See which Compose services declare bind mounts and named volumes.
 - Compare Compose-declared mounts with the mounts Docker is actually running.
+- See non-Docker runtime signals from PM2, systemd, cron, tmux, Tailscale/Headscale,
+  reverse proxies, local DNS, and listening sockets.
 - Spot common problems, such as missing host folders or duplicate container mount paths.
 - Preview a Compose mount path change as a diff before any write feature exists.
 
@@ -18,8 +22,8 @@ today it can inspect files and show dry-run diffs, but it does not write Compose
 apps/web          React + Vite browser app
 apps/api          Node + Express browser-facing API
 packages/contracts Shared TypeScript response types
-crates/dockermap-core Rust models, Compose parsing, graph logic
-crates/dockermap-daemon Rust HTTP daemon that reads Docker and Compose data
+crates/dockermap-core Rust models, Compose parsing, runtime graph logic
+crates/dockermap-daemon Rust HTTP daemon that reads Docker, Compose, and host runtime signals
 docs              Architecture, proxy, safety, and planning notes
 tests/fixtures    Compose and API contract examples
 ```
@@ -75,13 +79,16 @@ PATH="$HOME/.cargo/bin:$PATH" cargo test -p dockermap-core --manifest-path crate
 
 ## Checks
 
-These match the GitHub Actions workflow:
+These are the core automated checks. The full testing plan, including manual smoke tests
+for the UI, bearer-token auth, and reverse-proxy review setup, is in
+[docs/TESTING_PLAN.md](docs/TESTING_PLAN.md).
 
 ```bash
 npm ci
 npm audit --omit=dev
 npm run typecheck
 npm run build
+npm test
 PATH="$HOME/.cargo/bin:$PATH" cargo fmt --manifest-path crates/Cargo.toml --all -- --check
 PATH="$HOME/.cargo/bin:$PATH" cargo clippy --manifest-path crates/Cargo.toml --all-targets -- -D warnings
 PATH="$HOME/.cargo/bin:$PATH" cargo test -p dockermap-core --manifest-path crates/Cargo.toml
@@ -112,6 +119,9 @@ header when it forwards `/api/*` requests to `127.0.0.1:4000`. See
 
 - The web app has pages for dashboard, containers, images, networks, volumes, logs, and Compose.
 - The daemon reads Docker when available and falls back to mock data when Docker is unavailable.
+- The runtime map also reads PM2, systemd, cron, tmux, listening sockets,
+  Tailscale/Headscale, reverse-proxy markers, and local DNS markers when those tools are
+  present on the host.
 - Compose scanning discovers base files plus adjacent override files.
 - Compose scans now include runtime mount checks: matched, missing, and extra.
 - Rust and TypeScript share API contract fixtures under `tests/fixtures/contracts`.
@@ -120,6 +130,7 @@ header when it forwards `/api/*` requests to `127.0.0.1:4000`. See
 More background:
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/TESTING_PLAN.md](docs/TESTING_PLAN.md)
 - [docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)
 - [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)
 - [ROADMAP.md](ROADMAP.md)

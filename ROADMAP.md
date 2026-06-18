@@ -2,35 +2,38 @@
 
 ## Vision
 
-DockerMap helps developers understand and safely manage Docker environments by making
-**networking the primary insight layer**. Unlike generic container monitors, DockerMap
-focuses on the *relationships* between services — Docker networks, bind mounts, named
-volumes, reverse-proxy domain routing, and VPN mesh (Tailscale/Headscale) connectivity
-— and exposes all of this through a stable, versioned API that external dashboards
-(Homepage, Grafana, custom scripts) can consume.
+DockerMap helps developers understand one self-hosted machine without having to jump
+between many tools. Docker and Docker Compose remain the deepest feature area, but the
+same map now includes read-only signals from PM2, systemd, cron, tmux, listening ports,
+Tailscale/Headscale, reverse proxies, and local DNS tools.
+
+The main product idea is a relationship map: which services exist, what paths and ports
+they use, how they connect, and what would change before DockerMap ever writes a file.
+Those insights should be available in the UI and through a stable, documented API that
+external dashboards such as Homepage, Grafana, or custom scripts can consume.
 
 The three questions DockerMap should always answer clearly:
 
 1. What host paths, container paths, named volumes, and Compose-file declarations exist,
    and how are they connected?
-2. How do services communicate — which Docker networks, which domains, which Tailscale
-   peers?
+2. How do services communicate — which Docker networks, listening ports, domains,
+   Tailscale/Headscale peers, and local DNS/proxy markers?
 3. What will change if I edit a mount or routing rule, and is that change safe?
 
-Market research in `docs/MARKET_RESEARCH.md` supports keeping the initial wedge narrow:
-Docker Compose persistence and path confusion show stronger demand than another broad
-container dashboard. Expansion into PM2, systemd, tmux, Supervisor, and similar
-persistent runtimes is possible, but should happen through read-only providers under a
-broader "persistent runtime map" model.
+Market research in `docs/MARKET_RESEARCH.md` supports keeping Docker Compose persistence
+and path confusion as the first deep workflow. The broader host map matters too, but PM2,
+systemd, tmux, Tailscale/Headscale, proxy, DNS, and other providers should stay
+read-only until the safety model is proven.
 
 ---
 
 ## Guiding Principles
 
-- **Read first, edit second.** Every mutation requires a diff preview and explicit
+- **Read first, edit second.** Every write action requires a diff preview and explicit
   confirmation.
-- **Networking is the USP.** Surface Docker network topology, reverse-proxy domains,
-  Tailscale/Headscale peers, and reverse DNS — things other monitors ignore.
+- **Relationships are the differentiator.** Surface Docker network topology, PM2 and
+  systemd services, cron jobs, tmux sessions, reverse-proxy domains, local DNS, and
+  Tailscale/Headscale peers in one map.
 - **API-first.** Every insight available in the UI must be available via a versioned,
   documented REST endpoint for external dashboard integration.
 - **Confidence before writes.** Validation, dry-run, backup, and rollback guidance must
@@ -44,9 +47,9 @@ broader "persistent runtime map" model.
 
 ## Current Status
 
-### ✅ Phase 0 — Foundation (Done)
+### Phase 0 — Foundation (Done)
 
-- Monorepo: React/Vite frontend (port 3233), Express BFF (port 4000), Rust Axum daemon
+- Monorepo: React/Vite frontend (port 3233), Express Node API (port 4000), Rust Axum daemon
   (port 4100)
 - Rust toolchain pinned at 1.88.0; `Cargo.lock` committed
 - `dockermap-core` crate: domain model, mock snapshot, `derive_images`, `derive_graph`,
@@ -58,19 +61,21 @@ broader "persistent runtime map" model.
 - SSE heartbeat for live refresh; global search with 250 ms debounce
 - CI workflow published at `.github/workflows/ci.yml`
 - Compose test fixtures at `tests/fixtures/compose/`
-- Architecture docs: `ARCHITECTURE.md`, `PAGE_LOGIC.md`
+- Architecture docs: `docs/ARCHITECTURE.md`, `PAGE_LOGIC.md`
 - Vite 8, zero production audit vulnerabilities
 
-### 🔄 Phase 1 — Partially Done
+### Phase 1 — Partially Done
 
 **Working:** Docker runtime inventory (containers, images, networks, volumes, logs), all
 read-only API endpoints, React UI with routing, SSE live refresh, mock fallback, graph
 derivation, Compose scan/graph/edit-plan endpoints, headless Compose CLI commands, and a
-first Compose UI route.
+first Compose UI route. The runtime map also reads PM2, systemd, cron, tmux, listening
+sockets, Tailscale/Headscale, reverse-proxy markers, and local DNS markers when those
+tools exist on the host.
 
-**Not yet done:** table sorting, advanced filters, clickable graph nodes, richer container
-detail pages, log level filter, live tail, log pagination UI, API versioning, OpenAPI
-docs, and Homepage/Grafana-style widget endpoints.
+**Still to build:** table sorting, advanced filters, clickable graph nodes, richer
+container detail pages, log level filter, live tail, log pagination UI, API versioning,
+OpenAPI docs, and Homepage/Grafana-style widget endpoints.
 
 ---
 
@@ -92,13 +97,13 @@ dependencies within a stream are noted explicitly.
 
 #### Stream A — Rust: Compose Parsing And Correlation
 
-**A1. Add Compose domain types to `dockermap-core`** ✅
+**A1. Add Compose domain types to `dockermap-core`** Done
 - `ComposeFile`, `ComposeService`, `ComposeMountDeclaration` (discriminated union of
   `BindMount`, `NamedVolume`, `AnonymousVolume`), `ComposeProject`, `ComposeDiagnostic`
 - All types derive `Serialize/Deserialize` with `rename_all = "camelCase"`
 - File: new `crates/dockermap-core/src/compose/mod.rs`
 
-**A2. Implement YAML parser** ✅
+**A2. Implement YAML parser** Done
 - Parse `services.<name>.volumes[]` in both short form (`./src:/app:ro`) and long form
   (`type: bind`, `source:`, `target:`, `read_only:`)
 - Parse top-level `volumes:` keys; `depends_on` in list and condition forms
@@ -106,28 +111,28 @@ dependencies within a stream are noted explicitly.
 - Add `serde_yaml = "0.9"` to `Cargo.toml`
 - Unit tests for every syntax form in `tests/fixtures/compose/path-mapping.compose.yaml`
 
-**A3. Path resolution** ✅
+**A3. Path resolution** Done
 - Resolve relative host paths against the Compose file's own directory
 - Expand `${VAR:-default}` and `${VAR}` with env substitution; emit
   `ComposeDiagnostic(Warning)` for unresolved references
 - Store both raw source value and resolved absolute path on each mount declaration
 
-**A4. Compose file discovery** ✅
+**A4. Compose file discovery** Done
 - Walk directories for `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`,
   `compose.yaml` using the `walkdir` crate
 - Detect override files; support explicit `-f` path argument
 - Respect `.dockerignore` and `node_modules/` exclusions
 
-**A5. Override file merging** ✅
+**A5. Override file merging** Done
 - Merge services per Compose spec: volumes append, environment maps merge, image replaces
 - Test with `tests/fixtures/compose/override.compose.yaml`
 
-**A6. Compose ↔ runtime correlation** ✅
+**A6. Compose to runtime correlation** Done
 - Match Compose service names to containers via `com.docker.compose.service` label
 - Produce `MountCorrelation { declared_source, runtime_source, status }` for each mount
 - Store on `ContainerRecord` or return from a dedicated endpoint
 
-**A7. Daemon Compose endpoints** ✅
+**A7. Daemon Compose endpoints** Done
 - Delivered: `GET /daemon/compose/scan`, `GET /daemon/compose/graph`,
   `GET /daemon/compose/edit-plan`
 - Optional later split endpoints: files, mounts, and project aggregates if the UI needs
@@ -139,17 +144,17 @@ dependencies within a stream are noted explicitly.
 
 #### Stream B — Node/Express: Proxies & Contract Hardening
 
-**B1. Proxy Compose endpoints through `apps/api`** ✅
+**B1. Proxy Compose endpoints through `apps/api`** Done
 - Delivered: `/api/compose/scan`, `/api/compose/graph`, `/api/compose/edit-plan`
 - Mock fallback preserves safe empty Compose responses when the daemon is unavailable
 
-**B2. Contract compatibility tests** ✅
+**B2. Contract compatibility tests** Done
 - Shared JSON examples live in `tests/fixtures/contracts`
 - Rust deserializes the fixtures in `dockermap-core` tests
 - TypeScript imports the same fixtures in `packages/contracts/src/compatibility.test.ts`
 - This catches silent drift between Rust responses and TypeScript consumers
 
-**B3. Add Compose types to `@dockermap/contracts`** ✅
+**B3. Add Compose types to `@dockermap/contracts`** Done
 - Mirrors the active scan, graph, diagnostics, mount, service, and edit-plan response
   shapes consumed by the API and web app
 
@@ -166,7 +171,7 @@ dependencies within a stream are noted explicitly.
 **B6. Python legacy removed**
 - Keep README and architecture docs pointed at the React + Node.js + Rust stack only
 
-#### Stream C — Frontend: Component Decomposition ✅
+#### Stream C — Frontend: Component Decomposition Done
 
 > Complete; Stream D feature work is unblocked.
 
@@ -209,29 +214,39 @@ table (host path → container path → service → file:line), named vs bind vi
 
 #### Phase 1 Verification
 
-- [ ] `cargo test` passes, including new Compose parser unit tests
-- [ ] `npm run typecheck` passes across all workspaces
-- [ ] `App.tsx` under 100 lines
-- [ ] `GET /api/compose/scan` returns discovered files when daemon starts from repo root
-- [ ] Containers, Images, Networks, Volumes pages have sort controls
-- [ ] Graph nodes are clickable and navigate correctly
-- [ ] CI workflow runs on every PR
+Covered now:
+
+- `cargo test -p dockermap-core` covers Compose parser, override merging, runtime
+  correlation, edit-plan, and shared contract fixtures.
+- `npm run typecheck`, `npm run build`, and `npm test` cover the TypeScript workspaces
+  and contract compatibility fixtures.
+- `App.tsx` is under 100 lines.
+- `GET /api/compose/scan` returns discovered files and resolved mount data.
+- CI runs on push and pull request.
+
+Remaining:
+
+- Containers, Images, Networks, Volumes, and Logs pages need sort controls.
+- Graph nodes need click navigation.
+- Browser end-to-end smoke tests still need to be added.
+
+The full local and manual test plan is in `docs/TESTING_PLAN.md`.
 
 ---
 
-### Phase 1.5 — Networking USP & External API
+### Phase 1.5 — Runtime Map, Networking, And External API
 
-> **Goal:** Differentiate DockerMap from generic Docker monitors. Surface Docker network
-> topology, reverse-proxy domain routing, and Tailscale/Headscale VPN connectivity.
-> Expose everything via a versioned, documented REST API for external dashboard
-> integration. Runs **concurrently with Phase 2**.
+> **Goal:** Make DockerMap more than a container list. Surface Docker network topology,
+> PM2 apps, systemd services, cron jobs, tmux sessions, reverse-proxy/domain routing,
+> local DNS, and Tailscale/Headscale connectivity through a versioned, documented API.
+> Runs **concurrently with Phase 2**.
 
 #### Stream A — External API Exposure
 
-**A1. Configurable bind address, CORS, and token auth** ✅
+**A1. Configurable bind address, CORS, and token auth** Done
 - `DOCKERMAP_DAEMON_HOST` and `DOCKERMAP_DAEMON_PORT` control daemon binding;
   non-loopback daemon binding also requires `DOCKERMAP_ALLOW_REMOTE_DAEMON=true`
-- `DOCKERMAP_API_TOKEN` → Bearer token auth middleware on the Express BFF for all
+- `DOCKERMAP_API_TOKEN` -> Bearer token auth middleware on the Express Node API for all
   non-health endpoints
 - `DOCKERMAP_ALLOWED_ORIGINS` env var (comma-separated allowed origins)
 - Keep `docs/THREAT_MODEL.md` and `docs/REVERSE_PROXY.md` current for external binding,
@@ -240,7 +255,7 @@ table (host path → container path → service → file:line), named vs bind vi
 **A2. OpenAPI documentation**
 - Hand-crafted `docs/openapi.yaml` covering all v1 read-only endpoints (params, response
   schemas, error codes)
-- Serve `GET /api/openapi.json` from the Express BFF
+- Serve `GET /api/openapi.json` from the Express Node API
 - Serve `GET /api/docs` using `swagger-ui-dist` for browser-accessible Swagger UI
 
 **A3. API versioning**
@@ -256,7 +271,17 @@ table (host path → container path → service → file:line), named vs bind vi
 
 **A5. Rate limiting**
 - Add `express-rate-limit`: 120 req/min per IP on read endpoints; 10 req/min on future
-  mutation endpoints
+  write endpoints
+
+#### Stream A.5 — Current Runtime Map Providers
+
+**A.5.1. Host runtime provider pass** Done
+- `GET /daemon/runtime/map` includes read-only providers for systemd, cron, PM2, tmux,
+  listening sockets, Tailscale, Headscale, reverse-proxy markers, local DNS markers, and
+  Docker-derived graph nodes.
+- `GET /api/runtime/map` proxies the provider-neutral graph to the browser.
+- Provider commands are fixed read-only invocations and return diagnostics instead of
+  failing the whole map when a tool is absent.
 
 #### Stream B — Docker Network Deep Dive
 
@@ -295,19 +320,25 @@ table (host path → container path → service → file:line), named vs bind vi
 
 #### Stream C — Tailscale / Headscale Integration
 
-**C1. Tailscale status detection**
-- Attempt connection to Tailscale local API socket
-  (`/var/run/tailscale/tailscaled.sock`)
-- Parse peer list: `NodeKey`, `DNSName`, `TailscaleIPs`, `Online`, `Tags`
-- Cache with 30-second TTL
-- Graceful no-op when Tailscale not present
+**C1. Base Tailscale and Headscale discovery** Done
+- `GET /daemon/runtime/map` reads `tailscale status --json` when Tailscale is available.
+- `GET /daemon/runtime/map` reads `headscale nodes list --output json` when Headscale is
+  available.
+- Missing tools produce diagnostics instead of failing the whole runtime map.
+
+**C1.5. Tailnet provider enrichment**
+- Optionally switch to the Tailscale local API socket
+  (`/var/run/tailscale/tailscaled.sock`) for richer metadata.
+- Parse peer list details such as `NodeKey`, `DNSName`, `TailscaleIPs`, `Online`, and
+  `Tags`.
+- Cache with a 30-second TTL.
 
 **C2. Container ↔ Tailscale peer correlation**
 - Match peers to containers by label (`tailscale.hostname` / `tailscale.ip`), container
   name matching Tailscale DNS name, or presence of `TS_AUTHKEY` env var
 - Produce `TailscaleRecord { peer_name, tailscale_ip, container_name, online, tags }`
 
-**C3. Headscale support**
+**C3. Headscale API enrichment**
 - Accept `DOCKERMAP_HEADSCALE_URL` and `DOCKERMAP_HEADSCALE_API_KEY` env vars
 - Query `GET /api/v1/machine` on the Headscale server; same correlation logic as C2
 
@@ -341,6 +372,8 @@ table (host path → container path → service → file:line), named vs bind vi
 
 #### Phase 1.5 Verification
 
+- [ ] `GET /api/runtime/map` returns Docker nodes and either provider nodes or clear
+  diagnostics for PM2, systemd, cron, tmux, Tailscale/Headscale, proxy, DNS, and ports
 - [ ] `GET /api/v1/status` returns 200 from a different host when bind addr is `0.0.0.0`
 - [ ] `GET /api/widgets/homepage` returns expected structure; documented in README
 - [ ] `GET /api/docs` renders Swagger UI covering all read-only endpoints
@@ -414,7 +447,7 @@ and external API exposure risks.
 
 > **Goal:** Safe, reversible Compose file editing with diff preview.
 > **Prerequisite:** Phase 2 complete. `Blocked` diagnostics must gate all writes.
-> **Security:** Mutation endpoints require `DOCKERMAP_EDITS_ENABLED=true` flag and API
+> **Security:** Write endpoints require `DOCKERMAP_EDITS_ENABLED=true` flag and API
 > token auth.
 
 #### Stream A — Rust Edit Engine (sequential within stream)
@@ -437,14 +470,14 @@ and external API exposure risks.
 - Git-aware warning: if file has uncommitted changes, add `Warning` to `EditPlan`
 - Return `EditResult { backup_path, rollback_command, applied_at }`
 
-#### Stream B — Mutation API
+#### Stream B — Write API
 
 **B1. `POST /daemon/compose/plan-edit`** — requires feature flag; returns `EditPlan`
 
 **B2. `POST /daemon/compose/apply-edit`** — body `{ plan_id, confirm: true }`; returns
 `EditResult`; max 1 concurrent write (mutex)
 
-**B3. BFF proxy** — proxy mutation routes; log each apply to an audit log file with
+**B3. Node API proxy** — proxy write routes; log each apply to an audit log file with
 timestamp and summary
 
 #### Stream C — Frontend Edit UI
@@ -499,8 +532,8 @@ reuse work from Phase 1.5 Stream D2).
 ### Phase 5 — Runtime Enrichment
 
 > **Goal:** Live metrics and drift detection.
-> **Prerequisite:** Phase 1 complete (specifically bind mount field on `ContainerRecord`
-> and Compose ↔ runtime correlation).
+> **Prerequisite:** Phase 1 complete (specifically runtime mount capture on
+> `ContainerRecord` and Compose to runtime correlation).
 
 #### Stream A — Container Metrics
 
@@ -514,8 +547,8 @@ page.
 
 #### Stream B — Drift Detection
 
-**B1.** Compare `ContainerRecord.bind_mounts` (actual bollard data) against
-`ComposeMountDeclaration` per service → `DriftReport { matched, only_in_compose,
+**B1.** Compare `ContainerRecord.mounts` (actual bollard runtime data) against
+`ComposeMountDeclaration` per service -> `DriftReport { matched, only_in_compose,
 only_in_runtime }`.
 
 **B2.** `GET /daemon/compose/drift` endpoint.
@@ -552,38 +585,38 @@ change.
 
 ---
 
-### Phase 7 — Persistent Runtime Providers
+### Phase 7 — Persistent Runtime Provider Enrichment
 
-> **Prerequisite:** Docker/Compose mapping is stable enough that non-Docker providers can
-> share the same graph and diagnostics model.
+> **Prerequisite:** The current read-only runtime map is stable enough for deeper provider
+> drill-down pages and richer metadata.
 
-**Provider interface** — define a read-only provider contract for non-Docker persistent
-runtimes: identity, status, working directory, ports where detectable, log handles,
-config file origins, and safe graph edges.
+**Provider interface enrichment** — extend the existing read-only provider contract with
+working directory, ports where detectable, log handles, config file origins, and safe
+graph edges.
 
-**PM2 provider** — ingest structured PM2 process metadata first. Map app name, script,
-cwd, status, restart count, interpreter, log paths, and detectable ports. Do not expose
-environment variables by default.
+**PM2 provider enrichment** — build on the current `pm2 jlist` discovery. Add log paths,
+detectable ports, richer restart metadata, and UI drill-down. Do not expose environment
+variables by default.
 
-**systemd provider** — ingest service units, working directories, exec commands, restart
-policy, enabled/running state, and journal availability. Handle system and user services
-separately.
+**systemd provider enrichment** — build on the current `systemctl list-units` discovery.
+Add working directories, exec commands, restart policy, enabled/running state, journal
+availability, and separate system/user service handling.
 
-**tmux provider** — treat tmux as a later session inventory source, not a process
-supervisor. List sessions, windows, panes, attached state, and commands conservatively;
-avoid pane scrollback by default because it can contain secrets.
+**tmux provider enrichment** — build on the current session listing. Add windows, panes,
+attached state, and commands conservatively; avoid pane scrollback by default because it
+can contain secrets.
 
-**Tailnet provider** — discover Tailscale through `tailscale status --json` and Headscale
-through `headscale nodes list --output json`; map peer DNS names, online state, and
-tailnet IPs without requiring control-plane mutation access.
+**Tailnet provider enrichment** — build on the current Tailscale and Headscale CLI
+discovery. Add peer-to-container correlation, tags, richer status, and a dedicated UI
+without requiring control-plane write access.
 
-**Reverse proxy and local DNS providers** — classify common proxy/DNS infrastructure from
-fixed config paths plus Docker container names/images: nginx, Nginx Proxy Manager,
-Traefik, Caddy, HAProxy, Envoy, Apache httpd, Cloudflare Tunnel, frp, Pi-hole, AdGuard
-Home, dnsmasq, Unbound, CoreDNS, and Technitium DNS.
+**Reverse proxy and local DNS enrichment** — build on current config/container markers.
+Extract real routes and useful records from nginx, Nginx Proxy Manager, Traefik, Caddy,
+HAProxy, Envoy, Apache httpd, Cloudflare Tunnel, frp, Pi-hole, AdGuard Home, dnsmasq,
+Unbound, CoreDNS, and Technitium DNS.
 
-**Other providers** — evaluate Supervisor, launchd, cron, and SSH remote collection after
-PM2, systemd, and networking providers prove the model.
+**Other providers** — evaluate Supervisor, launchd, and SSH remote collection after the
+current PM2, systemd, cron, tmux, tailnet, proxy, and DNS providers prove the model.
 
 ---
 
@@ -600,11 +633,11 @@ Ordered by expected value. No hard phase gate unless noted.
 | Medium | Export to Mermaid / Graphviz | `GET /api/v1/graph?format=mermaid|dot`; useful for README/wiki embedding |
 | Medium | Integration tests with live Docker | `DOCKERMAP_INTEGRATION_TESTS=true` job; spin up fixture Compose project, assert on output |
 | Medium | Policy file for allowed host roots | `.dockermap.policy.yaml`: `allowedHostRoots: [...]`; `PathTraversal` rule checks against it |
-| Medium | PM2 read-only provider | Process metadata, logs, restart counts, cwd/script mapping; no env exposure by default |
-| Medium | systemd read-only provider | Unit files, service state, exec commands, restart policy, journal availability |
-| Medium | Tailscale / Headscale provider | Tailnet peers, DNS names, online state, and tailnet IPs |
-| Medium | Reverse proxy classifier | nginx, NPM, Traefik, Caddy, HAProxy, Envoy, Apache, Cloudflare Tunnel, frp |
-| Medium | Local DNS classifier | Pi-hole, AdGuard Home, dnsmasq, Unbound, CoreDNS, Technitium DNS |
+| Medium | PM2 provider enrichment | Add log paths, ports where detectable, and UI drill-down; keep env hidden by default |
+| Medium | systemd provider enrichment | Add unit files, exec commands, restart policy, journal availability, and UI drill-down |
+| Medium | Tailscale / Headscale enrichment | Add peer-to-container correlation, badges, and a dedicated tailnet page |
+| Medium | Reverse proxy route parser | Go beyond markers and extract routes/domains from nginx, NPM, Traefik, Caddy, HAProxy, Envoy, Apache, Cloudflare Tunnel, and frp |
+| Medium | Local DNS enrichment | Go beyond markers and show useful Pi-hole, AdGuard Home, dnsmasq, Unbound, CoreDNS, and Technitium DNS records |
 | Low | Path normalization (Windows/WSL/macOS) | `C:\Users\...` → `/mnt/c/...` in WSL; macOS Docker Desktop path translation |
 | Low | Named volume lifecycle hints | Detect compose-declared volumes never created; Docker volumes not referenced in any file |
 | Low | "Explain this mount" AI command | `POST /api/v1/explain`; plain-English explanation of a mount/volume; Claude API integration |
@@ -637,7 +670,7 @@ Phase 2 (validation)  ────────── concurrent ─────�
   ▼
 Phase 3 (editing)  ─────────── concurrent ──────── Phase 5 (metrics + drift)
   Stream A (Rust edit engine)                       Stream A (bollard stats)
-  Stream B (mutation API)                           Stream B (drift detection)
+  Stream B (write API)                              Stream B (drift detection)
   Stream C (diff preview UI)
   │
   ▼
@@ -646,9 +679,10 @@ Phase 6 (CLI + release)
 
 **Critical path within Phase 1:**
 The backend can now parse Compose files, include adjacent override files, compare declared
-mounts with runtime mounts, and protect the BFF with a bearer token. The main near-term
-work is product polish: sortable tables, clearer detail pages, log controls, API
-versioning, and simple dashboard/widget endpoints.
+mounts with runtime mounts, map PM2/systemd/cron/tmux/tailnet/proxy/DNS signals, and
+protect the Node API with a bearer token. The main near-term work is product polish:
+sortable tables, clearer detail pages, log controls, API versioning, richer runtime-map
+UI, and simple dashboard/widget endpoints.
 
 **VPS-hosted test UI path:** a review-only UI can now be hosted behind a reverse proxy.
 Keep the Rust daemon private, expose only the Node browser-facing API through the proxy,
