@@ -1,0 +1,7 @@
+services:
+  api:
+    image: alpine:3.21
+    volumes:
+      - type: bind
+        source: ${DOCKERMAP_FIXTURE_DATA_ROOT}
+        target: /workspace/data

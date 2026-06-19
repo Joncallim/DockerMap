@@ -8,11 +8,16 @@ containers, or services.
 
 - TypeScript type checks for the web app, Node API, and shared contracts.
 - Production builds for the TypeScript workspaces.
+- Workspace-level JavaScript tests via `npm run test:js`.
 - Rust formatting and linting.
-- Rust unit tests for the core Docker and Compose model.
+- Rust unit tests for the core Docker and Compose model plus daemon helpers.
 - Runtime-map contracts for Docker and non-Docker provider signals.
 - Shared contract examples in `tests/fixtures/contracts`, read by both Rust and
   TypeScript tests so the backend and browser-facing types do not drift apart.
+- API security tests for bearer auth, CORS, daemon URL restrictions, query limits,
+  mock fallback, and error detail exposure.
+- Playwright smoke tests for the GUI through `npm run test:e2e`, with live-Docker
+  coverage opt-in through `npm run test:live-docker`.
 
 ## Run The Local Check Suite
 
@@ -20,17 +25,63 @@ Run these before merging or pushing a change that touches code, contracts, or AP
 
 ```bash
 npm ci
-npm audit --omit=dev
-npm run typecheck
-npm run build
-npm test
-PATH="$HOME/.cargo/bin:$PATH" cargo fmt --manifest-path crates/Cargo.toml --all -- --check
-PATH="$HOME/.cargo/bin:$PATH" cargo clippy --manifest-path crates/Cargo.toml --all-targets -- -D warnings
-PATH="$HOME/.cargo/bin:$PATH" cargo test -p dockermap-core --manifest-path crates/Cargo.toml
+npm run check
 ```
 
-`npm test` currently runs Vitest. The contracts package has an active compatibility test;
-the web package is wired for tests and passes when no web tests exist yet.
+Use the narrower aliases while developing:
+
+```bash
+npm run check:js
+npm run check:rust
+npm run test:js
+npm run test:api
+npm run test:web
+npm run test:contracts
+npm run test:rust
+npm run test:rust:core
+npm run test:rust:daemon
+```
+
+`npm test` is an alias for `npm run test:js`. The contracts package has an active
+compatibility test; the web package is wired for tests and passes when no web tests
+exist yet. The API package has black-box security tests that start the real Express entry point
+with controlled environment variables.
+
+If your shell finds an older system Cargo first, prefix Rust-backed npm scripts with:
+
+```bash
+PATH="$HOME/.cargo/bin:$PATH" npm run check:rust
+```
+
+## Security Test Suite
+
+Run the API security tests directly when changing `apps/api`, auth behavior, CORS,
+query validation, daemon URL handling, mock fallback, or error reporting:
+
+```bash
+npm run test:api
+```
+
+The API tests cover:
+
+- `/api/health` staying public while protected routes require a bearer token.
+- Rejection of missing and incorrect bearer tokens.
+- Explicit-origin CORS behavior and rejected wildcard startup config.
+- Loopback-only daemon URL enforcement unless remote access is explicitly enabled.
+- Query limits for Compose scan and edit-plan routes.
+- Hidden daemon error details by default, with opt-in detail exposure.
+
+Run GUI smoke tests before release candidates:
+
+```bash
+npm run test:e2e
+```
+
+Run live-Docker tests only on a Docker-capable Linux host:
+
+```bash
+npm run test:live-docker
+```
 
 ## Manual Smoke Test
 
@@ -97,8 +148,8 @@ More detail is in [docs/REVERSE_PROXY.md](REVERSE_PROXY.md).
 
 ## Gaps To Close
 
-- Add browser end-to-end tests with Playwright.
-- Add live-Docker integration tests that spin up a fixture Compose project.
+- Broaden browser end-to-end tests beyond the current smoke flows.
+- Run and record live-Docker integration evidence on the release host.
 - Add reverse-proxy integration tests for bearer-token injection and SSE streaming.
 - Add OpenAPI schema checks once the versioned API spec exists.
 - Add write-mode tests only after backup, confirmation, and rollback behavior exists.

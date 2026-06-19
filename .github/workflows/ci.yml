@@ -32,6 +32,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Test
+        run: npm run test:js
+
   rust:
     name: Rust
     runs-on: ubuntu-latest
@@ -51,5 +54,32 @@ jobs:
       - name: Lint
         run: cargo clippy --manifest-path crates/Cargo.toml --all-targets -- -D warnings
 
-      - name: Test (core library only — no Docker socket needed)
-        run: cargo test -p dockermap-core --manifest-path crates/Cargo.toml
+      - name: Test
+        run: cargo test --manifest-path crates/Cargo.toml
+
+  e2e:
+    name: Playwright smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run GUI smoke tests
+        run: npm run test:e2e

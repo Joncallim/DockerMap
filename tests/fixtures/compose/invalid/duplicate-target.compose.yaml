@@ -1,0 +1,6 @@
+services:
+  api:
+    image: alpine:3.21
+    volumes:
+      - ./data:/workspace/data
+      - ./other-data:/workspace/data

@@ -93,6 +93,15 @@ server {
 }
 ```
 
+## Required Negative Checks
+
+Before release, verify these failures deliberately:
+
+- Direct remote access to the daemon port fails.
+- Direct remote access to the Node API without the proxy-injected token returns `401` for non-health routes.
+- A browser origin not listed in `DOCKERMAP_ALLOWED_ORIGINS` does not receive an `Access-Control-Allow-Origin` header.
+- The proxy requires viewer authentication before it injects the DockerMap bearer token.
+
 ## Smoke Test
 
 After the proxy is up, check these from a browser or from `curl`:

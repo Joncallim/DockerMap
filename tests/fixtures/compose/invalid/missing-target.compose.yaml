@@ -1,0 +1,6 @@
+services:
+  api:
+    image: alpine:3.21
+    volumes:
+      - type: bind
+        source: ./data
