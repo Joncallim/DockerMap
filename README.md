@@ -6,6 +6,20 @@ services, cron jobs, tmux sessions, listening ports, Tailscale/Headscale nodes, 
 proxies, and local DNS tools. It is read-first: today it can inspect files and show
 dry-run diffs, but it does not write Compose files or change running services.
 
+## Screenshots
+
+Dashboard topology and dependency view:
+
+![DockerMap dashboard topology](docs/screenshots/dashboard-topology.png)
+
+Container inventory and filters:
+
+![DockerMap container inventory](docs/screenshots/containers-inventory.png)
+
+Container detail with runtime metadata and recent logs:
+
+![DockerMap container detail](docs/screenshots/container-detail.png)
+
 ## What It Helps With
 
 - See which containers, networks, volumes, and ports exist on a host.
