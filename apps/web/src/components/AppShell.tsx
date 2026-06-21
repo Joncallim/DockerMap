@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, NavLink, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 import { useDaemonHeartbeat } from "../hooks/useDaemonHeartbeat";
 import { formatTime } from "../utils/format";
 import Icon, { type IconName } from "./Icon";
@@ -24,7 +24,6 @@ const navigation: { path: string; label: string; icon: IconName }[] = [
 ];
 
 export default function AppShell() {
-  const location = useLocation();
   const navigate = useNavigate();
   const { health } = useDaemonHeartbeat();
   const [searchParams] = useSearchParams();
@@ -35,6 +34,10 @@ export default function AppShell() {
   }, [searchParams]);
 
   useEffect(() => {
+    if ((searchParams.get("q") ?? "") === draftQuery) {
+      return;
+    }
+
     const timer = window.setTimeout(() => {
       const next = new URLSearchParams(searchParams);
       if (draftQuery) {
@@ -43,7 +46,8 @@ export default function AppShell() {
         next.delete("q");
       }
       const query = next.toString();
-      navigate(query ? `${location.pathname}?${query}` : location.pathname, { replace: true });
+      const pathname = window.location.pathname;
+      navigate(query ? `${pathname}?${query}` : pathname, { replace: true });
     }, 250);
 
     return () => window.clearTimeout(timer);

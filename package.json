@@ -14,17 +14,33 @@
     "build": "npm run build --workspaces --if-present",
     "build:deploy": "npm run build && cargo build --release -p dockermap-daemon --manifest-path crates/Cargo.toml",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "audit": "npm audit",
-    "ci:js": "npm ci && npm run audit && npm run typecheck && npm run build",
+    "audit": "npm audit --omit=dev",
+    "check:js": "npm run audit && npm run typecheck && npm run build && npm run test:js",
+    "ci:js": "npm ci && npm run check:js",
     "fmt:rust": "cargo fmt --manifest-path crates/Cargo.toml --all",
+    "fmt:rust:check": "cargo fmt --manifest-path crates/Cargo.toml --all -- --check",
     "lint:rust": "cargo clippy --manifest-path crates/Cargo.toml --all-targets -- -D warnings",
+    "check:rust": "npm run fmt:rust:check && npm run lint:rust && npm run test:rust",
+    "check": "npm run check:js && npm run check:rust",
     "build:rust": "cargo build --manifest-path crates/Cargo.toml",
     "start:api": "npm run start --workspace @dockermap/api",
     "start:daemon": "crates/target/release/dockermap-daemon",
+    "test:js": "npm run test --workspaces --if-present",
+    "test:api": "npm run test --workspace @dockermap/api --if-present",
+    "test:web": "npm run test --workspace @dockermap/web --if-present",
+    "test:contracts": "npm run test --workspace @dockermap/contracts --if-present",
+    "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
+    "test:live-docker": "DOCKERMAP_E2E_LIVE_DOCKER=1 playwright test --config tests/e2e/playwright.config.ts --grep @live-docker",
     "test:rust": "cargo test --manifest-path crates/Cargo.toml",
-    "test": "npm run test --workspaces --if-present"
+    "test:rust:core": "cargo test -p dockermap-core --manifest-path crates/Cargo.toml",
+    "test:rust:daemon": "cargo test -p dockermap-daemon --manifest-path crates/Cargo.toml",
+    "test:all": "npm run typecheck && npm run build && npm run test:js && npm run test:rust",
+    "test": "npm run test:js"
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.0"
   }
 }

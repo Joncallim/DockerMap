@@ -6,6 +6,20 @@ services, cron jobs, tmux sessions, listening ports, Tailscale/Headscale nodes, 
 proxies, and local DNS tools. It is read-first: today it can inspect files and show
 dry-run diffs, but it does not write Compose files or change running services.
 
+## Screenshots
+
+Dashboard topology and dependency view:
+
+![DockerMap dashboard topology](docs/screenshots/dashboard-topology.png)
+
+Container inventory and filters:
+
+![DockerMap container inventory](docs/screenshots/containers-inventory.png)
+
+Container detail with runtime metadata and recent logs:
+
+![DockerMap container detail](docs/screenshots/container-detail.png)
+
 ## What It Helps With
 
 - See which containers, networks, volumes, and ports exist on a host.
@@ -85,13 +99,10 @@ for the UI, bearer-token auth, and reverse-proxy review setup, is in
 
 ```bash
 npm ci
-npm audit --omit=dev
-npm run typecheck
-npm run build
-npm test
-PATH="$HOME/.cargo/bin:$PATH" cargo fmt --manifest-path crates/Cargo.toml --all -- --check
-PATH="$HOME/.cargo/bin:$PATH" cargo clippy --manifest-path crates/Cargo.toml --all-targets -- -D warnings
-PATH="$HOME/.cargo/bin:$PATH" cargo test -p dockermap-core --manifest-path crates/Cargo.toml
+npm run check
+npm run test:e2e
+# On a Docker-capable Linux host:
+npm run test:live-docker
 ```
 
 ## Optional API Token
@@ -125,7 +136,7 @@ header when it forwards `/api/*` requests to `127.0.0.1:4000`. See
 - Compose scanning discovers base files plus adjacent override files.
 - Compose scans now include runtime mount checks: matched, missing, and extra.
 - Rust and TypeScript share API contract fixtures under `tests/fixtures/contracts`.
-- CI runs TypeScript audit/typecheck/build and Rust format/lint/core tests.
+- CI runs TypeScript audit/typecheck/build/tests, Rust format/lint/tests, and Playwright smoke tests.
 
 More background:
 
@@ -134,4 +145,6 @@ More background:
 - [docs/TESTING_PLAN.md](docs/TESTING_PLAN.md)
 - [docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)
 - [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)
+- [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
+- [docs/DOC_CONTROL.md](docs/DOC_CONTROL.md)
 - [ROADMAP.md](ROADMAP.md)

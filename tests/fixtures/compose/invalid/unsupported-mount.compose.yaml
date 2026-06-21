@@ -1,0 +1,7 @@
+services:
+  api:
+    image: alpine:3.21
+    volumes:
+      - type: nfs
+        source: remote-share
+        target: /workspace/data

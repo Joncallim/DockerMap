@@ -1870,6 +1870,35 @@ fn sanitize_id(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn repo_fixture_path(parts: &[&str]) -> PathBuf {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for part in parts {
+            path.push(part);
+        }
+        path
+    }
+
+    fn scan_content(file: &Path, project_root: &Path, content: &str) -> ComposeScan {
+        let mut scan = ComposeScan {
+            files: vec![display_path(file)],
+            project_root: display_path(project_root),
+            services: Vec::new(),
+            mounts: Vec::new(),
+            correlations: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        parse_compose_file(file, content, &mut scan);
+        coalesce_compose_services(&mut scan);
+        validate_compose_scan(&mut scan);
+        scan
+    }
+
+    fn scan_invalid_fixture(name: &str) -> ComposeScan {
+        let root = repo_fixture_path(&["tests", "fixtures", "compose", "invalid"]);
+        let file = root.join(name);
+        scan_compose_files(&root, &[file]).expect("invalid fixture should scan with diagnostics")
+    }
+
     #[test]
     fn mock_snapshot_has_expected_shape() {
         let snapshot = mock_snapshot();
@@ -1958,9 +1987,7 @@ mod tests {
 
     #[test]
     fn scans_compose_fixture_mounts_and_diagnostics() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("tests/fixtures/compose");
+        let root = repo_fixture_path(&["tests", "fixtures", "compose"]);
         let file = root.join("path-mapping.compose.yaml");
         let scan = scan_compose_files(&root, &[file]).expect("fixture should scan");
 
@@ -1999,16 +2026,7 @@ services:
       - ./a:/workspace
       - ./b:/workspace
 "#;
-        let mut scan = ComposeScan {
-            files: vec![display_path(&file)],
-            project_root: display_path(&root),
-            services: Vec::new(),
-            mounts: Vec::new(),
-            correlations: Vec::new(),
-            diagnostics: Vec::new(),
-        };
-        parse_compose_file(&file, yaml, &mut scan);
-        validate_compose_scan(&mut scan);
+        let scan = scan_content(&file, &root, yaml);
 
         assert_eq!(
             scan.diagnostics
@@ -2017,6 +2035,120 @@ services:
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn malformed_compose_fixtures_emit_expected_diagnostics() {
+        let cases = [
+            (
+                "duplicate-target.compose.yaml",
+                "compose_duplicate_target",
+                DiagnosticSeverity::Error,
+            ),
+            (
+                "invalid-target.compose.yaml",
+                "compose_invalid_container_target",
+                DiagnosticSeverity::Error,
+            ),
+            (
+                "invalid-volumes.compose.yaml",
+                "compose_invalid_volumes",
+                DiagnosticSeverity::Error,
+            ),
+            (
+                "missing-services.compose.yaml",
+                "compose_missing_services",
+                DiagnosticSeverity::Error,
+            ),
+            (
+                "missing-target.compose.yaml",
+                "compose_mount_missing_target",
+                DiagnosticSeverity::Error,
+            ),
+            (
+                "unresolved-variable.compose.yaml",
+                "compose_unresolved_variable",
+                DiagnosticSeverity::Warning,
+            ),
+            (
+                "unsupported-mount.compose.yaml",
+                "compose_unsupported_mount_type",
+                DiagnosticSeverity::Warning,
+            ),
+            (
+                "yaml-parse-error.compose.yaml",
+                "compose_yaml_parse_error",
+                DiagnosticSeverity::Blocked,
+            ),
+        ];
+
+        for (fixture, expected_id, expected_severity) in cases {
+            let scan = scan_invalid_fixture(fixture);
+            assert!(
+                scan.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.id == expected_id && diagnostic.severity == expected_severity
+                }),
+                "expected {expected_id}/{expected_severity:?} for {fixture}, got {:?}",
+                scan.diagnostics
+            );
+        }
+
+        let duplicate_scan = scan_invalid_fixture("duplicate-target.compose.yaml");
+        assert_eq!(
+            duplicate_scan
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.id == "compose_duplicate_target")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn empty_compose_file_list_returns_warning_scan() {
+        let root = PathBuf::from("/tmp/dockermap-empty-compose");
+        let scan =
+            scan_compose_files(&root, &[]).expect("empty file list should be diagnostic only");
+
+        assert!(scan.services.is_empty());
+        assert!(scan.mounts.is_empty());
+        assert!(scan
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.id == "compose_no_files"
+                && diagnostic.severity == DiagnosticSeverity::Warning));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reports_symlink_bind_sources_without_following() {
+        let root = tempfile::TempDir::new().expect("temp dir should be created");
+        let real_dir = root.path().join("real-data");
+        let linked_dir = root.path().join("linked-data");
+        std::fs::create_dir_all(&real_dir).expect("real source should be created");
+        std::os::unix::fs::symlink(&real_dir, &linked_dir)
+            .expect("symlink source should be created");
+        let file = root.path().join("compose.yaml");
+        std::fs::write(
+            &file,
+            r#"
+services:
+  api:
+    image: alpine
+    volumes:
+      - ./linked-data:/workspace/data
+"#,
+        )
+        .expect("compose fixture should be written");
+
+        let scan =
+            scan_compose_files(root.path(), std::slice::from_ref(&file)).expect("scan should pass");
+
+        assert!(scan
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.id == "compose_bind_source_symlink"
+                && diagnostic.severity == DiagnosticSeverity::Warning));
     }
 
     #[test]
@@ -2040,9 +2172,7 @@ services:
 
     #[test]
     fn derives_compose_graph_from_scan() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("tests/fixtures/compose");
+        let root = repo_fixture_path(&["tests", "fixtures", "compose"]);
         let file = root.join("path-mapping.compose.yaml");
         let scan = scan_compose_files(&root, &[file]).expect("fixture should scan");
         let graph = derive_compose_graph(&scan);
@@ -2067,9 +2197,7 @@ services:
 
     #[test]
     fn coalesces_compose_override_services() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("tests/fixtures/compose");
+        let root = repo_fixture_path(&["tests", "fixtures", "compose"]);
         let base = root.join("path-mapping.compose.yaml");
         let override_file = root.join("override.compose.yaml");
         let scan = scan_compose_files(&root, &[base, override_file]).expect("fixtures should scan");
@@ -2169,16 +2297,7 @@ services:
     volumes:
       - ./src:/workspace/src:ro
 "#;
-        let mut scan = ComposeScan {
-            files: vec![display_path(&file)],
-            project_root: "/tmp".into(),
-            services: Vec::new(),
-            mounts: Vec::new(),
-            correlations: Vec::new(),
-            diagnostics: Vec::new(),
-        };
-        parse_compose_file(&file, content, &mut scan);
-        validate_compose_scan(&mut scan);
+        let scan = scan_content(&file, Path::new("/tmp"), content);
 
         let plan = plan_compose_mount_edit(
             &file,
@@ -2206,16 +2325,7 @@ services:
     volumes:
       - ./src:/workspace/src:ro
 "#;
-        let mut scan = ComposeScan {
-            files: vec![display_path(&file)],
-            project_root: "/tmp".into(),
-            services: Vec::new(),
-            mounts: Vec::new(),
-            correlations: Vec::new(),
-            diagnostics: Vec::new(),
-        };
-        parse_compose_file(&file, content, &mut scan);
-        validate_compose_scan(&mut scan);
+        let scan = scan_content(&file, Path::new("/tmp"), content);
 
         let plan =
             plan_compose_mount_edit(&file, content, &scan.mounts[0], Some("../secrets"), None);
@@ -2238,16 +2348,7 @@ services:
     volumes:
       - ./src:/workspace/src:ro
 "#;
-        let mut scan = ComposeScan {
-            files: vec![display_path(&file)],
-            project_root: "/tmp".into(),
-            services: Vec::new(),
-            mounts: Vec::new(),
-            correlations: Vec::new(),
-            diagnostics: Vec::new(),
-        };
-        parse_compose_file(&file, content, &mut scan);
-        validate_compose_scan(&mut scan);
+        let scan = scan_content(&file, Path::new("/tmp"), content);
 
         let plan = plan_compose_mount_edit(&file, content, &scan.mounts[0], Some("./app"), None);
 
@@ -2258,11 +2359,73 @@ services:
             .any(|diagnostic| diagnostic.id == "edit_original_source_not_found"));
     }
 
+    #[test]
+    fn edit_plan_reports_noop_without_writing() {
+        let file = PathBuf::from("/tmp/compose.yaml");
+        let content = r#"
+services:
+  api:
+    volumes:
+      - ./src:/workspace/src
+"#;
+        let scan = scan_content(&file, Path::new("/tmp"), content);
+
+        let plan = plan_compose_mount_edit(&file, content, &scan.mounts[0], None, None);
+
+        assert!(!plan.will_write);
+        assert!(plan.unified_diff.is_empty());
+        assert!(plan
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.id == "edit_noop"
+                && diagnostic.severity == DiagnosticSeverity::Error));
+    }
+
+    #[test]
+    fn edit_plan_blocks_invalid_target_without_diff() {
+        let file = PathBuf::from("/tmp/compose.yaml");
+        let content = r#"
+services:
+  api:
+    volumes:
+      - ./src:/workspace/src
+"#;
+        let scan = scan_content(&file, Path::new("/tmp"), content);
+
+        let plan =
+            plan_compose_mount_edit(&file, content, &scan.mounts[0], None, Some("relative/path"));
+
+        assert!(plan.unified_diff.is_empty());
+        assert!(plan
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.id == "edit_invalid_target"
+                && diagnostic.severity == DiagnosticSeverity::Blocked));
+    }
+
+    #[test]
+    fn edit_plan_blocks_named_volume_source_changes() {
+        let file = PathBuf::from("/tmp/compose.yaml");
+        let content = r#"
+services:
+  api:
+    volumes:
+      - cache:/workspace/cache
+"#;
+        let scan = scan_content(&file, Path::new("/tmp"), content);
+
+        let plan = plan_compose_mount_edit(&file, content, &scan.mounts[0], Some("./cache"), None);
+
+        assert!(plan.unified_diff.is_empty());
+        assert!(plan
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.id == "edit_source_requires_bind"
+                && diagnostic.severity == DiagnosticSeverity::Blocked));
+    }
+
     fn read_contract_fixture<T: serde::de::DeserializeOwned>(name: &str) -> T {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("tests/fixtures/contracts")
-            .join(name);
+        let path = repo_fixture_path(&["tests", "fixtures", "contracts", name]);
         let content = std::fs::read_to_string(&path).expect("contract fixture should be readable");
         serde_json::from_str(&content).expect("contract fixture should deserialize")
     }
