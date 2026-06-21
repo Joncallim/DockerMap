@@ -3,7 +3,14 @@ import { Link } from "react-router-dom";
 import type { ImageRecord } from "@dockermap/contracts";
 import { useApiResource } from "../hooks/useApiResource";
 import { useSearchParamState } from "../hooks/useSearchParamState";
-import StatePanel from "../components/StatePanel";
+import Icon from "../components/Icon";
+import { Badge, PageHead, StateView } from "../components/ui";
+
+function splitImage(ref: string) {
+  const at = ref.lastIndexOf(":");
+  if (at <= 0) return { repo: ref, tag: "latest" };
+  return { repo: ref.slice(0, at), tag: ref.slice(at + 1) };
+}
 
 export default function ImagesPage(props: { heartbeat: number }) {
   const { searchParams } = useSearchParamState();
@@ -22,28 +29,47 @@ export default function ImagesPage(props: { heartbeat: number }) {
   );
 
   if (resource.loading) {
-    return <StatePanel title="Loading images" body="Grouping services by image lineage." />;
+    return <StateView kind="loading" title="Loading images" body="Grouping services by image lineage." icon="image" />;
   }
-
   if (resource.error || !resource.data) {
-    return <StatePanel title="Images unavailable" body={resource.error ?? "Unknown failure"} tone="error" />;
+    return <StateView kind="error" title="Images unavailable" body={resource.error ?? "Unknown failure"} />;
   }
 
   return (
-    <section className="card-grid">
-      {images.map((image) => (
-        <article className="panel-card" key={image.image}>
-          <div className="panel-label">Image</div>
-          <h3>{image.image}</h3>
-          <div className="pill-row">
-            {image.containers.map((container) => (
-              <Link key={container} className="pill" to={`/containers/${container}`}>
-                {container}
-              </Link>
-            ))}
-          </div>
-        </article>
-      ))}
+    <section className="stack">
+      <PageHead eyebrow="Image lineage" title="Images" subtitle="Distinct image references and the services they back." />
+
+      {images.length === 0 ? (
+        <StateView kind="empty" title="No images match" body="Try clearing the search query." icon="search" />
+      ) : (
+        <div className="card-grid">
+          {images.map((image) => {
+            const { repo, tag } = splitImage(image.image);
+            return (
+              <article className="tile" key={image.image}>
+                <div className="tile-top">
+                  <span className="tile-icon tile-icon-gold">
+                    <Icon name="image" size={18} />
+                  </span>
+                  <Badge tone="neutral">{tag}</Badge>
+                </div>
+                <h3 className="tile-title">{repo}</h3>
+                <div className="tile-meta">
+                  {image.containers.length} container{image.containers.length === 1 ? "" : "s"}
+                </div>
+                <div className="chip-row chip-row-spaced">
+                  {image.containers.map((container) => (
+                    <Link key={container} className="chip" to={`/containers/${container}`}>
+                      <Icon name="container" size={12} />
+                      {container}
+                    </Link>
+                  ))}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }

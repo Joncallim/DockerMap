@@ -1,54 +1,102 @@
+/*
+ * DockerMap — design tokens
+ * Synthesis of three design skills:
+ *   • impeccable      → OKLCH tinted darks (never pure black), no Inter, warm/cool tension
+ *   • emil-design-eng → restrained motion vocabulary, custom ease-out curves
+ *   • ui-ux-pro-max   → dark infra-dashboard palette, AA contrast, no emoji-as-icon
+ */
 :root {
   color-scheme: dark;
 
-  --font-ui: Inter, ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
+  /* Type — deliberately not Inter */
+  --font-ui: "Albert Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", "Albert Sans", ui-sans-serif, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, monospace;
 
-  --bg: #070a0d;
-  --bg-grid: rgba(255, 255, 255, 0.03);
-  --panel: rgba(18, 25, 31, 0.88);
-  --panel-strong: rgba(12, 17, 22, 0.96);
-  --panel-soft: rgba(24, 34, 41, 0.86);
-  --panel-raised: rgba(20, 29, 35, 0.94);
-  --stroke: rgba(141, 237, 236, 0.12);
-  --stroke-strong: rgba(141, 237, 236, 0.22);
+  /* Grounds — tinted blue-slate lacquer, never #000 */
+  --ground: oklch(15% 0.018 250);
+  --ground-deep: oklch(12.5% 0.02 254);
+  --ground-base: oklch(17% 0.018 248);
+  --surface-1: oklch(20% 0.02 248);
+  --surface-2: oklch(23.5% 0.022 247);
+  --surface-3: oklch(27% 0.024 246);
+  --surface-raised: oklch(25% 0.026 246);
 
-  --ink: #f6faf9;
-  --ink-soft: #d5e4e9;
-  --muted: #91a3ac;
-  --muted-deep: #6f848d;
+  /* Hairlines */
+  --line: oklch(40% 0.02 245 / 0.32);
+  --line-soft: oklch(40% 0.02 245 / 0.18);
+  --line-strong: oklch(62% 0.05 220 / 0.42);
 
-  --teal: #8dedec;
-  --teal-strong: #47c8c8;
-  --green: #8af3a1;
-  --amber: #ffbf47;
-  --coral: #ff8d78;
-  --red: #ff5f6d;
+  /* Ink — tinted, AA on surfaces */
+  --ink: oklch(97% 0.01 240);
+  --ink-soft: oklch(88% 0.012 240);
+  --muted: oklch(72% 0.02 244);
+  --muted-deep: oklch(60% 0.02 246);
 
-  --radius-xs: 6px;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
-  --radius-panel: 12px;
+  /* Signature accents — cool aqua + warm gold (impeccable verdigris × kinpaku) */
+  --aqua: oklch(80% 0.13 195);
+  --aqua-deep: oklch(66% 0.12 198);
+  --aqua-bright: oklch(86% 0.14 192);
+  --gold: oklch(83% 0.135 82);
+  --gold-deep: oklch(72% 0.13 74);
+  --coral: oklch(74% 0.145 32);
 
-  --space-1: 0.25rem;
-  --space-2: 0.5rem;
-  --space-3: 0.75rem;
-  --space-4: 1rem;
-  --space-5: 1.25rem;
-  --space-6: 1.5rem;
-  --space-7: 1.75rem;
-  --space-8: 2rem;
+  /* Status */
+  --ok: oklch(80% 0.15 152);
+  --warn: oklch(83% 0.14 78);
+  --err: oklch(68% 0.2 22);
+  --info: oklch(78% 0.11 232);
 
-  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  --shadow-teal: 0 0 0 1px rgba(141, 237, 236, 0.06), 0 0 30px rgba(71, 200, 200, 0.08);
-  --shadow-green: 0 0 0 1px rgba(138, 243, 161, 0.08), 0 0 30px rgba(138, 243, 161, 0.08);
-  --shadow-coral: 0 0 0 1px rgba(255, 141, 120, 0.08), 0 0 30px rgba(255, 141, 120, 0.08);
+  /* Status wash backgrounds */
+  --ok-wash: oklch(80% 0.15 152 / 0.12);
+  --warn-wash: oklch(83% 0.14 78 / 0.12);
+  --err-wash: oklch(68% 0.2 22 / 0.13);
+  --info-wash: oklch(78% 0.11 232 / 0.12);
+  --aqua-wash: oklch(80% 0.13 195 / 0.1);
+  --gold-wash: oklch(83% 0.135 82 / 0.1);
 
-  --focus-ring: 0 0 0 3px rgba(141, 237, 236, 0.28);
-  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --duration-fast: 160ms;
-  --duration-standard: 220ms;
+  /* Radii */
+  --r-xs: 6px;
+  --r-sm: 9px;
+  --r-md: 13px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+  --r-pill: 999px;
+
+  /* Space scale */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.25rem;
+  --s-6: 1.5rem;
+  --s-8: 2rem;
+  --s-10: 2.5rem;
+  --s-12: 3rem;
+
+  /* Elevation — soft, tinted, no harsh black */
+  --shadow-1: 0 1px 0 oklch(100% 0 0 / 0.04) inset, 0 1px 2px oklch(0% 0 0 / 0.3);
+  --shadow-2: 0 1px 0 oklch(100% 0 0 / 0.05) inset, 0 8px 24px -12px oklch(0% 0 0 / 0.6);
+  --shadow-pop: 0 1px 0 oklch(100% 0 0 / 0.06) inset, 0 24px 60px -24px oklch(0% 0 0 / 0.7);
+  --glow-aqua: 0 0 0 1px oklch(80% 0.13 195 / 0.18), 0 12px 40px -16px oklch(80% 0.13 195 / 0.35);
+  --glow-gold: 0 0 0 1px oklch(83% 0.135 82 / 0.18), 0 12px 40px -16px oklch(83% 0.135 82 / 0.3);
+
+  /* Focus */
+  --focus: 0 0 0 2px var(--ground), 0 0 0 4px oklch(80% 0.13 195 / 0.7);
+
+  /* Motion — custom curves, sub-300ms (emil) */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-soft: cubic-bezier(0.33, 1, 0.68, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --t-fast: 140ms;
+  --t-base: 200ms;
+  --t-slow: 280ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 1ms;
+    --t-base: 1ms;
+    --t-slow: 1ms;
+  }
 }

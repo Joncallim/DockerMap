@@ -1,73 +1,143 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import type { DockerSnapshot, GraphResponse } from "@dockermap/contracts";
 import { useApiResource } from "../hooks/useApiResource";
-import GraphNodeCard from "../components/GraphNodeCard";
-import KpiCard from "../components/KpiCard";
-import StatePanel from "../components/StatePanel";
+import NetworkScene from "../components/NetworkScene";
+import Icon from "../components/Icon";
+import { Badge, Kpi, SectionCard, StateView, StatusDot } from "../components/ui";
+import type { SceneNode } from "../lib/topology";
+
+const ACCENT = { container: "#5fe3d1", network: "#f3c06a", volume: "#f0937a" };
 
 export default function DashboardPage(props: { heartbeat: number }) {
+  const navigate = useNavigate();
   const snapshot = useApiResource<DockerSnapshot>("/api/snapshot", props.heartbeat);
   const graph = useApiResource<GraphResponse>("/api/graph", props.heartbeat);
 
   if (snapshot.loading || graph.loading) {
-    return <StatePanel title="Building topology" body="Refreshing containers, networks, volumes, and graph edges." />;
+    return <StateView kind="loading" title="Building topology" body="Resolving containers, networks, volumes and graph edges." icon="orbit" />;
+  }
+  if (snapshot.error || graph.error || !snapshot.data || !graph.data) {
+    return <StateView kind="error" title="Graph unavailable" body={snapshot.error ?? graph.error ?? "Unknown failure"} />;
   }
 
-  if (snapshot.error || graph.error || !snapshot.data || !graph.data) {
-    return <StatePanel title="Graph unavailable" body={snapshot.error ?? graph.error ?? "Unknown failure"} tone="error" />;
-  }
+  const s = snapshot.data;
+  const running = s.containers.filter((c) => c.status.toLowerCase() === "running").length;
+  const stopped = s.containers.length - running;
+  const internalNets = s.networks.filter((n) => n.internal).length;
+  const attachedVolumes = s.volumes.filter((v) => v.attachedTo.length > 0).length;
+
+  const onSelect = (node: SceneNode) => {
+    if (node.type === "container") navigate(`/containers/${node.label}`);
+    else if (node.type === "network") navigate(`/networks?network=${node.id}`);
+    else navigate(`/volumes?volume=${node.id}`);
+  };
 
   return (
-    <div className="page-grid">
-      <section className="hero-panel">
-        <div className="panel-label">Topology Canvas</div>
-        <div className="graph-grid">
-          {graph.data.nodes.map((node) => (
-            <GraphNodeCard key={node.id} node={node} />
-          ))}
-        </div>
-        <div className="edge-list">
-          {graph.data.edges.map((edge, index) => (
-            <div className="edge-row" key={`${edge.source}-${edge.target}-${index}`}>
-              <span>{edge.source.replace("container_", "").replace("network_", "").replace("volume_", "")}</span>
-              <span>{edge.relationship}</span>
-              <span>{edge.target.replace("container_", "").replace("network_", "").replace("volume_", "")}</span>
-            </div>
-          ))}
-        </div>
-      </section>
+    <div className="dashboard">
+      <SectionCard
+        flush
+        eyebrow="Topology · Observe mode"
+        title="Network architecture"
+        icon="orbit"
+        actions={
+          <Badge tone="aqua" icon="pulse">
+            {graph.data.nodes.length} nodes · {graph.data.edges.length} links
+          </Badge>
+        }
+        className="scene-card"
+      >
+        <NetworkScene graph={graph.data} height={480} onSelect={onSelect} />
+      </SectionCard>
 
-      <section className="kpi-grid">
-        <KpiCard label="Containers" value={snapshot.data.containers.length} detail="Live runtime inventory" />
-        <KpiCard label="Images" value={snapshot.data.images.length} detail="Derived image groups" />
-        <KpiCard label="Networks" value={snapshot.data.networks.length} detail="Bridge and internal zones" />
-        <KpiCard label="Volumes" value={snapshot.data.volumes.length} detail="Persistent state" />
-      </section>
+      <div className="kpi-row">
+        <Kpi
+          icon="container"
+          label="Containers"
+          value={s.containers.length}
+          accent="aqua"
+          segments={[
+            { color: "var(--ok)", value: running, label: "running" },
+            { color: "var(--err)", value: stopped, label: "stopped" },
+          ]}
+        />
+        <Kpi icon="image" label="Images" value={s.images.length} accent="gold" sub="Distinct image lineages in use" />
+        <Kpi
+          icon="network"
+          label="Networks"
+          value={s.networks.length}
+          accent="aqua"
+          segments={[
+            { color: "var(--aqua)", value: s.networks.length - internalNets, label: "bridge" },
+            { color: "var(--gold)", value: internalNets, label: "internal" },
+          ]}
+        />
+        <Kpi
+          icon="volume"
+          label="Volumes"
+          value={s.volumes.length}
+          accent="gold"
+          segments={[
+            { color: "var(--ok)", value: attachedVolumes, label: "attached" },
+            { color: "var(--muted)", value: s.volumes.length - attachedVolumes, label: "idle" },
+          ]}
+        />
+      </div>
 
-      <section className="info-panel">
-        <div className="panel-label">Dependencies</div>
-        {snapshot.data.containers.map((container) => (
-          <div className="list-row" key={container.id}>
-            <div>
-              <Link className="inline-link" to={`/containers/${container.name}`}>
-                {container.name}
-              </Link>
-              <div className="subtle-copy">{container.role}</div>
-            </div>
-            <div className="pill-row">
-              {container.dependsOn.map((dependency) => (
-                <Link
-                  className="pill"
-                  key={dependency}
-                  to={`/containers/${dependency.replace("container_", "")}`}
-                >
-                  {dependency.replace("container_", "")}
-                </Link>
-              ))}
-            </div>
+      <div className="dashboard-cols">
+        <SectionCard eyebrow="Service graph" title="Dependency flow" icon="link">
+          <div className="flow-list">
+            {s.containers.map((c) => (
+              <div className="flow-row" key={c.id}>
+                <div className="flow-node">
+                  <StatusDot status={c.status} pulse={c.status.toLowerCase() === "running"} />
+                  <Link className="flow-name" to={`/containers/${c.name}`}>
+                    {c.name}
+                  </Link>
+                  <span className="flow-role">{c.role}</span>
+                </div>
+                <div className="flow-deps">
+                  {c.dependsOn.length === 0 ? (
+                    <span className="flow-empty">no upstreams</span>
+                  ) : (
+                    c.dependsOn.map((d) => (
+                      <Link className="chip" key={d} to={`/containers/${d.replace("container_", "")}`}>
+                        <Icon name="arrow" size={12} />
+                        {d.replace("container_", "")}
+                      </Link>
+                    ))
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
-      </section>
+        </SectionCard>
+
+        <SectionCard eyebrow="Segmentation" title="Networks at a glance" icon="network">
+          <div className="mini-list">
+            {s.networks.map((n) => (
+              <Link className="mini-row" key={n.id} to={`/networks?network=${n.id}`}>
+                <div className="mini-main">
+                  <span className="mini-name">{n.name}</span>
+                  <span className="mini-sub">{n.driver}</span>
+                </div>
+                <div className="mini-end">
+                  <Badge tone={n.internal ? "gold" : "aqua"}>{n.internal ? "internal" : "bridge"}</Badge>
+                  <span className="mini-count">{n.members.length} members</span>
+                </div>
+              </Link>
+            ))}
+          </div>
+
+          <div className="legend-foot">
+            {(["container", "network", "volume"] as const).map((t) => (
+              <span key={t}>
+                <i style={{ background: ACCENT[t] }} />
+                {t}
+              </span>
+            ))}
+          </div>
+        </SectionCard>
+      </div>
     </div>
   );
 }
