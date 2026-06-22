@@ -34,7 +34,7 @@ export default function LogsPage(props: { heartbeat: number }) {
     <section className="stack">
       <PageHead
         eyebrow="Output stream"
-        title="Logs"
+        title="Log Stream"
         subtitle="Tail recent output and focus a single service."
         actions={
           <select

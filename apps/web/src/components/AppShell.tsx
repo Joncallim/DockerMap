@@ -54,7 +54,7 @@ export default function AppShell() {
   }, [draftQuery, location.pathname, navigate, searchParams]);
 
   const reachable = health?.dockerReachable;
-  const mode = health?.mode === "docker" ? "Docker socket" : "Mock engine";
+  const mode = health?.mode === "docker" ? "Docker Socket" : "Mock Engine";
 
   return (
     <div className="shell">
@@ -77,7 +77,7 @@ export default function AppShell() {
           <div className="host-meta">{reachable ? "Socket reachable" : "Socket unreachable"}</div>
         </div>
 
-        <nav className="nav" aria-label="Primary">
+        <nav className="nav nav-list" aria-label="Primary">
           {navigation.map((item) => (
             <NavLink key={item.path} to={item.path} end={item.path === "/"} className="nav-item">
               <Icon name={item.icon} size={18} />

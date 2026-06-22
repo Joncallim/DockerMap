@@ -36,8 +36,8 @@ export default function DashboardPage(props: { heartbeat: number }) {
     <div className="dashboard">
       <SectionCard
         flush
-        eyebrow="Topology · Observe mode"
-        title="Network architecture"
+        eyebrow="Observe mode"
+        title="Topology Canvas"
         icon="orbit"
         actions={
           <Badge tone="aqua" icon="pulse">
