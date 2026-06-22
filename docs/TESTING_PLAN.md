@@ -15,7 +15,8 @@ containers, or services.
 - Shared contract examples in `tests/fixtures/contracts`, read by both Rust and
   TypeScript tests so the backend and browser-facing types do not drift apart.
 - API security tests for bearer auth, CORS, daemon URL restrictions, query limits,
-  mock fallback, and error detail exposure.
+  mock fallback, read-only verb enforcement, fixed daemon route shaping, and error
+  detail exposure.
 - Playwright smoke tests for the GUI through `npm run test:e2e`, with live-Docker
   coverage opt-in through `npm run test:live-docker`.
 
@@ -66,10 +67,35 @@ The API tests cover:
 
 - `/api/health` staying public while protected routes require a bearer token.
 - Rejection of missing and incorrect bearer tokens.
-- Explicit-origin CORS behavior and rejected wildcard startup config.
+- Explicit-origin CORS behavior, public preflight handling, and rejected wildcard startup config.
 - Loopback-only daemon URL enforcement unless remote access is explicitly enabled.
-- Query limits for Compose scan and edit-plan routes.
-- Hidden daemon error details by default, with opt-in detail exposure.
+- Query limits for Compose scan, edit-plan, and logs routes.
+- Read-only route behavior, including authenticated write-verb rejection.
+- Fixed daemon proxy paths and normalized query encoding for logs, Compose scan, and
+  container detail requests.
+- Hidden daemon error details by default, with opt-in detail exposure for JSON and SSE routes.
+
+These tests run against the real Express entry point with mock fallback or a stub daemon.
+They do not require Docker, systemd, tmux, reverse-proxy software, DNS services, or a GUI.
+
+After the next implementation commit lands, execute the post-commit follow-up queue in
+[`docs/RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md). That queue is the source of truth for
+provider redaction fixtures, package advisory/network opt-in documentation, live-Docker
+release-host evidence, reverse-proxy smoke evidence, and Python/native-process provider
+planning.
+
+## Alpha Security Gates For Expanded Providers
+
+When adding systemd, tmux, npm/package, Python/native-process, reverse-proxy, DNS, or
+external-API collection, the alpha bar is:
+
+- Provider commands are fixed read-only invocations with no user-supplied shell.
+- Filesystem inspection is bounded to documented paths, request parameters, or explicit caps.
+- Registry, advisory, or other network lookups are opt-in or called out in release docs.
+- Returned metadata excludes or redacts secrets from env vars, unit files, process args,
+  package auth config, service definitions, and proxy credentials.
+- Security tests for the provider can run locally without depending on Docker, systemd,
+  tmux, or browser automation.
 
 Run GUI smoke tests before release candidates:
 
@@ -152,4 +178,6 @@ More detail is in [docs/REVERSE_PROXY.md](REVERSE_PROXY.md).
 - Run and record live-Docker integration evidence on the release host.
 - Add reverse-proxy integration tests for bearer-token injection and SSE streaming.
 - Add OpenAPI schema checks once the versioned API spec exists.
+- Add fixture-driven provider redaction tests for systemd, tmux, package inspection,
+  Python/native processes, reverse proxies, DNS, and any external advisory clients.
 - Add write-mode tests only after backup, confirmation, and rollback behavior exists.

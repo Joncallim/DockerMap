@@ -3,22 +3,26 @@
 ## Vision
 
 DockerMap helps developers understand one self-hosted machine without having to jump
-between many tools. Docker and Docker Compose remain the deepest feature area, but the
-same map now includes read-only signals from PM2, systemd, cron, tmux, listening ports,
-Tailscale/Headscale, reverse proxies, and local DNS tools.
+between many tools. Docker and Docker Compose remain deep feature areas, but Docker is
+now one subsystem inside a larger operational topology. The map must also represent
+systemd services, tmux-managed agents, npm and Python applications, native Linux
+services, reverse proxies, databases, DNS providers, storage, external APIs, and AI
+workloads.
 
 The main product idea is a relationship map: which services exist, what paths and ports
 they use, how they connect, and what would change before DockerMap ever writes a file.
 Those insights should be available in the UI and through a stable, documented API that
 external dashboards such as Homepage, Grafana, or custom scripts can consume.
 
-The three questions DockerMap should always answer clearly:
+The four questions DockerMap should always answer clearly:
 
 1. What host paths, container paths, named volumes, and Compose-file declarations exist,
    and how are they connected?
 2. How do services communicate — which Docker networks, listening ports, domains,
    Tailscale/Headscale peers, and local DNS/proxy markers?
-3. What will change if I edit a mount or routing rule, and is that change safe?
+3. Which service depends on which other service, regardless of whether the implementation
+   is Docker, systemd, tmux, npm, Python, or a native process?
+4. What will change if I edit a mount or routing rule, and is that change safe?
 
 Market research in `docs/MARKET_RESEARCH.md` supports keeping Docker Compose persistence
 and path confusion as the first deep workflow. The broader host map matters too, but PM2,
@@ -34,6 +38,9 @@ read-only until the safety model is proven.
 - **Relationships are the differentiator.** Surface Docker network topology, PM2 and
   systemd services, cron jobs, tmux sessions, reverse-proxy domains, local DNS, and
   Tailscale/Headscale peers in one map.
+- **Operational reality over implementation detail.** Internally treat containers,
+  systemd services, tmux sessions, npm apps, Python apps, and native processes as service
+  entities with common status, dependencies, health, logs, events, owner, and location.
 - **API-first.** Every insight available in the UI must be available via a versioned,
   documented REST endpoint for external dashboard integration.
 - **Confidence before writes.** Validation, dry-run, backup, and rollback guidance must
@@ -69,13 +76,17 @@ read-only until the safety model is proven.
 **Working:** Docker runtime inventory (containers, images, networks, volumes, logs), all
 read-only API endpoints, React UI with routing, SSE live refresh, mock fallback, graph
 derivation, Compose scan/graph/edit-plan endpoints, headless Compose CLI commands, and a
-first Compose UI route. The runtime map also reads PM2, systemd, cron, tmux, listening
-sockets, Tailscale/Headscale, reverse-proxy markers, and local DNS markers when those
-tools exist on the host.
+first Compose UI route. The runtime map also reads PM2, systemd, cron, tmux, npm
+projects, listening sockets, Tailscale/Headscale, reverse-proxy markers, and local DNS
+markers when those tools exist on the host. The backend now has a first provider-neutral
+service entity model, bounded systemd dependency enrichment, bounded npm project/package
+discovery, and expanded runtime-map contract fixtures for cross-technology chains.
 
-**Still to build:** table sorting, advanced filters, clickable graph nodes, richer
-container detail pages, log level filter, live tail, log pagination UI, API versioning,
-OpenAPI docs, and Homepage/Grafana-style widget endpoints.
+**Still to build:** provider-specific redaction fixtures for new collectors, richer
+systemd/npm package metadata, Python/native-process provider peers, table sorting,
+advanced filters, clickable graph nodes, richer container detail pages, log level filter,
+live tail, log pagination UI, API versioning, OpenAPI docs, and Homepage/Grafana-style
+widget endpoints.
 
 ---
 
@@ -282,6 +293,49 @@ The full local and manual test plan is in `docs/TESTING_PLAN.md`.
 - `GET /api/runtime/map` proxies the provider-neutral graph to the browser.
 - Provider commands are fixed read-only invocations and return diagnostics instead of
   failing the whole map when a tool is absent.
+
+#### Stream A.6 — Unified Service Entity Alpha Focus
+
+**A.6.1. Service entity model**
+- Add a provider-neutral service entity shape to the runtime map contracts:
+  `name`, `status`, `dependencies`, `dependents`, `health`, `logs`, `events`, `owner`,
+  and `location`.
+- Keep existing runtime nodes and edges compatible, but enrich them with `layer`,
+  `service`, and evidence metadata so the UI can filter by Docker, systemd, tmux, npm,
+  storage, network, DNS, reverse proxy, external API, and AI-agent layers.
+
+**A.6.2. systemd first-class layer**
+- Parse service metadata from fixed read-only `systemctl` calls.
+- Capture service name, active/sub state, enabled state, restart policy/count, uptime,
+  unit file path, and dependency fields where available.
+- Add dependency edges for `After=`, `Requires=`, `Wants=`, and `PartOf=`.
+- Keep recent logs bounded and redacted; do not include secrets or full journal output.
+
+**A.6.3. npm application layer**
+- Discover `package.json`, `package-lock.json`, `pnpm-lock.yaml`, and `yarn.lock` under
+  the configured project root while skipping `node_modules`, build outputs, and hidden
+  dependency caches.
+- Identify project name, version, scripts, framework hints, dependencies, lockfile type,
+  and location.
+- Represent package dependencies as nodes linked to their npm project.
+- Package latest-version and advisory checks must be bounded, cached, and either opt-in
+  or clearly documented before release because they require registry/network behavior.
+
+**A.6.4. Cross-technology chains**
+- Derive explicit edges for common chains such as:
+  `Cloudflare -> Caddy (systemd) -> Docker network -> container -> database -> volume`.
+- Derive application runtime chains such as:
+  `Forge (npm) -> forge.service -> tmux session -> GPT worker`.
+- Prefer explicit evidence first: systemd dependencies, Compose labels, package scripts,
+  process working directories, tmux session names, proxy route config, and Docker network
+  membership.
+
+**A.6.5. Alpha security gate**
+- All provider commands remain fixed, read-only invocations.
+- Filesystem scans are bounded by configured roots and skip dependency/build directories.
+- Package/app inspection must not surface `.env` values, tokens, private registry auth,
+  or full command-line secrets.
+- Add parser-level fixtures and API security tests before public alpha.
 
 #### Stream B — Docker Network Deep Dive
 

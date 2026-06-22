@@ -316,17 +316,92 @@ pub struct ComposeEditPlan {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ServiceEntityKind {
+    Service,
+    NodeApplication,
+    PythonApplication,
+    AiAgent,
+    Session,
+    Host,
+    Storage,
+    ExternalApi,
+    DnsProvider,
+    ReverseProxy,
+    PackageDependency,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceEntityRelationshipKind {
+    DependsOn,
+    RunsOn,
+    StoresDataIn,
+    Calls,
+    ResolvesVia,
+    ProxiesTo,
+    Contains,
+    RelatedTo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceEntity {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: ServiceEntityKind,
+    pub label: String,
+    pub status: Option<String>,
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceEntityRelationship {
+    pub source: String,
+    pub target: String,
+    pub relationship: ServiceEntityRelationshipKind,
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OperationalMap {
+    pub services: Vec<ServiceEntity>,
+    pub relationships: Vec<ServiceEntityRelationship>,
+}
+
+pub fn service_entity_kind_name(kind: &ServiceEntityKind) -> &'static str {
+    match kind {
+        ServiceEntityKind::Service => "service",
+        ServiceEntityKind::NodeApplication => "node_application",
+        ServiceEntityKind::PythonApplication => "python_application",
+        ServiceEntityKind::AiAgent => "ai_agent",
+        ServiceEntityKind::Session => "session",
+        ServiceEntityKind::Host => "host",
+        ServiceEntityKind::Storage => "storage",
+        ServiceEntityKind::ExternalApi => "external_api",
+        ServiceEntityKind::DnsProvider => "dns_provider",
+        ServiceEntityKind::ReverseProxy => "reverse_proxy",
+        ServiceEntityKind::PackageDependency => "package_dependency",
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum RuntimeProviderKind {
     Docker,
     Compose,
+    Host,
     Systemd,
     ScheduledJob,
+    Npm,
     Pm2,
     Tmux,
     Tailscale,
     Headscale,
+    Cloudflare,
+    Caddy,
     ReverseProxy,
     LocalDns,
+    DnsProvider,
+    ExternalApi,
     Process,
     Network,
     Kubernetes,
@@ -339,6 +414,8 @@ pub enum RuntimeNodeKind {
     Container,
     DockerNetwork,
     DockerVolume,
+    Host,
+    Service,
     SystemdService,
     ScheduledJob,
     Pm2App,
@@ -346,6 +423,16 @@ pub enum RuntimeNodeKind {
     TailnetNode,
     ReverseProxy,
     LocalDnsResolver,
+    DnsProvider,
+    NodeApplication,
+    PythonApplication,
+    AiAgent,
+    Package,
+    Storage,
+    ExternalApi,
+    PackageDependency,
+    Database,
+    Worker,
     Process,
     NetworkListener,
     OrchestratorWorkload,
@@ -355,9 +442,24 @@ pub enum RuntimeNodeKind {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeRelationshipKind {
     ConnectedTo,
+    DependsOn,
+    RequiredBy,
+    Requires,
+    Wants,
+    After,
+    Before,
+    PartOf,
+    BindsTo,
+    ConflictsWith,
     Mounts,
     Manages,
     Exposes,
+    RunsOn,
+    Uses,
+    Calls,
+    ResolvesVia,
+    ProxiesTo,
+    Contains,
     Owns,
     RelatedTo,
 }
@@ -678,6 +780,10 @@ pub fn derive_runtime_map(
         let mut metadata = BTreeMap::new();
         metadata.insert("image".into(), container.image.clone());
         metadata.insert("role".into(), container.role.clone());
+        metadata.insert(
+            "serviceEntityKind".into(),
+            service_entity_kind_name(&ServiceEntityKind::Service).into(),
+        );
         if !container.ports.is_empty() {
             metadata.insert("ports".into(), container.ports.join(","));
         }
@@ -736,13 +842,18 @@ pub fn derive_runtime_map(
     }
 
     for volume in &snapshot.volumes {
+        let mut metadata = BTreeMap::new();
+        metadata.insert(
+            "serviceEntityKind".into(),
+            service_entity_kind_name(&ServiceEntityKind::Storage).into(),
+        );
         nodes.push(RuntimeMapNode {
             id: format!("docker_volume_{}", sanitize_id(&volume.id)),
             provider: RuntimeProviderKind::Docker,
             kind: RuntimeNodeKind::DockerVolume,
             label: volume.name.clone(),
             status: None,
-            metadata: BTreeMap::new(),
+            metadata,
         });
 
         for attached in &volume.attached_to {
@@ -1969,6 +2080,7 @@ mod tests {
         let compose_scan: ComposeScan = read_contract_fixture("compose-scan.json");
         let compose_graph: ComposeGraph = read_contract_fixture("compose-graph.json");
         let runtime_map: RuntimeMap = read_contract_fixture("runtime-map.json");
+        let expanded_runtime_map: RuntimeMap = read_contract_fixture("runtime-map-expanded.json");
 
         assert_eq!(
             snapshot.containers[0].mounts[0].kind,
@@ -1983,6 +2095,14 @@ mod tests {
             ComposeRelationshipKind::DeclaresMount
         );
         assert_eq!(runtime_map.nodes[0].provider, RuntimeProviderKind::Docker);
+        assert!(expanded_runtime_map
+            .nodes
+            .iter()
+            .any(|node| node.provider == RuntimeProviderKind::Cloudflare));
+        assert!(expanded_runtime_map
+            .edges
+            .iter()
+            .any(|edge| edge.relationship == RuntimeRelationshipKind::Wants));
     }
 
     #[test]
