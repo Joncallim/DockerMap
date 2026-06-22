@@ -1,10 +1,29 @@
 # DockerMap
 
-DockerMap is a local web app for understanding one self-hosted machine. It maps Docker
-and Compose in depth, and it also reads nearby runtime signals such as PM2 apps, systemd
-services, cron jobs, tmux sessions, listening ports, Tailscale/Headscale nodes, reverse
-proxies, and local DNS tools. It is read-first: today it can inspect files and show
-dry-run diffs, but it does not write Compose files or change running services.
+DockerMap is a local operational topology app for understanding one self-hosted machine.
+Docker and Compose remain deep subsystems, but the product direction is broader: map the
+whole environment across Docker, systemd, tmux, package ecosystems, native processes,
+reverse proxies, databases, DNS, storage, network edges, and AI workloads.
+
+It is read-first: today it can inspect files and show dry-run diffs, but it does not
+write Compose files or change running services.
+
+## Current Alpha Focus
+
+The alpha focus is backend and security work, not GUI redesign:
+
+- Treat every runtime as a provider-neutral service entity with name, status,
+  dependencies, dependents, health, logs, events, owner, and location.
+- Make systemd a first-class infrastructure layer with service status, enabled state,
+  restart policy/count, uptime, dependencies, and recent-log metadata where safe.
+- Discover npm and other application projects separately from containers so direct
+  Node.js services, MCP servers, AI agents, and custom APIs appear on the same map.
+- Represent cross-technology chains such as Cloudflare -> Caddy -> Docker network ->
+  container -> database -> volume, or npm app -> systemd service -> tmux worker.
+- Harden read-only collectors, bounded filesystem scans, API auth/CORS behavior, and
+  release evidence before opening a full alpha.
+
+The GUI should stay stable for now and will be handed off separately for design work.
 
 ## Screenshots
 
@@ -25,8 +44,10 @@ Container detail with runtime metadata and recent logs:
 - See which containers, networks, volumes, and ports exist on a host.
 - See which Compose services declare bind mounts and named volumes.
 - Compare Compose-declared mounts with the mounts Docker is actually running.
-- See non-Docker runtime signals from PM2, systemd, cron, tmux, Tailscale/Headscale,
-  reverse proxies, local DNS, and listening sockets.
+- See non-Docker runtime signals from systemd, tmux, npm projects, PM2, cron,
+  Tailscale/Headscale, reverse proxies, local DNS, and listening sockets.
+- Follow service chains across implementation technologies without needing to know
+  whether a workload is Docker, systemd, tmux, npm, Python, or a native Linux process.
 - Spot common problems, such as missing host folders or duplicate container mount paths.
 - Preview a Compose mount path change as a diff before any write feature exists.
 
@@ -130,12 +151,15 @@ header when it forwards `/api/*` requests to `127.0.0.1:4000`. See
 
 - The web app has pages for dashboard, containers, images, networks, volumes, logs, and Compose.
 - The daemon reads Docker when available and falls back to mock data when Docker is unavailable.
-- The runtime map also reads PM2, systemd, cron, tmux, listening sockets,
+- The runtime map also reads PM2, systemd, cron, tmux, npm projects, listening sockets,
   Tailscale/Headscale, reverse-proxy markers, and local DNS markers when those tools are
   present on the host.
+- systemd discovery includes bounded dependency enrichment, and npm discovery creates
+  project and package-dependency nodes under the configured project root.
 - Compose scanning discovers base files plus adjacent override files.
 - Compose scans now include runtime mount checks: matched, missing, and extra.
-- Rust and TypeScript share API contract fixtures under `tests/fixtures/contracts`.
+- Rust and TypeScript share API contract fixtures under `tests/fixtures/contracts`,
+  including an expanded cross-technology runtime-map fixture.
 - CI runs TypeScript audit/typecheck/build/tests, Rust format/lint/tests, and Playwright smoke tests.
 
 More background:

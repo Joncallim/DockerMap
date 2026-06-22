@@ -7,6 +7,22 @@ Each phase is split into **concurrent streams** that can be assigned to differen
 developers. Dependencies within a stream are noted inline; streams within a phase are
 otherwise independent.
 
+## Current Product Direction
+
+DockerMap is no longer just a Docker-and-Compose map. Docker is one subsystem inside a
+larger operational topology. The first full-alpha push should prioritize backend model,
+collector, contract, and security work for:
+
+- Docker containers, networks, volumes, images, and Compose stacks.
+- systemd services, dependencies, restart metadata, uptime, and bounded logs.
+- tmux sessions and tmux-managed workers.
+- npm projects, Node.js services, package dependencies, and lockfiles.
+- Python applications and native Linux processes as follow-on provider peers.
+- Reverse proxies, DNS providers, external APIs, storage pools, databases, and AI agents.
+
+Do not develop the GUI in this phase. The GUI will be handed off separately once the
+runtime model and contracts are stable.
+
 ---
 
 ## Current Status
@@ -21,17 +37,26 @@ otherwise independent.
 ### In Progress (Phase 1)
 - Docker runtime inventory via bollard is working: containers, images, networks, volumes,
   logs, and mounts.
-- The runtime map also reads PM2 apps, systemd services, cron jobs, tmux sessions,
-  listening sockets, Tailscale/Headscale nodes, reverse-proxy markers, and local DNS
-  markers when those tools are available on the host.
+- The runtime map also reads PM2 apps, systemd services, cron jobs, tmux sessions, npm
+  projects, listening sockets, Tailscale/Headscale nodes, reverse-proxy markers, and
+  local DNS markers when those tools are available on the host.
+- A first provider-neutral service entity model is in place, along with bounded systemd
+  dependency enrichment, bounded npm project/package discovery, and an expanded
+  cross-technology runtime-map contract fixture.
 - All current read-only API endpoints are exposed.
 - React UI has pages for dashboard, containers, container detail, images, networks,
   volumes, logs, and Compose.
 - Frontend component split, Compose scan/graph/edit-plan endpoints, CLI
   scan/validate/export, Compose/runtime correlation, override merge semantics, and
   contract compatibility tests are done.
-- Still to build: table sorting, advanced filters, clickable graph nodes, log level
-  filter, live tail, and log pagination UI.
+- Still to build before full alpha: provider-specific redaction fixtures for new
+  collectors, richer package/update/advisory behavior, Python/native-process provider
+  peers, table sorting, advanced filters, clickable graph nodes, log level filter, live
+  tail, and log pagination UI.
+- Immediately after the next implementation commit lands, execute the follow-up queue in
+  [`docs/RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md): provider redaction fixtures,
+  package advisory/network opt-in docs, live-Docker/reverse-proxy release-host evidence,
+  and Python/native-process provider planning.
 - Testing plan: see [`docs/TESTING_PLAN.md`](TESTING_PLAN.md).
 
 ---
@@ -271,6 +296,59 @@ Remaining:
 - `GET /api/runtime/map` proxies that provider-neutral graph to the browser.
 - Provider commands are fixed read-only invocations and return diagnostics instead of
   failing the whole map when a tool is absent.
+
+### Stream A.6 — Unified Service Entity And Application Ecosystems
+
+**A.6.1. Core model expansion**
+- File: `crates/dockermap-core/src/lib.rs`
+- Add a provider-neutral service entity shape with common fields:
+  `name`, `status`, `dependencies`, `dependents`, `health`, `logs`, `events`, `owner`,
+  and `location`.
+- Preserve current `RuntimeMap` compatibility while enriching nodes with `layer`,
+  service metadata, and evidence/source metadata.
+- Expand node and relationship enums for npm projects, Python projects, Node.js services,
+  AI agents, package dependencies, hosts, storage pools, external APIs, DNS providers,
+  reverse proxies, systemd dependencies, package dependencies, and runtime hosts.
+
+**A.6.2. systemd dependency provider**
+- File: `crates/dockermap-daemon/src/main.rs`
+- Use fixed read-only calls only: `systemctl list-units`, `systemctl show`, and bounded
+  journal snippets only after redaction rules exist.
+- Capture service name, active/sub state, enabled state, unit file path, restart policy,
+  restart count, uptime fields, and dependencies.
+- Add graph edges for `After=`, `Requires=`, `Wants=`, and `PartOf=` when the referenced
+  unit is also present or can be represented as a placeholder systemd node.
+- Add parser-level tests for representative `systemctl` output.
+
+**A.6.3. npm project provider**
+- Files: `crates/dockermap-daemon/src/main.rs`, optionally a later provider module split.
+- Discover `package.json`, `package-lock.json`, `pnpm-lock.yaml`, and `yarn.lock` under
+  `DOCKERMAP_PROJECT_ROOT`.
+- Skip `node_modules`, `.git`, `dist`, `build`, `target`, coverage, and cache
+  directories.
+- Parse project name, version, scripts, framework hints, dependency names, lockfile type,
+  and location.
+- Add npm project nodes plus package dependency edges.
+- Do not read `.env` values or registry auth files.
+
+**A.6.4. Contracts and fixtures**
+- Files: `packages/contracts/src/index.ts`, `tests/fixtures/contracts/runtime-map.json`
+- Keep TypeScript runtime-map contracts in sync with Rust.
+- Add fixture examples for:
+  `Cloudflare -> Caddy (systemd) -> Docker network -> Immich container -> Postgres container -> Storage volume`.
+- Add fixture examples for:
+  `Forge (npm) -> forge.service -> tmux session -> GPT worker`.
+
+**A.6.5. Security and alpha evidence**
+- Files: `apps/api/test/security.test.ts`, `docs/THREAT_MODEL.md`,
+  `docs/TESTING_PLAN.md`, `docs/RELEASE_CHECKLIST.md`
+- Add tests that do not require Docker/systemd availability.
+- Verify auth, CORS, daemon URL restrictions, bounded query handling, hidden daemon error
+  details, runtime-map fallback safety, and startup rejection for unsafe configuration.
+- Add alpha gates for bounded filesystem scans, fixed read-only commands, no secret/env
+  leakage, and documented opt-in package advisory/network behavior.
+- After the current commit is completed, create the concrete follow-up issues/tasks named
+  in the release checklist's "Execute After Next Commit" section.
 
 ---
 

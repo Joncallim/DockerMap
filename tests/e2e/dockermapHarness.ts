@@ -142,7 +142,8 @@ function startDaemon(options: {
   const env = {
     ...process.env,
     DOCKERMAP_DAEMON_HOST: "127.0.0.1",
-    DOCKERMAP_DAEMON_PORT: String(options.port)
+    DOCKERMAP_DAEMON_PORT: String(options.port),
+    ...(options.useDockerAccess ? {} : { DOCKERMAP_FORCE_MOCK: "true" })
   };
 
   if (options.useDockerAccess && options.docker?.[0] === "sudo") {

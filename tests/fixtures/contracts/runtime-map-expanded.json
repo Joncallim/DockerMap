@@ -1,0 +1,598 @@
+{
+  "nodes": [
+    {
+      "id": "runtime_cloudflare_edge",
+      "provider": "cloudflare",
+      "type": "reverse_proxy",
+      "layer": "edge",
+      "label": "Cloudflare edge",
+      "status": "running",
+      "metadata": {
+        "zone": "dockermap.example",
+        "hostname": "dockermap.example"
+      },
+      "service": {
+        "name": "cloudflare tunnel",
+        "status": "running",
+        "dependencies": ["caddy.service"],
+        "dependents": ["caddy"],
+        "health": {
+          "state": "healthy",
+          "source": "cloudflare",
+          "message": "Edge ingress is healthy"
+        },
+        "logs": [
+          {
+            "id": "runtime_cloudflare_edge_log_1",
+            "source": "cloudflared",
+            "level": "info"
+          }
+        ],
+        "events": [
+          {
+            "id": "runtime_cloudflare_edge_event_1",
+            "kind": "heartbeat",
+            "message": "Edge tunnel connected"
+          }
+        ],
+        "owner": {
+          "kind": "vendor",
+          "name": "Cloudflare"
+        },
+        "location": {
+          "kind": "region",
+          "value": "global"
+        }
+      }
+    },
+    {
+      "id": "runtime_caddy_proxy",
+      "provider": "caddy",
+      "type": "reverse_proxy",
+      "layer": "edge",
+      "label": "caddy",
+      "status": "running",
+      "metadata": {
+        "config": "Caddyfile",
+        "tls": "true"
+      },
+      "service": {
+        "name": "caddy",
+        "status": "running",
+        "dependencies": ["caddy.service"],
+        "dependents": ["api", "worker"],
+        "health": {
+          "state": "healthy",
+          "source": "caddy",
+          "message": "Proxy configuration loaded"
+        },
+        "logs": [
+          {
+            "id": "runtime_caddy_proxy_log_1",
+            "source": "caddy",
+            "level": "info",
+            "message": "Serving HTTPS for dockermap.example"
+          }
+        ],
+        "events": [
+          {
+            "id": "runtime_caddy_proxy_event_1",
+            "kind": "config_reload",
+            "message": "Loaded Caddyfile"
+          }
+        ],
+        "owner": {
+          "kind": "team",
+          "name": "platform"
+        },
+        "location": {
+          "kind": "host",
+          "value": "node-a"
+        }
+      }
+    },
+    {
+      "id": "runtime_systemd_caddy",
+      "provider": "systemd",
+      "type": "systemd_service",
+      "layer": "host",
+      "label": "caddy.service",
+      "status": "running",
+      "metadata": {
+        "unit": "caddy.service",
+        "restart": "always"
+      },
+      "service": {
+        "name": "caddy.service",
+        "status": "running",
+        "dependencies": ["docker.service"],
+        "dependents": ["caddy"],
+        "health": {
+          "state": "healthy",
+          "source": "systemd",
+          "message": "systemd reports active"
+        },
+        "logs": [
+          {
+            "id": "runtime_systemd_caddy_log_1",
+            "source": "journalctl",
+            "level": "info",
+            "message": "Started Caddy service"
+          }
+        ],
+        "events": [
+          {
+            "id": "runtime_systemd_caddy_event_1",
+            "kind": "start",
+            "message": "Service entered running state"
+          }
+        ],
+        "owner": {
+          "kind": "system",
+          "name": "systemd"
+        },
+        "location": {
+          "kind": "host",
+          "value": "node-a"
+        }
+      }
+    },
+    {
+      "id": "runtime_docker_network_app",
+      "provider": "docker",
+      "type": "docker_network",
+      "layer": "network",
+      "label": "app-net",
+      "status": "available",
+      "metadata": {
+        "driver": "bridge",
+        "scope": "local"
+      }
+    },
+    {
+      "id": "runtime_container_api",
+      "provider": "docker",
+      "type": "container",
+      "layer": "container",
+      "label": "api",
+      "status": "running",
+      "metadata": {
+        "image": "python:3.12-slim",
+        "role": "api"
+      },
+      "service": {
+        "name": "api",
+        "status": "running",
+        "dependencies": ["db"],
+        "dependents": ["caddy"],
+        "health": {
+          "state": "healthy",
+          "source": "http",
+          "message": "API responded in under 50ms"
+        },
+        "logs": [
+          {
+            "id": "runtime_container_api_log_1",
+            "source": "docker logs api",
+            "level": "info",
+            "message": "Application started"
+          }
+        ],
+        "events": [
+          {
+            "id": "runtime_container_api_event_1",
+            "kind": "restart",
+            "message": "Container restarted after deploy"
+          }
+        ],
+        "owner": {
+          "kind": "team",
+          "name": "platform"
+        },
+        "location": {
+          "kind": "container",
+          "value": "app-net"
+        }
+      }
+    },
+    {
+      "id": "runtime_database_db",
+      "provider": "docker",
+      "type": "database",
+      "layer": "container",
+      "label": "db",
+      "status": "running",
+      "metadata": {
+        "image": "postgres:16",
+        "role": "database"
+      },
+      "service": {
+        "name": "db",
+        "status": "running",
+        "dependencies": ["db-data"],
+        "dependents": ["api"],
+        "health": {
+          "state": "healthy",
+          "source": "postgres",
+          "message": "Primary is accepting connections"
+        },
+        "logs": [
+          {
+            "id": "runtime_database_db_log_1",
+            "source": "postgres",
+            "level": "info",
+            "message": "database ready"
+          }
+        ],
+        "events": [
+          {
+            "id": "runtime_database_db_event_1",
+            "kind": "backup",
+            "message": "Nightly backup completed"
+          }
+        ],
+        "owner": {
+          "kind": "team",
+          "name": "platform"
+        },
+        "location": {
+          "kind": "container",
+          "value": "app-net"
+        }
+      }
+    },
+    {
+      "id": "runtime_volume_db_data",
+      "provider": "docker",
+      "type": "docker_volume",
+      "layer": "storage",
+      "label": "db-data",
+      "status": "attached",
+      "metadata": {
+        "driver": "local",
+        "scope": "project"
+      }
+    },
+    {
+      "id": "runtime_npm_app",
+      "provider": "npm",
+      "type": "package",
+      "layer": "package",
+      "label": "@dockermap/worker",
+      "status": "outdated",
+      "metadata": {
+        "manager": "npm",
+        "workspace": "apps/worker"
+      },
+      "service": {
+        "name": "@dockermap/worker",
+        "status": "running",
+        "dependencies": ["worker.service"],
+        "dependents": ["worker-session"],
+        "health": {
+          "state": "degraded",
+          "source": "process",
+          "message": "One dependency update is available"
+        },
+        "logs": [
+          {
+            "id": "runtime_npm_app_log_1",
+            "source": "npm run start",
+            "level": "info",
+            "message": "Worker app booted"
+          }
+        ],
+        "events": [
+          {
+            "id": "runtime_npm_app_event_1",
+            "kind": "deploy",
+            "message": "New npm build deployed"
+          }
+        ],
+        "owner": {
+          "kind": "team",
+          "name": "platform"
+        },
+        "location": {
+          "kind": "workspace",
+          "value": "/srv/dockermap/apps/worker"
+        }
+      },
+      "package": {
+        "name": "@dockermap/worker",
+        "manager": "npm",
+        "version": "1.2.3",
+        "dependencies": ["express", "tsx"],
+        "dependents": ["worker.service"],
+        "update": {
+          "currentVersion": "1.2.3",
+          "latestVersion": "1.3.0",
+          "available": true,
+          "advisories": [
+            {
+              "id": "npm-audit-worker-2026-001",
+              "source": "npm audit",
+              "title": "Transitive dependency exposes unsafe input handling",
+              "severity": "high",
+              "fixedVersion": "1.3.0",
+              "url": "https://example.test/advisories/npm-audit-worker-2026-001",
+              "publishedAt": 1710000000100
+            }
+          ]
+        },
+        "owner": {
+          "kind": "team",
+          "name": "platform"
+        },
+        "location": {
+          "kind": "workspace",
+          "value": "/srv/dockermap/apps/worker"
+        }
+      }
+    },
+    {
+      "id": "runtime_package_express",
+      "provider": "npm",
+      "type": "package_dependency",
+      "layer": "package",
+      "label": "express",
+      "status": "current",
+      "metadata": {
+        "manager": "npm",
+        "parent": "@dockermap/worker",
+        "version": "5.1.0"
+      },
+      "package": {
+        "name": "express",
+        "manager": "npm",
+        "version": "5.1.0",
+        "dependencies": [],
+        "dependents": ["@dockermap/worker"],
+        "update": null,
+        "owner": null,
+        "location": null
+      }
+    },
+    {
+      "id": "runtime_package_tsx",
+      "provider": "npm",
+      "type": "package_dependency",
+      "layer": "package",
+      "label": "tsx",
+      "status": "outdated",
+      "metadata": {
+        "manager": "npm",
+        "parent": "@dockermap/worker",
+        "version": "4.20.5"
+      },
+      "package": {
+        "name": "tsx",
+        "manager": "npm",
+        "version": "4.20.5",
+        "dependencies": [],
+        "dependents": ["@dockermap/worker"],
+        "update": {
+          "currentVersion": "4.20.5",
+          "latestVersion": "4.21.0",
+          "available": true,
+          "advisories": [
+            {
+              "id": "npm-audit-tsx-2026-001",
+              "source": "npm audit",
+              "title": "Parsing issue in dependency tree",
+              "severity": "moderate",
+              "fixedVersion": "4.21.0",
+              "publishedAt": 1710000000200
+            }
+          ]
+        },
+        "owner": null,
+        "location": null
+      }
+    },
+    {
+      "id": "runtime_systemd_worker",
+      "provider": "systemd",
+      "type": "systemd_service",
+      "layer": "host",
+      "label": "worker.service",
+      "status": "running",
+      "metadata": {
+        "unit": "worker.service",
+        "restart": "on-failure"
+      },
+      "service": {
+        "name": "worker.service",
+        "status": "running",
+        "dependencies": ["worker-session"],
+        "dependents": ["worker"],
+        "health": {
+          "state": "healthy",
+          "source": "systemd",
+          "message": "Worker service active"
+        },
+        "logs": [
+          {
+            "id": "runtime_systemd_worker_log_1",
+            "source": "journalctl",
+            "level": "info",
+            "message": "Started worker service"
+          }
+        ],
+        "events": [
+          {
+            "id": "runtime_systemd_worker_event_1",
+            "kind": "start",
+            "message": "Worker service is running"
+          }
+        ],
+        "owner": {
+          "kind": "automation",
+          "name": "systemd"
+        },
+        "location": {
+          "kind": "host",
+          "value": "node-a"
+        }
+      }
+    },
+    {
+      "id": "runtime_tmux_worker",
+      "provider": "tmux",
+      "type": "tmux_session",
+      "layer": "session",
+      "label": "worker-session",
+      "status": "attached",
+      "metadata": {
+        "session": "worker",
+        "paneCount": "1"
+      },
+      "service": {
+        "name": "worker-session",
+        "status": "running",
+        "dependencies": ["worker.service"],
+        "dependents": ["worker"],
+        "health": {
+          "state": "healthy",
+          "source": "tmux",
+          "message": "Session attached"
+        },
+        "logs": [
+          {
+            "id": "runtime_tmux_worker_log_1",
+            "source": "tmux",
+            "level": "info",
+            "message": "Detached session preserved"
+          }
+        ],
+        "events": [
+          {
+            "id": "runtime_tmux_worker_event_1",
+            "kind": "attach",
+            "message": "Operator attached to worker session"
+          }
+        ],
+        "owner": {
+          "kind": "team",
+          "name": "platform"
+        },
+        "location": {
+          "kind": "host",
+          "value": "node-a"
+        }
+      }
+    },
+    {
+      "id": "runtime_process_worker",
+      "provider": "process",
+      "type": "worker",
+      "layer": "process",
+      "label": "worker",
+      "status": "running",
+      "metadata": {
+        "pid": "2412",
+        "command": "node worker.js"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "runtime_cloudflare_edge",
+      "target": "runtime_caddy_proxy",
+      "relationship": "related_to",
+      "metadata": {
+        "path": "443/tcp"
+      }
+    },
+    {
+      "source": "runtime_caddy_proxy",
+      "target": "runtime_systemd_caddy",
+      "relationship": "manages",
+      "metadata": {
+        "unit": "caddy.service"
+      }
+    },
+    {
+      "source": "runtime_systemd_caddy",
+      "target": "runtime_docker_network_app",
+      "relationship": "exposes",
+      "metadata": {
+        "port": "443"
+      }
+    },
+    {
+      "source": "runtime_docker_network_app",
+      "target": "runtime_container_api",
+      "relationship": "connected_to",
+      "metadata": {
+        "scope": "app-net"
+      }
+    },
+    {
+      "source": "runtime_container_api",
+      "target": "runtime_database_db",
+      "relationship": "connected_to",
+      "metadata": {
+        "role": "primary"
+      }
+    },
+    {
+      "source": "runtime_database_db",
+      "target": "runtime_volume_db_data",
+      "relationship": "mounts",
+      "metadata": {
+        "mountPoint": "/var/lib/postgresql/data"
+      }
+    },
+    {
+      "source": "runtime_npm_app",
+      "target": "runtime_systemd_worker",
+      "relationship": "depends_on",
+      "metadata": {
+        "kind": "deployment"
+      }
+    },
+    {
+      "source": "runtime_systemd_worker",
+      "target": "runtime_tmux_worker",
+      "relationship": "wants",
+      "metadata": {
+        "ordering": "after-login"
+      }
+    },
+    {
+      "source": "runtime_tmux_worker",
+      "target": "runtime_process_worker",
+      "relationship": "owns",
+      "metadata": {
+        "command": "node worker.js"
+      }
+    },
+    {
+      "source": "runtime_npm_app",
+      "target": "runtime_package_express",
+      "relationship": "depends_on",
+      "metadata": {
+        "manager": "npm"
+      }
+    },
+    {
+      "source": "runtime_npm_app",
+      "target": "runtime_package_tsx",
+      "relationship": "depends_on",
+      "metadata": {
+        "manager": "npm"
+      }
+    },
+    {
+      "source": "runtime_systemd_caddy",
+      "target": "runtime_container_api",
+      "relationship": "after",
+      "metadata": {
+        "ordering": "proxy"
+      }
+    }
+  ],
+  "diagnostics": [],
+  "lastUpdated": 1710000001234
+}

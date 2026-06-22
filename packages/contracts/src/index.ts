@@ -177,17 +177,122 @@ export interface ComposeEditPlan {
   willWrite: boolean;
 }
 
+export type RuntimeMetadataValue = string | number | boolean | null;
+export type RuntimeNodeLayer =
+  | "edge"
+  | "host"
+  | "service"
+  | "container"
+  | "process"
+  | "session"
+  | "package"
+  | "network"
+  | "storage"
+  | "advisory";
+
+export type RuntimeServiceStatus =
+  | "running"
+  | "starting"
+  | "stopping"
+  | "stopped"
+  | "degraded"
+  | "failed"
+  | "unknown";
+export type RuntimeOwnershipKind = "person" | "team" | "system" | "automation" | "vendor";
+export type RuntimeLocationKind = "host" | "container" | "path" | "cluster" | "region" | "workspace" | "tailnet";
+export type RuntimeHealthState = "healthy" | "degraded" | "unhealthy" | "unknown";
+export type RuntimePackageManager = "npm" | "pnpm" | "yarn" | "pip" | "apt" | "apk" | "brew" | "cargo" | "system";
+export type RuntimeAdvisorySeverity = "low" | "moderate" | "high" | "critical";
+
+export interface RuntimeOwnership {
+  kind: RuntimeOwnershipKind;
+  name: string;
+  id?: string;
+}
+
+export interface RuntimeLocation {
+  kind: RuntimeLocationKind;
+  value: string;
+  detail?: string;
+}
+
+export interface RuntimeHealth {
+  state: RuntimeHealthState;
+  checkedAt?: number;
+  source?: string;
+  message?: string;
+}
+
+export interface RuntimeLogRef {
+  id: string;
+  source: string;
+  level?: "debug" | "info" | "warn" | "error";
+}
+
+export interface RuntimeEventRef {
+  id: string;
+  kind: string;
+  timestamp?: number;
+  message?: string;
+}
+
+export interface RuntimeServiceEntity {
+  name: string;
+  status: RuntimeServiceStatus;
+  dependencies: string[];
+  dependents: string[];
+  health: RuntimeHealth | null;
+  logs: RuntimeLogRef[];
+  events: RuntimeEventRef[];
+  owner: RuntimeOwnership | null;
+  location: RuntimeLocation | null;
+}
+
+export interface RuntimePackageAdvisory {
+  id: string;
+  source: string;
+  title: string;
+  severity: RuntimeAdvisorySeverity;
+  fixedVersion: string | null;
+  url?: string;
+  publishedAt?: number;
+}
+
+export interface RuntimePackageUpdate {
+  currentVersion: string;
+  latestVersion: string | null;
+  available: boolean;
+  advisories: RuntimePackageAdvisory[];
+}
+
+export interface RuntimePackageEntity {
+  name: string;
+  manager: RuntimePackageManager;
+  version: string;
+  dependencies: string[];
+  dependents: string[];
+  update: RuntimePackageUpdate | null;
+  owner: RuntimeOwnership | null;
+  location: RuntimeLocation | null;
+}
+
 export type RuntimeProviderKind =
   | "docker"
   | "compose"
+  | "host"
   | "systemd"
   | "scheduled_job"
+  | "npm"
   | "pm2"
   | "tmux"
   | "tailscale"
   | "headscale"
+  | "cloudflare"
+  | "caddy"
   | "reverse_proxy"
   | "local_dns"
+  | "dns_provider"
+  | "external_api"
   | "process"
   | "network"
   | "kubernetes"
@@ -197,6 +302,8 @@ export type RuntimeNodeKind =
   | "container"
   | "docker_network"
   | "docker_volume"
+  | "host"
+  | "service"
   | "systemd_service"
   | "scheduled_job"
   | "pm2_app"
@@ -204,9 +311,19 @@ export type RuntimeNodeKind =
   | "tailnet_node"
   | "reverse_proxy"
   | "local_dns_resolver"
+  | "dns_provider"
+  | "node_application"
+  | "python_application"
+  | "ai_agent"
+  | "storage"
+  | "external_api"
   | "process"
   | "network_listener"
-  | "orchestrator_workload";
+  | "orchestrator_workload"
+  | "package"
+  | "package_dependency"
+  | "database"
+  | "worker";
 
 export type RuntimeRelationshipKind =
   | "connected_to"
@@ -214,7 +331,22 @@ export type RuntimeRelationshipKind =
   | "manages"
   | "exposes"
   | "owns"
-  | "related_to";
+  | "related_to"
+  | "depends_on"
+  | "required_by"
+  | "wants"
+  | "requires"
+  | "after"
+  | "before"
+  | "part_of"
+  | "binds_to"
+  | "conflicts_with"
+  | "runs_on"
+  | "uses"
+  | "calls"
+  | "resolves_via"
+  | "proxies_to"
+  | "contains";
 
 export interface RuntimeMapNode {
   id: string;
@@ -222,14 +354,17 @@ export interface RuntimeMapNode {
   type: RuntimeNodeKind;
   label: string;
   status: string | null;
-  metadata: Record<string, string>;
+  layer?: RuntimeNodeLayer | null;
+  metadata: Record<string, RuntimeMetadataValue>;
+  service?: RuntimeServiceEntity | null;
+  package?: RuntimePackageEntity | null;
 }
 
 export interface RuntimeMapEdge {
   source: string;
   target: string;
   relationship: RuntimeRelationshipKind;
-  metadata: Record<string, string>;
+  metadata: Record<string, RuntimeMetadataValue>;
 }
 
 export interface RuntimeMapDiagnostic {
