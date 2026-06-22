@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+const channel = process.env.PLAYWRIGHT_CHROME_CHANNEL;
 
 export default defineConfig({
   testDir: ".",
@@ -16,7 +17,7 @@ export default defineConfig({
   use: {
     ...devices["Desktop Chrome"],
     browserName: "chromium",
-    channel: executablePath ? undefined : (process.env.PLAYWRIGHT_CHROME_CHANNEL ?? "chrome"),
+    channel: executablePath ? undefined : channel,
     launchOptions: executablePath ? { executablePath } : undefined,
     trace: "on-first-retry"
   }
