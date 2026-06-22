@@ -244,6 +244,12 @@ async fn refresh_cache(state: &AppState) {
 }
 
 async fn collect_snapshot() -> DaemonCache {
+    if std::env::var("DOCKERMAP_FORCE_MOCK").ok().as_deref() == Some("true") {
+        let mut cache = DaemonCache::mock();
+        cache.health.message = Some("Mock mode forced by DOCKERMAP_FORCE_MOCK".into());
+        return cache;
+    }
+
     match DockerCollector::connect() {
         Ok(collector) => match collector.collect_snapshot().await {
             Ok(mut snapshot) => {
