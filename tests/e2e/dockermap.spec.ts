@@ -23,7 +23,7 @@ test.describe("DockerMap GUI", () => {
     stack = await startMockStack();
 
     await page.goto(stack.webUrl);
-    await expect(page.getByText("DockerMap")).toBeVisible();
+    await expect(page.getByText("DockerMap", { exact: true })).toBeVisible();
     await expect(page.getByText(/Mock Engine|Docker Socket/)).toBeVisible();
     await expect(page.getByText("Topology Canvas")).toBeVisible();
 
