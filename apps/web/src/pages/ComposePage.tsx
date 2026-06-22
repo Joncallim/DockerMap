@@ -82,7 +82,7 @@ export default function ComposePage(props: { heartbeat: number }) {
     <section className="stack">
       <PageHead
         eyebrow="Declared vs running"
-        title="Compose"
+        title="Compose Map"
         subtitle="Services, mount paths, file provenance and runtime drift."
         actions={
           <select

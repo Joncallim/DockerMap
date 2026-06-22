@@ -42,7 +42,7 @@ export default function ContainersPage(props: { heartbeat: number }) {
     <section className="stack">
       <PageHead
         eyebrow="Runtime inventory"
-        title="Containers"
+        title="Container Index"
         subtitle="Running services, their reachable networks and dependency edges."
         actions={
           <div className="chip-row">
