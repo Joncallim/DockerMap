@@ -71,7 +71,7 @@ packaging remains future work.
 
 ### Phase 2: Validation And Safety
 
-Implemented machine-readable validation output and tests for malformed/edge-case Compose inputs. Threat model coverage now lives in `docs/THREAT_MODEL.md`.
+Implemented machine-readable validation output and tests for malformed/edge-case Compose inputs. Threat model coverage now lives in `docs/security/THREAT_MODEL.md`.
 
 ### Phase 3: Editing Workflow
 
@@ -79,7 +79,7 @@ Started and constrained to safe dry-run edit planning. The system generates diff
 
 ### Phase 3.5: Local Deployment And Reverse Proxy Hardening
 
-Added roadmap coverage and baseline app hardening. Deployment guidance lives in `docs/REVERSE_PROXY.md`.
+Added roadmap coverage and baseline app hardening. Deployment guidance lives in `docs/deployment/REVERSE_PROXY.md`.
 
 ## Verification
 

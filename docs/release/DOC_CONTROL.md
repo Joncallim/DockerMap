@@ -7,12 +7,13 @@ relevant docs in the same pull request.
 ## Controlled Docs
 
 - `README.md`: product scope, quick start, and main command list.
-- `docs/ARCHITECTURE.md`: source-of-truth data flow and component responsibilities.
-- `docs/DEPLOYMENT.md`: host deployment and systemd/reverse-proxy checklist.
-- `docs/REVERSE_PROXY.md`: remote review exposure model and proxy requirements.
-- `docs/TESTING_PLAN.md`: local, CI, E2E, live-Docker, and security test commands.
-- `docs/THREAT_MODEL.md`: risks, controls, and security test expectations.
-- `docs/RELEASE_CHECKLIST.md`: release gates, evidence, and known follow-up work.
+- `docs/architecture/ARCHITECTURE.md`: source-of-truth data flow and component responsibilities.
+- `docs/deployment/DEPLOYMENT.md`: host deployment and systemd/reverse-proxy checklist.
+- `docs/deployment/REVERSE_PROXY.md`: remote review exposure model and proxy requirements.
+- `docs/deployment/DOCKER.md`: single-container Docker/Compose build and run instructions.
+- `docs/testing/TESTING_PLAN.md`: local, CI, E2E, live-Docker, and security test commands.
+- `docs/security/THREAT_MODEL.md`: risks, controls, and security test expectations.
+- `docs/release/RELEASE_CHECKLIST.md`: release gates, evidence, and known follow-up work.
 
 ## Update Triggers
 

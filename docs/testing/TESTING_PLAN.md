@@ -79,7 +79,7 @@ These tests run against the real Express entry point with mock fallback or a stu
 They do not require Docker, systemd, tmux, reverse-proxy software, DNS services, or a GUI.
 
 After the next implementation commit lands, execute the post-commit follow-up queue in
-[`docs/RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md). That queue is the source of truth for
+[`docs/release/RELEASE_CHECKLIST.md`](../release/RELEASE_CHECKLIST.md). That queue is the source of truth for
 provider redaction fixtures, package advisory/network opt-in documentation, live-Docker
 release-host evidence, reverse-proxy smoke evidence, and Python/native-process provider
 planning.
@@ -170,7 +170,7 @@ For a review UI on another machine:
 - Confirm `/api/snapshot`, `/api/compose/scan`, and `/api/events/stream` work through
   the proxy.
 
-More detail is in [docs/REVERSE_PROXY.md](REVERSE_PROXY.md).
+More detail is in [docs/deployment/REVERSE_PROXY.md](../deployment/REVERSE_PROXY.md).
 
 ## Gaps To Close
 

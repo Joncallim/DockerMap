@@ -28,7 +28,7 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 - [ ] Confirm direct remote access to `127.0.0.1:4100` is impossible from another machine.
 - [ ] Confirm `/api/snapshot` returns `401` without a bearer token when bypassing the proxy.
 - [ ] Confirm `/api/health`, `/api/snapshot`, `/api/runtime/map`, `/api/compose/scan`, and `/api/events/stream` work through the proxy.
-- [ ] Update `README.md`, `docs/DEPLOYMENT.md`, `docs/REVERSE_PROXY.md`, `docs/TESTING_PLAN.md`, and `docs/THREAT_MODEL.md` for any release-time behavior changes.
+- [ ] Update `README.md`, `docs/deployment/DEPLOYMENT.md`, `docs/deployment/REVERSE_PROXY.md`, `docs/testing/TESTING_PLAN.md`, and `docs/security/THREAT_MODEL.md` for any release-time behavior changes.
 - [ ] Create release notes with known limitations and the exact commit SHA.
 
 ## Execute After Next Commit

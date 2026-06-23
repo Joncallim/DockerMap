@@ -1,7 +1,7 @@
 # DockerMap Implementation Plan
 
 > Detailed sub-tasks and file-level guidance for each phase of the roadmap.
-> For the high-level vision and dependency graph, see [`ROADMAP.md`](../ROADMAP.md).
+> For the high-level vision and dependency graph, see [`ROADMAP.md`](ROADMAP.md).
 
 Each phase is split into **concurrent streams** that can be assigned to different
 developers. Dependencies within a stream are noted inline; streams within a phase are
@@ -32,7 +32,7 @@ runtime model and contracts are stable.
 - Rust toolchain pinned, `Cargo.lock` committed
 - CI workflow published at `.github/workflows/ci.yml`
 - Compose test fixtures at `tests/fixtures/compose/`
-- Architecture + `PAGE_LOGIC.md` documentation; Vite 8, 0 audit vulnerabilities
+- Architecture + `docs/architecture/PAGE_LOGIC.md` documentation; Vite 8, 0 audit vulnerabilities
 
 ### In Progress (Phase 1)
 - Docker runtime inventory via bollard is working: containers, images, networks, volumes,
@@ -54,10 +54,10 @@ runtime model and contracts are stable.
   peers, table sorting, advanced filters, clickable graph nodes, log level filter, live
   tail, and log pagination UI.
 - Immediately after the next implementation commit lands, execute the follow-up queue in
-  [`docs/RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md): provider redaction fixtures,
+  [`docs/release/RELEASE_CHECKLIST.md`](../release/RELEASE_CHECKLIST.md): provider redaction fixtures,
   package advisory/network opt-in docs, live-Docker/reverse-proxy release-host evidence,
   and Python/native-process provider planning.
-- Testing plan: see [`docs/TESTING_PLAN.md`](TESTING_PLAN.md).
+- Testing plan: see [`docs/testing/TESTING_PLAN.md`](../testing/TESTING_PLAN.md).
 
 ---
 
@@ -213,7 +213,7 @@ table (host path → container path → service → file:line), named vs bind vi
   Compose/runtime drift detection.
 
 **E4. Testing plan** Done
-- `docs/TESTING_PLAN.md` explains automated checks, local smoke tests, token-auth checks,
+- `docs/testing/TESTING_PLAN.md` explains automated checks, local smoke tests, token-auth checks,
   reverse-proxy review checks, and current test gaps.
 
 ---
@@ -254,7 +254,7 @@ Remaining:
 - `DOCKERMAP_API_TOKEN` — Bearer token middleware on the Express Node API for all non-health
   endpoints
 - `DOCKERMAP_ALLOWED_ORIGINS` — comma-separated allowed origins for the Express Node API
-- Document risks in `docs/THREAT_MODEL.md` and `docs/REVERSE_PROXY.md`
+- Document risks in `docs/security/THREAT_MODEL.md` and `docs/deployment/REVERSE_PROXY.md`
 
 **A1.5. VPS-hosted review UI**
 - Build `apps/web` with `VITE_API_BASE_URL` pointing at the public Node API origin.
@@ -340,8 +340,8 @@ Remaining:
   `Forge (npm) -> forge.service -> tmux session -> GPT worker`.
 
 **A.6.5. Security and alpha evidence**
-- Files: `apps/api/test/security.test.ts`, `docs/THREAT_MODEL.md`,
-  `docs/TESTING_PLAN.md`, `docs/RELEASE_CHECKLIST.md`
+- Files: `apps/api/test/security.test.ts`, `docs/security/THREAT_MODEL.md`,
+  `docs/testing/TESTING_PLAN.md`, `docs/release/RELEASE_CHECKLIST.md`
 - Add tests that do not require Docker/systemd availability.
 - Verify auth, CORS, daemon URL restrictions, bounded query handling, hidden daemon error
   details, runtime-map fallback safety, and startup rejection for unsafe configuration.
@@ -500,7 +500,7 @@ Vec<ComposeDiagnostic>`; one concrete struct per rule.
 
 ### Stream C — Security Docs
 
-**C1. Security docs** — keep `docs/THREAT_MODEL.md` and `docs/REVERSE_PROXY.md` current
+**C1. Security docs** — keep `docs/security/THREAT_MODEL.md` and `docs/deployment/REVERSE_PROXY.md` current
 for host path exposure, symlink traversal, Docker socket risk, and external API risks.
 
 ---
@@ -596,7 +596,7 @@ Docker is unreachable.
 **Playwright E2E tests**
 - Install `@playwright/test`; target mock stack
 - Smoke: dashboard KPIs, containers filter, detail navigation, logs filter
-- Navigation: all cross-page links from `PAGE_LOGIC.md`
+- Navigation: all cross-page links from `docs/architecture/PAGE_LOGIC.md`
 - Add Playwright job to CI workflow
 - New directory: `tests/e2e/`
 

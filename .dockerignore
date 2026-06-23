@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+.venv
+.codex
+.claude
+crates/target
+tests/e2e
+coverage
+*.log

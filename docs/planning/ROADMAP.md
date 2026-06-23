@@ -24,7 +24,7 @@ The four questions DockerMap should always answer clearly:
    is Docker, systemd, tmux, npm, Python, or a native process?
 4. What will change if I edit a mount or routing rule, and is that change safe?
 
-Market research in `docs/MARKET_RESEARCH.md` supports keeping Docker Compose persistence
+Market research in `docs/planning/MARKET_RESEARCH.md` supports keeping Docker Compose persistence
 and path confusion as the first deep workflow. The broader host map matters too, but PM2,
 systemd, tmux, Tailscale/Headscale, proxy, DNS, and other providers should stay
 read-only until the safety model is proven.
@@ -68,7 +68,7 @@ read-only until the safety model is proven.
 - SSE heartbeat for live refresh; global search with 250 ms debounce
 - CI workflow published at `.github/workflows/ci.yml`
 - Compose test fixtures at `tests/fixtures/compose/`
-- Architecture docs: `docs/ARCHITECTURE.md`, `PAGE_LOGIC.md`
+- Architecture docs: `docs/architecture/ARCHITECTURE.md`, `docs/architecture/PAGE_LOGIC.md`
 - Vite 8, zero production audit vulnerabilities
 
 ### Phase 1 — Partially Done
@@ -241,7 +241,7 @@ Remaining:
 - Graph nodes need click navigation.
 - Browser end-to-end smoke tests still need to be added.
 
-The full local and manual test plan is in `docs/TESTING_PLAN.md`.
+The full local and manual test plan is in `docs/testing/TESTING_PLAN.md`.
 
 ---
 
@@ -260,7 +260,7 @@ The full local and manual test plan is in `docs/TESTING_PLAN.md`.
 - `DOCKERMAP_API_TOKEN` -> Bearer token auth middleware on the Express Node API for all
   non-health endpoints
 - `DOCKERMAP_ALLOWED_ORIGINS` env var (comma-separated allowed origins)
-- Keep `docs/THREAT_MODEL.md` and `docs/REVERSE_PROXY.md` current for external binding,
+- Keep `docs/security/THREAT_MODEL.md` and `docs/deployment/REVERSE_PROXY.md` current for external binding,
   Docker socket, proxy, and auth risks
 
 **A2. OpenAPI documentation**
@@ -484,7 +484,7 @@ The full local and manual test plan is in `docs/TESTING_PLAN.md`.
 
 #### Stream C — Security & Docs
 
-**C1. Security docs** — keep `docs/THREAT_MODEL.md` and `docs/REVERSE_PROXY.md`
+**C1. Security docs** — keep `docs/security/THREAT_MODEL.md` and `docs/deployment/REVERSE_PROXY.md`
 current for host path exposure, symlink traversal, Docker socket risk, edit permissions,
 and external API exposure risks.
 
@@ -571,7 +571,7 @@ reuse work from Phase 1.5 Stream D2).
 **Playwright E2E tests**
 - Install `@playwright/test`; target mock stack
 - Smoke tests: dashboard KPIs, containers filter, detail navigation, logs filter
-- Navigation cross-page tests per `PAGE_LOGIC.md` cross-page rules
+- Navigation cross-page tests per `docs/architecture/PAGE_LOGIC.md` cross-page rules
 - Add Playwright job to CI workflow
 
 #### Phase 4 Verification

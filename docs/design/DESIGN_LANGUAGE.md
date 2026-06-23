@@ -1,7 +1,7 @@
 # DockerMap UI/UX Design Language
 
 This document shows the DockerMap design language **as built**. It is the visual companion
-to [DESIGN.md](../DESIGN.md), which holds the principles and tokens. Where DESIGN.md says
+to [DESIGN.md](DESIGN.md), which holds the principles and tokens. Where DESIGN.md says
 *why*, this file shows *what it looks like*.
 
 The interface expresses infrastructure as **services, relationships, state, and impact** —
@@ -32,7 +32,7 @@ The command center answers *"what needs attention?"* in under five seconds: a co
 strip, an attention list, recent change, a causal chain when something is wrong, a map
 preview, and pending updates.
 
-![Home command center](screenshots/command-center.png)
+![Home command center](../screenshots/command-center.png)
 
 ## Layer 2 — Relationships (Service Map)
 
@@ -41,7 +41,7 @@ coloured by edge health (healthy / slow / failing). Selecting a service reveals 
 radius** — what it depends on and, crucially, *what breaks if it dies* — instantly, with a
 live inspector. The graph is pan/zoom and filterable by state.
 
-![Service map with impact radius](screenshots/service-map.png)
+![Service map with impact radius](../screenshots/service-map.png)
 
 ## Service Detail
 
@@ -50,7 +50,7 @@ Resources, Logs, Configuration) rather than separate pages. An impact band sits 
 Docker internals (container ID, raw image ref, port bindings) live behind a Layer-4 toggle
 inside Configuration.
 
-![Service detail](screenshots/service-detail.png)
+![Service detail](../screenshots/service-detail.png)
 
 ## Change Center
 
@@ -58,7 +58,7 @@ Change is a first-class story: a filterable timeline of deploys, image updates, 
 failures, and recoveries. Markers are state-coloured. (Until daemon change collectors land,
 this view is clearly labelled as a sample timeline.)
 
-![Change Center](screenshots/change-center.png)
+![Change Center](../screenshots/change-center.png)
 
 ## Copilot
 
@@ -66,14 +66,14 @@ Copilot interprets the topology and never controls it. It answers questions like
 depends on postgres?"* by reasoning over the live model, then links every referenced service
 for click-through.
 
-![Copilot](screenshots/copilot.png)
+![Copilot](../screenshots/copilot.png)
 
 ## Command Palette (⌘K)
 
 A primary interface, not a shortcut. It blends navigation, service jump, and an *Ask Copilot*
 action over whatever you type.
 
-![Command palette](screenshots/command-palette.png)
+![Command palette](../screenshots/command-palette.png)
 
 ## Component Language
 
@@ -127,8 +127,8 @@ suite.)
 
 ## Implementation Map
 
-- Tokens and component CSS: [apps/web/src/styles.css](../apps/web/src/styles.css)
-- Domain model (services, relationships, state, impact): [apps/web/src/lib/model.ts](../apps/web/src/lib/model.ts)
-- Primitives: [apps/web/src/components/primitives.tsx](../apps/web/src/components/primitives.tsx)
-- Service map: [apps/web/src/components/ServiceMap.tsx](../apps/web/src/components/ServiceMap.tsx)
-- Command palette: [apps/web/src/components/CommandPalette.tsx](../apps/web/src/components/CommandPalette.tsx)
+- Tokens and component CSS: [apps/web/src/styles.css](../../apps/web/src/styles.css)
+- Domain model (services, relationships, state, impact): [apps/web/src/lib/model.ts](../../apps/web/src/lib/model.ts)
+- Primitives: [apps/web/src/components/primitives.tsx](../../apps/web/src/components/primitives.tsx)
+- Service map: [apps/web/src/components/ServiceMap.tsx](../../apps/web/src/components/ServiceMap.tsx)
+- Command palette: [apps/web/src/components/CommandPalette.tsx](../../apps/web/src/components/CommandPalette.tsx)

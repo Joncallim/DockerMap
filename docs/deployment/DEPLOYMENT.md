@@ -94,7 +94,7 @@ also be a member of that group on hosts that require it.
 
 ## Reverse Proxy
 
-Start from `deploy/nginx/dockermap.conf` or `docs/REVERSE_PROXY.md`.
+Start from `deploy/nginx/dockermap.conf` or `docs/deployment/REVERSE_PROXY.md`.
 
 Before enabling it:
 
