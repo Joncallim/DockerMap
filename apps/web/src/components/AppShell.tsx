@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
+import type { AuthWhoamiResponse } from "@dockermap/contracts";
 import { useDaemonHeartbeat } from "../hooks/useDaemonHeartbeat";
 import { useSystemModel } from "../hooks/useSystemModel";
+import { useSettings } from "../hooks/useSettings";
+import { useApiResource } from "../hooks/useApiResource";
 import { summarize } from "../lib/model";
 import { formatClock } from "../lib/format";
 import { AppContext } from "../context";
 import Icon, { type IconName } from "./Icon";
 import CommandPalette from "./CommandPalette";
-import { StateDot } from "./primitives";
+import { StateDot, Tag } from "./primitives";
 
 interface NavItem {
   to: string;
@@ -35,14 +38,75 @@ const SPACES: { heading: string; items: NavItem[] }[] = [
       { to: "/logs", label: "Logs", icon: "logs" },
       { to: "/compose", label: "Compose", icon: "compose" }
     ]
+  },
+  {
+    heading: "System",
+    items: [{ to: "/settings", label: "Settings", icon: "settings" }]
   }
 ];
+
+function useThemeAndDensity() {
+  const { settings } = useSettings();
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const media = window.matchMedia("(prefers-color-scheme: light)");
+
+    const apply = () => {
+      const resolved = settings.theme === "system" ? (media.matches ? "light" : "dark") : settings.theme;
+      root.dataset.theme = resolved;
+    };
+
+    apply();
+    if (settings.theme === "system") {
+      media.addEventListener("change", apply);
+      return () => media.removeEventListener("change", apply);
+    }
+    return undefined;
+  }, [settings.theme]);
+
+  useEffect(() => {
+    document.documentElement.dataset.density = settings.density;
+  }, [settings.density]);
+}
+
+function AuthStatus() {
+  const { settings } = useSettings();
+  const whoami = useApiResource<AuthWhoamiResponse>("/api/auth/whoami");
+  const user = whoami.data?.user;
+
+  return (
+    <div className="auth-status">
+      {user ? (
+        <>
+          <Tag tone="accent" icon="shield">
+            {whoami.data?.name ?? user}
+          </Tag>
+          {settings.auth.logoutUrl && (
+            <a className="ghost-link" href={settings.auth.logoutUrl}>
+              Sign out
+            </a>
+          )}
+        </>
+      ) : (
+        settings.auth.loginUrl && (
+          <a className="ghost-link" href={settings.auth.loginUrl}>
+            <Icon name="shield" size={14} /> Sign in
+          </a>
+        )
+      )}
+    </div>
+  );
+}
 
 export default function AppShell() {
   const { tick, health } = useDaemonHeartbeat();
   const { model, loading, error } = useSystemModel(tick);
+  const { settings } = useSettings();
   const [commandOpen, setCommandOpen] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
+
+  useThemeAndDensity();
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 1000);
@@ -61,7 +125,7 @@ export default function AppShell() {
   }, []);
 
   const summary = useMemo(() => (model ? summarize(model) : null), [model]);
-  const mode = health?.mode === "docker" ? "Docker" : "Mock";
+  const mode = settings.demoMode ? "Demo" : health?.mode === "docker" ? "Docker" : "Mock";
   const overall = !summary
     ? "unknown"
     : summary.offline > 0
@@ -135,6 +199,7 @@ export default function AppShell() {
                   {summary.attention > 0 && <span className="sys-attn">{summary.attention} need attention</span>}
                 </div>
               )}
+              {settings.auth.showStatus && <AuthStatus />}
               <span className="topbar-clock">{formatClock(clock)}</span>
             </div>
           </header>

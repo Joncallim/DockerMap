@@ -36,7 +36,8 @@ export type IconName =
   | "plus"
   | "minus"
   | "up"
-  | "down";
+  | "down"
+  | "settings";
 
 const paths: Record<IconName, ReactElement> = {
   home: (
@@ -206,7 +207,13 @@ const paths: Record<IconName, ReactElement> = {
   plus: <path d="M12 5v14M5 12h14" />,
   minus: <path d="M5 12h14" />,
   up: <path d="m6 14 6-6 6 6" />,
-  down: <path d="m6 10 6 6 6-6" />
+  down: <path d="m6 10 6 6 6-6" />,
+  settings: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l1.8-1.4-2-3.4-2.1.6a7.6 7.6 0 0 0-2.6-1.5L14 2.5h-4l-.5 2.3a7.6 7.6 0 0 0-2.6 1.5l-2.1-.6-2 3.4 1.8 1.4a7.6 7.6 0 0 0 0 3L2.8 14.9l2 3.4 2.1-.6c.77.65 1.65 1.16 2.6 1.5l.5 2.3h4l.5-2.3a7.6 7.6 0 0 0 2.6-1.5l2.1.6 2-3.4-1.8-1.4Z" />
+    </>
+  )
 };
 
 interface IconProps extends SVGProps<SVGSVGElement> {
