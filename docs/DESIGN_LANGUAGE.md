@@ -1,96 +1,134 @@
 # DockerMap UI/UX Design Language
 
-## Source Skill Review
+This document shows the DockerMap design language **as built**. It is the visual companion
+to [DESIGN.md](../DESIGN.md), which holds the principles and tokens. Where DESIGN.md says
+*why*, this file shows *what it looks like*.
 
-I reviewed GitHub UI/UX skills for Codex and selected `frontend-design` from `vipulgupta2048/codex-skills` for this repo. It is Codex-specific, supports repo-scoped installation at `.codex/skills/`, and focuses on distinctive production-grade frontend work. Other candidates were broader multi-platform packs, Claude-oriented, or Next.js-specific.
+The interface expresses infrastructure as **services, relationships, state, and impact** —
+not containers, compose files, or Docker internals. Those remain available, but only when
+asked for.
 
-Installed location:
+## At a Glance
 
-```text
-.codex/skills/frontend-design/
-```
+| Principle | How it shows up |
+| --- | --- |
+| Understanding over management | Spaces named for intent (Understand / Operate), not for Docker objects |
+| Progressive disclosure | Four layers: system story → relationships → operations → Docker internals |
+| State first | A six-state system; colour only ever encodes state |
+| Information compression | Dense rows, tables, topology, and context panels — no giant cards |
+| Command-palette first | ⌘K navigates, jumps to a service, or asks Copilot |
+| AI explains, never controls | Copilot reasons over the live map |
 
-Use this project-local skill for future DockerMap UI work.
+## Spaces & Shell
 
-## Product Interpretation
+A persistent rail groups destinations into two spaces — **Understand** (Home, Service Map,
+Changes, Copilot) and **Operate** (Networking, Storage, Images, Logs, Compose). The top bar
+carries the global system state (`n/total healthy`), a live clock, and the ⌘K search/ask
+entry. The rail foot shows the engine connection (Docker or Mock) as a state dot plus label.
 
-DockerMap is a local, security-sensitive operational tool for Docker and nearby host
-runtimes. Its design should prioritize:
+## Layer 1 — System Story (Home)
 
-- Scanability over persuasion.
-- Provenance over decoration.
-- Diff confidence over speed-to-click.
-- Explicit risk over optimistic UI.
-- Local trust boundaries over cloud/SaaS polish.
-- One-host runtime awareness across Docker, Compose, PM2, systemd, cron, tmux,
-  Tailscale/Headscale, reverse proxies, and local DNS.
+The command center answers *"what needs attention?"* in under five seconds: a compact metric
+strip, an attention list, recent change, a causal chain when something is wrong, a map
+preview, and pending updates.
 
-## Aesthetic Route
+![Home command center](screenshots/command-center.png)
 
-Primary route: **Industrial / Utilitarian**
+## Layer 2 — Relationships (Service Map)
 
-Adapted for DockerMap as **Harbor Control**:
+The map is the flagship. Nodes are services coloured by state; edges are relationships
+coloured by edge health (healthy / slow / failing). Selecting a service reveals its **impact
+radius** — what it depends on and, crucially, *what breaks if it dies* — instantly, with a
+live inspector. The graph is pan/zoom and filterable by state.
 
-- Rigid grid, labeled panels, coordinate-like metadata.
-- Terminal path tags and route lines.
-- Carbon, slate, mist, oxide teal, hazard amber, cut coral.
-- Compact tables and graph surfaces with strong information scent.
-- Minimal motion, used to show data refresh and focus changes.
+![Service map with impact radius](screenshots/service-map.png)
 
-## Layout Principles
+## Service Detail
 
-- Use full-width work surfaces, not decorative section cards.
-- Keep side navigation restrained and persistent on desktop.
-- Use compact repeated cards only for individual resources.
-- Favor tables, rails, tabs, segmented controls, and diagnostic strips for operational views.
-- Make Compose path mapping a first-class work surface: graph, diagnostics, file origin, dry-run diff.
+Everything about one service, organised as contextual tabs (Overview, Dependencies,
+Resources, Logs, Configuration) rather than separate pages. An impact band sits at the top;
+Docker internals (container ID, raw image ref, port bindings) live behind a Layer-4 toggle
+inside Configuration.
+
+![Service detail](screenshots/service-detail.png)
+
+## Change Center
+
+Change is a first-class story: a filterable timeline of deploys, image updates, restarts,
+failures, and recoveries. Markers are state-coloured. (Until daemon change collectors land,
+this view is clearly labelled as a sample timeline.)
+
+![Change Center](screenshots/change-center.png)
+
+## Copilot
+
+Copilot interprets the topology and never controls it. It answers questions like *"what
+depends on postgres?"* by reasoning over the live model, then links every referenced service
+for click-through.
+
+![Copilot](screenshots/copilot.png)
+
+## Command Palette (⌘K)
+
+A primary interface, not a shortcut. It blends navigation, service jump, and an *Ask Copilot*
+action over whatever you type.
+
+![Command palette](screenshots/command-palette.png)
 
 ## Component Language
 
-### Path Tag
+### State dot & pill
+The atom of the whole UI. A dot is a small coloured disc with a soft halo; the healthy dot
+pulses. The pill adds the state label. Colour is driven by a single `--c` custom property set
+by an `s-{state}` class, so every component states the same six colours one way.
 
-Use for host paths, container paths, Compose filenames, and mount sources.
+### Tags
+Compact metadata (image refs, ports, network names, mount kinds). Neutral by default;
+`accent` for interactive/port emphasis and `warn` for read-only or risk.
 
-- Mono font.
-- Subtle carbon background.
-- Left border or leading glyph showing path type.
-- Wrap long paths across lines before truncating.
+### Panels
+The one surface primitive. Panels own their boundary; rows live flat inside them — we never
+nest a card in a card. A panel has an optional title, icon, hint, and actions.
 
-### Diagnostic Strip
+### Metrics, bars & sparklines
+Numeric truth. Metric = label + large value + optional sub. Bars and sparklines inherit the
+service state colour so a CPU bar on an offline service reads correctly at a glance.
 
-Use for validation output.
+### Service map nodes & edges
+Nodes carry state colour, a halo on hover/selection, and a label. Edges carry relationship
+kind (solid dependency, dashed data) and an edge-health tint. The selected service's impact
+set is lit; everything else dims.
 
-- Severity label.
-- Short human-readable message.
-- Origin: file, service, field.
-- Machine-readable ID in muted mono.
+### Timeline rows
+Change events: a state-coloured marker, a summary that links to the service, a relative
+timestamp, and an optional detail line.
 
-### Diff Preview
+### Empty, loading & error states
+Empty states teach the next action (no mascots, no marketing). Loading uses a single spinner
+with honest copy. Errors use the alert glyph and say what failed.
 
-Use for edit plans.
+## Estimated Data
 
-- Unified diff format.
-- No write action until a later explicit confirmation design exists.
-- Sticky summary showing `willWrite: false` while DockerMap remains read-first.
+Resource samples, change history, and edge health are derived deterministically from the real
+topology and **labelled as estimates** (`Estimated — live resource collectors not yet wired`)
+until matching read-only collectors exist in the daemon. The label is part of the design: we
+never present an estimate as live telemetry.
 
-### Runtime Health
+## Regenerating Screenshots
 
-Use for daemon, Docker socket, mock fallback, and snapshot age.
+Screenshots are captured from the running app against the mock stack:
 
-- Signal dot plus text label.
-- Color is supporting evidence, not the only state indicator.
+```bash
+DOCKERMAP_CAPTURE=1 npx playwright test --config tests/e2e/playwright.config.ts capture.spec.ts
+```
 
-## Token Files
+(The capture spec is added when refreshing screenshots and is not part of the committed test
+suite.)
 
-- [DESIGN.md](../DESIGN.md): human-facing design source of truth.
-- [apps/web/src/design-tokens.css](../apps/web/src/design-tokens.css): CSS variables for implementation.
+## Implementation Map
 
-## Future UI Work
-
-When GUI work begins, start with:
-
-1. Compose map route.
-2. Diagnostics table.
-3. Edit-plan diff preview.
-4. Runtime inventory refinements for Docker and non-Docker runtime signals.
-5. Reverse-proxy/deployment status view.
+- Tokens and component CSS: [apps/web/src/styles.css](../apps/web/src/styles.css)
+- Domain model (services, relationships, state, impact): [apps/web/src/lib/model.ts](../apps/web/src/lib/model.ts)
+- Primitives: [apps/web/src/components/primitives.tsx](../apps/web/src/components/primitives.tsx)
+- Service map: [apps/web/src/components/ServiceMap.tsx](../apps/web/src/components/ServiceMap.tsx)
+- Command palette: [apps/web/src/components/CommandPalette.tsx](../apps/web/src/components/CommandPalette.tsx)

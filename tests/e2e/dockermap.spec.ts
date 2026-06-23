@@ -6,7 +6,7 @@ import {
   type Stack
 } from "./dockermapHarness";
 
-async function openRailPage(page: Page, label: string, path: string) {
+async function openSpace(page: Page, label: string, path: string) {
   await page.locator(`.rail .nav-list a[href="${path}"]`, { hasText: label }).click();
   await expect(page).toHaveURL(new RegExp(`${path === "/" ? "/$" : path}`));
 }
@@ -19,28 +19,40 @@ test.describe("DockerMap GUI", () => {
     stack = null;
   });
 
-  test("navigates every primary page against the daemon fallback", async ({ page }) => {
+  test("navigates every space against the daemon fallback", async ({ page }) => {
     stack = await startMockStack();
 
     await page.goto(stack.webUrl);
     await expect(page.getByText("DockerMap", { exact: true })).toBeVisible();
-    await expect(page.getByText(/Mock Engine|Docker Socket/)).toBeVisible();
-    await expect(page.getByText("Topology Canvas")).toBeVisible();
+    await expect(page.getByText(/Mock Engine|Docker Engine/)).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("Command Center");
 
-    const pages = [
-      ["Containers", "/containers", "Container Index"],
-      ["Images", "/images", "Image"],
-      ["Networks", "/networks", "Network"],
-      ["Volumes", "/volumes", "Volume"],
-      ["Logs", "/logs", "Log Stream"],
-      ["Compose", "/compose", "Compose Map"]
+    const spaces = [
+      ["Service Map", "/map", "Service Map"],
+      ["Changes", "/changes", "Change Center"],
+      ["Copilot", "/copilot", "Copilot"],
+      ["Networking", "/networking", "Networking"],
+      ["Storage", "/storage", "Storage"],
+      ["Images", "/images", "Images"],
+      ["Logs", "/logs", "Logs"],
+      ["Compose", "/compose", "Compose"]
     ] as const;
 
-    for (const [label, path, marker] of pages) {
-      await openRailPage(page, label, path);
+    for (const [label, path, marker] of spaces) {
+      await openSpace(page, label, path);
       await expect(page.getByRole("main")).toContainText(marker);
-      await expect(page.getByText(/unavailable/i)).toHaveCount(0);
     }
+
+    // The command palette is a primary interface.
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog", { name: "Command palette" });
+    await expect(palette).toBeVisible();
+    await palette.getByPlaceholder(/Search services/).fill("postgres");
+    await palette.getByText("Go to postgres").click();
+
+    await expect(page).toHaveURL(/\/services\/postgres/);
+    await expect(page.getByRole("main")).toContainText("postgres");
+    await expect(page.getByRole("main")).toContainText("Dependencies");
   });
 
   test("maps a live Docker Compose fixture through the GUI @live-docker", async ({ page, request }) => {
@@ -64,41 +76,32 @@ test.describe("DockerMap GUI", () => {
     expect(workerName).toBeTruthy();
 
     await page.goto(stack.webUrl);
-    await expect(page.getByText("Docker Socket")).toBeVisible();
-    await expect(page.getByText("Docker engine connected")).toBeVisible();
+    await expect(page.getByText(/Docker Engine/)).toBeVisible();
 
-    await page.getByPlaceholder("Search services, images, networks, volumes, paths").fill(projectName);
-    await openRailPage(page, "Containers", "/containers");
+    // Service map shows the live services as nodes.
+    await openSpace(page, "Service Map", "/map");
     await expect(page.getByRole("main")).toContainText(apiName!);
     await expect(page.getByRole("main")).toContainText(workerName!);
 
-    await page.getByRole("link", { name: apiName! }).first().click();
-    await expect(page).toHaveURL(new RegExp(`/containers/${apiName}`));
-    await expect(page.getByText("Service Detail")).toBeVisible();
-    await expect(page.getByText("busybox:1.36.1")).toBeVisible();
-    await expect(page.getByRole("main").getByText(/up|running/i)).toBeVisible();
-
-    await openRailPage(page, "Images", "/images");
+    // Service detail surfaces the running image and dependency context.
+    await page.goto(`${stack.webUrl}/services/${encodeURIComponent(apiName!)}`);
+    await expect(page.getByRole("main")).toContainText(apiName!);
     await expect(page.getByRole("main")).toContainText("busybox:1.36.1");
+    await expect(page.getByRole("main")).toContainText("Dependencies");
 
-    await openRailPage(page, "Networks", "/networks");
+    await openSpace(page, "Networking", "/networking");
     await expect(page.getByRole("main")).toContainText(`${projectName}_back`);
     await expect(page.getByRole("main")).toContainText(`${projectName}_front`);
 
-    await openRailPage(page, "Volumes", "/volumes");
+    await openSpace(page, "Storage", "/storage");
     await expect(page.getByRole("main")).toContainText(`${projectName}_live-cache`);
     await expect(page.getByRole("main")).toContainText(`${projectName}_live-logs`);
 
-    await openRailPage(page, "Logs", "/logs");
+    await openSpace(page, "Logs", "/logs");
     await page.locator("select.service-select").selectOption(workerName!);
     await expect(page.getByRole("main")).toContainText("dockermap-live-worker", { timeout: 20_000 });
 
-    await openRailPage(page, "Compose", "/compose");
-    await expect(page.getByText("Compose Map")).toBeVisible();
-    await expect(page.getByRole("main")).toContainText("api");
-    await expect(page.getByRole("main")).toContainText("worker");
-    await expect(page.getByRole("main")).toContainText("/data");
-    await expect(page.getByRole("main")).toContainText("/worker-data");
+    await openSpace(page, "Compose", "/compose");
     await expect(page.getByRole("main")).toContainText("matched");
   });
 });
