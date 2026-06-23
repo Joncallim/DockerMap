@@ -5,7 +5,7 @@ exists to create **understanding**, not to manage containers. Every screen shoul
 person answer — within seconds — what they have, how it is connected, what is healthy,
 what changed, and what to do next.
 
-The companion document [docs/DESIGN_LANGUAGE.md](docs/DESIGN_LANGUAGE.md) shows this
+The companion document [docs/design/DESIGN_LANGUAGE.md](DESIGN_LANGUAGE.md) shows this
 language applied, screen by screen, with screenshots. This file is the source of truth for
 principles and tokens.
 
@@ -72,7 +72,7 @@ change so the two never rely on colour alone.
 ## Visual Tokens
 
 The canonical token set lives in the `:root` block of
-[apps/web/src/styles.css](apps/web/src/styles.css). Highlights:
+[apps/web/src/styles.css](../../apps/web/src/styles.css). Highlights:
 
 - **Surfaces** — a near-black base (`--bg`) with three raised surface levels and two
   hairline border weights. Dense layouts stay calm because contrast between surfaces is low

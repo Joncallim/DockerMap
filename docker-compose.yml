@@ -1,0 +1,15 @@
+services:
+  dockermap:
+    build: .
+    image: dockermap:local
+    ports:
+      - "3233:3233"
+    environment:
+      DOCKERMAP_API_TOKEN: ""
+      DOCKERMAP_ALLOW_MOCK: "true"
+    volumes:
+      # Read-only access to Docker so DockerMap can see real containers.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Mount the Compose project you want DockerMap to scan.
+      - ./:/opt/dockermap/project:ro
+    restart: unless-stopped

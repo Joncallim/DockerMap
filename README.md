@@ -1,186 +1,134 @@
-# DockerMap
+<div align="center">
 
-DockerMap is a local operational topology app for understanding one self-hosted machine.
-Docker and Compose remain deep subsystems, but the product direction is broader: map the
-whole environment across Docker, systemd, tmux, package ecosystems, native processes,
-reverse proxies, databases, DNS, storage, network edges, and AI workloads.
-
-It is read-first: today it can inspect files and show dry-run diffs, but it does not
-write Compose files or change running services.
-
-## Current Alpha Focus
-
-The alpha focus is backend and security work, not GUI redesign:
-
-- Treat every runtime as a provider-neutral service entity with name, status,
-  dependencies, dependents, health, logs, events, owner, and location.
-- Make systemd a first-class infrastructure layer with service status, enabled state,
-  restart policy/count, uptime, dependencies, and recent-log metadata where safe.
-- Discover npm and other application projects separately from containers so direct
-  Node.js services, MCP servers, AI agents, and custom APIs appear on the same map.
-- Represent cross-technology chains such as Cloudflare -> Caddy -> Docker network ->
-  container -> database -> volume, or npm app -> systemd service -> tmux worker.
-- Harden read-only collectors, bounded filesystem scans, API auth/CORS behavior, and
-  release evidence before opening a full alpha.
-
-The GUI has been rebuilt around understanding rather than container management. It is
-organised into spaces — a Home command center (what needs attention), a Service Map
-(dependencies and impact radius), a Change Center, and an explain-only Copilot — with
-operational detail (networking, storage, images, logs, compose) and Docker internals
-available on demand. A ⌘K command palette is a primary way to navigate and ask. The
-GUI smoke test in `tests/e2e` encodes this information architecture. Some resource and
-change-history surfaces are clearly labelled estimates until the matching read-only
-collectors land in the daemon.
-
-## Screenshots
-
-Home command center — what needs attention, recent change, and a map preview:
-
-![DockerMap command center](docs/screenshots/command-center.png)
-
-Service Map — dependencies, health, and impact radius:
-
-![DockerMap service map](docs/screenshots/service-map.png)
-
-Service detail — overview, relationships, resources, logs, and configuration:
-
-![DockerMap service detail](docs/screenshots/service-detail.png)
-
-The design language behind these screens — the state system, spaces, progressive
-disclosure, and component catalog — is documented in [DESIGN.md](DESIGN.md) (principles and
-tokens) and [docs/DESIGN_LANGUAGE.md](docs/DESIGN_LANGUAGE.md) (applied, with screenshots of
-the Change Center, Copilot, and command palette).
-
-## What It Helps With
-
-- See which containers, networks, volumes, and ports exist on a host.
-- See which Compose services declare bind mounts and named volumes.
-- Compare Compose-declared mounts with the mounts Docker is actually running.
-- See non-Docker runtime signals from systemd, tmux, npm projects, PM2, cron,
-  Tailscale/Headscale, reverse proxies, local DNS, and listening sockets.
-- Follow service chains across implementation technologies without needing to know
-  whether a workload is Docker, systemd, tmux, npm, Python, or a native Linux process.
-- Spot common problems, such as missing host folders or duplicate container mount paths.
-- Preview a Compose mount path change as a diff before any write feature exists.
-
-## Project Layout
-
-```text
-apps/web          React + Vite browser app
-apps/api          Node + Express browser-facing API
-packages/contracts Shared TypeScript response types
-crates/dockermap-core Rust models, Compose parsing, runtime graph logic
-crates/dockermap-daemon Rust HTTP daemon that reads Docker, Compose, and host runtime signals
-docs              Architecture, proxy, safety, and planning notes
-tests/fixtures    Compose and API contract examples
+```
+ ██████╗  ██████╗  ██████╗██╗  ██╗███████╗██████╗ ███╗   ███╗ █████╗ ██████╗
+ ██╔══██╗██╔═══██╗██╔════╝██║ ██╔╝██╔════╝██╔══██╗████╗ ████║██╔══██╗██╔══██╗
+ ██║  ██║██║   ██║██║     █████╔╝ █████╗  ██████╔╝██╔████╔██║███████║██████╔╝
+ ██║  ██║██║   ██║██║     ██╔═██╗ ██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══██║██╔══██╗
+ ██████╔╝╚██████╔╝╚██████╗██║  ██╗███████╗██║  ██║██║ ╚═╝ ██║██║  ██║██║  ██║
+ ╚═════╝  ╚═════╝  ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝
 ```
 
-## Run Locally
+### Understand your whole self-hosted machine. One map, no guessing.
 
-Install JavaScript dependencies:
+[![Docker](https://img.shields.io/badge/docker-ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](docs/deployment/DOCKER.md)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-3c873a?style=for-the-badge&logo=node.js&logoColor=white)](#-quick-installation)
+[![Rust](https://img.shields.io/badge/rust-1.88-orange?style=for-the-badge&logo=rust&logoColor=white)](#-quick-installation)
+[![Status](https://img.shields.io/badge/status-read--only%20%26%20safe-f59e0b?style=for-the-badge)](docs/security/THREAT_MODEL.md)
+
+</div>
+
+---
+
+## 🚀 Quick Installation
+
+Pick whichever you're more comfortable with. Both give you the same app at
+**http://127.0.0.1:3233**.
+
+### Option A — Docker (recommended)
+
+```bash
+docker compose up --build
+```
+
+No Compose? Plain Docker works too:
+
+```bash
+docker build -t dockermap:local .
+docker run --rm -p 3233:3233 \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  dockermap:local
+```
+
+### Option B — NPM
 
 ```bash
 npm install
-```
-
-Run the daemon, API, and web app together:
-
-```bash
 npm run dev:stack
 ```
 
-Default local URLs:
+This starts the Rust daemon (`:4100`), the Node API (`:4000`), and the web app
+(`:3233`) together. Requires Node.js 22+ and the Rust toolchain pinned in
+[`rust-toolchain.toml`](rust-toolchain.toml).
 
-- Web app: `http://127.0.0.1:3233`
-- Node API: `http://127.0.0.1:4000`
-- Rust daemon: `http://127.0.0.1:4100`
+Full setup details, environment variables, and a host/systemd deployment guide live in
+[`docs/deployment/`](docs/deployment/).
 
-Useful API routes:
+---
 
-- `GET /api/health`
-- `GET /api/snapshot`
-- `GET /api/runtime/map`
-- `GET /api/compose/scan?file=compose.yaml`
-- `GET /api/compose/graph?file=compose.yaml`
-- `GET /api/compose/edit-plan?file=compose.yaml&service=api&mount=0&source=./app`
+## 📖 About
 
-Headless Compose commands:
+**DockerMap is a local operational topology app for understanding one self-hosted
+machine.** Docker and Compose are deep subsystems, but the map is broader than
+containers: it spans Docker, systemd, tmux, package ecosystems, native processes,
+reverse proxies, databases, DNS, storage, network edges, and AI workloads.
 
-```bash
-cargo run -p dockermap-daemon --manifest-path crates/Cargo.toml -- scan --file tests/fixtures/compose/path-mapping.compose.yaml
-cargo run -p dockermap-daemon --manifest-path crates/Cargo.toml -- validate --file tests/fixtures/compose/path-mapping.compose.yaml
-cargo run -p dockermap-daemon --manifest-path crates/Cargo.toml -- export --format json --file tests/fixtures/compose/path-mapping.compose.yaml
-```
+### Why this exists
 
-## Local Rust Toolchain
+Self-hosting one machine usually means juggling `docker ps`, `systemctl status`,
+half-remembered tmux sessions, a couple of SSH tabs, and a mental model of which
+service depends on which that lives only in your head. The most common failure mode
+isn't any one tool — it's not knowing what breaks if *this* thing goes down, or that a
+service is quietly running outside Docker where nothing else is watching it.
 
-The repo pins Rust `1.88.0` in `rust-toolchain.toml`. The checked-in lockfile requires a
-new enough Cargo, so use rustup or make sure your shell uses the pinned toolchain.
+DockerMap exists to answer that clearly, in one place:
 
-In this workspace, Rust 1.88.0 is available under `~/.cargo/bin`. If your shell still
-finds an older system Cargo first, run commands like this:
+- **What's actually here?** Every service, across Docker and beyond, treated as one
+  kind of thing — with status, dependencies, dependents, health, and logs.
+- **What depends on what?** Select a service and see its impact radius: what it needs,
+  and what breaks if it dies.
+- **What changed, and is it safe to change more?** A change timeline, plus dry-run
+  diffs before any edit — DockerMap never writes files or touches running services on
+  its own.
 
-```bash
-PATH="$HOME/.cargo/bin:$PATH" cargo test -p dockermap-core --manifest-path crates/Cargo.toml
-```
+The GUI is built around understanding, not container management: a Home command
+center for what needs attention, a Service Map for dependencies and impact radius, a
+Change Center, and an explain-only Copilot — with operational detail (networking,
+storage, images, logs, Compose) and raw Docker internals available on demand, not
+shown by default.
 
-## Checks
+### Screenshots
 
-These are the core automated checks. The full testing plan, including manual smoke tests
-for the UI, bearer-token auth, and reverse-proxy review setup, is in
-[docs/TESTING_PLAN.md](docs/TESTING_PLAN.md).
+**Home — what needs attention, recent change, and a map preview**
+![DockerMap command center](docs/screenshots/command-center.png)
 
-```bash
-npm ci
-npm run check
-npm run test:e2e
-# On a Docker-capable Linux host:
-npm run test:live-docker
-```
+**Service Map — dependencies, health, and impact radius**
+![DockerMap service map](docs/screenshots/service-map.png)
 
-## Optional API Token
+**Service detail — overview, relationships, resources, logs, and configuration**
+![DockerMap service detail](docs/screenshots/service-detail.png)
 
-For local development, the Node API does not require a token unless
-`DOCKERMAP_API_TOKEN` is set.
+The full design language behind these screens lives in
+[`docs/design/`](docs/design/).
 
-When the API is exposed through a reverse proxy, set a token:
+---
 
-```bash
-DOCKERMAP_API_TOKEN="replace-with-a-long-random-value"
-```
+## 🗺️ Dev Roadmap
 
-Then every route except `/health` and `/api/health` requires:
+The full breakdown — concurrent work streams, dependencies, and backlog — lives in
+[`docs/planning/ROADMAP.md`](docs/planning/ROADMAP.md). Short version:
 
-```text
-Authorization: Bearer replace-with-a-long-random-value
-```
+**Right now:** backend and security work, not GUI redesign — treating every runtime as
+one provider-neutral service entity, making systemd a first-class infrastructure layer,
+discovering npm/Node.js projects alongside containers, and hardening read-only
+collectors and API auth before opening a full alpha.
 
-For a review UI, prefer a reverse proxy that keeps the token server-side and injects the
-header when it forwards `/api/*` requests to `127.0.0.1:4000`. See
-[docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md).
+**Next up:** representing cross-technology chains end to end (e.g. Cloudflare → Caddy →
+Docker network → container → database → volume), provider redaction fixtures, and
+live-Docker/reverse-proxy release evidence.
 
-## Current Status
+**Long-term:** Python and native-process providers, a validation engine for real config
+problems, a safe editing workflow with diff preview and automatic backups, container
+metrics, drift detection, and a packaged CLI with versioned releases.
 
-- The web app has pages for dashboard, containers, images, networks, volumes, logs, and Compose.
-- The daemon reads Docker when available and falls back to mock data when Docker is unavailable.
-- The runtime map also reads PM2, systemd, cron, tmux, npm projects, listening sockets,
-  Tailscale/Headscale, reverse-proxy markers, and local DNS markers when those tools are
-  present on the host.
-- systemd discovery includes bounded dependency enrichment, and npm discovery creates
-  project and package-dependency nodes under the configured project root.
-- Compose scanning discovers base files plus adjacent override files.
-- Compose scans now include runtime mount checks: matched, missing, and extra.
-- Rust and TypeScript share API contract fixtures under `tests/fixtures/contracts`,
-  including an expanded cross-technology runtime-map fixture.
-- CI runs TypeScript audit/typecheck/build/tests, Rust format/lint/tests, and Playwright smoke tests.
+See [`docs/planning/`](docs/planning/) for the market research and detailed
+implementation plan behind these decisions.
 
-More background:
+---
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
-- [docs/TESTING_PLAN.md](docs/TESTING_PLAN.md)
-- [docs/REVERSE_PROXY.md](docs/REVERSE_PROXY.md)
-- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)
-- [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
-- [docs/DOC_CONTROL.md](docs/DOC_CONTROL.md)
-- [ROADMAP.md](ROADMAP.md)
+<div align="center">
+
+Built for people who run their own servers.
+More reference material lives in [`docs/`](docs/).
+
+</div>
