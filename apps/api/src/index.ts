@@ -4,6 +4,7 @@ import express from "express";
 import helmet from "helmet";
 import type {
   ApiError,
+  AuthWhoamiResponse,
   ComposeEditPlan,
   ComposeGraph,
   ComposeScan,
@@ -36,6 +37,14 @@ const pollIntervalMs = readBoundedNumber(process.env.DOCKERMAP_SSE_INTERVAL_MS, 
 const allowedOrigins = readAllowedOrigins(
   process.env.DOCKERMAP_ALLOWED_ORIGINS ?? "http://127.0.0.1:3233,http://localhost:3233",
 );
+// Forward-auth: trust identity headers set by an authenticating reverse proxy
+// (Authelia, Authentik, oauth2-proxy, Traefik/Caddy forward-auth, etc.) placed in
+// front of this API. DockerMap never speaks OIDC itself.
+const authUserHeader = readHeaderName(process.env.DOCKERMAP_AUTH_USER_HEADER, "x-remote-user");
+const authNameHeader = readHeaderName(process.env.DOCKERMAP_AUTH_NAME_HEADER, "x-remote-name");
+const authEmailHeader = readHeaderName(process.env.DOCKERMAP_AUTH_EMAIL_HEADER, "x-remote-email");
+const authGroupsHeader = readHeaderName(process.env.DOCKERMAP_AUTH_GROUPS_HEADER, "x-remote-groups");
+const authRequired = process.env.DOCKERMAP_AUTH_REQUIRED === "true";
 const maxQueryLength = 256;
 const maxContainerNameLength = 128;
 const maxComposeFiles = 8;
@@ -98,6 +107,14 @@ function readAllowedOrigins(value: string) {
     });
 }
 
+function readHeaderName(value: string | undefined, fallback: string) {
+  const name = (value ?? fallback).trim().toLowerCase();
+  if (!/^[a-z0-9-]+$/.test(name)) {
+    throw new Error(`Invalid forward-auth header name: ${value}`);
+  }
+  return name;
+}
+
 function readApiToken(value: string | undefined) {
   if (value === undefined) {
     return null;
@@ -138,6 +155,24 @@ function requireBearerToken(req: express.Request, res: express.Response, next: e
   next();
 }
 
+function requireForwardAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!authRequired || isPublicRoute(req)) {
+    next();
+    return;
+  }
+
+  const user = req.get(authUserHeader);
+  if (!user) {
+    res.status(401).json({
+      code: "auth_required",
+      message: `Missing trusted identity header "${authUserHeader}". DockerMap must run behind an authenticating reverse proxy (Authelia, Authentik, oauth2-proxy, etc.) when DOCKERMAP_AUTH_REQUIRED is enabled.`
+    } satisfies ApiError);
+    return;
+  }
+
+  next();
+}
+
 app.disable("x-powered-by");
 app.use(helmet({ strictTransportSecurity: false }));
 app.use(
@@ -155,6 +190,7 @@ app.use(
 );
 app.use(express.json({ limit: "16kb" }));
 app.use(requireBearerToken);
+app.use(requireForwardAuth);
 
 class HttpError extends Error {
   constructor(
@@ -513,6 +549,25 @@ app.get("/api/health", async (_req, res) => {
   } catch (error) {
     sendError(res, error);
   }
+});
+
+app.get("/api/auth/whoami", (req, res) => {
+  const user = req.get(authUserHeader) ?? null;
+  const name = req.get(authNameHeader) ?? null;
+  const email = req.get(authEmailHeader) ?? null;
+  const groups = (req.get(authGroupsHeader) ?? "")
+    .split(",")
+    .map((group) => group.trim())
+    .filter(Boolean);
+
+  res.json({
+    authenticated: Boolean(user),
+    required: authRequired,
+    user,
+    name,
+    email,
+    groups
+  } satisfies AuthWhoamiResponse);
 });
 
 app.get("/api/snapshot", async (_req, res) => {

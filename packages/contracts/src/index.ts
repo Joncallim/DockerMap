@@ -394,3 +394,12 @@ export interface ApiError {
   message: string;
   details?: unknown;
 }
+
+export interface AuthWhoamiResponse {
+  authenticated: boolean;
+  required: boolean;
+  user: string | null;
+  name: string | null;
+  email: string | null;
+  groups: string[];
+}

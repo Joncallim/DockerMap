@@ -1588,3 +1588,132 @@ kbd {
   border: 2px solid transparent;
   background-clip: padding-box;
 }
+
+.auth-status {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* ===========================================================================
+   Settings
+   =========================================================================== */
+
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.field-row:last-child {
+  border-bottom: none;
+}
+
+.field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 60%;
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--muted-deep);
+}
+
+.field-control {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.field-control input[type="url"] {
+  min-width: 280px;
+}
+
+.switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  transition: background var(--t);
+  padding: 0;
+}
+
+.switch.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ink);
+  transition: transform var(--t);
+}
+
+.switch.is-on .switch-knob {
+  transform: translateX(16px);
+  background: #fff;
+}
+
+.settings-snippet {
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border);
+}
+
+.settings-pre {
+  margin: var(--s2) 0 0;
+  padding: var(--s3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* Light theme override -------------------------------------------------------*/
+:root[data-theme="light"] {
+  --bg: #f4f6fa;
+  --bg-2: #eef1f6;
+  --surface: #ffffff;
+  --surface-2: #f3f5f9;
+  --surface-3: #e8ebf1;
+  --border: rgba(15, 23, 42, 0.09);
+  --border-strong: rgba(15, 23, 42, 0.16);
+
+  --ink: #161a23;
+  --ink-soft: #3b4250;
+  --muted: #5b6577;
+  --muted-deep: #828ca0;
+
+  --shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+  color-scheme: light;
+}
+
+:root[data-theme="light"] body {
+  background: radial-gradient(1200px 700px at 80% -10%, #ffffff 0%, var(--bg) 55%);
+}
+
+/* Compact density -------------------------------------------------------------*/
+:root[data-density="compact"] {
+  --s3: 8px;
+  --s4: 12px;
+  --s5: 16px;
+  --s6: 22px;
+}
+
+:root[data-density="compact"] .panel {
+  padding: var(--s3);
+}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchJson } from "../utils/api";
+import { useSettings } from "./useSettings";
 
 export type ResourceState<T> = {
   data: T | null;
@@ -8,6 +9,7 @@ export type ResourceState<T> = {
 };
 
 export function useApiResource<T>(path: string, refreshTick = 0): ResourceState<T> {
+  const { settings } = useSettings();
   const [state, setState] = useState<ResourceState<T>>({
     data: null,
     error: null,
@@ -37,7 +39,7 @@ export function useApiResource<T>(path: string, refreshTick = 0): ResourceState<
     return () => {
       cancelled = true;
     };
-  }, [path, refreshTick]);
+  }, [path, refreshTick, settings.demoMode]);
 
   return state;
 }
