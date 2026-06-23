@@ -46,6 +46,11 @@ Service detail — overview, relationships, resources, logs, and configuration:
 
 ![DockerMap service detail](docs/screenshots/service-detail.png)
 
+The design language behind these screens — the state system, spaces, progressive
+disclosure, and component catalog — is documented in [DESIGN.md](DESIGN.md) (principles and
+tokens) and [docs/DESIGN_LANGUAGE.md](docs/DESIGN_LANGUAGE.md) (applied, with screenshots of
+the Change Center, Copilot, and command palette).
+
 ## What It Helps With
 
 - See which containers, networks, volumes, and ports exist on a host.
