@@ -23,21 +23,28 @@ The alpha focus is backend and security work, not GUI redesign:
 - Harden read-only collectors, bounded filesystem scans, API auth/CORS behavior, and
   release evidence before opening a full alpha.
 
-The GUI should stay stable for now and will be handed off separately for design work.
+The GUI has been rebuilt around understanding rather than container management. It is
+organised into spaces — a Home command center (what needs attention), a Service Map
+(dependencies and impact radius), a Change Center, and an explain-only Copilot — with
+operational detail (networking, storage, images, logs, compose) and Docker internals
+available on demand. A ⌘K command palette is a primary way to navigate and ask. The
+GUI smoke test in `tests/e2e` encodes this information architecture. Some resource and
+change-history surfaces are clearly labelled estimates until the matching read-only
+collectors land in the daemon.
 
 ## Screenshots
 
-Dashboard topology and dependency view:
+Home command center — what needs attention, recent change, and a map preview:
 
-![DockerMap dashboard topology](docs/screenshots/dashboard-topology.png)
+![DockerMap command center](docs/screenshots/command-center.png)
 
-Container inventory and filters:
+Service Map — dependencies, health, and impact radius:
 
-![DockerMap container inventory](docs/screenshots/containers-inventory.png)
+![DockerMap service map](docs/screenshots/service-map.png)
 
-Container detail with runtime metadata and recent logs:
+Service detail — overview, relationships, resources, logs, and configuration:
 
-![DockerMap container detail](docs/screenshots/container-detail.png)
+![DockerMap service detail](docs/screenshots/service-detail.png)
 
 ## What It Helps With
 

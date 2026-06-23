@@ -1,150 +1,151 @@
-import { useEffect, useState } from "react";
-import { Link, NavLink, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { NavLink, Outlet } from "react-router-dom";
 import { useDaemonHeartbeat } from "../hooks/useDaemonHeartbeat";
-import { formatTime } from "../utils/format";
+import { useSystemModel } from "../hooks/useSystemModel";
+import { summarize } from "../lib/model";
+import { formatClock } from "../lib/format";
+import { AppContext } from "../context";
 import Icon, { type IconName } from "./Icon";
-import DashboardPage from "../pages/DashboardPage";
-import ContainersPage from "../pages/ContainersPage";
-import ContainerDetailPage from "../pages/ContainerDetailPage";
-import ImagesPage from "../pages/ImagesPage";
-import NetworksPage from "../pages/NetworksPage";
-import VolumesPage from "../pages/VolumesPage";
-import LogsPage from "../pages/LogsPage";
-import ComposePage from "../pages/ComposePage";
-import NotFoundPage from "../pages/NotFoundPage";
+import CommandPalette from "./CommandPalette";
+import { StateDot } from "./primitives";
 
-const navigation: { path: string; label: string; icon: IconName }[] = [
-  { path: "/", label: "Dashboard", icon: "dashboard" },
-  { path: "/containers", label: "Containers", icon: "container" },
-  { path: "/images", label: "Images", icon: "image" },
-  { path: "/networks", label: "Networks", icon: "network" },
-  { path: "/volumes", label: "Volumes", icon: "volume" },
-  { path: "/logs", label: "Logs", icon: "logs" },
-  { path: "/compose", label: "Compose", icon: "compose" },
+interface NavItem {
+  to: string;
+  label: string;
+  icon: IconName;
+  end?: boolean;
+}
+
+const SPACES: { heading: string; items: NavItem[] }[] = [
+  {
+    heading: "Understand",
+    items: [
+      { to: "/", label: "Home", icon: "home", end: true },
+      { to: "/map", label: "Service Map", icon: "map" },
+      { to: "/changes", label: "Changes", icon: "history" },
+      { to: "/copilot", label: "Copilot", icon: "spark" }
+    ]
+  },
+  {
+    heading: "Operate",
+    items: [
+      { to: "/networking", label: "Networking", icon: "network" },
+      { to: "/storage", label: "Storage", icon: "storage" },
+      { to: "/images", label: "Images", icon: "image" },
+      { to: "/logs", label: "Logs", icon: "logs" },
+      { to: "/compose", label: "Compose", icon: "compose" }
+    ]
+  }
 ];
 
 export default function AppShell() {
-  const navigate = useNavigate();
-  const { health } = useDaemonHeartbeat();
-  const [searchParams] = useSearchParams();
-  const [draftQuery, setDraftQuery] = useState(searchParams.get("q") ?? "");
+  const { tick, health } = useDaemonHeartbeat();
+  const { model, loading, error } = useSystemModel(tick);
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [clock, setClock] = useState(() => Date.now());
 
   useEffect(() => {
-    setDraftQuery(searchParams.get("q") ?? "");
-  }, [searchParams]);
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
-    if ((searchParams.get("q") ?? "") === draftQuery) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      const next = new URLSearchParams(searchParams);
-      if (draftQuery) {
-        next.set("q", draftQuery);
-      } else {
-        next.delete("q");
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setCommandOpen((o) => !o);
       }
-      const query = next.toString();
-      const pathname = window.location.pathname;
-      navigate(query ? `${pathname}?${query}` : pathname, { replace: true });
-    }, 250);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
-    return () => window.clearTimeout(timer);
-  }, [draftQuery, location.pathname, navigate, searchParams]);
+  const summary = useMemo(() => (model ? summarize(model) : null), [model]);
+  const mode = health?.mode === "docker" ? "Docker" : "Mock";
+  const overall = !summary
+    ? "unknown"
+    : summary.offline > 0
+      ? "offline"
+      : summary.attention > 0
+        ? "warning"
+        : "healthy";
 
-  const reachable = health?.dockerReachable;
-  const mode = health?.mode === "docker" ? "Docker Socket" : "Mock Engine";
+  const ctx = {
+    model,
+    loading,
+    error,
+    health,
+    tick,
+    openCommand: () => setCommandOpen(true)
+  };
 
   return (
-    <div className="shell">
-      <aside className="rail">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <Icon name="orbit" size={22} />
-          </span>
-          <div className="brand-text">
-            <div className="brand-title">DockerMap</div>
-            <div className="brand-sub">Runtime Atlas</div>
-          </div>
-        </div>
-
-        <div className={`host-card ${reachable ? "host-up" : "host-down"}`}>
-          <div className="host-row">
-            <span className={`dot ${reachable ? "dot-ok dot-pulse" : "dot-err"}`} aria-hidden="true" />
-            <span className="host-mode">{mode}</span>
-          </div>
-          <div className="host-meta">{reachable ? "Socket reachable" : "Socket unreachable"}</div>
-        </div>
-
-        <nav className="nav nav-list" aria-label="Primary">
-          {navigation.map((item) => (
-            <NavLink key={item.path} to={item.path} end={item.path === "/"} className="nav-item">
-              <Icon name={item.icon} size={18} />
-              <span>{item.label}</span>
-            </NavLink>
-          ))}
-        </nav>
-
-        <div className="rail-foot">
-          <div className="eyebrow">Daemon</div>
-          <div className={`daemon-state daemon-${health?.status ?? "connecting"}`}>
-            <span className={`dot ${health?.status === "ok" ? "dot-ok" : "dot-warn"}`} aria-hidden="true" />
-            {health?.status ?? "connecting"}
-          </div>
-          <p className="rail-foot-msg">{health?.message ?? "Waiting for daemon heartbeat."}</p>
-          <div className="rail-foot-time">{health ? `Synced ${formatTime(health.lastUpdated)}` : "No live data yet"}</div>
-        </div>
-      </aside>
-
-      <div className="surface">
-        <header className="topbar">
-          <label className="command">
-            <Icon name="search" size={17} />
-            <input
-              value={draftQuery}
-              onChange={(event) => setDraftQuery(event.target.value)}
-              className="command-input"
-              placeholder="Search services, images, networks, volumes, paths…"
-              aria-label="Search the runtime"
-            />
-            <kbd>/</kbd>
-          </label>
-          <div className="topbar-actions">
-            <span className={`live-chip ${reachable ? "live-on" : "live-off"}`}>
-              <span className={`dot ${reachable ? "dot-ok dot-pulse" : "dot-err"}`} aria-hidden="true" />
-              {reachable ? "Live" : "Offline"}
+    <AppContext.Provider value={ctx}>
+      <div className="shell">
+        <aside className="rail">
+          <div className="brand">
+            <span className="brand-mark" aria-hidden="true">
+              <Icon name="map" size={20} />
             </span>
-            <Link className="btn btn-ghost" to="/logs">
-              <Icon name="logs" size={16} />
-              Logs
-            </Link>
+            <div className="brand-text">
+              <div className="brand-title">DockerMap</div>
+              <div className="brand-sub">Infrastructure, understood</div>
+            </div>
           </div>
-        </header>
 
-        <main className="content">
-          <Routes>
-            <Route path="/" element={<DashboardPage heartbeat={health?.lastUpdated ?? 0} />} />
-            <Route path="/containers" element={<ContainersPage heartbeat={health?.lastUpdated ?? 0} />} />
-            <Route path="/containers/:name" element={<ContainerDetailPage heartbeat={health?.lastUpdated ?? 0} />} />
-            <Route path="/images" element={<ImagesPage heartbeat={health?.lastUpdated ?? 0} />} />
-            <Route path="/networks" element={<NetworksPage heartbeat={health?.lastUpdated ?? 0} />} />
-            <Route path="/volumes" element={<VolumesPage heartbeat={health?.lastUpdated ?? 0} />} />
-            <Route path="/logs" element={<LogsPage heartbeat={health?.lastUpdated ?? 0} />} />
-            <Route path="/compose" element={<ComposePage heartbeat={health?.lastUpdated ?? 0} />} />
-            <Route path="*" element={<NotFoundPage />} />
-          </Routes>
-        </main>
+          <nav className="nav nav-list" aria-label="Primary">
+            {SPACES.map((space) => (
+              <div className="nav-group" key={space.heading}>
+                <div className="nav-heading">{space.heading}</div>
+                {space.items.map((item) => (
+                  <NavLink key={item.to} to={item.to} end={item.end} className="nav-item">
+                    <Icon name={item.icon} size={17} />
+                    <span>{item.label}</span>
+                  </NavLink>
+                ))}
+              </div>
+            ))}
+          </nav>
 
-        <nav className="mobile-nav" aria-label="Primary mobile">
-          {navigation.map((item) => (
-            <NavLink key={item.path} to={item.path} end={item.path === "/"} className="mobile-item">
-              <Icon name={item.icon} size={20} />
-              <span>{item.label}</span>
-            </NavLink>
-          ))}
-        </nav>
+          <div className="rail-foot">
+            <div className={`conn conn-${health?.dockerReachable ? "up" : "down"}`}>
+              <StateDot state={health?.dockerReachable ? "healthy" : "offline"} pulse={health?.dockerReachable} />
+              <span className="conn-mode">{mode} Engine</span>
+            </div>
+            <p className="conn-msg">{health?.message ?? "Connecting to daemon…"}</p>
+          </div>
+        </aside>
+
+        <div className="frame">
+          <header className="topbar">
+            <button type="button" className="topbar-search" onClick={() => setCommandOpen(true)}>
+              <Icon name="search" size={16} />
+              <span>Search or ask…</span>
+              <kbd>
+                <Icon name="command" size={11} /> K
+              </kbd>
+            </button>
+            <div className="topbar-status">
+              {summary && (
+                <div className={`sys-state s-${overall}`}>
+                  <StateDot state={overall} pulse={overall === "healthy"} />
+                  <span>
+                    {summary.healthy}/{summary.total} healthy
+                  </span>
+                  {summary.attention > 0 && <span className="sys-attn">{summary.attention} need attention</span>}
+                </div>
+              )}
+              <span className="topbar-clock">{formatClock(clock)}</span>
+            </div>
+          </header>
+
+          <main className="content">
+            <Outlet />
+          </main>
+        </div>
       </div>
-    </div>
+
+      <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} model={model} />
+    </AppContext.Provider>
   );
 }
