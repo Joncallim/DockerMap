@@ -4,6 +4,9 @@ Use the sandbox fixture when you want DockerMap to inspect a realistic but isola
 topology. It creates a labeled Docker Compose project, temporary provider command stubs,
 and a bounded project root under `/tmp`.
 
+For the full operator runbook, use
+[TESTBED_DOCKER_PROCEDURE.md](TESTBED_DOCKER_PROCEDURE.md).
+
 ## Start
 
 ```bash

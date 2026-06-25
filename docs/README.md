@@ -90,6 +90,9 @@ daemon, provider, auth, deployment, or write-mode behavior.
   tests, browser smoke tests, live-Docker tests, and manual release smoke.
 - [testing/SANDBOX_FIXTURE.md](testing/SANDBOX_FIXTURE.md): isolated labeled
   Docker and provider-stub topology for manual DockerMap testing.
+- [testing/TESTBED_DOCKER_PROCEDURE.md](testing/TESTBED_DOCKER_PROCEDURE.md):
+  exact testbed startup, API/UI checks, automated commands, failure capture, and
+  teardown procedure.
 - [release/RELEASE_CHECKLIST.md](release/RELEASE_CHECKLIST.md): private alpha
   release gate and evidence to capture.
 - [design/DESIGN.md](design/DESIGN.md): UI direction.
