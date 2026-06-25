@@ -58,8 +58,10 @@ tasks before starting new GUI work:
 - [ ] Capture reverse-proxy smoke evidence on the release host, including bearer-token
   injection, SSE streaming, public review URL access, and direct daemon-port
   inaccessibility.
-- [ ] Plan Python and native-process providers as the next backend provider peers after
+- [x] Plan Python and native-process providers as the next backend provider peers after
   the current Rust runtime model and contracts settle.
+  The planning doc is `docs/planning/PYTHON_AND_PROCESS_PROVIDERS.md`. Implementation,
+  fixture, contract, and frontend follow-ups remain separate future work.
 
 ## Second Round Before Wider Beta
 

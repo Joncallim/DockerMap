@@ -78,11 +78,12 @@ The API tests cover:
 These tests run against the real Express entry point with mock fallback or a stub daemon.
 They do not require Docker, systemd, tmux, reverse-proxy software, DNS services, or a GUI.
 
-After the next implementation commit lands, execute the post-commit follow-up queue in
-[`docs/release/RELEASE_CHECKLIST.md`](../release/RELEASE_CHECKLIST.md). That queue is the source of truth for
-provider redaction fixtures, package advisory/network opt-in documentation, live-Docker
-release-host evidence, reverse-proxy smoke evidence, and Python/native-process provider
-planning.
+The Python/native-process provider plan now lives in
+[`docs/planning/PYTHON_AND_PROCESS_PROVIDERS.md`](../planning/PYTHON_AND_PROCESS_PROVIDERS.md).
+Keep the post-commit follow-up queue in
+[`docs/release/RELEASE_CHECKLIST.md`](../release/RELEASE_CHECKLIST.md) current for remaining
+release-host evidence and for implementation, fixture, API, and docs evidence when new
+providers land.
 
 ## Alpha Security Gates For Expanded Providers
 
@@ -118,6 +119,15 @@ markers, provider diagnostics, and provider edge metadata. These fixtures delibe
 `DOCKERMAP_TEST_FAKE_*` sentinels and assert the returned runtime/provider JSON omits those
 raw values. The native-process check is an output-boundary regression test until a real
 bounded native-process collector is implemented.
+
+Before Python or native-process collectors are enabled, add fixture-first tests for fake
+`/proc` trees, optional fixed `ps` output, Python manifests, skipped directories, cap
+diagnostics, and redaction sentinels. These tests should prove that env values, raw secret
+arguments, private package-index URLs, cwd paths outside the configured project root, and
+manifest credentials are omitted or redacted. They should also cover process disappearance,
+unreadable proc fields, too many processes, too many Python projects, too many dependencies,
+and oversized manifests without requiring Docker, systemd, tmux, real Python services, or
+external network access.
 
 Run the provider redaction fixture checks with:
 

@@ -40,9 +40,9 @@ Working now:
 
 Still in progress:
 
-- Provider-specific redaction fixtures.
+- Provider-specific redaction fixtures for future collectors.
 - Richer systemd and package metadata.
-- Python and native-process providers.
+- Python and native-process provider implementations.
 - Better table sorting, filtering, graph navigation, and logs UI.
 - OpenAPI docs and stable versioned API routes.
 - Safe write mode with backups and rollback. This is not enabled today.
@@ -84,6 +84,8 @@ daemon, provider, auth, deployment, or write-mode behavior.
   data flow, runtime-map model, and provider rules.
 - [architecture/PAGE_LOGIC.md](architecture/PAGE_LOGIC.md): intended UI routes,
   page behavior, and cross-page navigation.
+- [planning/PYTHON_AND_PROCESS_PROVIDERS.md](planning/PYTHON_AND_PROCESS_PROVIDERS.md):
+  read-only provider plan for future Python application and native-process collection.
 - [testing/TESTING_PLAN.md](testing/TESTING_PLAN.md): local checks, security
   tests, browser smoke tests, live-Docker tests, and manual release smoke.
 - [testing/SANDBOX_FIXTURE.md](testing/SANDBOX_FIXTURE.md): isolated labeled
