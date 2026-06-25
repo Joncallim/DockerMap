@@ -169,6 +169,8 @@ scripts/dockermap-fixture-down.sh
 
 Details and cleanup boundaries are in
 [`docs/testing/SANDBOX_FIXTURE.md`](SANDBOX_FIXTURE.md).
+The full step-by-step operator procedure is in
+[`docs/testing/TESTBED_DOCKER_PROCEDURE.md`](TESTBED_DOCKER_PROCEDURE.md).
 
 ## Manual Smoke Test
 
