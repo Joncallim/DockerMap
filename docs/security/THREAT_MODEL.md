@@ -33,7 +33,8 @@ changes them:
 - Compose edit planning is dry-run only and always returns `willWrite: false`.
 - Filesystem inspection stays bounded to explicit Compose targets, documented provider paths,
   or fixed config locations; DockerMap must not do unbounded host-wide scans for discovery.
-- Package registry, advisory, or other external-network lookups are opt-in or explicitly
+- Package registry, advisory, DNS-provider API, and generic external-API lookups are not
+  enabled in DockerMap runtime by default; any future lookup must be opt-in or explicitly
   documented before release.
 - Package, service, process, unit, and proxy inspection must not leak secrets from env vars,
   command lines, service files, credentials, or inline auth URLs.
@@ -72,8 +73,14 @@ Protections:
 - Provider commands stay fixed and read-only, such as list/status/introspection calls.
 - Provider discovery stays bounded to explicit request parameters, known config locations, or
   capped fixture-like scans instead of recursive host crawling.
-- Package advisory or registry traffic is disabled by default unless the operator opts in or
-  the release docs explicitly call out the network behavior.
+- Package registry/advisory traffic, DNS-provider API calls, Cloudflare API calls, and
+  generic external-API lookups are disabled or not implemented in DockerMap runtime today.
+- Tailscale and Headscale discovery use fixed local CLI commands when those tools are
+  installed. DockerMap does not add tokens, URLs, or user input, but those commands inherit
+  the daemon environment and the installed tools may use the operator's existing daemon/config
+  to contact their configured control plane.
+- The browser UI currently loads Google Fonts from Google-hosted font endpoints. Treat
+  that as browser asset egress, separate from daemon/provider egress.
 - Sensitive values from env files, process args, unit files, proxy configs, and package auth
   settings must be redacted or omitted before returning API responses.
 - Security validation for provider routes must run locally without Docker, systemd, tmux, or a
@@ -125,8 +132,10 @@ Security checks that still require release evidence:
 - Live-Docker E2E on a Docker-capable Linux host.
 - Reverse-proxy bearer-token injection and SSE streaming through the public review URL.
 - Direct remote inaccessibility of the daemon port.
+- A release decision on whether Tailscale/Headscale delegated CLI collection and
+  Google-hosted web fonts are acceptable defaults for the private review environment.
 - Package/advisory network-egress behavior for package, Python/native-process, DNS, and
-  external-API collectors once those routes land or become configurable.
+  external-API collectors if those routes later land or become configurable.
 
 ## Out Of Scope Until Write Mode
 

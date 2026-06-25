@@ -69,8 +69,10 @@ The map is read-only and currently contains:
 - tmux sessions and tmux-managed agents where the session metadata exposes a bounded
   relationship.
 - npm projects discovered from `package.json` and lockfiles under the configured project
-  root, with scripts, framework hints, dependency nodes, and package-update/advisory
-  metadata kept behind safe bounded collectors.
+  root, with scripts, framework hints, and dependency nodes. The contracts can represent
+  package-update/advisory metadata, but no runtime registry or advisory lookup is enabled
+  today. UI update labels are derived from local model/demo data unless a future opt-in
+  advisory provider is implemented.
 - Python projects discovered from common project files as a later application-provider
   peer to npm.
 - scheduled jobs from `/etc/crontab`, `/etc/cron.d/*`, and the current user's `crontab -l` when readable.

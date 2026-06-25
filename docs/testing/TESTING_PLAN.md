@@ -97,6 +97,21 @@ external-API collection, the alpha bar is:
 - Security tests for the provider can run locally without depending on Docker, systemd,
   tmux, or browser automation.
 
+For provider-network behavior evidence, verify source and docs rather than running
+external services with real credentials:
+
+```bash
+rg -n "advisory|registry|external|network|Tailscale|Headscale|token|auth" docs crates apps packages
+rg -n "fetch\\(|Command::new|npm audit|npm view|registry|advisory|fonts.googleapis|fonts.gstatic" apps crates packages docs -g '!**/package-lock.json' -g '!**/Cargo.lock'
+```
+
+Expected current result: DockerMap runtime has no package registry, package advisory,
+DNS-provider API, Cloudflare API, or generic external-API lookup. Tailscale and Headscale
+are fixed delegated CLI calls when installed, inherit the daemon environment, and may use
+the operator's configured control plane. The API talks to a loopback daemon unless remote
+daemon access is explicitly enabled, and the browser shell loads Google-hosted fonts unless
+assets are packaged locally.
+
 The daemon unit suite includes fake-only provider redaction fixtures for systemd, tmux,
 npm/package metadata, native-process-shaped command output, reverse-proxy markers, DNS
 markers, provider diagnostics, and provider edge metadata. These fixtures deliberately use
@@ -214,6 +229,7 @@ More detail is in [docs/deployment/REVERSE_PROXY.md](../deployment/REVERSE_PROXY
 - Run and record live-Docker integration evidence on the release host.
 - Add reverse-proxy integration tests for bearer-token injection and SSE streaming.
 - Add OpenAPI schema checks once the versioned API spec exists.
-- Add fixture-driven provider redaction tests for systemd, tmux, package inspection,
-  Python/native processes, reverse proxies, DNS, and any external advisory clients.
+- Add fixture-driven provider redaction tests for any future Python/native-process,
+  reverse-proxy config-content, DNS config-content, package advisory, registry, or
+  external-API collectors.
 - Add write-mode tests only after backup, confirmation, and rollback behavior exists.

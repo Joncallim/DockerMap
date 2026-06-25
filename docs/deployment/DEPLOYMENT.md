@@ -52,6 +52,33 @@ This builds:
 - `apps/web/dist`
 - `crates/target/release/dockermap-daemon`
 
+## External Network Behavior
+
+Separate build-time downloads from DockerMap runtime behavior:
+
+- Build and maintenance commands can use the network. `npm ci`, Cargo dependency
+  fetches, and `npm audit --omit=dev` contact npm or Cargo registries/advisory
+  services as part of installing, building, or validating the project.
+- DockerMap runtime does not run package-registry, package-advisory, DNS-provider API,
+  Cloudflare API, or generic external-API lookups today. Advisory/update fields may
+  appear in contracts and fixtures, but the daemon does not populate them from a live
+  registry or advisory service.
+- The web UI currently loads Google Fonts from `fonts.googleapis.com` and
+  `fonts.gstatic.com` when a browser opens it. Package the fonts locally before release
+  if the review environment must avoid browser egress.
+
+Current runtime provider behavior:
+
+| Provider area | Default behavior | Network note |
+| --- | --- | --- |
+| Docker | Reads the local Docker socket. | Local host socket access, not registry access. |
+| Compose and npm/package metadata | Reads bounded files under `DOCKERMAP_PROJECT_ROOT`. | No registry, audit, advisory, or `.npmrc` lookup. |
+| systemd, cron, PM2, tmux, listeners | Runs fixed local read-only commands or reads local `/proc`/cron files. | No user-supplied shell and no configured external destination. |
+| reverse-proxy and local DNS markers | Checks fixed local marker paths and Docker image/name signals. | Does not read proxy/DNS config contents or call DNS/proxy provider APIs. |
+| Tailscale and Headscale | Runs fixed local CLI commands if the tools are installed. | DockerMap does not add tokens, URLs, or user input, but those CLIs inherit the daemon environment and may use the operator's existing daemon/config to contact their configured control plane. |
+| Node API to Rust daemon | Uses `DOCKERMAP_DAEMON_URL`, defaulting to `http://127.0.0.1:4100`. | Non-loopback daemon URLs are rejected unless `DOCKERMAP_ALLOW_REMOTE_DAEMON=true`. |
+| Public review access | Disabled unless you deploy a reverse proxy. | The proxy, SSO, VPN, or DNS provider may have its own network behavior outside DockerMap. |
+
 ## Environment File
 
 Copy the example and edit it:
