@@ -1,0 +1,126 @@
+name: Bug Report
+description: Report broken, incorrect, unsafe, or unintended DockerMap behavior
+title: "[BUG] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when DockerMap behaves incorrectly. Write the issue so an AI coding agent can reproduce the problem, fix the smallest responsible surface, verify it, and then recommend closure with evidence. Agents should not close issues automatically.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Bug Summary
+      description: What is broken in plain English?
+      placeholder: "Example: The runtime map includes an env value from a systemd unit instead of redacting it."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: likely_area
+    attributes:
+      label: Likely Area
+      description: Pick the closest area so the right subagent can take the first pass.
+      options:
+        - Compose parser or edit plan
+        - Runtime provider collector
+        - API, auth, CORS, or contracts
+        - Frontend UI or navigation
+        - Security or redaction
+        - Tests or fixtures
+        - Release, Docker, CI, or deployment
+        - Documentation
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Current Behavior
+      description: What actually happens now?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+      description: What should happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction_steps
+    attributes:
+      label: Reproduction Steps
+      description: Provide the shortest reliable path to see the bug.
+      placeholder: |
+        1. Start ...
+        2. Open or request ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Add logs, screenshots, response snippets, fixture names, file paths, or command output.
+      render: markdown
+    validations:
+      required: false
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Critical - data loss, secret leak, host mutation, or app unusable
+        - High - major workflow broken or unsafe behavior possible
+        - Medium - feature partially broken
+        - Low - minor bug or polish issue
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: How do we know the bug is fixed?
+      placeholder: |
+        - [ ] The reproduction steps no longer show the bug.
+        - [ ] Expected behavior is restored.
+        - [ ] A regression test, fixture, or explicit validation step is included.
+        - [ ] Existing read-only behavior remains unaffected.
+        - [ ] The agent posts plain-English evidence and recommends whether to close.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggested_validation
+    attributes:
+      label: Suggested Validation
+      description: Commands or checks the agent should run.
+      placeholder: |
+        - npm run test:api
+        - npm run test:rust:core
+        - npm run test:e2e
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Add OS, browser, Docker version, Node/Rust version, branch, commit, deployment URL, or proxy setup where relevant.
+      placeholder: |
+        - OS:
+        - Browser:
+        - Docker:
+        - Branch/commit:
+        - Deployment:
+    validations:
+      required: false

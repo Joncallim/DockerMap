@@ -7,4 +7,6 @@ coverage
 .turbo
 target
 .claude/
-.codex/
+.codex/*
+!.codex/agents/
+!.codex/agents/*.toml

@@ -1,0 +1,119 @@
+name: Feature Request
+description: Propose a new DockerMap capability or product improvement
+title: "[FEATURE] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for new DockerMap capabilities. The issue should be specific enough that an AI coding agent can implement one narrow pass without inventing requirements. Agents should resolve with evidence and recommend closure, not close issues automatically.
+
+  - type: textarea
+    id: problem_statement
+    attributes:
+      label: Problem Statement
+      description: What user or operator problem are we solving?
+      placeholder: "Example: Operators cannot tell which reverse proxy route points to which container and volume chain."
+    validations:
+      required: true
+
+  - type: textarea
+    id: desired_outcome
+    attributes:
+      label: Desired Outcome
+      description: What should be true after this feature pass?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: recommended_subagent
+    attributes:
+      label: Recommended Subagent
+      description: Choose the narrow DockerMap subagent most likely to implement the first pass.
+      options:
+        - compose-core
+        - runtime-provider
+        - api-contracts
+        - frontend-topology
+        - security-readonly
+        - qa-evidence
+        - release-ops
+        - docs-operator
+        - issue-steward
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: requirements
+    attributes:
+      label: Requirements
+      description: List concrete functional requirements. Keep each item testable.
+      placeholder: |
+        - Requirement 1
+        - Requirement 2
+        - Requirement 3
+    validations:
+      required: true
+
+  - type: textarea
+    id: read_only_safety
+    attributes:
+      label: Read-Only And Safety Expectations
+      description: Explain how the feature should preserve DockerMap's inspection-first behavior.
+      placeholder: |
+        - No write endpoints are added.
+        - Provider commands remain fixed and read-only.
+        - Secrets are redacted or omitted.
+        - Filesystem discovery remains bounded.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: These are the implementation contract for the AI coding agent.
+      placeholder: |
+        - [ ] User can ...
+        - [ ] API or UI exposes ...
+        - [ ] Existing read-only behavior remains unaffected.
+        - [ ] Tests, fixtures, or validation steps are included.
+        - [ ] The agent posts plain-English evidence and recommends whether to close.
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out Of Scope
+      description: What should not be implemented as part of this issue?
+      placeholder: |
+        - Do not add ...
+        - Do not change ...
+        - Do not close this issue automatically.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: implementation_scope
+    attributes:
+      label: Implementation Scope
+      description: Estimate the first pass, not the whole long-term idea.
+      options:
+        - Small - isolated change
+        - Medium - multiple files or components
+        - Large - needs architecture split before coding
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: technical_notes
+    attributes:
+      label: Technical Notes
+      description: Optional file paths, API shapes, docs, screenshots, or suggested implementation direction.
+      render: markdown
+    validations:
+      required: false

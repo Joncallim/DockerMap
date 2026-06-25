@@ -488,9 +488,17 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
 async function readFirstChunk(response: Response) {
   const reader = response.body?.getReader();
   assert.ok(reader, "expected a streaming response body");
-  const chunk = await reader.read();
+  const decoder = new TextDecoder();
+  let body = "";
+
+  for (let reads = 0; reads < 8 && !body.includes("\n\n"); reads += 1) {
+    const chunk = await reader.read();
+    assert.equal(chunk.done, false, "stream ended before the first SSE frame");
+    body += decoder.decode(chunk.value ?? new Uint8Array(), { stream: true });
+  }
+
   await reader.cancel();
-  return new TextDecoder().decode(chunk.value ?? new Uint8Array());
+  return body;
 }
 
 function stopServer(server: Server) {

@@ -1,37 +1,31 @@
-<div align="center">
+# DockerMap
 
-```
- ██████╗  ██████╗  ██████╗██╗  ██╗███████╗██████╗ ███╗   ███╗ █████╗ ██████╗
- ██╔══██╗██╔═══██╗██╔════╝██║ ██╔╝██╔════╝██╔══██╗████╗ ████║██╔══██╗██╔══██╗
- ██║  ██║██║   ██║██║     █████╔╝ █████╗  ██████╔╝██╔████╔██║███████║██████╔╝
- ██║  ██║██║   ██║██║     ██╔═██╗ ██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══██║██╔═══╝
- ██████╔╝╚██████╔╝╚██████╗██║  ██╗███████╗██║  ██║██║ ╚═╝ ██║██║  ██║██║  
- ╚═════╝  ╚═════╝  ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  
-```
+DockerMap is a local web app that helps you understand what is running on one
+self-hosted machine.
 
-### Understand your whole self-hosted machine. One map, no guessing.
+It shows Docker containers, Compose files, host services, ports, volumes, logs,
+and related runtime signals in one place. The goal is simple: when something is
+running on your server, DockerMap should help you answer what it is, what it
+depends on, where its data lives, and what might break if you change it.
 
-[![Docker](https://img.shields.io/badge/docker-ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](docs/deployment/DOCKER.md)
-[![Node](https://img.shields.io/badge/node-%3E%3D22-3c873a?style=for-the-badge&logo=node.js&logoColor=white)](#-quick-installation)
-[![Rust](https://img.shields.io/badge/rust-1.88-orange?style=for-the-badge&logo=rust&logoColor=white)](#-quick-installation)
-[![Status](https://img.shields.io/badge/status-read--only%20%26%20safe-f59e0b?style=for-the-badge)](docs/security/THREAT_MODEL.md)
+DockerMap is read-only today. It inspects your machine, but it does not restart
+services, change containers, edit Compose files, or delete data.
 
-</div>
+## Quick Start
 
----
-
-## 🚀 Quick Installation
-
-Pick whichever you're more comfortable with. Both give you the same app at
-**http://127.0.0.1:3233**.
-
-### Option A — Docker (recommended)
+The fastest way to try DockerMap is Docker Compose:
 
 ```bash
 docker compose up --build
 ```
 
-No Compose? Plain Docker works too:
+Then open:
+
+```text
+http://127.0.0.1:3233
+```
+
+If you do not use Docker Compose, plain Docker works too:
 
 ```bash
 docker build -t dockermap:local .
@@ -40,95 +34,138 @@ docker run --rm -p 3233:3233 \
   dockermap:local
 ```
 
-### Option B — NPM
+That Docker socket mount is read-only. DockerMap needs it so it can inspect
+containers, images, networks, volumes, and logs.
+
+## Run From Source
+
+Use this path if you are developing DockerMap or want the three local services
+running directly on your machine.
+
+Requirements:
+
+- Node.js 22 or newer
+- npm
+- Rust, using the version pinned in [rust-toolchain.toml](rust-toolchain.toml)
+- Docker, if you want live Docker data instead of fallback demo data
+
+Install and start the local stack:
 
 ```bash
 npm install
 npm run dev:stack
 ```
 
-This starts the Rust daemon (`:4100`), the Node API (`:4000`), and the web app
-(`:3233`) together. Requires Node.js 22+ and the Rust toolchain pinned in
-[`rust-toolchain.toml`](rust-toolchain.toml).
+This starts:
 
-Full setup details, environment variables, and a host/systemd deployment guide live in
-[`docs/deployment/`](docs/deployment/).
+- Web app: `http://127.0.0.1:3233`
+- Node API: `http://127.0.0.1:4000`
+- Rust daemon: `http://127.0.0.1:4100`
 
----
+## What You Can Do
 
-## 📖 About
+- See containers, images, networks, volumes, and logs.
+- See Compose files, declared mounts, named volumes, and dry-run edit plans.
+- See a broader runtime map when host tools are available, including systemd,
+  cron, PM2, tmux, listening sockets, Tailscale or Headscale, reverse-proxy
+  markers, and local DNS markers.
+- Compare what Compose says should exist with what Docker is actually running.
+- Use mock fallback data when Docker is not available.
 
-**DockerMap is a local operational topology app for understanding one self-hosted
-machine.** Docker and Compose are deep subsystems, but the map is broader than
-containers: it spans Docker, systemd, tmux, package ecosystems, native processes,
-reverse proxies, databases, DNS, storage, network edges, and AI workloads.
+DockerMap is for understanding a host, not controlling it. Write actions are
+planned only after diff previews, backups, confirmations, and rollback behavior
+exist.
 
-### Why this exists
+## First Things To Check
 
-Self-hosting one machine usually means juggling `docker ps`, `systemctl status`,
-half-remembered tmux sessions, a couple of SSH tabs, and a mental model of which
-service depends on which that lives only in your head. The most common failure mode
-isn't any one tool — it's not knowing what breaks if *this* thing goes down, or that a
-service is quietly running outside Docker where nothing else is watching it.
+If the app opens but looks empty:
 
-DockerMap exists to answer that clearly, in one place:
+1. Confirm Docker is running.
+2. Confirm the Docker socket is mounted when using Docker:
 
-- **What's actually here?** Every service, across Docker and beyond, treated as one
-  kind of thing — with status, dependencies, dependents, health, and logs.
-- **What depends on what?** Select a service and see its impact radius: what it needs,
-  and what breaks if it dies.
-- **What changed, and is it safe to change more?** A change timeline, plus dry-run
-  diffs before any edit — DockerMap never writes files or touches running services on
-  its own.
+   ```text
+   /var/run/docker.sock:/var/run/docker.sock:ro
+   ```
 
-The GUI is built around understanding, not container management: a Home command
-center for what needs attention, a Service Map for dependencies and impact radius, a
-Change Center, and an explain-only Copilot — with operational detail (networking,
-storage, images, logs, Compose) and raw Docker internals available on demand, not
-shown by default.
+3. Check the API health endpoint:
 
-### Screenshots
+   ```text
+   http://127.0.0.1:4000/api/health
+   ```
 
-**Home — what needs attention, recent change, and a map preview**
-![DockerMap command center](docs/screenshots/command-center.png)
+4. Check the daemon health endpoint:
 
-**Service Map — dependencies, health, and impact radius**
-![DockerMap service map](docs/screenshots/service-map.png)
+   ```text
+   http://127.0.0.1:4100/daemon/health
+   ```
 
-**Service detail — overview, relationships, resources, logs, and configuration**
-![DockerMap service detail](docs/screenshots/service-detail.png)
+If Docker is not reachable, DockerMap should still start with safe fallback data
+so the UI can be inspected.
 
-The full design language behind these screens lives in
-[`docs/design/`](docs/design/).
+## Safety Model
 
----
+DockerMap treats host data as sensitive. Its current safety rules are:
 
-## 🗺️ Dev Roadmap
+- Bind to loopback by default.
+- Keep daemon routes read-only.
+- Use fixed provider commands, not user-supplied shell commands.
+- Keep Compose edits as dry-run previews only.
+- Require bearer-token auth for non-health API routes when
+  `DOCKERMAP_API_TOKEN` is set.
+- Redact or omit secrets from provider output where collectors may encounter
+  service files, process args, package config, proxy config, logs, or env values.
 
-The full breakdown — concurrent work streams, dependencies, and backlog — lives in
-[`docs/planning/ROADMAP.md`](docs/planning/ROADMAP.md). Short version:
+More detail is in [docs/security/THREAT_MODEL.md](docs/security/THREAT_MODEL.md).
 
-**Right now:** backend and security work, not GUI redesign — treating every runtime as
-one provider-neutral service entity, making systemd a first-class infrastructure layer,
-discovering npm/Node.js projects alongside containers, and hardening read-only
-collectors and API auth before opening a full alpha.
+## Documentation
 
-**Next up:** representing cross-technology chains end to end (e.g. Cloudflare → Caddy →
-Docker network → container → database → volume), provider redaction fixtures, and
-live-Docker/reverse-proxy release evidence.
+Start with the [DockerMap wiki](docs/README.md). It links to the short roadmap,
+deployment notes, testing plan, architecture reference, and release checklist.
 
-**Long-term:** Python and native-process providers, a validation engine for real config
-problems, a safe editing workflow with diff preview and automatic backups, container
-metrics, drift detection, and a packaged CLI with versioned releases.
+Useful entry points:
 
-See [`docs/planning/`](docs/planning/) for the market research and detailed
-implementation plan behind these decisions.
+- [Docker setup](docs/deployment/DOCKER.md)
+- [Host deployment](docs/deployment/DEPLOYMENT.md)
+- [Reverse proxy notes](docs/deployment/REVERSE_PROXY.md)
+- [Roadmap](docs/planning/ROADMAP.md)
+- [Testing plan](docs/testing/TESTING_PLAN.md)
+- [Architecture](docs/architecture/ARCHITECTURE.md)
 
----
+## Developer Checks
 
-<div align="center">
+Run the normal local gate before merging code:
 
-Built for people who run their own servers.
-More reference material lives in [`docs/`](docs/).
+```bash
+npm run check
+```
 
-</div>
+Useful narrower checks:
+
+```bash
+npm run typecheck
+npm run build
+npm run test:js
+npm run test:api
+npm run test:contracts
+npm run test:rust
+npm run test:e2e
+```
+
+Run live-Docker tests only on a host where Docker is available:
+
+```bash
+npm run test:live-docker
+```
+
+## Project Shape
+
+- `apps/web`: React/Vite browser app.
+- `apps/api`: Express API for the browser.
+- `crates/dockermap-daemon`: Rust daemon that reads Docker and host runtime
+  signals.
+- `crates/dockermap-core`: Rust domain model, Compose parser, and graph logic.
+- `packages/contracts`: TypeScript API contracts shared by the web and API.
+- `tests`: shared fixtures and Playwright smoke tests.
+
+DockerMap is built for people who run their own servers and want fewer blind
+spots before they touch anything.
