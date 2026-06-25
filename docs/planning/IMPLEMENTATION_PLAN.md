@@ -51,14 +51,14 @@ still the runtime model, collectors, contracts, and security evidence.
 - Frontend component split, Compose scan/graph/edit-plan endpoints, CLI
   scan/validate/export, Compose/runtime correlation, override merge semantics, and
   contract compatibility tests are done.
-- Still to build before full alpha: provider-specific redaction fixtures for new
-  collectors, richer package/update/advisory behavior, Python/native-process provider
-  peers, table sorting, advanced filters, clickable graph nodes, log level filter, live
-  tail, broader browser smoke coverage, and log pagination UI.
-- Immediately after the next implementation commit lands, execute the follow-up queue in
-  [`docs/release/RELEASE_CHECKLIST.md`](../release/RELEASE_CHECKLIST.md): provider redaction fixtures,
-  package advisory/network opt-in docs, live-Docker/reverse-proxy release-host evidence,
-  and Python/native-process provider planning.
+- Still to build before full alpha: provider fixtures for future collectors, richer
+  package/update/advisory behavior, Python/native-process provider implementations, table
+  sorting, advanced filters, clickable graph nodes, log level filter, live tail, broader
+  browser smoke coverage, and log pagination UI.
+- The Python/native-process provider plan lives in
+  [`docs/planning/PYTHON_AND_PROCESS_PROVIDERS.md`](PYTHON_AND_PROCESS_PROVIDERS.md).
+  Remaining release-host evidence is tracked in
+  [`docs/release/RELEASE_CHECKLIST.md`](../release/RELEASE_CHECKLIST.md).
 - Testing plan: see [`docs/testing/TESTING_PLAN.md`](../testing/TESTING_PLAN.md).
 
 ---

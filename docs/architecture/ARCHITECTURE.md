@@ -73,8 +73,6 @@ The map is read-only and currently contains:
   package-update/advisory metadata, but no runtime registry or advisory lookup is enabled
   today. UI update labels are derived from local model/demo data unless a future opt-in
   advisory provider is implemented.
-- Python projects discovered from common project files as a later application-provider
-  peer to npm.
 - scheduled jobs from `/etc/crontab`, `/etc/cron.d/*`, and the current user's `crontab -l` when readable.
 - PM2 apps from `pm2 jlist` when PM2 is installed.
 - tmux sessions from `tmux list-sessions` when tmux is installed and reachable.
@@ -88,6 +86,11 @@ Optional providers fail softly with diagnostics instead of making the map endpoi
 Provider commands are fixed read-only invocations, not user-supplied shell commands.
 Filesystem discovery must stay bounded by configured roots, skip dependency/build
 directories, and avoid reading secrets such as `.env` values.
+
+Planned Python application and native-process providers should plug into this same map as
+later read-only peers. The implementation plan in
+[`docs/planning/PYTHON_AND_PROCESS_PROVIDERS.md`](../planning/PYTHON_AND_PROCESS_PROVIDERS.md)
+defines safe sources, discovery bounds, omitted data, diagnostics, and follow-up slices.
 
 Kubernetes and other orchestrators should plug into this same model as additional providers, not replace the local Docker/host model. Kubernetes support should be opt-in because it needs kubeconfig or in-cluster credentials, namespace scoping, and RBAC permissions. A safe first Kubernetes provider should read namespaces, pods, services, deployments, ingress objects, persistent volume claims, and selected labels/owner references, then map them to `orchestrator_workload` nodes and edges.
 
@@ -127,7 +130,10 @@ Forge (npm) -> forge.service -> tmux session -> GPT worker
 Relationship discovery should prefer explicit evidence first, such as systemd dependency
 fields, Compose labels, process working directories, package manifests, lockfiles, known
 reverse-proxy routes, and Docker network membership. Heuristics are allowed only when
-metadata records why the edge exists.
+metadata records why the edge exists. Future Python/native-process edges must include
+evidence metadata such as `proc_cwd`, `project_manifest`, or `systemd_main_pid`.
+Process-to-listener edges stay out of the first Python/native-process implementation unless
+a later security review approves a safe source that does not read `/proc/<pid>/fd` targets.
 
 ## Docker Access
 

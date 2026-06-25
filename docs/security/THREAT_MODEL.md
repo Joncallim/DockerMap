@@ -73,6 +73,14 @@ Protections:
 - Provider commands stay fixed and read-only, such as list/status/introspection calls.
 - Provider discovery stays bounded to explicit request parameters, known config locations, or
   capped fixture-like scans instead of recursive host crawling.
+- Python/native-process collection must not read `/proc/<pid>/environ`, process memory,
+  open files, `/proc/<pid>/fd` targets, terminal scrollback, logs, or cwd contents beyond
+  bounded manifest checks under the configured project root.
+- Native-process command summaries must be tokenized, redacted, or omitted before they reach
+  nodes, edges, diagnostics, fixtures, screenshots, logs, or issue comments. Raw argv and
+  raw `ps args` must never leave the provider boundary.
+- Python project discovery must not read `.env`, `.pypirc`, `pip.conf`, `pip.ini`, Poetry auth
+  config, private-index credentials, or virtualenv package trees.
 - Package registry/advisory traffic, DNS-provider API calls, Cloudflare API calls, and
   generic external-API lookups are disabled or not implemented in DockerMap runtime today.
 - Tailscale and Headscale discovery use fixed local CLI commands when those tools are

@@ -32,9 +32,8 @@ Working:
 
 Not finished:
 
-- Provider-specific redaction fixtures for expanded host collectors.
 - Richer metadata for systemd and npm/package providers.
-- Python and native-process providers.
+- Python and native-process provider implementation.
 - List sorting, advanced filters, clickable graph nodes, and richer logs UI.
 - OpenAPI docs, route versioning, and dashboard/widget endpoints.
 - Safe write mode.
@@ -98,8 +97,8 @@ These items improve the product without changing host state.
   evidence where safe.
 - Enrich npm provider output with scripts, framework hints, dependency nodes,
   and bounded package metadata.
-- Plan Python and native-process providers as peers under the same read-only
-  runtime map.
+- Implement Python and native-process providers from the documented read-only plan in
+  [`PYTHON_AND_PROCESS_PROVIDERS.md`](PYTHON_AND_PROCESS_PROVIDERS.md).
 - Add parser-level fixtures for systemd, cron, PM2, tmux, Tailscale, Headscale,
   reverse proxy, DNS, and listener output.
 
