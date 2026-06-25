@@ -74,6 +74,16 @@ test.describe("DockerMap GUI", () => {
     const workerName = containerNames.find((name: string) => name.includes(`${projectName}-worker-1`));
     expect(apiName).toBeTruthy();
     expect(workerName).toBeTruthy();
+    expect(containerNames).not.toContain(stack.controlContainerName);
+
+    const runtimeMap = await (await request.get(`${stack.apiUrl}/api/runtime/map`)).json();
+    const runtimeProviders = new Set(runtimeMap.nodes.map((node: { provider: string }) => node.provider));
+    for (const provider of ["docker", "reverse_proxy", "local_dns", "tailscale", "headscale", "npm", "tmux", "systemd", "pm2", "scheduled_job"]) {
+      expect(runtimeProviders.has(provider), `expected runtime provider ${provider}`).toBe(true);
+    }
+    if (process.platform === "linux") {
+      expect(runtimeProviders.has("network"), "expected network listener provider on Linux").toBe(true);
+    }
 
     await page.goto(stack.webUrl);
     await expect(page.getByText(/Docker Engine/)).toBeVisible();
@@ -102,6 +112,10 @@ test.describe("DockerMap GUI", () => {
     await expect(page.getByRole("main")).toContainText("dockermap-live-worker", { timeout: 20_000 });
 
     await openSpace(page, "Compose", "/compose");
-    await expect(page.getByRole("main")).toContainText("matched");
+    if (process.platform === "linux") {
+      await expect(page.getByRole("main")).toContainText("matched");
+    } else {
+      await expect(page.getByRole("main")).toContainText("Mount drift");
+    }
   });
 });

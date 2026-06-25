@@ -36,6 +36,21 @@ docker run --rm -p 3233:3233 \
 - `/opt/dockermap/project` (read-only): the Compose project directory DockerMap scans.
   Point this at whichever project you want to inspect.
 
+## Optional Docker Label Filter
+
+Set `DOCKERMAP_DOCKER_LABEL_FILTER` on the daemon to inspect only Docker resources
+that carry one label expression:
+
+```yaml
+environment:
+  DOCKERMAP_DOCKER_LABEL_FILTER: "com.dockermap.fixture=abc123"
+```
+
+When unset, DockerMap inspects all visible Docker containers, networks, and volumes.
+When set, the filter is applied directly to Docker Engine list calls before DockerMap
+builds its snapshot. This is useful for sandbox fixtures and release-host tests where
+unrelated host resources must stay out of the UI.
+
 ## Security Note
 
 Mounting the Docker socket gives the container the same level of access as the Docker
