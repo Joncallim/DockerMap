@@ -1,0 +1,87 @@
+name: Release Evidence
+description: Capture a release, deployment, live-Docker, reverse-proxy, or security evidence pass
+title: "[RELEASE] "
+labels:
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for release-readiness checks that should end with clear evidence. The agent should record what was checked, what passed, what failed, and whether the issue can be closed by a maintainer. The agent should not close the issue automatically.
+
+  - type: dropdown
+    id: evidence_type
+    attributes:
+      label: Evidence Type
+      options:
+        - Local full check
+        - Deployment build
+        - Live-Docker smoke
+        - Reverse-proxy smoke
+        - API auth or bearer-token smoke
+        - Provider redaction evidence
+        - Release notes or known limitations
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: purpose
+    attributes:
+      label: Purpose
+      description: What release question should this pass answer?
+      placeholder: "Example: Prove the public review URL can stream SSE through the reverse proxy while the daemon remains unreachable directly."
+    validations:
+      required: true
+
+  - type: textarea
+    id: commands_or_checks
+    attributes:
+      label: Commands Or Checks To Run
+      description: List exact commands, URLs, hosts, or manual checks.
+      placeholder: |
+        - npm run check
+        - npm run build:deploy
+        - scripts/smoke-deploy.sh http://127.0.0.1:4000
+        - Confirm direct daemon access is blocked from another machine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_evidence
+    attributes:
+      label: Expected Evidence
+      description: What should be pasted or summarized in the final comment?
+      placeholder: |
+        - Commit SHA:
+        - Host OS and kernel:
+        - Node/npm/Rust/Cargo/Docker versions:
+        - Command results:
+        - Public/private URL behavior:
+        - Known limitations:
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      placeholder: |
+        - [ ] Required commands or manual checks were run.
+        - [ ] Failures or skipped checks are stated plainly.
+        - [ ] Evidence is understandable without reading raw logs.
+        - [ ] The agent recommends close or keep open.
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety_notes
+    attributes:
+      label: Safety Notes
+      description: Call out secrets, tokens, public URLs, or sensitive logs that must not be pasted.
+      placeholder: |
+        - Do not paste bearer tokens.
+        - Redact public hostnames if needed.
+        - Summarize logs instead of pasting secrets.
+    validations:
+      required: false

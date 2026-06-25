@@ -1,0 +1,129 @@
+name: AI Agent Pass
+description: Create a narrow implementation, validation, documentation, or release pass for an AI coding agent
+title: "[AGENT] "
+labels:
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the work should be solved by an AI coding agent in one bounded pass. Keep the scope narrow enough that a lower-cost model can inspect, edit, and verify without inventing missing requirements.
+
+        Resolution rule: after the pass, the agent should post plain-English evidence and recommend whether a maintainer should close the issue. The agent should not close the issue automatically.
+
+  - type: dropdown
+    id: recommended_subagent
+    attributes:
+      label: Recommended Subagent
+      description: Choose the narrow DockerMap subagent that should own this pass.
+      options:
+        - compose-core
+        - runtime-provider
+        - api-contracts
+        - frontend-topology
+        - security-readonly
+        - qa-evidence
+        - release-ops
+        - docs-operator
+        - issue-steward
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: plain_english_goal
+    attributes:
+      label: Plain-English Goal
+      description: What should be true for a maintainer or user after this pass?
+      placeholder: "Example: DockerMap should prove that systemd unit env values are redacted before the runtime map reaches the API."
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_evidence
+    attributes:
+      label: Current Evidence Or Trigger
+      description: What prompted this pass? Link docs, failing tests, TODOs, release checklist items, logs, screenshots, or code paths.
+      placeholder: |
+        - Source:
+        - Current behavior:
+        - Why this matters:
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_change
+    attributes:
+      label: Expected Change
+      description: List the concrete behavior, files, docs, or tests expected from the agent.
+      placeholder: |
+        - Update ...
+        - Add fixture ...
+        - Preserve ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: target_files
+    attributes:
+      label: Likely Target Files
+      description: Give the agent a small starting set. It may inspect related files, but this keeps the pass bounded.
+      placeholder: |
+        - crates/dockermap-core/...
+        - crates/dockermap-daemon/...
+        - packages/contracts/...
+        - docs/security/...
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out Of Scope
+      description: What must the agent not change in this pass?
+      placeholder: |
+        - Do not add write endpoints.
+        - Do not redesign the UI.
+        - Do not close this issue automatically.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: Keep each item testable.
+      placeholder: |
+        - [ ] The targeted behavior is implemented or documented.
+        - [ ] Existing read-only behavior remains unaffected.
+        - [ ] Fixtures or tests cover the changed behavior where practical.
+        - [ ] The agent posts plain-English resolution evidence and recommends whether to close.
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Expected Validation
+      description: Commands or checks the agent should run, plus any allowed skips.
+      placeholder: |
+        - npm run test:rust:core
+        - npm run test:contracts
+        - npm run test:api
+        - Explain any skipped checks.
+    validations:
+      required: true
+
+  - type: textarea
+    id: closure_evidence
+    attributes:
+      label: Closure Evidence To Provide
+      description: What should the final issue comment prove in layman-readable English?
+      placeholder: |
+        - What changed:
+        - Why this resolves the issue:
+        - How it was checked:
+        - Remaining risk or follow-up:
+        - Recommendation: close or keep open
+    validations:
+      required: true

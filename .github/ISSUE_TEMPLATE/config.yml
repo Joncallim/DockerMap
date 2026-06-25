@@ -1,0 +1,6 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: DockerMap Product Discussion
+    url: https://github.com/Joncallim/DockerMap/discussions
+    about: Discuss broad ideas before converting them into a narrow agent-solvable issue.

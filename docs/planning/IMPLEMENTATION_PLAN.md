@@ -1,7 +1,9 @@
 # DockerMap Implementation Plan
 
-> Detailed sub-tasks and file-level guidance for each phase of the roadmap.
-> For the high-level vision and dependency graph, see [`ROADMAP.md`](ROADMAP.md).
+> Historical detailed sub-tasks and file-level guidance for the roadmap.
+> For the current short source of truth, start with [`../README.md`](../README.md)
+> and [`ROADMAP.md`](ROADMAP.md). This file is retained for developers and agents
+> that need older implementation detail.
 
 Each phase is split into **concurrent streams** that can be assigned to different
 developers. Dependencies within a stream are noted inline; streams within a phase are
@@ -20,8 +22,8 @@ collector, contract, and security work for:
 - Python applications and native Linux processes as follow-on provider peers.
 - Reverse proxies, DNS providers, external APIs, storage pools, databases, and AI agents.
 
-Do not develop the GUI in this phase. The GUI will be handed off separately once the
-runtime model and contracts are stable.
+Do not let GUI polish outrun backend safety in this phase. The primary alpha work is
+still the runtime model, collectors, contracts, and security evidence.
 
 ---
 
@@ -52,7 +54,7 @@ runtime model and contracts are stable.
 - Still to build before full alpha: provider-specific redaction fixtures for new
   collectors, richer package/update/advisory behavior, Python/native-process provider
   peers, table sorting, advanced filters, clickable graph nodes, log level filter, live
-  tail, and log pagination UI.
+  tail, broader browser smoke coverage, and log pagination UI.
 - Immediately after the next implementation commit lands, execute the follow-up queue in
   [`docs/release/RELEASE_CHECKLIST.md`](../release/RELEASE_CHECKLIST.md): provider redaction fixtures,
   package advisory/network opt-in docs, live-Docker/reverse-proxy release-host evidence,
@@ -61,14 +63,14 @@ runtime model and contracts are stable.
 
 ---
 
-## Phase 1 — Read-Only Map Completion
+## Phase 1 - Read-Only Map Completion
 
 > Current state: component decomposition, Compose parsing/resolution/discovery,
 > scan/graph/edit-plan endpoints, contract types, CLI commands, and the first Compose UI
 > route are in place. Compose scans also compare declared mounts with runtime mounts.
 > Remaining Phase 1 work is mostly list UX, log UX, and deeper resource detail pages.
 
-### Stream A — Rust: Compose Parsing _(sequential within stream)_
+### Stream A - Rust: Compose Parsing _(sequential within stream)_
 
 **A1. Compose File Discovery**
 - Scan for `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`, `compose.yaml`
@@ -88,7 +90,7 @@ runtime model and contracts are stable.
 **A3. Path Resolution** _(depends on A2)_
 - Resolve relative host paths against the Compose file's own directory
 - Normalize `..` / `.` components
-- Expand `${VAR:-default}` / `${VAR}` — emit `ComposeDiagnostic(Warning)` for unresolved
+- Expand `${VAR:-default}` / `${VAR}` - emit `ComposeDiagnostic(Warning)` for unresolved
 - Produce `ResolvedMount { host_path (absolute), container_path, mode, source_file, source_line }`
 - New file: `crates/dockermap-core/src/compose/resolver.rs`
 
@@ -109,14 +111,14 @@ runtime model and contracts are stable.
   UI needs narrower payloads
 - File: `crates/dockermap-daemon/src/main.rs`
 
-**A7. Log Pagination** _(independent — do any time)_
+**A7. Log Pagination** _(independent - do any time)_
 - Add `cursor` and `limit` query params to `GET /daemon/logs`
 - Return opaque base64 cursor in `LogsResponse.nextCursor`
 - File: `crates/dockermap-daemon/src/main.rs`
 
 ---
 
-### Stream B — Node/Express: Proxies & Contract Hardening
+### Stream B - Node/Express: Proxies & Contract Hardening
 
 **B1. Proxy Compose endpoints** Done
 - Delivered `/api/compose/scan`, `/api/compose/graph`, and `/api/compose/edit-plan` in
@@ -134,9 +136,9 @@ runtime model and contracts are stable.
   shapes consumed by the API and web app
 
 **B4. Individual resource detail endpoints**
-- `GET /daemon/images/:imageRef` — full tag list, size, created date, using containers
-- `GET /daemon/networks/:id` — IPAM config, subnet, gateway, attachability
-- `GET /daemon/volumes/:name` — mountpoint, driver options, labels
+- `GET /daemon/images/:imageRef` - full tag list, size, created date, using containers
+- `GET /daemon/networks/:id` - IPAM config, subnet, gateway, attachability
+- `GET /daemon/volumes/:name` - mountpoint, driver options, labels
 
 **B5. Keep CI workflow healthy**
 - Source of truth: `.github/workflows/ci.yml`
@@ -148,57 +150,57 @@ runtime model and contracts are stable.
 
 ---
 
-### Stream C — Frontend: Component Decomposition Done
+### Stream C - Frontend: Component Decomposition Done
 
 > Complete; Stream D feature work is unblocked.
 
-**C1. Extract hooks** → `apps/web/src/hooks/`
+**C1. Extract hooks** -> `apps/web/src/hooks/`
 - `useApiResource.ts`, `useDaemonHeartbeat.ts`, `useSearchParamState.ts`
 
-**C2. Extract utilities** → `apps/web/src/utils/`
+**C2. Extract utilities** -> `apps/web/src/utils/`
 - `api.ts` (`API_BASE`, `apiUrl`, `fetchJson`), `format.ts` (`formatTime`)
 
-**C3. Extract UI primitives** → `apps/web/src/components/`
+**C3. Extract UI primitives** -> `apps/web/src/components/`
 - `StatePanel.tsx`, `EmptyPanel.tsx`, `KpiCard.tsx`, `InfoCard.tsx`, `GraphNodeCard.tsx`
 
-**C4. Extract pages** → `apps/web/src/pages/`
+**C4. Extract pages** -> `apps/web/src/pages/`
 - One file per page: `DashboardPage`, `ContainersPage`, `ContainerDetailPage`,
   `ImagesPage`, `NetworksPage`, `VolumesPage`, `LogsPage`, `NotFoundPage`
 
 **C5. Slim `App.tsx`**
-- After C1–C4: `App.tsx` = imports + `AppShell` component + `<Routes>` — target ≤ 80 lines
+- After C1-C4: `App.tsx` = imports + `AppShell` component + `<Routes>` - target <= 80 lines
 
 ---
 
-### Stream D — Frontend: Feature Gaps _(depends on C5; sub-tasks are parallel)_
+### Stream D - Frontend: Feature Gaps _(depends on C5; sub-tasks are parallel)_
 
-**D1. Table sorting** — `sort` + `dir` query params on all list pages; shared
+**D1. Table sorting** - `sort` + `dir` query params on all list pages; shared
 `useSortState` hook; default name ascending; sort direction indicator.
 
-**D2. Advanced filtering** — containers: network/image/stack pills; images: in-use/
+**D2. Advanced filtering** - containers: network/image/stack pills; images: in-use/
 unused/dangling; networks: driver, empty; volumes: attached/unattached; logs: level.
 
-**D3. Clickable graph nodes** — containers → `/containers/:name`; networks →
-`/networks?network=id`; volumes → `/volumes?volume=name`; hover tooltip.
+**D3. Clickable graph nodes** - containers -> `/containers/:name`; networks ->
+`/networks?network=id`; volumes -> `/volumes?volume=name`; hover tooltip.
 
-**D4. Container detail enrichment** — labels key/value table, formatted port bindings
-(`host:port → container:port/proto`), volume attachment section, restart policy.
+**D4. Container detail enrichment** - labels key/value table, formatted port bindings
+(`host:port -> container:port/proto`), volume attachment section, restart policy.
 
-**D5. Networks page: IPAM** — subnet, gateway, per-member container IPs.
+**D5. Networks page: IPAM** - subnet, gateway, per-member container IPs.
 
-**D6. Volumes page** — driver, mountpoint, scope; mark unattached as prune candidates.
+**D6. Volumes page** - driver, mountpoint, scope; mark unattached as prune candidates.
 
-**D7. Logs improvements** — level filter dropdown, message search, live-tail toggle with
+**D7. Logs improvements** - level filter dropdown, message search, live-tail toggle with
 auto-scroll, "Load more" cursor button (requires A7).
 
-**D8. Compose UI** _(depends on B1)_ — new `/compose` page: discovered files, mount
-table (host path → container path → service → file:line), named vs bind visual coding.
+**D8. Compose UI** _(depends on B1)_ - new `/compose` page: discovered files, mount
+table (host path -> container path -> service -> file:line), named vs bind visual coding.
 
-**D9. Dashboard: search-aware graph** — dim non-matching nodes; highlight matches.
+**D9. Dashboard: search-aware graph** - dim non-matching nodes; highlight matches.
 
 ---
 
-### Stream E — Infrastructure _(independent of all other streams)_
+### Stream E - Infrastructure _(independent of all other streams)_
 
 **E1. Add Vitest** Done
 - `@dockermap/web` and `@dockermap/contracts` both have test scripts.
@@ -235,25 +237,25 @@ Remaining:
 
 - All list pages need sort controls.
 - Graph nodes need click navigation.
-- Browser end-to-end tests are not wired yet.
+- Browser smoke tests are wired; broader end-to-end coverage still needs to be expanded.
 
 ---
 
-## Phase 1.5 — Runtime Map, Networking, And External API
+## Phase 1.5 - Runtime Map, Networking, And External API
 
 > Runs **concurrently with Phase 2**. Makes DockerMap more than a container list by
 > mapping PM2 apps, systemd services, cron jobs, tmux sessions, listening ports,
 > Tailscale/Headscale, reverse proxies, local DNS, and Docker network topology. Also
 > enables embedding in external dashboards such as Homepage, Grafana, and scripts.
 
-### Stream A — External API Exposure
+### Stream A - External API Exposure
 
 **A1. Configurable exposure & auth** Done
 - `DOCKERMAP_DAEMON_HOST` and `DOCKERMAP_DAEMON_PORT` control daemon binding; non-loopback
   daemon binding also requires `DOCKERMAP_ALLOW_REMOTE_DAEMON=true`
-- `DOCKERMAP_API_TOKEN` — Bearer token middleware on the Express Node API for all non-health
+- `DOCKERMAP_API_TOKEN` - Bearer token middleware on the Express Node API for all non-health
   endpoints
-- `DOCKERMAP_ALLOWED_ORIGINS` — comma-separated allowed origins for the Express Node API
+- `DOCKERMAP_ALLOWED_ORIGINS` - comma-separated allowed origins for the Express Node API
 - Document risks in `docs/security/THREAT_MODEL.md` and `docs/deployment/REVERSE_PROXY.md`
 
 **A1.5. VPS-hosted review UI**
@@ -287,7 +289,7 @@ Remaining:
 - `express-rate-limit`: 120 req/min per IP on read endpoints; 10 req/min on future
   write endpoints
 
-### Stream A.5 — Current Runtime Map Providers
+### Stream A.5 - Current Runtime Map Providers
 
 **A.5.1. Host runtime provider pass** Done
 - `GET /daemon/runtime/map` now includes read-only providers for systemd, cron, PM2,
@@ -297,7 +299,7 @@ Remaining:
 - Provider commands are fixed read-only invocations and return diagnostics instead of
   failing the whole map when a tool is absent.
 
-### Stream A.6 — Unified Service Entity And Application Ecosystems
+### Stream A.6 - Unified Service Entity And Application Ecosystems
 
 **A.6.1. Core model expansion**
 - File: `crates/dockermap-core/src/lib.rs`
@@ -352,7 +354,7 @@ Remaining:
 
 ---
 
-### Stream B — Docker Network Deep Dive
+### Stream B - Docker Network Deep Dive
 
 **B1. IPAM enrichment**
 - Pull `Ipam.Config[].Subnet`, `Gateway`, `IPRange` from bollard network inspect
@@ -361,7 +363,7 @@ Remaining:
 - Networks page: show each member container with its IP
 
 **B2. Gateway detection**
-- Detect containers spanning ≥ 2 networks → candidate gateway containers
+- Detect containers spanning >= 2 networks -> candidate gateway containers
 - Infer `role: "gateway" | "service" | "database" | "cache"` from network membership +
   image name heuristics (`nginx`, `traefik`, `caddy`, `postgres`, `redis`, etc.)
 - Dashboard graph: gateway-role containers rendered distinctly
@@ -369,7 +371,7 @@ Remaining:
 **B3. Port exposure map**
 - Extend `ContainerRecord.ports`: add `host_ip`, `host_port`, `container_port`,
   `protocol`, `publicly_exposed` (`host_ip == "0.0.0.0"` or `"::"`)
-- `GET /daemon/ports` — all publicly exposed ports across all containers
+- `GET /daemon/ports` - all publicly exposed ports across all containers
 - Dashboard: "Exposed Ports" summary table; port-based search
 
 **B4. Reverse proxy label parsing**
@@ -378,7 +380,7 @@ Remaining:
 - Parse Nginx Proxy Manager labels; parse Caddy labels
 - Type: `ProxyRoute { domain, container_name, port, tls, provider }`
 - `GET /daemon/proxy-routes`
-- New `/domains` page: domain → container → port table; TLS indicator
+- New `/domains` page: domain -> container -> port table; TLS indicator
 - Container detail: "Domains" section
 
 **B5. Reverse DNS**
@@ -388,7 +390,7 @@ Remaining:
 
 ---
 
-### Stream C — Tailscale / Headscale Integration
+### Stream C - Tailscale / Headscale Integration
 
 **C1. Base Tailscale and Headscale discovery** Done
 - `GET /daemon/runtime/map` reads `tailscale status --json` when Tailscale is available.
@@ -402,7 +404,7 @@ Remaining:
   `Tags`.
 - Cache with a 30-second TTL.
 
-**C2. Container ↔ peer correlation**
+**C2. Container <-> peer correlation**
 - Match by: container label `tailscale.hostname`/`tailscale.ip`, container name matching
   Tailscale DNS name, or `TS_AUTHKEY` env var presence
 - Type: `TailscaleRecord { peer_name, tailscale_ip, container_name, online, tags }`
@@ -412,8 +414,8 @@ Remaining:
 - Query `GET /api/v1/machine`; same correlation logic as C2
 
 **C4. Daemon endpoints**
-- `GET /daemon/tailscale/peers` — peers with container correlation
-- `GET /daemon/tailscale/status` — overall connectivity, exit node, online count
+- `GET /daemon/tailscale/peers` - peers with container correlation
+- `GET /daemon/tailscale/status` - overall connectivity, exit node, online count
 
 **C5. Tailscale UI**
 - Dashboard: "VPN-accessible containers" (hidden when absent)
@@ -423,13 +425,13 @@ Remaining:
 
 ---
 
-### Stream D — Network Visualization Upgrade
+### Stream D - Network Visualization Upgrade
 
 **D1. Graph view selector**
 - Dashboard toggle: "Docker Topology" | "Network View" | "Domain View" | "VPN View"
 - Network View: containers grouped by Docker network with IPs, gateway containers
   highlighted
-- Domain View: reverse-proxy routes as nodes; domain → container → port flow
+- Domain View: reverse-proxy routes as nodes; domain -> container -> port flow
 - VPN View: Tailscale/Headscale peers mapped to containers (shown only when VPN detected)
 
 **D2. Force-directed layout**
@@ -454,27 +456,27 @@ Remaining:
 
 ---
 
-## Phase 2 — Validation & Diagnostics
+## Phase 2 - Validation & Diagnostics
 
-> **Prerequisite:** Phase 1 Compose parsing (A1–A3) complete.
+> **Prerequisite:** Phase 1 Compose parsing (A1-A3) complete.
 
-### Stream A — Rust Validation Engine
+### Stream A - Rust Validation Engine
 
-**A1. `ValidationRule` trait** — `fn check(&self, project: &ComposeProject) ->
+**A1. `ValidationRule` trait** - `fn check(&self, project: &ComposeProject) ->
 Vec<ComposeDiagnostic>`; one concrete struct per rule.
 
 **A2. Validation rules** _(each can be a separate PR)_
-- `MissingHostPath` — `fs::metadata(host_path)` check → `Error`
-- `DuplicateContainerTarget` — two mounts same target per service → `Error`
-- `AmbiguousRelativePath` — `../..` above project root → `Warning`
-- `ReadWriteMismatch` — declared `read_only: false` but host path unwritable → `Warning`
-- `PathTraversal` — escapes configured `projectRoot` policy → `Error`
-- `UnresolvedEnvVar` — `${VAR}` with no default and absent from env → `Error`
+- `MissingHostPath` - `fs::metadata(host_path)` check -> `Error`
+- `DuplicateContainerTarget` - two mounts same target per service -> `Error`
+- `AmbiguousRelativePath` - `../..` above project root -> `Warning`
+- `ReadWriteMismatch` - declared `read_only: false` but host path unwritable -> `Warning`
+- `PathTraversal` - escapes configured `projectRoot` policy -> `Error`
+- `UnresolvedEnvVar` - `${VAR}` with no default and absent from env -> `Error`
 - File: new `crates/dockermap-core/src/validation/` module
 
 **A3. Severity model + machine-readable output**
 - `Severity` enum: `Info | Warning | Error | Blocked`
-- `GET /daemon/compose/validate` → `{ rules, diagnostics, summary: { errors, warnings, info } }`
+- `GET /daemon/compose/validate` -> `{ rules, diagnostics, summary: { errors, warnings, info } }`
 
 **A4. Malformed fixture tests**
 - New `tests/fixtures/compose/invalid/` with: missing path, duplicate target, unresolved
@@ -483,12 +485,12 @@ Vec<ComposeDiagnostic>`; one concrete struct per rule.
 
 ---
 
-### Stream B — API & Diagnostics UI
+### Stream B - API & Diagnostics UI
 
 **B1.** Proxy `GET /api/compose/validate`; add mock response; add `ComposeDiagnostic` to
 `@dockermap/contracts`.
 
-**B2.** New `/diagnostics` page — severity-grouped table, filter by severity/file/rule.
+**B2.** New `/diagnostics` page - severity-grouped table, filter by severity/file/rule.
 
 **B3.** Severity badges on nav items; error outline on graph nodes with issues.
 
@@ -498,9 +500,9 @@ Vec<ComposeDiagnostic>`; one concrete struct per rule.
 
 ---
 
-### Stream C — Security Docs
+### Stream C - Security Docs
 
-**C1. Security docs** — keep `docs/security/THREAT_MODEL.md` and `docs/deployment/REVERSE_PROXY.md` current
+**C1. Security docs** - keep `docs/security/THREAT_MODEL.md` and `docs/deployment/REVERSE_PROXY.md` current
 for host path exposure, symlink traversal, Docker socket risk, and external API risks.
 
 ---
@@ -514,16 +516,16 @@ for host path exposure, symlink traversal, Docker socket risk, and external API 
 
 ---
 
-## Phase 3 — Editing Workflow
+## Phase 3 - Editing Workflow
 
 > **Prerequisite:** Phase 2 complete. `Blocked` diagnostics must gate writes.
 > Write endpoints require `DOCKERMAP_EDITS_ENABLED=true` flag + API token.
 
-### Stream A — Rust Edit Engine _(sequential within stream)_
+### Stream A - Rust Edit Engine _(sequential within stream)_
 
 **A1. YAML round-trip parsing**
 - Parse with `serde_yaml::Value` (generic, preserves structure)
-- Round-trip test: parse → re-serialize → must match input byte-for-byte
+- Round-trip test: parse -> re-serialize -> must match input byte-for-byte
 - Add `similar` crate for unified diff generation
 - New file: `crates/dockermap-core/src/compose/yaml_roundtrip.rs`
 
@@ -537,34 +539,34 @@ for host path exposure, symlink traversal, Docker socket risk, and external API 
 - Standard unified diff (`--- a/file.yml` / `+++ b/file.yml`) via `similar` crate
 - New file: `crates/dockermap-core/src/editing/diff.rs`
 
-**A4. Backup & apply** _(depends on A1–A3)_
+**A4. Backup & apply** _(depends on A1-A3)_
 - Copy original to `<filename>.dockermap.bak` in same directory
 - Write to temp file; atomic rename
-- Git-aware warning: uncommitted changes → add `Warning` to `EditPlan`
+- Git-aware warning: uncommitted changes -> add `Warning` to `EditPlan`
 - New file: `crates/dockermap-core/src/editing/writer.rs`
 
 ---
 
-### Stream B — Write API
+### Stream B - Write API
 
-**B1.** `POST /daemon/compose/edit/preview` (feature-flagged) → `EditPlan` with diff
+**B1.** `POST /daemon/compose/edit/preview` (feature-flagged) -> `EditPlan` with diff
 
-**B2.** `POST /daemon/compose/edit/apply` body `{ plan_id, confirm: true }` →
+**B2.** `POST /daemon/compose/edit/apply` body `{ plan_id, confirm: true }` ->
 `ApplyResult { backup_path, applied_at, rollback_command }`; max 1 concurrent write
 
 **B3.** Node API proxy for write routes; append each apply to `apps/api/src/audit.log`
 
 ---
 
-### Stream C — Frontend Edit UI
+### Stream C - Frontend Edit UI
 
-**C1. Diff preview modal** — "Change path" on mount row → modal with colour-coded
+**C1. Diff preview modal** - "Change path" on mount row -> modal with colour-coded
 `+`/`-` diff lines and validation summary; "Cancel" / "Apply" buttons.
 
-**C2. Edit form** — inline host-path and mode inputs; client-side validation; submits to
+**C2. Edit form** - inline host-path and mode inputs; client-side validation; submits to
 preview endpoint.
 
-**C3. Confirmation flow** — "Apply" sends apply-edit; success/failure toast; shows backup
+**C3. Confirmation flow** - "Apply" sends apply-edit; success/failure toast; shows backup
 path.
 
 ---
@@ -579,34 +581,32 @@ path.
 
 ---
 
-## Phase 4 — Visual & UX Polish
+## Phase 4 - Visual & UX Polish
 
 > Can begin concurrently with Phase 3.
 
-**Theme toggle** — dark/light; `localStorage`; CSS custom property override.
+**Theme toggle** - dark/light; `localStorage`; CSS custom property override.
 
-**Keyboard shortcuts** — `g/c/i/n/v/l` for nav; `/` focus search; `?` cheatsheet;
+**Keyboard shortcuts** - `g/c/i/n/v/l` for nav; `/` focus search; `?` cheatsheet;
 `Escape` clear search.
 
-**Accessibility** — `aria-label` and `role` on all interactive elements; axe-core audit.
+**Accessibility** - `aria-label` and `role` on all interactive elements; axe-core audit.
 
-**Empty states** — contextual message on every page when no data; onboarding prompt when
+**Empty states** - contextual message on every page when no data; onboarding prompt when
 Docker is unreachable.
 
 **Playwright E2E tests**
-- Install `@playwright/test`; target mock stack
-- Smoke: dashboard KPIs, containers filter, detail navigation, logs filter
-- Navigation: all cross-page links from `docs/architecture/PAGE_LOGIC.md`
-- Add Playwright job to CI workflow
-- New directory: `tests/e2e/`
+- Basic Playwright smoke coverage and CI wiring are in place under `tests/e2e/`.
+- Broaden coverage for dashboard KPIs, containers filter, detail navigation, logs filter,
+  and cross-page links from `docs/architecture/PAGE_LOGIC.md`.
 
 ---
 
-## Phase 5 — Runtime Enrichment
+## Phase 5 - Runtime Enrichment
 
 > **Prerequisite:** Phase 1 complete (runtime mount capture + correlation).
 
-### Stream A — Container Metrics
+### Stream A - Container Metrics
 
 **A1.** Background task polling bollard `stats()` every 5 seconds; store
 `ContainerMetrics { cpu_percent, memory_mb, memory_limit_mb }` with per-container cache.
@@ -618,10 +618,10 @@ New file: `crates/dockermap-daemon/src/metrics.rs`
 
 ---
 
-### Stream B — Drift Detection
+### Stream B - Drift Detection
 
 **B1.** Compare `ContainerRecord.mounts` (bollard runtime data) vs
-`ComposeMountDeclaration` per service → `DriftReport { matched, only_in_compose,
+`ComposeMountDeclaration` per service -> `DriftReport { matched, only_in_compose,
 only_in_runtime }`.
 
 **B2.** `GET /daemon/compose/drift`
@@ -630,22 +630,22 @@ only_in_runtime }`.
 
 ---
 
-## Phase 6 — Collaboration & Release
+## Phase 6 - Collaboration & Release
 
-> **Prerequisite:** Phases 1–5 largely complete.
+> **Prerequisite:** Phases 1-5 largely complete.
 
-**CLI package** — `crates/dockermap-cli` with `clap`; commands: `scan`, `validate`,
+**CLI package** - `crates/dockermap-cli` with `clap`; commands: `scan`, `validate`,
 `export`, `report`, `edit --dry-run`; ship as binary via GitHub Releases.
 
-**Saved reports** — `GET /api/v1/report?format=json|html`; fail CI if any `Error`
+**Saved reports** - `GET /api/v1/report?format=json|html`; fail CI if any `Error`
 diagnostic.
 
-**Release workflow** — `.github/workflows/release.yml` on `v*` tags; build daemon + CLI
+**Release workflow** - `.github/workflows/release.yml` on `v*` tags; build daemon + CLI
 for linux-x86_64, linux-aarch64, macos-aarch64; publish as Release assets with checksums.
 
-**Changelog** — `CHANGELOG.md` in Keep a Changelog format.
+**Changelog** - `CHANGELOG.md` in Keep a Changelog format.
 
-**npm publish for contracts** — `publishConfig.access: public`; publish on release.
+**npm publish for contracts** - `publishConfig.access: public`; publish on release.
 
 ---
 
@@ -660,7 +660,7 @@ for linux-x86_64, linux-aarch64, macos-aarch64; publish as Release assets with c
 | Medium | Mermaid / Graphviz export | `GET /api/v1/graph?format=mermaid|dot` |
 | Medium | Integration tests with live Docker | Spin up fixture project; assert on output; opt-in via env var |
 | Medium | Policy file for allowed paths | `.dockermap.policy.yaml`; `PathTraversal` rule checks it |
-| Low | Path normalization (Windows/WSL/macOS) | `C:\Users\...` → `/mnt/c/...`; Docker Desktop path translation |
+| Low | Path normalization (Windows/WSL/macOS) | `C:\Users\...` -> `/mnt/c/...`; Docker Desktop path translation |
 | Low | Named volume lifecycle hints | Volumes in Docker not in any Compose file (prune candidates) |
 | Low | "Explain this mount" AI command | `POST /api/v1/explain`; Claude API integration |
 | Low | AdGuard / Pi-hole DNS awareness | Query local DNS for container hostname records |
