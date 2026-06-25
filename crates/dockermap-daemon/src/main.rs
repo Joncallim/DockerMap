@@ -47,6 +47,7 @@ const MAX_DISCOVERY_DIRS: usize = 4_096;
 const MAX_NPM_PROJECTS: usize = 64;
 const MAX_NPM_DEPENDENCIES_PER_PROJECT: usize = 64;
 const MAX_PACKAGE_JSON_BYTES: u64 = 262_144;
+const REDACTED_VALUE: &str = "[redacted]";
 
 #[derive(Clone)]
 struct AppState {
@@ -596,7 +597,9 @@ fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
         );
     }
 
-    derive_runtime_map(snapshot, nodes, edges, diagnostics)
+    let mut runtime_map = derive_runtime_map(snapshot, nodes, edges, diagnostics);
+    redact_runtime_map(&mut runtime_map);
+    runtime_map
 }
 
 fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapNode>) {
@@ -674,8 +677,13 @@ fn collect_tailscale(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<Runt
     }
 
     if let Some(peers) = status.get("Peer").and_then(serde_json::Value::as_object) {
-        for (id, peer) in peers {
-            push_tailnet_node(nodes, RuntimeProviderKind::Tailscale, id, peer);
+        for (index, peer) in peers.values().enumerate() {
+            push_tailnet_node(
+                nodes,
+                RuntimeProviderKind::Tailscale,
+                &format!("peer_{index}"),
+                peer,
+            );
         }
     }
 }
@@ -728,13 +736,13 @@ fn collect_headscale(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<Runt
         })
         .unwrap_or_default();
 
-    for node in nodes_json {
-        let id = node
-            .get("id")
-            .and_then(value_to_string_ref)
-            .or_else(|| node.get("machineKey").and_then(value_to_string_ref))
-            .unwrap_or_else(|| "headscale-node".into());
-        push_tailnet_node(nodes, RuntimeProviderKind::Headscale, &id, &node);
+    for (index, node) in nodes_json.into_iter().enumerate() {
+        push_tailnet_node(
+            nodes,
+            RuntimeProviderKind::Headscale,
+            &format!("node_{index}"),
+            &node,
+        );
     }
 }
 
@@ -789,7 +797,10 @@ fn push_tailnet_node(
         _ => "tailnet",
     };
     nodes.push(RuntimeMapNode {
-        id: format!("{provider_id}_node_{}", sanitize_runtime_id(&label)),
+        id: format!(
+            "{provider_id}_node_{}",
+            safe_runtime_id_component(&label, fallback_id)
+        ),
         provider,
         kind: RuntimeNodeKind::TailnetNode,
         label,
@@ -801,50 +812,55 @@ fn push_tailnet_node(
 fn collect_network_config_markers(nodes: &mut Vec<RuntimeMapNode>) {
     for marker in reverse_proxy_markers() {
         if path_exists(marker.path) {
-            let mut metadata = BTreeMap::new();
-            metadata.insert("source".into(), marker.path.into());
-            metadata.insert("product".into(), marker.product.into());
-            metadata.insert(
-                "serviceEntityKind".into(),
-                service_entity_kind_name(&ServiceEntityKind::ReverseProxy).into(),
-            );
-            nodes.push(RuntimeMapNode {
-                id: format!(
-                    "reverse_proxy_config_{}_{}",
-                    sanitize_runtime_id(marker.product),
-                    sanitize_runtime_id(marker.path)
-                ),
-                provider: RuntimeProviderKind::ReverseProxy,
-                kind: RuntimeNodeKind::ReverseProxy,
-                label: marker.product.into(),
-                status: Some("configured".into()),
-                metadata,
-            });
+            nodes.push(network_marker_node(
+                marker,
+                RuntimeProviderKind::ReverseProxy,
+                RuntimeNodeKind::ReverseProxy,
+                ServiceEntityKind::ReverseProxy,
+                "reverse_proxy_config",
+            ));
         }
     }
 
     for marker in local_dns_markers() {
         if path_exists(marker.path) {
-            let mut metadata = BTreeMap::new();
-            metadata.insert("source".into(), marker.path.into());
-            metadata.insert("product".into(), marker.product.into());
-            metadata.insert(
-                "serviceEntityKind".into(),
-                service_entity_kind_name(&ServiceEntityKind::DnsProvider).into(),
-            );
-            nodes.push(RuntimeMapNode {
-                id: format!(
-                    "local_dns_config_{}_{}",
-                    sanitize_runtime_id(marker.product),
-                    sanitize_runtime_id(marker.path)
-                ),
-                provider: RuntimeProviderKind::LocalDns,
-                kind: RuntimeNodeKind::LocalDnsResolver,
-                label: marker.product.into(),
-                status: Some("configured".into()),
-                metadata,
-            });
+            nodes.push(network_marker_node(
+                marker,
+                RuntimeProviderKind::LocalDns,
+                RuntimeNodeKind::LocalDnsResolver,
+                ServiceEntityKind::DnsProvider,
+                "local_dns_config",
+            ));
         }
+    }
+}
+
+fn network_marker_node(
+    marker: &NetworkMarker,
+    provider: RuntimeProviderKind,
+    kind: RuntimeNodeKind,
+    service_entity_kind: ServiceEntityKind,
+    id_prefix: &str,
+) -> RuntimeMapNode {
+    let mut metadata = BTreeMap::new();
+    metadata.insert("source".into(), marker.path.into());
+    metadata.insert("product".into(), marker.product.into());
+    metadata.insert(
+        "serviceEntityKind".into(),
+        service_entity_kind_name(&service_entity_kind).into(),
+    );
+    RuntimeMapNode {
+        id: format!(
+            "{}_{}_{}",
+            id_prefix,
+            safe_runtime_id_component(marker.product, "product"),
+            safe_runtime_id_component(marker.path, "path")
+        ),
+        provider,
+        kind,
+        label: marker.product.into(),
+        status: Some("configured".into()),
+        metadata,
     }
 }
 
@@ -1330,7 +1346,10 @@ fn classify_systemd_service_entity(detail: Option<&SystemdUnitDetails>) -> Servi
 }
 
 fn systemd_node_id(unit: &str) -> String {
-    format!("systemd_service_{}", sanitize_runtime_id(unit))
+    format!(
+        "systemd_service_{}",
+        safe_runtime_id_component(unit, "redacted")
+    )
 }
 
 fn collect_scheduled_jobs(
@@ -1364,19 +1383,20 @@ fn collect_scheduled_jobs(
     }
 
     for (source, line, command) in job_sources {
+        let safe_command = redact_sensitive_text(&command);
         let mut metadata = BTreeMap::new();
         metadata.insert("source".into(), source.clone());
         metadata.insert("line".into(), line.to_string());
-        metadata.insert("command".into(), command.clone());
+        metadata.insert("command".into(), safe_command.clone());
         nodes.push(RuntimeMapNode {
             id: format!(
                 "scheduled_job_{}_{}",
-                sanitize_runtime_id(&source),
-                sanitize_runtime_id(&format!("{line}_{command}"))
+                safe_runtime_id_component(&source, "source"),
+                safe_runtime_id_component(&format!("{line}_{safe_command}"), "command")
             ),
             provider: RuntimeProviderKind::ScheduledJob,
             kind: RuntimeNodeKind::ScheduledJob,
-            label: command,
+            label: safe_command,
             status: Some("scheduled".into()),
             metadata,
         });
@@ -1513,7 +1533,14 @@ fn collect_tmux_sessions(
         return;
     }
 
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    nodes.extend(tmux_session_nodes_from_output(&String::from_utf8_lossy(
+        &output.stdout,
+    )));
+}
+
+fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
+    let mut nodes = Vec::new();
+    for line in value.lines() {
         let parts = line.split('\t').collect::<Vec<_>>();
         if parts.len() < 4 {
             continue;
@@ -1526,7 +1553,10 @@ fn collect_tmux_sessions(
             service_entity_kind_name(&ServiceEntityKind::Session).into(),
         );
         nodes.push(RuntimeMapNode {
-            id: format!("tmux_session_{}", sanitize_runtime_id(parts[0])),
+            id: format!(
+                "tmux_session_{}",
+                safe_runtime_id_component(parts[0], "session")
+            ),
             provider: RuntimeProviderKind::Tmux,
             kind: RuntimeNodeKind::TmuxSession,
             label: parts[1].into(),
@@ -1541,6 +1571,7 @@ fn collect_tmux_sessions(
             metadata,
         });
     }
+    nodes
 }
 
 fn collect_npm_projects(
@@ -1550,7 +1581,7 @@ fn collect_npm_projects(
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
     let projects = discover_npm_projects(project_root, diagnostics);
-    for project in projects {
+    for (project_index, project) in projects.into_iter().enumerate() {
         let relative_path = project
             .directory
             .strip_prefix(project_root)
@@ -1559,7 +1590,7 @@ fn collect_npm_projects(
             .to_string();
         let node_id = format!(
             "npm_project_{}",
-            sanitize_runtime_id(&project.directory.display().to_string())
+            safe_runtime_id_component(&relative_path, &format!("project_{project_index}"))
         );
         let mut metadata = BTreeMap::new();
         metadata.insert("path".into(), relative_path.clone());
@@ -1592,16 +1623,23 @@ fn collect_npm_projects(
             metadata: BTreeMap::new(),
         });
 
-        for dependency in project.dependencies {
+        for (index, dependency) in project.dependencies.into_iter().enumerate() {
+            let safe_package_name = redact_sensitive_text(&dependency.name);
+            let safe_version = redact_sensitive_text(&dependency.version);
+            let safe_scope = redact_sensitive_text(&dependency.scope);
             let package_id = format!(
                 "npm_package_{}_{}",
-                sanitize_runtime_id(&dependency.name),
-                sanitize_runtime_id(&dependency.version)
+                safe_runtime_id_component(&safe_package_name, "package"),
+                if safe_version == REDACTED_VALUE {
+                    format!("redacted_{index}")
+                } else {
+                    safe_runtime_id_component(&safe_version, "version")
+                }
             );
             let mut package_metadata = BTreeMap::new();
-            package_metadata.insert("package".into(), dependency.name.clone());
-            package_metadata.insert("version".into(), dependency.version.clone());
-            package_metadata.insert("scope".into(), dependency.scope.clone());
+            package_metadata.insert("package".into(), safe_package_name.clone());
+            package_metadata.insert("version".into(), safe_version.clone());
+            package_metadata.insert("scope".into(), safe_scope.clone());
             package_metadata.insert(
                 "serviceEntityKind".into(),
                 service_entity_kind_name(&ServiceEntityKind::PackageDependency).into(),
@@ -1610,14 +1648,14 @@ fn collect_npm_projects(
                 id: package_id.clone(),
                 provider: RuntimeProviderKind::Npm,
                 kind: RuntimeNodeKind::PackageDependency,
-                label: dependency.name.clone(),
+                label: safe_package_name.clone(),
                 status: None,
                 metadata: package_metadata,
             });
 
             let mut dependency_metadata = BTreeMap::new();
-            dependency_metadata.insert("version".into(), dependency.version);
-            dependency_metadata.insert("scope".into(), dependency.scope);
+            dependency_metadata.insert("version".into(), safe_version);
+            dependency_metadata.insert("scope".into(), safe_scope);
             edges.push(RuntimeMapEdge {
                 source: node_id.clone(),
                 target: package_id,
@@ -1766,13 +1804,17 @@ fn summarize_npm_project(
 
     Ok(Some(NpmProjectSummary {
         directory: directory.to_path_buf(),
-        package_name: manifest.as_ref().and_then(|value| value.name.clone()),
-        display_name,
+        package_name: manifest
+            .as_ref()
+            .and_then(|value| value.name.clone())
+            .map(|value| redact_sensitive_text(&value)),
+        display_name: redact_sensitive_text(&display_name),
         kind,
         service_entity_kind,
         package_manager: manifest
             .as_ref()
-            .and_then(|value| value.package_manager.clone()),
+            .and_then(|value| value.package_manager.clone())
+            .map(|value| redact_sensitive_text(&value)),
         lockfiles: lockfiles.to_vec(),
         dependencies,
         private: manifest
@@ -1829,8 +1871,8 @@ fn collect_dependency_scope(
 ) {
     for (name, version) in entries {
         output.push(PackageDependencyRecord {
-            name: name.clone(),
-            version: version.clone(),
+            name: redact_sensitive_text(name),
+            version: redact_sensitive_text(version),
             scope: scope.to_string(),
         });
     }
@@ -1936,6 +1978,161 @@ fn non_empty_string(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+fn redact_runtime_map(runtime_map: &mut RuntimeMap) {
+    redact_runtime_nodes(&mut runtime_map.nodes);
+    redact_runtime_edges(&mut runtime_map.edges);
+    redact_runtime_diagnostics(&mut runtime_map.diagnostics);
+}
+
+fn redact_runtime_nodes(nodes: &mut [RuntimeMapNode]) {
+    for node in nodes {
+        redact_runtime_node(node);
+    }
+}
+
+fn redact_runtime_node(node: &mut RuntimeMapNode) {
+    node.label = redact_sensitive_text(&node.label);
+    if let Some(status) = &mut node.status {
+        *status = redact_sensitive_text(status);
+    }
+    for value in node.metadata.values_mut() {
+        *value = redact_sensitive_text(value);
+    }
+}
+
+fn redact_runtime_edges(edges: &mut [RuntimeMapEdge]) {
+    for edge in edges {
+        for value in edge.metadata.values_mut() {
+            *value = redact_sensitive_text(value);
+        }
+    }
+}
+
+fn redact_runtime_diagnostics(diagnostics: &mut [RuntimeMapDiagnostic]) {
+    for diagnostic in diagnostics {
+        diagnostic.message = redact_sensitive_text(&diagnostic.message);
+    }
+}
+
+fn redact_sensitive_text(value: &str) -> String {
+    if is_sensitive_text(value) {
+        REDACTED_VALUE.into()
+    } else {
+        value.to_string()
+    }
+}
+
+fn is_sensitive_text(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("dockermap_test_fake_")
+        || contains_url_userinfo(value)
+        || contains_sensitive_assignment(&lower)
+        || contains_sensitive_flag(&lower)
+        || contains_auth_scheme(&lower)
+}
+
+fn contains_url_userinfo(value: &str) -> bool {
+    let Some(scheme_index) = value.find("://") else {
+        return false;
+    };
+    let authority_start = scheme_index + 3;
+    let authority = &value[authority_start..];
+    let authority_end = authority.find(['/', '?', '#']).unwrap_or(authority.len());
+    authority[..authority_end].contains('@')
+}
+
+fn contains_sensitive_assignment(value: &str) -> bool {
+    [
+        "token=",
+        "token:",
+        "auth_token=",
+        "auth_token:",
+        "_authtoken=",
+        "_authtoken:",
+        "_auth=",
+        "_auth:",
+        "api_key=",
+        "api_key:",
+        "api-key=",
+        "api-key:",
+        "apikey=",
+        "apikey:",
+        "x-api-key=",
+        "x-api-key:",
+        "secret_key=",
+        "secret_key:",
+        "secret-key=",
+        "secret-key:",
+        "secret_access_key=",
+        "secret_access_key:",
+        "secret-access-key=",
+        "secret-access-key:",
+        "aws_secret_access_key=",
+        "aws_secret_access_key:",
+        "authorization=",
+        "authorization:",
+        "password=",
+        "password:",
+        "passwd=",
+        "passwd:",
+        "secret=",
+        "secret:",
+        "client_secret=",
+        "client_secret:",
+        "private_key=",
+        "private_key:",
+        "credential=",
+        "credential:",
+        "access_token=",
+        "access_token:",
+        "refresh_token=",
+        "refresh_token:",
+    ]
+    .into_iter()
+    .any(|needle| value.contains(needle))
+}
+
+fn contains_sensitive_flag(value: &str) -> bool {
+    let flags = [
+        "--token",
+        "--auth",
+        "--api-key",
+        "--authorization",
+        "--password",
+        "--secret",
+        "--client-secret",
+        "--private-key",
+    ];
+    value.split_whitespace().any(|token| {
+        flags
+            .into_iter()
+            .any(|flag| token == flag || token.starts_with(&format!("{flag}=")))
+    })
+}
+
+fn contains_auth_scheme(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    trimmed.starts_with("bearer ")
+        || value.contains("authorization: bearer")
+        || value.contains("authorization: basic")
+        || value.contains("authorization=bearer")
+        || value.contains("authorization=basic")
+}
+
+fn safe_runtime_id_component(value: &str, fallback: &str) -> String {
+    let redacted = redact_sensitive_text(value);
+    if redacted == REDACTED_VALUE {
+        fallback.into()
+    } else {
+        let sanitized = sanitize_runtime_id(&redacted);
+        if sanitized.is_empty() {
+            fallback.into()
+        } else {
+            sanitized
+        }
+    }
+}
+
 fn collect_network_listeners(
     nodes: &mut Vec<RuntimeMapNode>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
@@ -1999,14 +2196,6 @@ fn value_to_string(value: Option<&serde_json::Value>) -> Option<String> {
     match value {
         Some(serde_json::Value::String(value)) => Some(value.clone()),
         Some(serde_json::Value::Number(value)) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
-fn value_to_string_ref(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::String(value) => Some(value.clone()),
-        serde_json::Value::Number(value) => Some(value.to_string()),
         _ => None,
     }
 }
@@ -2609,6 +2798,233 @@ mod tests {
     }
 
     #[test]
+    fn redacts_systemd_secret_like_fixture_output() {
+        let details = parse_systemd_show_records(include_str!(
+            "../../../tests/fixtures/providers/redaction/systemd-show.txt"
+        ));
+        let summary = SystemdUnitSummary {
+            unit: "redaction-worker.service".into(),
+            active_state: "active".into(),
+            sub_state: "running".into(),
+            description: "Worker started with token=DOCKERMAP_TEST_FAKE_SYSTEMD_SUMMARY_TOKEN"
+                .into(),
+        };
+
+        let mut node =
+            systemd_runtime_node("redaction-worker.service", Some(&summary), details.first());
+        redact_runtime_node(&mut node);
+
+        assert_eq!(
+            node.metadata.get("serviceEntityKind").map(String::as_str),
+            Some("python_application")
+        );
+        assert_eq!(
+            node.metadata.get("description").map(String::as_str),
+            Some(REDACTED_VALUE)
+        );
+        assert_no_raw_secrets(
+            &node,
+            &[
+                "DOCKERMAP_TEST_FAKE_SYSTEMD_DESCRIPTION_TOKEN",
+                "DOCKERMAP_TEST_FAKE_SYSTEMD_EXEC_TOKEN",
+                "DOCKERMAP_TEST_FAKE_SYSTEMD_URL_TOKEN",
+                "DOCKERMAP_TEST_FAKE_SYSTEMD_SUMMARY_TOKEN",
+            ],
+        );
+    }
+
+    #[test]
+    fn redacts_tailnet_secret_like_ids_and_metadata() {
+        let value = serde_json::json!({
+            "DNSName": "worker.token=DOCKERMAP_TEST_FAKE_TAILNET_ID_TOKEN.example.",
+            "User": "operator SECRET_KEY=DOCKERMAP_TEST_FAKE_TAILNET_USER_SECRET",
+            "TailscaleIPs": ["100.64.0.2"],
+            "Online": true
+        });
+        let mut nodes = Vec::new();
+        push_tailnet_node(&mut nodes, RuntimeProviderKind::Tailscale, "peer_0", &value);
+        redact_runtime_nodes(&mut nodes);
+
+        assert_eq!(nodes[0].id, "tailscale_node_peer_0");
+        assert_eq!(nodes[0].label, REDACTED_VALUE);
+        assert_eq!(
+            nodes[0].metadata.get("user").map(String::as_str),
+            Some(REDACTED_VALUE)
+        );
+        assert_no_raw_secrets(
+            &nodes,
+            &[
+                "DOCKERMAP_TEST_FAKE_TAILNET_ID_TOKEN",
+                "DOCKERMAP_TEST_FAKE_TAILNET_USER_SECRET",
+            ],
+        );
+    }
+
+    #[test]
+    fn redacts_tmux_secret_like_fixture_output() {
+        let mut nodes = tmux_session_nodes_from_output(include_str!(
+            "../../../tests/fixtures/providers/redaction/tmux-list-sessions.txt"
+        ));
+        redact_runtime_nodes(&mut nodes);
+
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].label, REDACTED_VALUE);
+        assert_eq!(nodes[1].label, "safe-worker");
+        assert_no_raw_secrets(&nodes, &["DOCKERMAP_TEST_FAKE_TMUX_SESSION_SECRET"]);
+    }
+
+    #[test]
+    fn redacts_npm_package_fixture_output() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/providers/redaction");
+        let npmrc =
+            fs::read_to_string(project_root.join("npm-app/.npmrc")).expect("fixture .npmrc");
+        assert!(npmrc.contains("DOCKERMAP_TEST_FAKE_NPMRC_TOKEN"));
+
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut diagnostics = Vec::new();
+        collect_npm_projects(&project_root, &mut nodes, &mut edges, &mut diagnostics);
+        redact_runtime_nodes(&mut nodes);
+        redact_runtime_edges(&mut edges);
+        redact_runtime_diagnostics(&mut diagnostics);
+
+        assert!(nodes.iter().any(|node| {
+            node.metadata.get("version").map(String::as_str) == Some(REDACTED_VALUE)
+        }));
+        assert_no_raw_secrets(
+            &(&nodes, &edges, &diagnostics),
+            &[
+                "DOCKERMAP_TEST_FAKE_NPM_SCRIPT_TOKEN",
+                "DOCKERMAP_TEST_FAKE_NPM_URL_TOKEN",
+                "DOCKERMAP_TEST_FAKE_NPM_QUERY_TOKEN",
+                "DOCKERMAP_TEST_FAKE_NPMRC_TOKEN",
+                "DOCKERMAP_TEST_FAKE_PATH_TOKEN",
+            ],
+        );
+    }
+
+    #[test]
+    fn redacts_native_process_secret_like_fixture_output() {
+        let command =
+            include_str!("../../../tests/fixtures/providers/redaction/process-cmdline.txt").trim();
+        let mut node = RuntimeMapNode {
+            id: "process_2412".into(),
+            provider: RuntimeProviderKind::Process,
+            kind: RuntimeNodeKind::Process,
+            label: command.into(),
+            status: Some("running".into()),
+            metadata: BTreeMap::from([
+                ("pid".into(), "2412".into()),
+                ("command".into(), command.into()),
+            ]),
+        };
+        let mut edges = vec![RuntimeMapEdge {
+            source: "process_2412".into(),
+            target: "host_local".into(),
+            relationship: RuntimeRelationshipKind::RunsOn,
+            metadata: BTreeMap::from([("argv".into(), command.into())]),
+        }];
+        let mut diagnostics = vec![RuntimeMapDiagnostic {
+            provider: RuntimeProviderKind::Process,
+            severity: DiagnosticSeverity::Info,
+            message: format!("process fixture skipped: {command}"),
+        }];
+
+        redact_runtime_node(&mut node);
+        redact_runtime_edges(&mut edges);
+        redact_runtime_diagnostics(&mut diagnostics);
+
+        assert_eq!(node.label, REDACTED_VALUE);
+        assert_eq!(
+            node.metadata.get("command").map(String::as_str),
+            Some(REDACTED_VALUE)
+        );
+        assert_no_raw_secrets(
+            &(&node, &edges, &diagnostics),
+            &[
+                "DOCKERMAP_TEST_FAKE_PROCESS_PASSWORD",
+                "DOCKERMAP_TEST_FAKE_PROCESS_URL_TOKEN",
+            ],
+        );
+    }
+
+    #[test]
+    fn reverse_proxy_and_dns_markers_do_not_expose_config_fixture_contents() {
+        let proxy_config =
+            include_str!("../../../tests/fixtures/providers/redaction/reverse-proxy-caddyfile");
+        let dns_config =
+            include_str!("../../../tests/fixtures/providers/redaction/dns-adguard.yaml");
+        assert!(proxy_config.contains("DOCKERMAP_TEST_FAKE_PROXY_AUTH"));
+        assert!(dns_config.contains("DOCKERMAP_TEST_FAKE_DNS_URL_TOKEN"));
+        assert!(dns_config.contains("DOCKERMAP_TEST_FAKE_DNS_PASSWORD"));
+
+        let proxy_marker = NetworkMarker {
+            product: "Caddy",
+            path: "/etc/caddy/Caddyfile",
+        };
+        let dns_marker = NetworkMarker {
+            product: "AdGuard Home",
+            path: "/opt/adguardhome/conf/AdGuardHome.yaml",
+        };
+        let mut nodes = vec![
+            network_marker_node(
+                &proxy_marker,
+                RuntimeProviderKind::ReverseProxy,
+                RuntimeNodeKind::ReverseProxy,
+                ServiceEntityKind::ReverseProxy,
+                "reverse_proxy_config",
+            ),
+            network_marker_node(
+                &dns_marker,
+                RuntimeProviderKind::LocalDns,
+                RuntimeNodeKind::LocalDnsResolver,
+                ServiceEntityKind::DnsProvider,
+                "local_dns_config",
+            ),
+        ];
+        redact_runtime_nodes(&mut nodes);
+
+        assert_no_raw_secrets(
+            &nodes,
+            &[
+                "DOCKERMAP_TEST_FAKE_PROXY_AUTH",
+                "DOCKERMAP_TEST_FAKE_DNS_URL_TOKEN",
+                "DOCKERMAP_TEST_FAKE_DNS_PASSWORD",
+            ],
+        );
+    }
+
+    #[test]
+    fn redacts_sensitive_provider_diagnostics_and_edge_metadata() {
+        let mut edges = vec![RuntimeMapEdge {
+            source: "a".into(),
+            target: "b".into(),
+            relationship: RuntimeRelationshipKind::RelatedTo,
+            metadata: BTreeMap::from([(
+                "header".into(),
+                "Authorization: Bearer DOCKERMAP_TEST_FAKE_EDGE_TOKEN".into(),
+            )]),
+        }];
+        let mut diagnostics = vec![RuntimeMapDiagnostic {
+            provider: RuntimeProviderKind::Other,
+            severity: DiagnosticSeverity::Warning,
+            message: "skipped path with password=DOCKERMAP_TEST_FAKE_DIAGNOSTIC_PASSWORD".into(),
+        }];
+
+        redact_runtime_edges(&mut edges);
+        redact_runtime_diagnostics(&mut diagnostics);
+
+        assert_no_raw_secrets(
+            &(&edges, &diagnostics),
+            &[
+                "DOCKERMAP_TEST_FAKE_EDGE_TOKEN",
+                "DOCKERMAP_TEST_FAKE_DIAGNOSTIC_PASSWORD",
+            ],
+        );
+    }
+
+    #[test]
     fn classifies_ai_package_manifests() {
         let manifest = PackageManifestDocument {
             name: Some("agent-control".into()),
@@ -2641,5 +3057,15 @@ mod tests {
         assert!(!should_skip_discovery_dir("services"));
         assert!(is_node_lockfile("package-lock.json"));
         assert!(!is_node_lockfile("Cargo.lock"));
+    }
+
+    fn assert_no_raw_secrets<T: serde::Serialize>(value: &T, secrets: &[&str]) {
+        let serialized = serde_json::to_string(value).expect("value should serialize");
+        for secret in secrets {
+            assert!(
+                !serialized.contains(secret),
+                "serialized provider output leaked `{secret}`: {serialized}"
+            );
+        }
     }
 }

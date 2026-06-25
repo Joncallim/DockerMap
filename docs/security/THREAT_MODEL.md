@@ -116,6 +116,8 @@ Automated tests currently cover:
 - Fixed daemon proxy path shaping for logs, container detail, and Compose scan requests.
 - Compose malformed-file diagnostics and blocked unsafe edit plans.
 - Symlink bind-source detection without following the symlink during validation.
+- Provider redaction fixtures for systemd, tmux, npm/package metadata, native-process-shaped
+  output, reverse-proxy markers, DNS markers, provider diagnostics, and provider edge metadata.
 - GUI smoke coverage against daemon fallback mode.
 
 Security checks that still require release evidence:
@@ -123,8 +125,8 @@ Security checks that still require release evidence:
 - Live-Docker E2E on a Docker-capable Linux host.
 - Reverse-proxy bearer-token injection and SSE streaming through the public review URL.
 - Direct remote inaccessibility of the daemon port.
-- Provider-specific secret redaction and network-egress behavior for systemd, tmux, package,
-  Python/native-process, reverse-proxy, DNS, and external-API collectors once those routes land.
+- Package/advisory network-egress behavior for package, Python/native-process, DNS, and
+  external-API collectors once those routes land or become configurable.
 
 ## Out Of Scope Until Write Mode
 

@@ -1,0 +1,2 @@
+$1	worker DOCKERMAP_TEST_FAKE_TMUX_SESSION_SECRET	1	2
+$2	safe-worker	0	1

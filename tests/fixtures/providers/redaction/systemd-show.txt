@@ -1,0 +1,10 @@
+Id=redaction-worker.service
+ActiveState=active
+SubState=running
+Description=Worker started with token=DOCKERMAP_TEST_FAKE_SYSTEMD_DESCRIPTION_TOKEN
+FragmentPath=/etc/systemd/system/redaction-worker.service
+LoadState=loaded
+ExecStart={ path=/usr/bin/python3 ; argv[]=python3 /srv/app/worker.py --token=DOCKERMAP_TEST_FAKE_SYSTEMD_EXEC_TOKEN https://user:DOCKERMAP_TEST_FAKE_SYSTEMD_URL_TOKEN@example.test/app ; }
+Requires=network-online.target redis.service
+Wants=postgres.service
+PartOf=worker.target
