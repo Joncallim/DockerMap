@@ -19,7 +19,9 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 - [ ] Bound provider filesystem scanning to documented paths, explicit request targets, and hard caps.
 - [ ] Make package advisory, registry, or other external-network behavior opt-in or document it explicitly in release notes and deployment docs.
 - [ ] Verify package, service, process, unit, proxy, and DNS inspection does not leak env vars, secrets, credentials, or inline auth URLs.
-- [ ] Keep provider security checks runnable without GUI availability or host-specific daemons beyond the test fixture or stub daemon.
+  Fixture evidence now covers current provider outputs and marker boundaries; keep this
+  broader gate open until future native-process and config-content collectors land.
+- [x] Keep provider security checks runnable without GUI availability or host-specific daemons beyond the test fixture or stub daemon.
 - [x] Run `npm run test:live-docker` on a Docker-capable Linux host and record the result.
 - [ ] Run `npm run build:deploy` on the release target or a clean Linux build host.
 - [ ] Deploy behind the documented reverse proxy with viewer authentication enabled.
@@ -36,8 +38,11 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 After the next implementation commit is completed, open follow-up work items for these
 tasks before starting new GUI work:
 
-- [ ] Add provider-specific redaction fixtures for systemd, tmux, npm/package metadata,
+- [x] Add provider-specific redaction fixtures for systemd, tmux, npm/package metadata,
   native process inspection, reverse-proxy config, and DNS collectors.
+  Current coverage is systemd, tmux, npm/package, native-process-shaped output,
+  reverse-proxy marker, and DNS marker fixture coverage. Native process, reverse-proxy
+  config-content, and DNS config-content collectors remain future implementation work.
 - [ ] Decide and document package advisory, registry, or other external-network behavior:
   keep it disabled/opt-in by default, and record the operator-facing setting in release
   notes and deployment docs.
@@ -80,4 +85,7 @@ Store this evidence in release notes or the release PR.
 - Reverse-proxy smoke result.
 - Provider-network behavior note stating whether any package/advisory or other external API calls were enabled.
 - Provider-redaction evidence for any new systemd, tmux, package, Python/native-process, reverse-proxy, DNS, or external-API routes shipped in the release.
+  Current fixture evidence is `npm run test:rust:daemon`, covering fake systemd, tmux,
+  npm/package, native-process-shaped, reverse-proxy marker, DNS marker, diagnostic, and
+  edge-metadata secret sentinels without live host services.
 - Known limitations and skipped tests.

@@ -1,0 +1,5 @@
+dockermap.example.test {
+  reverse_proxy http://api:4000 {
+    header_up Authorization "Bearer DOCKERMAP_TEST_FAKE_PROXY_AUTH"
+  }
+}

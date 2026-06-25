@@ -1,0 +1,15 @@
+{
+  "name": "redaction-fixture",
+  "private": true,
+  "packageManager": "npm@10.0.0",
+  "scripts": {
+    "start": "node server.js --token=DOCKERMAP_TEST_FAKE_NPM_SCRIPT_TOKEN"
+  },
+  "dependencies": {
+    "safe-package": "1.0.0",
+    "private-registry-package": "https://user:DOCKERMAP_TEST_FAKE_NPM_URL_TOKEN@registry.example.test/private-registry-package.tgz"
+  },
+  "devDependencies": {
+    "tooling": "git+https://example.test/tooling.git?token=DOCKERMAP_TEST_FAKE_NPM_QUERY_TOKEN"
+  }
+}

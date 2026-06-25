@@ -1,0 +1,1 @@
+/usr/bin/python3 worker.py --password=DOCKERMAP_TEST_FAKE_PROCESS_PASSWORD https://user:DOCKERMAP_TEST_FAKE_PROCESS_URL_TOKEN@example.test/api

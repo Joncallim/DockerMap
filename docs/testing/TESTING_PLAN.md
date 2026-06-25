@@ -97,6 +97,19 @@ external-API collection, the alpha bar is:
 - Security tests for the provider can run locally without depending on Docker, systemd,
   tmux, or browser automation.
 
+The daemon unit suite includes fake-only provider redaction fixtures for systemd, tmux,
+npm/package metadata, native-process-shaped command output, reverse-proxy markers, DNS
+markers, provider diagnostics, and provider edge metadata. These fixtures deliberately use
+`DOCKERMAP_TEST_FAKE_*` sentinels and assert the returned runtime/provider JSON omits those
+raw values. The native-process check is an output-boundary regression test until a real
+bounded native-process collector is implemented.
+
+Run the provider redaction fixture checks with:
+
+```bash
+npm run test:rust:daemon
+```
+
 Run GUI smoke tests before release candidates:
 
 ```bash

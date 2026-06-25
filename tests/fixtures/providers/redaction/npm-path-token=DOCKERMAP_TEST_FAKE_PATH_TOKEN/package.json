@@ -1,0 +1,7 @@
+{
+  "name": "path-redaction-fixture",
+  "private": true,
+  "dependencies": {
+    "safe-package": "1.0.0"
+  }
+}

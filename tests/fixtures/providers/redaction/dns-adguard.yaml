@@ -1,0 +1,5 @@
+upstream_dns:
+  - https://user:DOCKERMAP_TEST_FAKE_DNS_URL_TOKEN@dns.example.test/dns-query
+users:
+  - name: reviewer
+    password: DOCKERMAP_TEST_FAKE_DNS_PASSWORD
