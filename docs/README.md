@@ -86,6 +86,8 @@ daemon, provider, auth, deployment, or write-mode behavior.
   page behavior, and cross-page navigation.
 - [testing/TESTING_PLAN.md](testing/TESTING_PLAN.md): local checks, security
   tests, browser smoke tests, live-Docker tests, and manual release smoke.
+- [testing/SANDBOX_FIXTURE.md](testing/SANDBOX_FIXTURE.md): isolated labeled
+  Docker and provider-stub topology for manual DockerMap testing.
 - [release/RELEASE_CHECKLIST.md](release/RELEASE_CHECKLIST.md): private alpha
   release gate and evidence to capture.
 - [design/DESIGN.md](design/DESIGN.md): UI direction.

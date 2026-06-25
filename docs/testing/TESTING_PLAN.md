@@ -122,6 +122,29 @@ Run live-Docker tests only on a Docker-capable Linux host:
 npm run test:live-docker
 ```
 
+The live-Docker harness labels its Compose resources, sets
+`DOCKERMAP_DOCKER_LABEL_FILTER`, and creates an unlabeled control container to prove
+DockerMap excludes unrelated Docker resources.
+
+## Sandbox Fixture
+
+Use the one-command sandbox when you want to manually inspect a realistic isolated
+topology:
+
+```bash
+scripts/dockermap-fixture-up.sh --verify
+```
+
+It starts a labeled Compose stack, temporary provider command stubs for host runtime
+signals, and DockerMap itself on loopback random ports. Tear it down with:
+
+```bash
+scripts/dockermap-fixture-down.sh
+```
+
+Details and cleanup boundaries are in
+[`docs/testing/SANDBOX_FIXTURE.md`](SANDBOX_FIXTURE.md).
+
 ## Manual Smoke Test
 
 Use this after larger changes or before a demo:

@@ -11,6 +11,7 @@ export type Stack = {
   daemonUrl: string;
   fixtureDir: string;
   projectName: string | null;
+  controlContainerName: string | null;
   stop: () => Promise<void>;
 };
 
@@ -24,6 +25,9 @@ type Fixture = {
   dir: string;
   composeFile: string;
   projectName: string;
+  labelFilter: string;
+  stubBinDir: string;
+  controlContainerName: string;
 };
 
 const repoRoot = resolve(__dirname, "../..");
@@ -50,6 +54,7 @@ export async function startMockStack(): Promise<Stack> {
     daemonUrl: `http://127.0.0.1:${ports.daemon}`,
     fixtureDir,
     projectName: null,
+    controlContainerName: null,
     stop: async () => {
       await stopProcesses(processes);
       rmSync(fixtureDir, { recursive: true, force: true });
@@ -66,6 +71,7 @@ export async function startLiveDockerStack(): Promise<Stack> {
   const fixture = createLiveDockerFixture();
   try {
     runDocker(docker, ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "up", "-d"], fixture.dir);
+    runDocker(docker, ["run", "-d", "--name", fixture.controlContainerName, "busybox:1.36.1", "sh", "-c", "while true; do sleep 60; done"], fixture.dir);
   } catch (error) {
     cleanupLiveDocker(docker, fixture);
     throw error;
@@ -75,7 +81,14 @@ export async function startLiveDockerStack(): Promise<Stack> {
   const processes: ProcessHandle[] = [];
 
   await ensureDaemonBinary();
-  processes.push(startDaemon({ port: ports.daemon, cwd: fixture.dir, useDockerAccess: true, docker }));
+  processes.push(startDaemon({
+    port: ports.daemon,
+    cwd: fixture.dir,
+    useDockerAccess: true,
+    docker,
+    dockerLabelFilter: fixture.labelFilter,
+    pathPrefix: fixture.stubBinDir
+  }));
   await waitForDockerHealth(`http://127.0.0.1:${ports.daemon}/daemon/health`);
   await waitForFixtureSnapshot(`http://127.0.0.1:${ports.daemon}/daemon/snapshot`, fixture.projectName);
 
@@ -91,6 +104,7 @@ export async function startLiveDockerStack(): Promise<Stack> {
     daemonUrl: `http://127.0.0.1:${ports.daemon}`,
     fixtureDir: fixture.dir,
     projectName: fixture.projectName,
+    controlContainerName: fixture.controlContainerName,
     stop: async () => {
       await stopProcesses(processes);
       cleanupLiveDocker(docker, fixture);
@@ -138,11 +152,15 @@ function startDaemon(options: {
   cwd: string;
   useDockerAccess: boolean;
   docker?: string[];
+  dockerLabelFilter?: string;
+  pathPrefix?: string;
 }): ProcessHandle {
   const env = {
     ...process.env,
     DOCKERMAP_DAEMON_HOST: "127.0.0.1",
     DOCKERMAP_DAEMON_PORT: String(options.port),
+    ...(options.dockerLabelFilter ? { DOCKERMAP_DOCKER_LABEL_FILTER: options.dockerLabelFilter } : {}),
+    ...(options.pathPrefix ? { PATH: `${options.pathPrefix}:${process.env.PATH}` } : {}),
     ...(options.useDockerAccess ? {} : { DOCKERMAP_FORCE_MOCK: "true" })
   };
 
@@ -318,24 +336,47 @@ function commandSucceeds(command: string, args: string[]) {
 
 function createLiveDockerFixture(): Fixture {
   const dir = mkdtempSync(join(tmpdir(), "dockermap-live-e2e-"));
+  const projectName = `dockermap-e2e-${Date.now().toString(36)}`;
+  const labelFilter = `com.dockermap.fixture=${projectName}`;
+  const controlContainerName = `${projectName}-unlabeled-control`;
+  const stubBinDir = join(dir, "bin");
   mkdirSync(join(dir, "api-data"), { recursive: true });
   mkdirSync(join(dir, "worker-data"), { recursive: true });
+  mkdirSync(join(dir, "services", "node-agent"), { recursive: true });
+  mkdirSync(stubBinDir, { recursive: true });
   writeFileSync(join(dir, "api-data", "fixture.txt"), "dockermap live api data\n");
   writeFileSync(join(dir, "worker-data", "fixture.txt"), "dockermap live worker data\n");
+  writeFileSync(join(dir, "package.json"), JSON.stringify({
+    name: "dockermap-live-fixture-root",
+    private: true,
+    packageManager: "npm@10.0.0",
+    scripts: { start: "node services/node-agent/index.js" },
+    dependencies: { openai: "^4.0.0", express: "^4.18.0" },
+    devDependencies: { tsx: "^4.0.0" }
+  }, null, 2));
+  writeFileSync(join(dir, "package-lock.json"), "{\"lockfileVersion\":3,\"packages\":{}}\n");
+  writeFileSync(join(dir, "services", "node-agent", "package.json"), JSON.stringify({
+    name: "dockermap-live-fixture-agent",
+    private: true,
+    scripts: { start: "node agent.js" },
+    dependencies: { "@modelcontextprotocol/sdk": "^1.0.0", langchain: "^0.3.0" }
+  }, null, 2));
+  writeProviderStubs(stubBinDir, projectName);
 
   const composeFile = join(dir, "compose.yaml");
-  const projectName = `dockermap-e2e-${Date.now().toString(36)}`;
-  writeFileSync(composeFile, liveComposeYaml());
-  return { dir, composeFile, projectName };
+  writeFileSync(composeFile, liveComposeYaml(projectName));
+  return { dir, composeFile, projectName, labelFilter, stubBinDir, controlContainerName };
 }
 
-function liveComposeYaml() {
+function liveComposeYaml(projectName: string) {
   return `services:
   api:
     image: busybox:1.36.1
     command: sh -c "mkdir -p /www && echo dockermap-live-api > /www/index.html && httpd -f -p 8080"
     ports:
       - "8080"
+    labels:
+      com.dockermap.fixture: "${projectName}"
     volumes:
       - type: bind
         source: ./api-data
@@ -353,6 +394,8 @@ function liveComposeYaml() {
     command: sh -c "while true; do echo dockermap-live-worker; sleep 2; done"
     depends_on:
       - api
+    labels:
+      com.dockermap.fixture: "${projectName}"
     volumes:
       - type: bind
         source: ./worker-data
@@ -363,15 +406,173 @@ function liveComposeYaml() {
     networks:
       - back
 
+  caddy-proxy:
+    image: busybox:1.36.1
+    command: sh -c "while true; do sleep 60; done"
+    depends_on:
+      - api
+    labels:
+      com.dockermap.fixture: "${projectName}"
+    networks:
+      - front
+
+  dnsmasq-dns:
+    image: busybox:1.36.1
+    command: sh -c "while true; do sleep 60; done"
+    labels:
+      com.dockermap.fixture: "${projectName}"
+    networks:
+      - front
+
+  tailscale-node:
+    image: busybox:1.36.1
+    command: sh -c "while true; do sleep 60; done"
+    labels:
+      com.dockermap.fixture: "${projectName}"
+    networks:
+      - front
+
+  headscale-control:
+    image: busybox:1.36.1
+    command: sh -c "while true; do sleep 60; done"
+    labels:
+      com.dockermap.fixture: "${projectName}"
+    networks:
+      - back
+
 networks:
   front:
+    labels:
+      com.dockermap.fixture: "${projectName}"
   back:
     internal: true
+    labels:
+      com.dockermap.fixture: "${projectName}"
 
 volumes:
   live-cache:
+    labels:
+      com.dockermap.fixture: "${projectName}"
   live-logs:
+    labels:
+      com.dockermap.fixture: "${projectName}"
 `;
+}
+
+function writeProviderStubs(stubBinDir: string, projectName: string) {
+  writeFileSync(join(stubBinDir, "tailscale"), `#!/bin/sh
+if [ "$1 $2" = "status --json" ]; then
+  cat <<'EOF'
+{
+  "Self": {
+    "DNSName": "dockermap-live.tailnet.test.",
+    "HostName": "dockermap-live",
+    "Online": true,
+    "TailscaleIPs": ["100.64.0.30"]
+  },
+  "Peer": {
+    "peer-1": {
+      "DNSName": "dockermap-live-peer.tailnet.test.",
+      "HostName": "dockermap-live-peer",
+      "Online": true,
+      "TailscaleIPs": ["100.64.0.31"]
+    }
+  }
+}
+EOF
+  exit 0
+fi
+exit 1
+`);
+  writeFileSync(join(stubBinDir, "headscale"), `#!/bin/sh
+if [ "$1 $2 $3 $4" = "nodes list --output json" ]; then
+  cat <<'EOF'
+[
+  {
+    "id": "live-node-1",
+    "givenName": "dockermap-live-headscale-node",
+    "online": true,
+    "ipAddresses": ["100.65.0.30"],
+    "user": "fixture"
+  }
+]
+EOF
+  exit 0
+fi
+exit 1
+`);
+  writeFileSync(join(stubBinDir, "systemctl"), `#!/bin/sh
+case "$1" in
+  list-units)
+    cat <<'EOF'
+dockermap-live-api.service loaded active running DockerMap live fixture API service
+dockermap-live-worker.service loaded active running DockerMap live fixture worker service
+EOF
+    exit 0
+    ;;
+  show)
+    cat <<'EOF'
+Id=dockermap-live-api.service
+ActiveState=active
+SubState=running
+Description=DockerMap live fixture API service
+ExecStart={ path=/usr/bin/node ; argv[]=node server.js ; }
+Requires=dockermap-live-worker.service
+Wants=
+PartOf=
+
+Id=dockermap-live-worker.service
+ActiveState=active
+SubState=running
+Description=DockerMap live fixture worker service
+ExecStart={ path=/usr/bin/python ; argv[]=python worker.py ; }
+Requires=
+Wants=
+PartOf=
+EOF
+    exit 0
+    ;;
+esac
+exit 1
+`);
+  writeFileSync(join(stubBinDir, "pm2"), `#!/bin/sh
+if [ "$1" = "jlist" ]; then
+  cat <<'EOF'
+[
+  {
+    "pm_id": 43,
+    "name": "dockermap-live-pm2",
+    "pm2_env": {
+      "name": "dockermap-live-pm2",
+      "status": "online",
+      "pm_cwd": "/tmp/dockermap-live",
+      "pm_exec_path": "/tmp/dockermap-live/app.js",
+      "restart_time": 0
+    }
+  }
+]
+EOF
+  exit 0
+fi
+exit 1
+`);
+  writeFileSync(join(stubBinDir, "tmux"), `#!/bin/sh
+if [ "$1" = "list-sessions" ]; then
+  printf '%s\\t%s\\t%s\\t%s\\n' "live-session-${projectName}" "dockermap-live-agent" "0" "1"
+  exit 0
+fi
+exit 1
+`);
+  writeFileSync(join(stubBinDir, "crontab"), `#!/bin/sh
+if [ "$1" = "-l" ]; then
+  echo "*/5 * * * * /usr/local/bin/dockermap-live-job --read-only"
+  exit 0
+fi
+exit 1
+`);
+  for (const command of ["tailscale", "headscale", "systemctl", "pm2", "tmux", "crontab"]) {
+    spawnSync("chmod", ["+x", join(stubBinDir, command)]);
+  }
 }
 
 function runDocker(docker: string[], args: string[], cwd: string) {
@@ -386,6 +587,11 @@ function runDocker(docker: string[], args: string[], cwd: string) {
 }
 
 function cleanupLiveDocker(docker: string[], fixture: Fixture) {
+  try {
+    runDocker(docker, ["rm", "-f", fixture.controlContainerName], fixture.dir);
+  } catch {
+    // Best-effort cleanup should not hide the original test result.
+  }
   try {
     runDocker(
       docker,

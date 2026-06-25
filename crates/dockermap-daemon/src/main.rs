@@ -27,7 +27,7 @@ use dockermap_core::{
 use futures_util::stream::StreamExt;
 use serde::Deserialize;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     net::{IpAddr, SocketAddr},
     path::{Component, Path as StdPath, PathBuf},
@@ -48,6 +48,7 @@ const MAX_NPM_PROJECTS: usize = 64;
 const MAX_NPM_DEPENDENCIES_PER_PROJECT: usize = 64;
 const MAX_PACKAGE_JSON_BYTES: u64 = 262_144;
 const REDACTED_VALUE: &str = "[redacted]";
+const MAX_DOCKER_LABEL_FILTER_CHARS: usize = 256;
 
 #[derive(Clone)]
 struct AppState {
@@ -282,35 +283,59 @@ async fn collect_snapshot() -> DaemonCache {
 
 struct DockerCollector {
     client: Docker,
+    label_filter: Option<String>,
 }
 
 impl DockerCollector {
     fn connect() -> Result<Self, String> {
+        let label_filter = docker_label_filter_from_env()?;
         let client = Docker::connect_with_unix_defaults()
             .map_err(|error| format!("failed to connect to docker socket: {error}"))?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            label_filter,
+        })
     }
 
     async fn collect_snapshot(&self) -> Result<DockerSnapshot, String> {
+        let filters = self.docker_filters();
+        let mut container_options = ListContainersOptionsBuilder::new().all(true);
+        if let Some(filters) = filters.as_ref() {
+            container_options = container_options.filters(filters);
+        }
         let containers = self
             .client
-            .list_containers(Some(ListContainersOptionsBuilder::new().all(true).build()))
+            .list_containers(Some(container_options.build()))
             .await
             .map_err(|error| format!("list_containers failed: {error}"))?;
 
+        let mut network_options = ListNetworksOptionsBuilder::new();
+        if let Some(filters) = filters.as_ref() {
+            network_options = network_options.filters(filters);
+        }
         let networks = self
             .client
-            .list_networks(Some(ListNetworksOptionsBuilder::new().build()))
+            .list_networks(Some(network_options.build()))
             .await
             .map_err(|error| format!("list_networks failed: {error}"))?;
 
+        let mut volume_options = ListVolumesOptionsBuilder::new();
+        if let Some(filters) = filters.as_ref() {
+            volume_options = volume_options.filters(filters);
+        }
         let volumes = self
             .client
-            .list_volumes(Some(ListVolumesOptionsBuilder::new().build()))
+            .list_volumes(Some(volume_options.build()))
             .await
             .map_err(|error| format!("list_volumes failed: {error}"))?;
 
         Ok(build_snapshot(containers, networks, volumes))
+    }
+
+    fn docker_filters(&self) -> Option<HashMap<String, Vec<String>>> {
+        self.label_filter
+            .as_ref()
+            .map(|label| HashMap::from([("label".to_string(), vec![label.clone()])]))
     }
 
     async fn collect_logs(
@@ -381,6 +406,37 @@ impl DockerCollector {
             next_cursor: None,
         })
     }
+}
+
+fn docker_label_filter_from_env() -> Result<Option<String>, String> {
+    match std::env::var("DOCKERMAP_DOCKER_LABEL_FILTER") {
+        Ok(value) => parse_docker_label_filter(&value)
+            .map_err(|message| format!("invalid DOCKERMAP_DOCKER_LABEL_FILTER: {message}")),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("invalid DOCKERMAP_DOCKER_LABEL_FILTER: value must be valid UTF-8".into())
+        }
+    }
+}
+
+fn parse_docker_label_filter(value: &str) -> Result<Option<String>, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_DOCKER_LABEL_FILTER_CHARS {
+        return Err(format!(
+            "label filter must be {MAX_DOCKER_LABEL_FILTER_CHARS} characters or fewer"
+        ));
+    }
+    if trimmed.contains('\0') {
+        return Err("label filter must not contain NUL bytes".into());
+    }
+    if trimmed.starts_with('=') {
+        return Err("label filter key must not be empty".into());
+    }
+
+    Ok(Some(trimmed.to_string()))
 }
 
 fn build_snapshot(
@@ -2736,6 +2792,32 @@ mod tests {
         let error = validate_optional_query(Some(&oversized), "q", MAX_LOG_QUERY_CHARS)
             .expect_err("oversized query should fail");
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn parses_docker_label_filter_values() {
+        assert_eq!(
+            parse_docker_label_filter(" com.dockermap.fixture ")
+                .expect("key-only filter should parse"),
+            Some("com.dockermap.fixture".into())
+        );
+        assert_eq!(
+            parse_docker_label_filter("com.dockermap.fixture=run-123")
+                .expect("key-value filter should parse"),
+            Some("com.dockermap.fixture=run-123".into())
+        );
+        assert_eq!(
+            parse_docker_label_filter("   ").expect("empty filter should be disabled"),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_docker_label_filter_values() {
+        let oversized = "a".repeat(MAX_DOCKER_LABEL_FILTER_CHARS + 1);
+        assert!(parse_docker_label_filter(&oversized).is_err());
+        assert!(parse_docker_label_filter("com.dockermap.fixture\0bad").is_err());
+        assert!(parse_docker_label_filter("=missing-key").is_err());
     }
 
     #[test]
