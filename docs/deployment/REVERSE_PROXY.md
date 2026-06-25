@@ -11,6 +11,11 @@ Keep the Rust daemon private. If you need remote review access, expose only the 
 and static web app through a reverse proxy. The proxy should control who can see the UI,
 and it should add the DockerMap API token when it talks to the local Node API.
 
+Reverse-proxy authentication tools, SSO providers, VPNs, DNS providers, and TLS
+automation may contact their own services. DockerMap does not manage those calls; it
+only receives the proxy request and, by default, talks back to the local Node API and
+Rust daemon.
+
 ## Recommended Review Setup
 
 1. Keep the Rust daemon on loopback:

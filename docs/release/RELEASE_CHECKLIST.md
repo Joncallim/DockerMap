@@ -17,7 +17,11 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 - [x] Add Playwright smoke coverage to CI.
 - [ ] Keep provider commands fixed and read-only for systemd, tmux, package, Python/native-process, reverse-proxy, DNS, and external-API collectors.
 - [ ] Bound provider filesystem scanning to documented paths, explicit request targets, and hard caps.
-- [ ] Make package advisory, registry, or other external-network behavior opt-in or document it explicitly in release notes and deployment docs.
+- [x] Make package advisory, registry, or other external-network behavior opt-in or document it explicitly in release notes and deployment docs.
+  Current runtime docs state that package registry/advisory, DNS-provider API,
+  Cloudflare API, and generic external-API lookups are disabled or not implemented.
+  Tailscale/Headscale delegated CLI behavior and Google-hosted browser fonts are
+  documented as release decisions.
 - [ ] Verify package, service, process, unit, proxy, and DNS inspection does not leak env vars, secrets, credentials, or inline auth URLs.
   Fixture evidence now covers current provider outputs and marker boundaries; keep this
   broader gate open until future native-process and config-content collectors land.
@@ -43,9 +47,12 @@ tasks before starting new GUI work:
   Current coverage is systemd, tmux, npm/package, native-process-shaped output,
   reverse-proxy marker, and DNS marker fixture coverage. Native process, reverse-proxy
   config-content, and DNS config-content collectors remain future implementation work.
-- [ ] Decide and document package advisory, registry, or other external-network behavior:
+- [x] Decide and document package advisory, registry, or other external-network behavior:
   keep it disabled/opt-in by default, and record the operator-facing setting in release
   notes and deployment docs.
+  Documented current behavior: no runtime package registry/advisory/external-API lookup,
+  build/release tooling may contact registries, Tailscale/Headscale use installed CLI
+  configuration, and the browser loads Google-hosted fonts unless packaged locally.
 - [ ] Capture live-Docker evidence on the release host with `npm run test:live-docker`,
   including Docker and Compose versions.
 - [ ] Capture reverse-proxy smoke evidence on the release host, including bearer-token
@@ -84,6 +91,8 @@ Store this evidence in release notes or the release PR.
 - Node, npm, Rust, Cargo, Docker, and browser versions.
 - Reverse-proxy smoke result.
 - Provider-network behavior note stating whether any package/advisory or other external API calls were enabled.
+  Current docs record no runtime package registry/advisory/external-API lookup; note the
+  Tailscale/Headscale delegated CLI caveat and Google Fonts browser egress in release notes.
 - Provider-redaction evidence for any new systemd, tmux, package, Python/native-process, reverse-proxy, DNS, or external-API routes shipped in the release.
   Current fixture evidence is `npm run test:rust:daemon`, covering fake systemd, tmux,
   npm/package, native-process-shaped, reverse-proxy marker, DNS marker, diagnostic, and
