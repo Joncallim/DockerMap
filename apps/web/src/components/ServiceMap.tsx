@@ -1,4 +1,11 @@
-import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import {
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent
+} from "react";
 import { computeImpact, type Service, type SystemModel } from "../lib/model";
 import { layoutServices } from "../lib/layout";
 import Icon, { KIND_ICON } from "./Icon";
@@ -6,6 +13,9 @@ import { StateDot } from "./primitives";
 
 const VIEW = 240;
 const PAD = 26;
+const NODE_EDGE_GAP = 10;
+const NETWORK_TRACK_GAP = 2.8;
+const NETWORK_COLORS = ["#22c55e", "#38bdf8", "#f59e0b", "#f472b6", "#a78bfa", "#14b8a6", "#fb7185", "#84cc16"];
 
 interface Transform {
   k: number;
@@ -25,10 +35,29 @@ export interface ServiceMapProps {
 export default function ServiceMap({ model, selectedId, onSelect, interactive = true, filter, height }: ServiceMapProps) {
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [transform, setTransform] = useState<Transform>({ k: 1, x: 0, y: 0 });
+  const [hiddenNetworks, setHiddenNetworks] = useState<Set<string>>(() => new Set());
   const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
 
   const services = useMemo(() => (filter ? model.services.filter(filter) : model.services), [model.services, filter]);
   const layout = useMemo(() => layoutServices(model.services, model.relationships), [model.services, model.relationships]);
+  const servicesById = useMemo(() => new Map(services.map((service) => [service.id, service])), [services]);
+  const networks = useMemo(() => {
+    const networkOrder = new Map(model.networks.map((network, index) => [network.name, index]));
+    const names = [...new Set(services.flatMap((service) => service.networks))].sort((a, b) => {
+      const aOrder = networkOrder.get(a) ?? Number.MAX_SAFE_INTEGER;
+      const bOrder = networkOrder.get(b) ?? Number.MAX_SAFE_INTEGER;
+      return aOrder - bOrder || a.localeCompare(b);
+    });
+    return names.map((name, index) => ({
+      name,
+      color: NETWORK_COLORS[index % NETWORK_COLORS.length]
+    }));
+  }, [model.networks, services]);
+  const networkByName = useMemo(() => new Map(networks.map((network) => [network.name, network])), [networks]);
+  const enabledNetworkNames = useMemo(
+    () => new Set(networks.filter((network) => !hiddenNetworks.has(network.name)).map((network) => network.name)),
+    [hiddenNetworks, networks]
+  );
 
   const place = (id: string) => {
     const p = layout.get(id);
@@ -54,6 +83,47 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
   };
 
   const visible = new Set(services.map((s) => s.id));
+
+  const edgePoints = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const len = Math.hypot(dx, dy);
+    if (len === 0) return { x1: from.x, y1: from.y, x2: to.x, y2: to.y };
+    const ux = dx / len;
+    const uy = dy / len;
+    return {
+      x1: from.x + ux * NODE_EDGE_GAP,
+      y1: from.y + uy * NODE_EDGE_GAP,
+      x2: to.x - ux * (NODE_EDGE_GAP + 1.5),
+      y2: to.y - uy * (NODE_EDGE_GAP + 1.5)
+    };
+  };
+
+  const offsetPoints = (points: ReturnType<typeof edgePoints>, index: number, total: number) => {
+    if (total <= 1) return points;
+    const dx = points.x2 - points.x1;
+    const dy = points.y2 - points.y1;
+    const len = Math.hypot(dx, dy);
+    if (len === 0) return points;
+    const distance = (index - (total - 1) / 2) * NETWORK_TRACK_GAP;
+    const ox = (-dy / len) * distance;
+    const oy = (dx / len) * distance;
+    return {
+      x1: points.x1 + ox,
+      y1: points.y1 + oy,
+      x2: points.x2 + ox,
+      y2: points.y2 + oy
+    };
+  };
+
+  const toggleNetwork = (name: string) => {
+    setHiddenNetworks((current) => {
+      const next = new Set(current);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
 
   const onWheel = (e: ReactWheelEvent<SVGSVGElement>) => {
     if (!interactive) return;
@@ -92,25 +162,57 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
         onPointerUp={onPointerUp}
         onPointerLeave={onPointerUp}
       >
+        <defs>
+          <marker id="edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.8" markerHeight="5.8" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />
+          </marker>
+        </defs>
         <g transform={`translate(${transform.x} ${transform.y}) translate(${VIEW / 2} ${VIEW / 2}) scale(${transform.k}) translate(${-VIEW / 2} ${-VIEW / 2})`}>
           {model.relationships.map((rel) => {
             if (!visible.has(rel.from) || !visible.has(rel.to)) return null;
+            const fromService = servicesById.get(rel.from);
+            const toService = servicesById.get(rel.to);
+            if (!fromService || !toService) return null;
             const a = place(rel.from);
             const b = place(rel.to);
+            const points = edgePoints(a, b);
             const lit = activeId ? rel.from === activeId || rel.to === activeId : false;
             const inImpact = activeId
               ? (rel.from === activeId || downstream.has(rel.from) || upstream.has(rel.from)) &&
                 (rel.to === activeId || downstream.has(rel.to) || upstream.has(rel.to))
               : false;
+            const toNetworks = new Set(toService.networks);
+            const edgeNetworks = fromService.networks.filter((network) => toNetworks.has(network) && enabledNetworkNames.has(network));
             return (
-              <line
-                key={rel.id}
-                className={`edge edge-${rel.kind} eh-${rel.health}${lit ? " is-lit" : ""}${activeId && !inImpact ? " is-dim" : ""}`}
-                x1={a.x}
-                y1={a.y}
-                x2={b.x}
-                y2={b.y}
-              />
+              <g key={rel.id} className="edge-group">
+                <title>
+                  {fromService.name} depends on {toService.name}
+                  {edgeNetworks.length > 0 ? ` via ${edgeNetworks.join(", ")}` : ""}
+                </title>
+                {edgeNetworks.map((network, index) => {
+                  const networkDef = networkByName.get(network);
+                  const track = offsetPoints(points, index, edgeNetworks.length);
+                  return (
+                    <line
+                      key={`${rel.id}:${network}`}
+                      className={`network-edge${activeId && !inImpact ? " is-dim" : ""}`}
+                      style={{ "--network-color": networkDef?.color ?? NETWORK_COLORS[0] } as CSSProperties}
+                      x1={track.x1}
+                      y1={track.y1}
+                      x2={track.x2}
+                      y2={track.y2}
+                    />
+                  );
+                })}
+                <line
+                  className={`edge edge-${rel.kind} eh-${rel.health}${lit ? " is-lit" : ""}${activeId && !inImpact ? " is-dim" : ""}`}
+                  x1={points.x1}
+                  y1={points.y1}
+                  x2={points.x2}
+                  y2={points.y2}
+                  markerEnd="url(#edge-arrow)"
+                />
+              </g>
             );
           })}
           {services.map((service) => {
@@ -153,6 +255,21 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
           <button type="button" onClick={reset} aria-label="Reset view">
             <Icon name="target" size={15} />
           </button>
+        </div>
+      )}
+
+      {networks.length > 0 && (
+        <div className="map-network-panel" aria-label="Network overlays">
+          <div className="map-network-title">Networks</div>
+          <div className="map-network-list">
+            {networks.map((network) => (
+              <label key={network.name} className="map-network-option" style={{ "--network-color": network.color } as CSSProperties}>
+                <input type="checkbox" checked={!hiddenNetworks.has(network.name)} onChange={() => toggleNetwork(network.name)} />
+                <span className="network-swatch" aria-hidden="true" />
+                <span>{network.name}</span>
+              </label>
+            ))}
+          </div>
         </div>
       )}
 
