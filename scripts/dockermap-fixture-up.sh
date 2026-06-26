@@ -45,15 +45,15 @@ if [[ -e "$STATE_FILE" ]]; then
 fi
 
 detect_docker() {
-  if docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+  if docker version --format '{{.Server.Version}}' >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     DOCKER_CMD=(docker)
     return
   fi
-  if sudo -n docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+  if sudo -n docker version --format '{{.Server.Version}}' >/dev/null 2>&1 && sudo -n docker compose version >/dev/null 2>&1; then
     DOCKER_CMD=(sudo -n docker)
     return
   fi
-  echo "Docker is not reachable by the current user or sudo -n docker." >&2
+  echo "Docker and Docker Compose are not reachable together by the current user or sudo -n docker." >&2
   exit 2
 }
 

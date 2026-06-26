@@ -31,8 +31,11 @@ the fixture-labeled Docker resources.
 Run from the repository root:
 
 ```bash
-cd /Users/jonathanlim/Documents/GitHub/DockerMap
+cd /path/to/DockerMap
 ```
+
+If you already have the repository open in a shell, stay in that repository
+root and run the commands from there.
 
 Confirm required tools are available:
 
@@ -40,8 +43,8 @@ Confirm required tools are available:
 node --version
 npm --version
 cargo --version
-docker version
-docker compose version
+(docker version && docker compose version) || \
+  (sudo -n docker version && sudo -n docker compose version)
 curl --version
 ```
 
@@ -99,6 +102,7 @@ STATE_FILE="${TMPDIR:-/tmp}/dockermap-fixture-current.env"
 set -a
 source "$STATE_FILE"
 set +a
+IFS=' ' read -r -a DOCKER_CMD <<< "${DOCKER_CMD_TEXT:-docker}"
 ```
 
 For a custom state file:
@@ -108,6 +112,7 @@ STATE_FILE="/tmp/dockermap-testbed.env"
 set -a
 source "$STATE_FILE"
 set +a
+IFS=' ' read -r -a DOCKER_CMD <<< "${DOCKER_CMD_TEXT:-docker}"
 ```
 
 Confirm the recorded URLs:
@@ -124,7 +129,7 @@ The default state file is `${TMPDIR:-/tmp}/dockermap-fixture-current.env`.
 List the fixture containers:
 
 ```bash
-docker ps --filter "label=$LABEL_EXPR" \
+"${DOCKER_CMD[@]}" ps --filter "label=$LABEL_EXPR" \
   --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 ```
 
@@ -140,15 +145,15 @@ Expected:
 Confirm the unlabeled control container exists outside the label filter:
 
 ```bash
-docker ps --filter "name=$CONTROL_CONTAINER" \
+"${DOCKER_CMD[@]}" ps --filter "name=$CONTROL_CONTAINER" \
   --format 'table {{.Names}}\t{{.Status}}'
 ```
 
 List fixture networks and volumes:
 
 ```bash
-docker network ls --filter "label=$LABEL_EXPR"
-docker volume ls --filter "label=$LABEL_EXPR"
+"${DOCKER_CMD[@]}" network ls --filter "label=$LABEL_EXPR"
+"${DOCKER_CMD[@]}" volume ls --filter "label=$LABEL_EXPR"
 ```
 
 Expected networks:
@@ -349,9 +354,9 @@ The testbed pass is acceptable when:
 If a step fails, capture:
 
 ```bash
-docker ps -a --filter "label=$LABEL_EXPR"
-docker network ls --filter "label=$LABEL_EXPR"
-docker volume ls --filter "label=$LABEL_EXPR"
+"${DOCKER_CMD[@]}" ps -a --filter "label=$LABEL_EXPR"
+"${DOCKER_CMD[@]}" network ls --filter "label=$LABEL_EXPR"
+"${DOCKER_CMD[@]}" volume ls --filter "label=$LABEL_EXPR"
 tail -200 "$FIXTURE_DIR/logs/daemon.log"
 tail -200 "$FIXTURE_DIR/logs/api.log"
 tail -200 "$FIXTURE_DIR/logs/web.log"
@@ -380,9 +385,9 @@ scripts/dockermap-fixture-down.sh --state-file /tmp/dockermap-testbed.env
 Confirm no fixture-labeled resources remain:
 
 ```bash
-docker ps -a --filter "label=$LABEL_EXPR"
-docker network ls --filter "label=$LABEL_EXPR"
-docker volume ls --filter "label=$LABEL_EXPR"
+"${DOCKER_CMD[@]}" ps -a --filter "label=$LABEL_EXPR"
+"${DOCKER_CMD[@]}" network ls --filter "label=$LABEL_EXPR"
+"${DOCKER_CMD[@]}" volume ls --filter "label=$LABEL_EXPR"
 ```
 
 The teardown script removes DockerMap processes, the unlabeled control
