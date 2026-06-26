@@ -81,13 +81,14 @@ write_state() {
 
 cleanup_on_error() {
   local exit_code=$?
+  trap - EXIT INT TERM
   if [[ "$exit_code" -ne 0 ]]; then
     echo "[dockermap-fixture] setup failed; attempting cleanup" >&2
     "$ROOT_DIR/scripts/dockermap-fixture-down.sh" --state-file "$STATE_FILE" >/dev/null 2>&1 || true
   fi
   exit "$exit_code"
 }
-trap cleanup_on_error EXIT
+trap cleanup_on_error EXIT INT TERM
 
 curl_json() {
   local url="$1"
@@ -397,7 +398,7 @@ echo "[dockermap-fixture] starting unlabeled control container $CONTROL_CONTAINE
 "${DOCKER_CMD[@]}" run -d --name "$CONTROL_CONTAINER" busybox:1.36.1 sh -c 'while true; do sleep 60; done' >/dev/null
 
 echo "[dockermap-fixture] building daemon binary"
-cargo build --manifest-path "$ROOT_DIR/crates/Cargo.toml" -p dockermap-daemon >/dev/null
+CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}" cargo build --manifest-path "$ROOT_DIR/crates/Cargo.toml" -p dockermap-daemon 2>&1 | tee "$LOG_DIR/daemon-build.log"
 
 echo "[dockermap-fixture] starting Rust daemon on $DAEMON_URL"
 PATH="$BIN_DIR:$PATH" \
