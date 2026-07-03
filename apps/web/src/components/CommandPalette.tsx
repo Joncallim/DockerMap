@@ -44,6 +44,7 @@ export default function CommandPalette({
     const nav: Command[] = [
       { id: "nav-home", label: "Home — Command Center", icon: "home", group: "Navigate", run: () => go("/") },
       { id: "nav-map", label: "Service Map", icon: "map", group: "Navigate", run: () => go("/map") },
+      { id: "nav-runtime", label: "Runtime Map", icon: "layers", group: "Navigate", run: () => go("/runtime") },
       { id: "nav-changes", label: "Change Center", icon: "history", group: "Navigate", run: () => go("/changes") },
       { id: "nav-copilot", label: "Copilot", icon: "spark", group: "Navigate", run: () => go("/copilot") },
       { id: "nav-net", label: "Networking", icon: "network", group: "Navigate", run: () => go("/networking") },

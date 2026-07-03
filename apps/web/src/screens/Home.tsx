@@ -85,6 +85,35 @@ export default function Home() {
             <ServiceMap model={model} selectedId={null} onSelect={() => {}} interactive={false} height={260} />
           </Panel>
 
+          <Panel
+            title="Runtime Signals"
+            icon="layers"
+            hint={`${model.runtime.summary.providers} providers · ${model.runtime.summary.diagnostics} diagnostics`}
+            actions={
+              <Link className="ghost-link" to="/runtime">
+                Open Runtime Map
+              </Link>
+            }
+          >
+            <div className="impact-band">
+              <div className="impact-cell">
+                <strong>{model.runtime.summary.totalNodes}</strong>
+                <span>runtime nodes</span>
+              </div>
+              <div className="impact-cell">
+                <strong>{model.runtime.summary.attention}</strong>
+                <span>need attention</span>
+              </div>
+            </div>
+            <div className="tag-wrap">
+              {model.runtime.providerSummary.slice(0, 6).map((bucket) => (
+                <Tag key={bucket.id} tone={bucket.attention ? "warn" : "muted"}>
+                  {bucket.id} {bucket.count}
+                </Tag>
+              ))}
+            </div>
+          </Panel>
+
           <Panel title="Recent change" icon="history" hint={STUB_CHANGES_NOTICE}>
             {changes.length === 0 ? (
               <EmptyState icon="history" title="No recent change" body="Deployments and restarts will appear here." />

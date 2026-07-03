@@ -138,7 +138,11 @@ function freePort(): Promise<number> {
 async function ensureDaemonBinary() {
   const result = spawnSync("cargo", ["build", "--manifest-path", "crates/Cargo.toml", "-p", "dockermap-daemon"], {
     cwd: repoRoot,
-    env: { ...process.env, PATH: `${process.env.HOME}/.cargo/bin:${process.env.PATH}` },
+    env: {
+      ...process.env,
+      PATH: `${process.env.HOME}/.cargo/bin:${process.env.PATH}`,
+      CARGO_INCREMENTAL: "0"
+    },
     encoding: "utf8"
   });
 

@@ -7,6 +7,7 @@ import type {
   ImageRecord,
   LogsResponse,
   NetworkRecord,
+  RuntimeMap,
   VolumeRecord
 } from "@dockermap/contracts";
 
@@ -224,6 +225,180 @@ const demoComposeScan: ComposeScan = {
   ]
 };
 
+const demoRuntimeMap: RuntimeMap = {
+  nodes: [
+    {
+      id: "runtime_gateway",
+      provider: "reverse_proxy",
+      type: "reverse_proxy",
+      layer: "edge",
+      label: "gateway",
+      status: "running",
+      metadata: {
+        config: "nginx.conf",
+        tls: true
+      },
+      service: {
+        name: "gateway",
+        status: "running",
+        dependencies: ["api"],
+        dependents: ["review-browser"],
+        health: { state: "healthy", source: "nginx", message: "Serving edge traffic" },
+        logs: [{ id: "runtime_gateway_log", source: "nginx", level: "info" }],
+        events: [{ id: "runtime_gateway_event", kind: "reload", message: "Proxy config reloaded" }],
+        owner: { kind: "team", name: "platform" },
+        location: { kind: "host", value: "demo-host" }
+      }
+    },
+    {
+      id: "runtime_api",
+      provider: "docker",
+      type: "container",
+      layer: "container",
+      label: "api",
+      status: "running",
+      metadata: {
+        image: "python:3.11-slim",
+        role: "api"
+      },
+      service: {
+        name: "api",
+        status: "running",
+        dependencies: ["postgres", "redis"],
+        dependents: ["gateway", "worker"],
+        health: { state: "healthy", source: "http", message: "Responding in 42ms" },
+        logs: [{ id: "runtime_api_log", source: "docker logs api", level: "info" }],
+        events: [{ id: "runtime_api_event", kind: "deploy", message: "API revision promoted" }],
+        owner: { kind: "team", name: "product" },
+        location: { kind: "container", value: "application" }
+      }
+    },
+    {
+      id: "runtime_worker",
+      provider: "process",
+      type: "worker",
+      layer: "process",
+      label: "worker",
+      status: "running",
+      metadata: {
+        pid: 2412,
+        command: "python worker.py"
+      },
+      service: {
+        name: "worker",
+        status: "running",
+        dependencies: ["api", "postgres"],
+        dependents: [],
+        health: { state: "degraded", source: "heartbeat", message: "Queue lag above target" },
+        logs: [{ id: "runtime_worker_log", source: "worker", level: "warn" }],
+        events: [{ id: "runtime_worker_event", kind: "lag", message: "Queue delay crossed 30 seconds" }],
+        owner: { kind: "team", name: "ops" },
+        location: { kind: "host", value: "demo-host" }
+      }
+    },
+    {
+      id: "runtime_systemd_api",
+      provider: "systemd",
+      type: "systemd_service",
+      layer: "host",
+      label: "dockermap-api.service",
+      status: "running",
+      metadata: {
+        unit: "dockermap-api.service",
+        restart: "always"
+      },
+      service: {
+        name: "dockermap-api.service",
+        status: "running",
+        dependencies: ["docker.service"],
+        dependents: ["gateway"],
+        health: { state: "healthy", source: "systemd", message: "Unit is active" },
+        logs: [],
+        events: [{ id: "runtime_systemd_event", kind: "start", message: "systemd marked the unit active" }],
+        owner: { kind: "system", name: "systemd" },
+        location: { kind: "host", value: "demo-host" }
+      }
+    },
+    {
+      id: "runtime_npm_forge",
+      provider: "npm",
+      type: "node_application",
+      layer: "package",
+      label: "forge-ui",
+      status: "running",
+      metadata: {
+        framework: "vite",
+        path: "/srv/forge"
+      },
+      package: {
+        name: "forge-ui",
+        manager: "npm",
+        version: "0.4.0",
+        dependencies: ["react", "vite"],
+        dependents: [],
+        update: {
+          currentVersion: "0.4.0",
+          latestVersion: null,
+          available: false,
+          advisories: []
+        },
+        owner: { kind: "team", name: "frontend" },
+        location: { kind: "path", value: "/srv/forge" }
+      }
+    },
+    {
+      id: "runtime_postgres",
+      provider: "docker",
+      type: "database",
+      layer: "container",
+      label: "postgres",
+      status: "running",
+      metadata: {
+        image: "postgres:16-alpine",
+        role: "database"
+      },
+      service: {
+        name: "postgres",
+        status: "running",
+        dependencies: ["postgres_data"],
+        dependents: ["api", "worker"],
+        health: { state: "healthy", source: "postgres", message: "Primary is ready" },
+        logs: [],
+        events: [{ id: "runtime_postgres_event", kind: "backup", message: "Nightly backup completed" }],
+        owner: { kind: "team", name: "platform" },
+        location: { kind: "container", value: "data" }
+      }
+    },
+    {
+      id: "runtime_postgres_data",
+      provider: "docker",
+      type: "docker_volume",
+      layer: "storage",
+      label: "postgres_data",
+      status: "attached",
+      metadata: {
+        driver: "local"
+      }
+    }
+  ],
+  edges: [
+    { source: "runtime_gateway", target: "runtime_api", relationship: "proxies_to", metadata: { port: 80 } },
+    { source: "runtime_api", target: "runtime_postgres", relationship: "depends_on", metadata: { source: "compose" } },
+    { source: "runtime_worker", target: "runtime_api", relationship: "calls", metadata: { queue: "jobs" } },
+    { source: "runtime_worker", target: "runtime_postgres", relationship: "depends_on", metadata: { source: "runtime" } },
+    { source: "runtime_postgres", target: "runtime_postgres_data", relationship: "mounts", metadata: { path: "/var/lib/postgresql/data" } },
+    { source: "runtime_systemd_api", target: "runtime_gateway", relationship: "exposes", metadata: { unit: "dockermap-api.service" } }
+  ],
+  diagnostics: [
+    {
+      provider: "process",
+      severity: "warning",
+      message: "Worker heartbeat is stale enough to warrant inspection."
+    }
+  ],
+  lastUpdated: Date.now()
+};
+
 function demoLogs(service: string | null): LogsResponse {
   const containers = service ? demoContainers.filter((c) => c.name === service) : demoContainers;
   const now = Date.now();
@@ -255,6 +430,7 @@ export function getDemoResponse<T>(path: string): T {
 
   if (pathname === "/api/snapshot") return demoSnapshot as T;
   if (pathname === "/api/graph") return demoGraph as T;
+  if (pathname === "/api/runtime/map") return demoRuntimeMap as T;
   if (pathname === "/api/health") {
     return {
       node: { status: "ok", port: 4000 },

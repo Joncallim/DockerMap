@@ -69,6 +69,8 @@ This starts:
 - See a broader runtime map when host tools are available, including systemd,
   cron, PM2, tmux, listening sockets, Tailscale or Headscale, reverse-proxy
   markers, and local DNS markers.
+- Use the Runtime Map workspace to inspect provider nodes, diagnostics, and
+  cross-provider edges in one read-only view.
 - Compare what Compose says should exist with what Docker is actually running.
 - Use mock fallback data when Docker is not available.
 

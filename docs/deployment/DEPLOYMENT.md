@@ -155,6 +155,15 @@ DOCKERMAP_SMOKE_URL=https://dockermap.example.com ./scripts/smoke-deploy.sh
 The proxy check should work without exporting `DOCKERMAP_API_TOKEN` if the proxy injects
 the token server-side.
 
+The smoke script currently verifies:
+
+- `/api/health` returns `200`.
+- Protected API routes return `401` without a token when `DOCKERMAP_API_TOKEN`
+  is provided locally.
+- `/api/snapshot`, `/api/runtime/map`, and `/api/compose/scan` return `200`
+  with the expected auth path.
+- `/api/events/stream` emits at least one `snapshot` SSE event.
+
 ## Draft Deployment Definition Of Done
 
 - `dockermap-daemon` and `dockermap-api` are running under systemd.
@@ -162,6 +171,8 @@ the token server-side.
 - The web UI loads over HTTPS.
 - `/api/health`, `/api/snapshot`, `/api/runtime/map`, and `/api/compose/scan` pass smoke
   checks through the proxy.
+- `/api/events/stream` stays live through the proxy without buffering away the
+  event stream.
 - Viewer authentication is enabled at the proxy.
 - `DOCKERMAP_API_TOKEN` is set and non-health API routes reject direct unauthenticated
   requests.

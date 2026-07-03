@@ -35,6 +35,8 @@ Working now:
 - Runtime-map providers for systemd, cron, PM2, tmux, listening sockets,
   Tailscale, Headscale, reverse-proxy markers, local DNS markers, and Docker
   graph nodes when those tools are available.
+- A Runtime Map page in the web app that consumes `/api/runtime/map` and shows
+  provider diagnostics, layer filters, and cross-provider relationships.
 - Shared Rust and TypeScript contract fixtures.
 - API security tests and Playwright smoke tests.
 

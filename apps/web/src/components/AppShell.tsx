@@ -25,6 +25,7 @@ const SPACES: { heading: string; items: NavItem[] }[] = [
     items: [
       { to: "/", label: "Home", icon: "home", end: true },
       { to: "/map", label: "Service Map", icon: "map" },
+      { to: "/runtime", label: "Runtime", icon: "layers" },
       { to: "/changes", label: "Changes", icon: "history" },
       { to: "/copilot", label: "Copilot", icon: "spark" }
     ]

@@ -4,37 +4,92 @@ set -euo pipefail
 
 BASE_URL="${DOCKERMAP_SMOKE_URL:-http://127.0.0.1:4000}"
 TOKEN="${DOCKERMAP_API_TOKEN:-}"
+TMP_BODY="$(mktemp -t dockermap-smoke-body.XXXXXX)"
+TMP_STREAM="$(mktemp -t dockermap-smoke-stream.XXXXXX)"
 
-curl_json() {
+cleanup() {
+  rm -f "$TMP_BODY" "$TMP_STREAM"
+}
+
+trap cleanup EXIT
+
+require_http_200() {
   local path="$1"
   local status
-  status="$(curl -fsS -o /tmp/dockermap-smoke.json -w "%{http_code}" "$BASE_URL$path")"
+  shift
+  status="$(curl -fsS -o "$TMP_BODY" -w "%{http_code}" "$@" "$BASE_URL$path")"
   if [[ "$status" != "200" ]]; then
     echo "Expected 200 for $path, got $status" >&2
-    cat /tmp/dockermap-smoke.json >&2 || true
+    cat "$TMP_BODY" >&2 || true
     exit 1
   fi
 }
 
-curl_auth_json() {
+require_http_status() {
   local path="$1"
+  local expected="$2"
+  shift 2
   local status
-  local args=(-fsS -o /tmp/dockermap-smoke.json -w "%{http_code}")
+  status="$(curl -sS -o "$TMP_BODY" -w "%{http_code}" "$@" "$BASE_URL$path")"
+  if [[ "$status" != "$expected" ]]; then
+    echo "Expected $expected for $path, got $status" >&2
+    cat "$TMP_BODY" >&2 || true
+    exit 1
+  fi
+}
+
+require_auth_json() {
+  local path="$1"
+  local -a args=()
   if [[ -n "$TOKEN" ]]; then
     args+=(-H "Authorization: Bearer $TOKEN")
   fi
-  status="$(curl "${args[@]}" "$BASE_URL$path")"
-  if [[ "$status" != "200" ]]; then
-    echo "Expected 200 for $path, got $status" >&2
-    cat /tmp/dockermap-smoke.json >&2 || true
+  require_http_200 "$path" "${args[@]}"
+}
+
+check_sse() {
+  local path="$1"
+  local -a args=(--no-buffer --max-time 10 -sS)
+  local curl_status
+  if [[ -n "$TOKEN" ]]; then
+    args+=(-H "Authorization: Bearer $TOKEN")
+  fi
+
+  set +e
+  curl "${args[@]}" "$BASE_URL$path" >"$TMP_STREAM"
+  curl_status="$?"
+  set -e
+
+  if [[ "$curl_status" != "0" && "$curl_status" != "28" ]]; then
+    echo "Expected SSE stream for $path, curl exited with $curl_status" >&2
+    cat "$TMP_STREAM" >&2 || true
+    exit 1
+  fi
+
+  if ! grep -q '^event: snapshot$' "$TMP_STREAM"; then
+    echo "Expected SSE snapshot event for $path" >&2
+    cat "$TMP_STREAM" >&2 || true
+    exit 1
+  fi
+
+  if ! grep -q '^data: ' "$TMP_STREAM"; then
+    echo "Expected SSE data payload for $path" >&2
+    cat "$TMP_STREAM" >&2 || true
     exit 1
   fi
 }
 
 echo "[dockermap] smoke target: $BASE_URL"
-curl_json "/api/health"
-curl_auth_json "/api/snapshot"
-curl_auth_json "/api/runtime/map"
-curl_auth_json "/api/compose/scan"
+require_http_200 "/api/health"
+
+if [[ -n "$TOKEN" ]]; then
+  echo "[dockermap] verifying protected routes reject unauthenticated direct access"
+  require_http_status "/api/snapshot" "401"
+fi
+
+require_auth_json "/api/snapshot"
+require_auth_json "/api/runtime/map"
+require_auth_json "/api/compose/scan"
+check_sse "/api/events/stream"
 
 echo "[dockermap] smoke checks passed"

@@ -185,7 +185,7 @@ Use this after larger changes or before a demo:
 2. Open `http://127.0.0.1:3233`.
 
 3. Check the main pages: dashboard, containers, images, networks, volumes, logs, and
-   Compose.
+   Compose, plus the Runtime Map page.
 
 4. Check these API routes:
 
@@ -234,6 +234,10 @@ For a review UI on another machine:
   the proxy.
 
 More detail is in [docs/deployment/REVERSE_PROXY.md](../deployment/REVERSE_PROXY.md).
+
+For the local host-side API path, `scripts/smoke-deploy.sh` now checks `/api/health`,
+the protected JSON routes, bearer-token `401` behavior when a token is supplied, and a
+live `/api/events/stream` snapshot event.
 
 ## Gaps To Close
 
