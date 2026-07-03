@@ -9,6 +9,7 @@ import Icon from "../components/Icon";
 const ROUTE_OPTIONS: { value: string; label: string }[] = [
   { value: "/", label: "Home" },
   { value: "/map", label: "Service Map" },
+  { value: "/runtime", label: "Runtime" },
   { value: "/changes", label: "Changes" },
   { value: "/copilot", label: "Copilot" },
   { value: "/networking", label: "Networking" },

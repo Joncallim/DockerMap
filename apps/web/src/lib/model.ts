@@ -1,8 +1,12 @@
 import type {
   ContainerRecord,
   DockerSnapshot,
-  GraphResponse,
   NetworkRecord,
+  RuntimeMap,
+  RuntimeMapDiagnostic,
+  RuntimeMapEdge,
+  RuntimeMapNode,
+  RuntimeProviderKind,
   VolumeRecord
 } from "@dockermap/contracts";
 
@@ -74,8 +78,52 @@ export interface SystemModel {
   relationships: Relationship[];
   networks: NetworkRecord[];
   volumes: VolumeRecord[];
+  runtime: RuntimeModel;
   byId: Map<string, Service>;
   byName: Map<string, Service>;
+  lastUpdated: number;
+}
+
+export type RuntimeLayerId = NonNullable<RuntimeMapNode["layer"]> | "unassigned";
+
+export interface RuntimeNodeRecord {
+  id: string;
+  provider: RuntimeProviderKind;
+  type: RuntimeMapNode["type"];
+  label: string;
+  status: RuntimeMapNode["status"];
+  layer: RuntimeLayerId;
+  metadata: RuntimeMapNode["metadata"];
+  service?: RuntimeMapNode["service"];
+  package?: RuntimeMapNode["package"];
+  state: ServiceState;
+  incoming: RuntimeMapEdge[];
+  outgoing: RuntimeMapEdge[];
+}
+
+export interface RuntimeBucketSummary<T extends string> {
+  id: T;
+  count: number;
+  attention: number;
+}
+
+export interface RuntimeSummary {
+  totalNodes: number;
+  serviceNodes: number;
+  providers: number;
+  layers: number;
+  diagnostics: number;
+  attention: number;
+}
+
+export interface RuntimeModel {
+  nodes: RuntimeNodeRecord[];
+  edges: RuntimeMapEdge[];
+  diagnostics: RuntimeMapDiagnostic[];
+  byId: Map<string, RuntimeNodeRecord>;
+  providerSummary: RuntimeBucketSummary<RuntimeProviderKind>[];
+  layerSummary: RuntimeBucketSummary<RuntimeLayerId>[];
+  summary: RuntimeSummary;
   lastUpdated: number;
 }
 
@@ -160,7 +208,7 @@ export function hashString(value: string): number {
   return (h >>> 0) / 4294967295;
 }
 
-export function buildModel(snapshot: DockerSnapshot, graph: GraphResponse): SystemModel {
+export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): SystemModel {
   const networkNameById = new Map(snapshot.networks.map((n) => [n.id, n.name]));
 
   // dependsOn references can be either container ids or names; normalise to ids.
@@ -207,15 +255,17 @@ export function buildModel(snapshot: DockerSnapshot, graph: GraphResponse): Syst
   const byName = new Map(services.map((s) => [s.name, s]));
 
   const relationships = buildRelationships(services, snapshot, byId);
+  const runtime = buildRuntimeModel(runtimeMap);
 
   return {
     services,
     relationships,
     networks: snapshot.networks,
     volumes: snapshot.volumes,
+    runtime,
     byId,
     byName,
-    lastUpdated: snapshot.lastUpdated
+    lastUpdated: Math.max(snapshot.lastUpdated, runtime.lastUpdated)
   };
 }
 
@@ -324,4 +374,133 @@ function traverse(model: SystemModel, startId: string, edge: "dependsOn" | "depe
   }
   visited.delete(startId);
   return visited;
+}
+
+function buildRuntimeModel(runtimeMap: RuntimeMap): RuntimeModel {
+  const incomingById = new Map<string, RuntimeMapEdge[]>();
+  const outgoingById = new Map<string, RuntimeMapEdge[]>();
+
+  for (const edge of runtimeMap.edges) {
+    const outgoing = outgoingById.get(edge.source) ?? [];
+    outgoing.push(edge);
+    outgoingById.set(edge.source, outgoing);
+
+    const incoming = incomingById.get(edge.target) ?? [];
+    incoming.push(edge);
+    incomingById.set(edge.target, incoming);
+  }
+
+  const nodes: RuntimeNodeRecord[] = runtimeMap.nodes
+    .map((node): RuntimeNodeRecord => ({
+      id: node.id,
+      provider: node.provider,
+      type: node.type,
+      label: node.label,
+      status: node.status,
+      layer: runtimeLayerForNode(node),
+      metadata: node.metadata,
+      service: node.service,
+      package: node.package,
+      state: runtimeStateForNode(node),
+      incoming: incomingById.get(node.id) ?? [],
+      outgoing: outgoingById.get(node.id) ?? []
+    }))
+    .sort((left, right) => {
+      if (left.state !== right.state) return runtimeStateRank(left.state) - runtimeStateRank(right.state);
+      if (left.layer !== right.layer) return left.layer.localeCompare(right.layer);
+      return left.label.localeCompare(right.label);
+    });
+
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const providerSummary = summarizeRuntimeBuckets<RuntimeProviderKind>(nodes, (node) => node.provider);
+  const layerSummary = summarizeRuntimeBuckets<RuntimeLayerId>(nodes, (node) => node.layer);
+  const attention = nodes.filter((node) => needsAttention(node.state)).length;
+
+  return {
+    nodes,
+    edges: runtimeMap.edges,
+    diagnostics: runtimeMap.diagnostics,
+    byId,
+    providerSummary,
+    layerSummary,
+    summary: {
+      totalNodes: nodes.length,
+      serviceNodes: nodes.filter((node) => node.service || node.package).length,
+      providers: providerSummary.length,
+      layers: layerSummary.length,
+      diagnostics: runtimeMap.diagnostics.length,
+      attention
+    },
+    lastUpdated: runtimeMap.lastUpdated
+  };
+}
+
+function summarizeRuntimeBuckets<T extends string>(nodes: RuntimeNodeRecord[], pick: (node: RuntimeNodeRecord) => T): RuntimeBucketSummary<T>[] {
+  const counts = new Map<T, RuntimeBucketSummary<T>>();
+
+  for (const node of nodes) {
+    const id = pick(node);
+    const bucket = counts.get(id) ?? { id, count: 0, attention: 0 };
+    bucket.count += 1;
+    if (needsAttention(node.state)) bucket.attention += 1;
+    counts.set(id, bucket);
+  }
+
+  return [...counts.values()].sort((left, right) => {
+    if (left.attention !== right.attention) return right.attention - left.attention;
+    if (left.count !== right.count) return right.count - left.count;
+    return left.id.localeCompare(right.id);
+  });
+}
+
+function runtimeLayerForNode(node: RuntimeMapNode): RuntimeLayerId {
+  return (node.layer ?? "unassigned") as RuntimeLayerId;
+}
+
+function runtimeStateForNode(node: RuntimeMapNode): ServiceState {
+  const healthState = node.service?.health?.state?.toLowerCase();
+  if (healthState === "healthy") return "healthy";
+  if (healthState === "degraded") return "degraded";
+  if (healthState === "unhealthy") return "offline";
+
+  const candidates = [node.service?.status, node.status]
+    .map((value) => value?.toLowerCase())
+    .filter((value): value is string => Boolean(value));
+
+  for (const value of candidates) {
+    if (value.includes("degraded") || value.includes("failed") || value.includes("error")) return "degraded";
+    if (
+      value.includes("offline") ||
+      value.includes("stopped") ||
+      value.includes("dead") ||
+      value.includes("down") ||
+      value.includes("exited") ||
+      value.includes("missing")
+    ) {
+      return "offline";
+    }
+    if (value.includes("warning") || value.includes("paused")) return "warning";
+    if (value.includes("starting") || value.includes("restarting") || value.includes("pending") || value.includes("loading")) {
+      return "updating";
+    }
+    if (
+      value.includes("healthy") ||
+      value.includes("running") ||
+      value.includes("active") ||
+      value.includes("online") ||
+      value.includes("available") ||
+      value.includes("attached") ||
+      value.includes("ready") ||
+      value.includes("connected")
+    ) {
+      return "healthy";
+    }
+  }
+
+  return "unknown";
+}
+
+function runtimeStateRank(state: ServiceState): number {
+  const order = { offline: 0, degraded: 1, warning: 2, updating: 3, unknown: 4, healthy: 5 };
+  return order[state];
 }

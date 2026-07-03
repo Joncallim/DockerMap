@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import AppShell from "./components/AppShell";
 import Home from "./screens/Home";
 import MapScreen from "./screens/Map";
+import RuntimeScreen from "./screens/Runtime";
 import ServiceDetail from "./screens/ServiceDetail";
 import Changes from "./screens/Changes";
 import Copilot from "./screens/Copilot";
@@ -28,6 +29,7 @@ export function App() {
       <Route element={<AppShell />}>
         <Route index element={<Landing />} />
         <Route path="map" element={<MapScreen />} />
+        <Route path="runtime" element={<RuntimeScreen />} />
         <Route path="services/:name" element={<ServiceDetail />} />
         <Route path="changes" element={<Changes />} />
         <Route path="copilot" element={<Copilot />} />

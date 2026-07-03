@@ -29,6 +29,7 @@ test.describe("DockerMap GUI", () => {
 
     const spaces = [
       ["Service Map", "/map", "Service Map"],
+      ["Runtime", "/runtime", "Runtime Map"],
       ["Changes", "/changes", "Change Center"],
       ["Copilot", "/copilot", "Copilot"],
       ["Networking", "/networking", "Networking"],
