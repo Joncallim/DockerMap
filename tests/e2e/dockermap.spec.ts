@@ -45,6 +45,15 @@ test.describe("DockerMap GUI", () => {
       await expect(page.getByRole("main")).toContainText(marker);
     }
 
+    // Logs controls narrow the stream without a reload.
+    await openSpace(page, "Logs", "/logs");
+    await page.locator("input.log-search").fill("traffic");
+    await expect(page.getByRole("main")).toContainText("accepted traffic");
+    await page.locator("select.log-level-select").selectOption("error");
+    await expect(page.getByRole("main")).toContainText("No output matches");
+    await page.locator("input.log-search").fill("");
+    await page.locator("select.log-level-select").selectOption("all");
+
     // The command palette is a primary interface.
     await page.keyboard.press("Control+k");
     const palette = page.getByRole("dialog", { name: "Command palette" });

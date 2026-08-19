@@ -1537,7 +1537,8 @@ kbd {
   color: var(--ink-soft);
 }
 
-.service-select {
+.service-select,
+.log-level-select {
   padding: 7px 11px;
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
@@ -1545,6 +1546,40 @@ kbd {
   color: var(--ink);
   font-family: inherit;
   font-size: 13px;
+}
+
+.log-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  margin-bottom: var(--s3);
+}
+
+.log-search {
+  padding: 7px 11px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  min-width: 200px;
+}
+
+.log-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.log-footer {
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border);
+  margin-top: var(--s2);
 }
 
 /* ===========================================================================
