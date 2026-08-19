@@ -164,6 +164,107 @@ pub struct LogsResponse {
     pub next_cursor: Option<String>,
 }
 
+/// Upper bound for a single log page returned by any provider path.
+pub const MAX_LOG_PAGE_SIZE: usize = 500;
+
+/// Default page size when the caller does not request one.
+pub const DEFAULT_LOG_PAGE_SIZE: usize = 100;
+
+/// Parse an RFC 3339 / RFC 3339 Nano timestamp prefix (as emitted by
+/// `docker logs --timestamps`, e.g. `2026-08-20T04:05:06.123456789Z`) into
+/// milliseconds since the Unix epoch. Returns `None` when the value does not
+/// match the expected shape. The parser is intentionally dependency-free and
+/// covers the fixed-width UTC layout Docker emits; offsets other than `Z` are
+/// rejected so callers can rely on the result being UTC.
+pub fn parse_rfc3339_nano_millis(value: &str) -> Option<u64> {
+    if value.len() < 20 || !value.ends_with('Z') {
+        return None;
+    }
+
+    let bytes = value.as_bytes();
+    let digit = |index: usize| -> Option<u64> {
+        let byte = *bytes.get(index)?;
+        byte.is_ascii_digit().then_some(u64::from(byte - b'0'))
+    };
+
+    let year = 1000 * digit(0)? + 100 * digit(1)? + 10 * digit(2)? + digit(3)?;
+    let month = 10 * digit(5)? + digit(6)?;
+    let day = 10 * digit(8)? + digit(9)?;
+    let hour = 10 * digit(11)? + digit(12)?;
+    let minute = 10 * digit(14)? + digit(15)?;
+    let second = 10 * digit(17)? + digit(18)?;
+
+    if bytes.get(4) != Some(&b'-')
+        || bytes.get(7) != Some(&b'-')
+        || bytes.get(10) != Some(&b'T')
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+    {
+        return None;
+    }
+
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+
+    // Fractional seconds: `.` followed by 1..=9 digits, truncated to ms.
+    let mut fraction_ms = 0u64;
+    if bytes.get(19) == Some(&b'.') {
+        let mut multiplier = 100u64;
+        let mut consumed = 0usize;
+        for index in 20..value.len() {
+            let Some(byte) = bytes.get(index) else {
+                break;
+            };
+            if !byte.is_ascii_digit() {
+                break;
+            }
+            if consumed < 3 {
+                fraction_ms += u64::from(byte - b'0') * multiplier;
+                multiplier /= 10;
+            }
+            consumed += 1;
+        }
+        if consumed == 0 {
+            return None;
+        }
+    }
+
+    let days = days_from_civil(year, month, day)?;
+    let seconds = days * 86_400 + hour as i64 * 3_600 + minute as i64 * 60 + second as i64;
+    u64::try_from(seconds)
+        .ok()?
+        .checked_mul(1_000)?
+        .checked_add(fraction_ms)
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
+/// `days_from_civil` algorithm). Returns `None` for invalid dates.
+fn days_from_civil(year: u64, month: u64, day: u64) -> Option<i64> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let year = i64::try_from(year).ok()?;
+    let month = i64::try_from(month).ok()?;
+    let day = i64::try_from(day).ok()?;
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    } / 400;
+    let year_of_era = adjusted_year - era * 400;
+    let month_adjusted = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_adjusted + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ComposeMountKind {
@@ -897,10 +998,13 @@ pub fn mock_logs(
     snapshot: &DockerSnapshot,
     service: Option<&str>,
     query: Option<&str>,
+    cursor_millis: Option<u64>,
+    limit: usize,
 ) -> LogsResponse {
     let mut entries = Vec::new();
     let now = unix_timestamp_millis();
     let filter = query.map(|value| value.to_ascii_lowercase());
+    let limit = limit.clamp(1, MAX_LOG_PAGE_SIZE);
 
     for (index, container) in snapshot.containers.iter().enumerate() {
         if let Some(service_filter) = service {
@@ -946,10 +1050,21 @@ pub fn mock_logs(
 
     entries.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
 
+    if let Some(cursor_millis) = cursor_millis {
+        entries.retain(|entry| entry.timestamp < cursor_millis);
+    }
+
+    let next_cursor = if entries.len() > limit {
+        Some(entries[limit - 1].timestamp.to_string())
+    } else {
+        None
+    };
+    entries.truncate(limit);
+
     LogsResponse {
         service: service.map(str::to_string),
         entries,
-        next_cursor: None,
+        next_cursor,
     }
 }
 
@@ -2048,9 +2163,68 @@ mod tests {
     #[test]
     fn filters_mock_logs_by_service_and_query() {
         let snapshot = mock_snapshot();
-        let logs = mock_logs(&snapshot, Some("api"), Some("python"));
+        let logs = mock_logs(
+            &snapshot,
+            Some("api"),
+            Some("python"),
+            None,
+            DEFAULT_LOG_PAGE_SIZE,
+        );
         assert!(logs.entries.iter().all(|entry| entry.container == "api"));
         assert!(!logs.entries.is_empty());
+    }
+
+    #[test]
+    fn paginates_mock_logs_with_cursor_and_limit() {
+        let snapshot = mock_snapshot();
+        let first = mock_logs(&snapshot, None, None, None, 2);
+        assert_eq!(first.entries.len(), 2);
+        let cursor = first.next_cursor.expect("a full first page has a cursor");
+
+        let second = mock_logs(
+            &snapshot,
+            None,
+            None,
+            Some(cursor.parse().expect("numeric cursor")),
+            2,
+        );
+        assert!(!second.entries.is_empty());
+        assert!(
+            second
+                .entries
+                .iter()
+                .all(|entry| entry.timestamp < first.entries[0].timestamp),
+            "second page must be strictly older than the first page"
+        );
+        assert!(
+            second.entries.iter().all(|entry| first
+                .entries
+                .iter()
+                .all(|first_entry| first_entry.id != entry.id)),
+            "pages must not overlap"
+        );
+    }
+
+    #[test]
+    fn parses_rfc3339_nano_timestamps() {
+        assert_eq!(parse_rfc3339_nano_millis("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            parse_rfc3339_nano_millis("2026-08-20T04:05:06Z"),
+            Some(1_787_198_706_000)
+        );
+        assert_eq!(
+            parse_rfc3339_nano_millis("2026-08-20T04:05:06.123456789Z"),
+            Some(1_787_198_706_123)
+        );
+        assert_eq!(
+            parse_rfc3339_nano_millis("2026-08-20T04:05:06.5Z"),
+            Some(1_787_198_706_500)
+        );
+        assert_eq!(parse_rfc3339_nano_millis("not-a-timestamp"), None);
+        assert_eq!(parse_rfc3339_nano_millis("2026-08-20T04:05:06+02:00"), None);
+        assert_eq!(parse_rfc3339_nano_millis("2026-13-20T04:05:06Z"), None);
+        assert_eq!(parse_rfc3339_nano_millis("2026-08-20T24:05:06Z"), None);
+        assert_eq!(parse_rfc3339_nano_millis("2026-08-20T04:05:06.Z"), None);
     }
 
     #[test]

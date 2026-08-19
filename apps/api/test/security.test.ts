@@ -169,6 +169,42 @@ test("logs and compose query validation rejects arrays, null bytes, and oversize
   assert.equal((await duplicateMount.json()).message, "Query parameter mount must be a string");
 });
 
+test("log pagination rejects invalid cursor and limit values", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+
+  const zeroLimit = await request(api, "/api/logs?limit=0");
+  assert.equal(zeroLimit.status, 400);
+  assert.equal(
+    (await zeroLimit.json()).message,
+    "Query parameter limit must be between 1 and 500"
+  );
+
+  const oversizedLimit = await request(api, "/api/logs?limit=501");
+  assert.equal(oversizedLimit.status, 400);
+  assert.equal(
+    (await oversizedLimit.json()).message,
+    "Query parameter limit must be between 1 and 500"
+  );
+
+  const nonNumericLimit = await request(api, "/api/logs?limit=abc");
+  assert.equal(nonNumericLimit.status, 400);
+  assert.equal((await nonNumericLimit.json()).message, "Query parameter limit must be an integer");
+
+  const duplicateLimit = await request(api, "/api/logs?limit=50&limit=60");
+  assert.equal(duplicateLimit.status, 400);
+  assert.equal((await duplicateLimit.json()).message, "Query parameter limit must be an integer");
+
+  const nonNumericCursor = await request(api, "/api/logs?cursor=not-a-cursor");
+  assert.equal(nonNumericCursor.status, 400);
+  assert.equal(
+    (await nonNumericCursor.json()).message,
+    "Query parameter cursor must be a non-negative integer"
+  );
+
+  const oversizedCursor = await request(api, `/api/logs?cursor=${"9".repeat(33)}`);
+  assert.equal(oversizedCursor.status, 400);
+});
+
 test("daemon failures hide details by default and expose details only when explicitly enabled", async () => {
   const closedPort = await freePort();
   const hidden = await startApi({
@@ -349,6 +385,15 @@ test("API forwards fixed read-only daemon paths with normalized query encoding",
   });
   assert.equal(logsResponse.status, 200);
 
+  const paginatedLogs = await request(
+    api,
+    "/api/logs?service=worker&q=error&cursor=1785175506123&limit=50",
+    {
+      headers: { Authorization: "Bearer test-token" }
+    }
+  );
+  assert.equal(paginatedLogs.status, 200);
+
   const composeParams = new URLSearchParams();
   composeParams.append("file", "docker-compose.yml");
   composeParams.append("file", "stack/systemd-proxy.yml");
@@ -364,6 +409,13 @@ test("API forwards fixed read-only daemon paths with normalized query encoding",
 
   assert.ok(
     daemon.requests.some((entry) => entry.method === "GET" && entry.url === "/daemon/logs?service=worker&q=error+timeout")
+  );
+  assert.ok(
+    daemon.requests.some(
+      (entry) =>
+        entry.method === "GET" &&
+        entry.url === "/daemon/logs?service=worker&q=error&cursor=1785175506123&limit=50"
+    )
   );
   assert.ok(
     daemon.requests.some(
