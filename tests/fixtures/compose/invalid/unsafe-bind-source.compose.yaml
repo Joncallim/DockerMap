@@ -1,0 +1,6 @@
+services:
+  docker-cli:
+    image: docker:cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc:/host/etc:ro
