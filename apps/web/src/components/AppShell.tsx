@@ -42,7 +42,10 @@ const SPACES: { heading: string; items: NavItem[] }[] = [
   },
   {
     heading: "System",
-    items: [{ to: "/settings", label: "Settings", icon: "settings" }]
+    items: [
+      { to: "/diagnostics", label: "Diagnostics", icon: "alert" },
+      { to: "/settings", label: "Settings", icon: "settings" }
+    ]
   }
 ];
 

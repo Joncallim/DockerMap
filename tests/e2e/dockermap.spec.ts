@@ -36,7 +36,8 @@ test.describe("DockerMap GUI", () => {
       ["Storage", "/storage", "Storage"],
       ["Images", "/images", "Images"],
       ["Logs", "/logs", "Logs"],
-      ["Compose", "/compose", "Compose"]
+      ["Compose", "/compose", "Compose"],
+      ["Diagnostics", "/diagnostics", "Diagnostics"]
     ] as const;
 
     for (const [label, path, marker] of spaces) {

@@ -107,6 +107,20 @@ export interface ComposeDiagnostic {
   origin: ComposeFileOrigin;
 }
 
+export interface DiagnosticsEntry {
+  id: string | null;
+  source: "compose" | "runtime" | "api";
+  severity: DiagnosticSeverity;
+  message: string;
+  file: string | null;
+  service: string | null;
+}
+
+export interface DiagnosticsReport {
+  generatedAt: number;
+  entries: DiagnosticsEntry[];
+}
+
 export interface ComposeMount {
   id: string;
   service: string;

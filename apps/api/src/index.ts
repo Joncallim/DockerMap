@@ -9,6 +9,8 @@ import type {
   ComposeGraph,
   ComposeScan,
   ContainerRecord,
+  DiagnosticsEntry,
+  DiagnosticsReport,
   DockerSnapshot,
   GraphResponse,
   HealthResponse,
@@ -636,6 +638,64 @@ app.get("/api/graph", async (_req, res) => {
 app.get("/api/runtime/map", async (_req, res) => {
   try {
     res.json(await fetchDaemon<RuntimeMap>("/daemon/runtime/map"));
+  } catch (error) {
+    sendError(res, error);
+  }
+});
+
+app.get("/api/diagnostics", async (_req, res) => {
+  try {
+    const entries: DiagnosticsEntry[] = [];
+    const [scanResult, runtimeResult] = await Promise.allSettled([
+      fetchDaemon<ComposeScan>("/daemon/compose/scan"),
+      fetchDaemon<RuntimeMap>("/daemon/runtime/map")
+    ]);
+
+    if (scanResult.status === "fulfilled") {
+      for (const diagnostic of scanResult.value.diagnostics) {
+        entries.push({
+          id: diagnostic.id,
+          source: "compose",
+          severity: diagnostic.severity,
+          message: diagnostic.message,
+          file: diagnostic.origin.file,
+          service: diagnostic.origin.service
+        });
+      }
+    } else {
+      entries.push({
+        id: null,
+        source: "api",
+        severity: "warning",
+        message: `Compose diagnostics unavailable: ${scanResult.reason instanceof Error ? scanResult.reason.message : "request failed"}`,
+        file: null,
+        service: null
+      });
+    }
+
+    if (runtimeResult.status === "fulfilled") {
+      for (const diagnostic of runtimeResult.value.diagnostics) {
+        entries.push({
+          id: diagnostic.provider,
+          source: "runtime",
+          severity: diagnostic.severity,
+          message: diagnostic.message,
+          file: null,
+          service: null
+        });
+      }
+    } else {
+      entries.push({
+        id: null,
+        source: "api",
+        severity: "warning",
+        message: `Runtime diagnostics unavailable: ${runtimeResult.reason instanceof Error ? runtimeResult.reason.message : "request failed"}`,
+        file: null,
+        service: null
+      });
+    }
+
+    res.json({ generatedAt: Date.now(), entries } satisfies DiagnosticsReport);
   } catch (error) {
     sendError(res, error);
   }

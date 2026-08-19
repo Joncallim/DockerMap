@@ -205,6 +205,25 @@ test("log pagination rejects invalid cursor and limit values", async () => {
   assert.equal(oversizedCursor.status, 400);
 });
 
+test("diagnostics aggregates compose and runtime findings", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+
+  const response = await request(api, "/api/diagnostics");
+  assert.equal(response.status, 200);
+
+  const body = await response.json();
+  assert.equal(typeof body.generatedAt, "number");
+  assert.ok(Array.isArray(body.entries));
+  assert.ok(
+    body.entries.some((entry: { source: string }) => entry.source === "compose"),
+    "compose diagnostics should be aggregated"
+  );
+  assert.ok(
+    body.entries.some((entry: { source: string }) => entry.source === "runtime"),
+    "runtime diagnostics should be aggregated"
+  );
+});
+
 test("daemon failures hide details by default and expose details only when explicitly enabled", async () => {
   const closedPort = await freePort();
   const hidden = await startApi({
