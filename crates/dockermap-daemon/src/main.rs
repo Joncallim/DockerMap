@@ -101,6 +101,9 @@ struct SystemdUnitDetails {
     fragment_path: Option<String>,
     load_state: Option<String>,
     exec_start: Option<String>,
+    restart: Option<String>,
+    active_enter_timestamp: Option<String>,
+    active_enter_monotonic_us: Option<u64>,
     requires: Vec<String>,
     wants: Vec<String>,
     part_of: Vec<String>,
@@ -1149,6 +1152,7 @@ fn collect_systemd_services(
     edges: &mut Vec<RuntimeMapEdge>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
+    let system_uptime = system_uptime_seconds_from_proc();
     let output = match Command::new("systemctl")
         .args([
             "list-units",
@@ -1203,7 +1207,7 @@ fn collect_systemd_services(
             .arg("show")
             .arg("--no-pager")
             .arg(
-                "--property=Id,ActiveState,SubState,Description,FragmentPath,LoadState,ExecStart,Requires,Wants,PartOf",
+                "--property=Id,ActiveState,SubState,Description,FragmentPath,LoadState,ExecStart,Restart,ActiveEnterTimestamp,ActiveEnterTimestampMonotonic,Requires,Wants,PartOf",
             )
             .args(units)
             .output()
@@ -1237,7 +1241,12 @@ fn collect_systemd_services(
 
     for summary in &summaries {
         let detail = details_by_unit.get(&summary.unit);
-        nodes.push(systemd_runtime_node(&summary.unit, Some(summary), detail));
+        nodes.push(systemd_runtime_node(
+            &summary.unit,
+            Some(summary),
+            detail,
+            system_uptime,
+        ));
     }
 
     let mut dependency_reasons = BTreeMap::<(String, String), BTreeSet<String>>::new();
@@ -1253,7 +1262,7 @@ fn collect_systemd_services(
                 .or_default()
                 .insert(property);
             if !summary_by_unit.contains_key(&dependency) {
-                nodes.push(systemd_runtime_node(&dependency, None, None));
+                nodes.push(systemd_runtime_node(&dependency, None, None, system_uptime));
             }
         }
     }
@@ -1320,6 +1329,13 @@ fn parse_systemd_show_records(value: &str) -> Vec<SystemdUnitDetails> {
             "FragmentPath" => current.fragment_path = non_empty_string(parsed_value),
             "LoadState" => current.load_state = non_empty_string(parsed_value),
             "ExecStart" => current.exec_start = non_empty_string(parsed_value),
+            "Restart" => current.restart = non_empty_string(parsed_value),
+            "ActiveEnterTimestamp" => {
+                current.active_enter_timestamp = non_empty_string(parsed_value);
+            }
+            "ActiveEnterTimestampMonotonic" => {
+                current.active_enter_monotonic_us = parsed_value.parse::<u64>().ok();
+            }
             "Requires" => current.requires = parse_systemd_unit_list(parsed_value),
             "Wants" => current.wants = parse_systemd_unit_list(parsed_value),
             "PartOf" => current.part_of = parse_systemd_unit_list(parsed_value),
@@ -1362,6 +1378,7 @@ fn systemd_runtime_node(
     unit: &str,
     summary: Option<&SystemdUnitSummary>,
     detail: Option<&SystemdUnitDetails>,
+    system_uptime: Option<f64>,
 ) -> RuntimeMapNode {
     let active_state = detail
         .and_then(|value| value.active_state.as_deref())
@@ -1393,6 +1410,18 @@ fn systemd_runtime_node(
     if let Some(load_state) = detail.and_then(|value| value.load_state.as_deref()) {
         metadata.insert("loadState".into(), load_state.to_string());
     }
+    if let Some(restart) = detail
+        .and_then(|value| value.restart.as_deref())
+        .filter(|value| !value.is_empty() && *value != "no")
+    {
+        metadata.insert("restartPolicy".into(), restart.to_string());
+    }
+    if let Some(active_enter) = detail.and_then(|value| value.active_enter_timestamp.as_deref()) {
+        metadata.insert("activeEnter".into(), active_enter.to_string());
+    }
+    if let Some(uptime) = detail.and_then(|value| systemd_uptime_seconds(value, system_uptime)) {
+        metadata.insert("uptimeSeconds".into(), uptime.to_string());
+    }
 
     RuntimeMapNode {
         id: systemd_node_id(unit),
@@ -1402,6 +1431,24 @@ fn systemd_runtime_node(
         status: active_state,
         metadata,
     }
+}
+
+/// Uptime of an active unit in whole seconds, derived from the monotonic
+/// active-enter clock and `/proc/uptime`. Returns `None` when the unit is not
+/// currently active or the host does not expose `/proc/uptime`.
+fn systemd_uptime_seconds(detail: &SystemdUnitDetails, system_uptime: Option<f64>) -> Option<u64> {
+    if detail.active_state.as_deref() != Some("active") {
+        return None;
+    }
+    let monotonic_us = detail.active_enter_monotonic_us?;
+    let uptime = system_uptime?;
+    let seconds = (uptime - monotonic_us as f64 / 1_000_000.0).max(0.0);
+    Some(seconds.round() as u64)
+}
+
+fn system_uptime_seconds_from_proc() -> Option<f64> {
+    let content = fs::read_to_string("/proc/uptime").ok()?;
+    content.split_whitespace().next()?.parse::<f64>().ok()
 }
 
 fn classify_systemd_service_entity(detail: Option<&SystemdUnitDetails>) -> ServiceEntityKind {
@@ -2943,6 +2990,9 @@ mod tests {
              SubState=running\n\
              Description=App Service\n\
              ExecStart={ path=/usr/bin/python ; argv[]=python app.py ; }\n\
+             Restart=always\n\
+             ActiveEnterTimestamp=Wed 2026-08-19 04:05:06 UTC\n\
+             ActiveEnterTimestampMonotonic=1200000000\n\
              Requires=network-online.target redis.service\n\
              Wants=postgres.service\n\
              PartOf=worker.service\n\
@@ -2965,6 +3015,36 @@ mod tests {
             classify_systemd_service_entity(records.first()),
             ServiceEntityKind::PythonApplication
         );
+        assert_eq!(records[0].restart.as_deref(), Some("always"));
+        assert_eq!(
+            records[0].active_enter_timestamp.as_deref(),
+            Some("Wed 2026-08-19 04:05:06 UTC")
+        );
+        assert_eq!(records[0].active_enter_monotonic_us, Some(1_200_000_000));
+    }
+
+    #[test]
+    fn computes_systemd_uptime_only_for_active_units() {
+        let active = SystemdUnitDetails {
+            id: "app.service".into(),
+            active_state: Some("active".into()),
+            active_enter_monotonic_us: Some(10_000_000),
+            ..SystemdUnitDetails::default()
+        };
+        let inactive = SystemdUnitDetails {
+            id: "idle.service".into(),
+            active_state: Some("inactive".into()),
+            active_enter_monotonic_us: Some(10_000_000),
+            ..SystemdUnitDetails::default()
+        };
+
+        assert_eq!(
+            systemd_uptime_seconds(&active, Some(1_010.0)),
+            Some(1_000),
+            "uptime is system uptime minus monotonic active-enter clock"
+        );
+        assert_eq!(systemd_uptime_seconds(&active, None), None);
+        assert_eq!(systemd_uptime_seconds(&inactive, Some(1_010.0)), None);
     }
 
     #[test]
@@ -2980,8 +3060,12 @@ mod tests {
                 .into(),
         };
 
-        let mut node =
-            systemd_runtime_node("redaction-worker.service", Some(&summary), details.first());
+        let mut node = systemd_runtime_node(
+            "redaction-worker.service",
+            Some(&summary),
+            details.first(),
+            None,
+        );
         redact_runtime_node(&mut node);
 
         assert_eq!(
