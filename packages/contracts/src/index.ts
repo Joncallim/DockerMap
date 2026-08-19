@@ -121,6 +121,22 @@ export interface DiagnosticsReport {
   entries: DiagnosticsEntry[];
 }
 
+export interface StatusResponse {
+  service: "dockermap";
+  status: "ok" | "degraded" | "offline";
+  mode: RuntimeMode;
+  dockerReachable: boolean;
+  containers: number;
+  containersRunning: number;
+  networks: number;
+  volumes: number;
+  images: number;
+  healthy: number;
+  attention: number;
+  offline: number;
+  version: string;
+}
+
 export interface ComposeMount {
   id: string;
   service: string;

@@ -224,6 +224,29 @@ test("diagnostics aggregates compose and runtime findings", async () => {
   );
 });
 
+test("status endpoint reports widget-friendly health and versioned alias works", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+
+  const status = await request(api, "/api/status");
+  assert.equal(status.status, 200);
+  const body = await status.json();
+  assert.equal(body.service, "dockermap");
+  assert.equal(typeof body.containers, "number");
+  assert.equal(typeof body.containersRunning, "number");
+  assert.equal(typeof body.version, "string");
+
+  const versioned = await request(api, "/api/v1/status");
+  assert.equal(versioned.status, 200);
+  assert.deepEqual(await versioned.json(), body);
+
+  const openapi = await request(api, "/api/openapi.json");
+  assert.equal(openapi.status, 200);
+  const doc = await openapi.json();
+  assert.equal(doc.openapi, "3.0.3");
+  assert.ok(doc.paths["/api/logs"], "openapi should document the logs route");
+  assert.ok(doc.paths["/api/diagnostics"], "openapi should document diagnostics");
+});
+
 test("daemon failures hide details by default and expose details only when explicitly enabled", async () => {
   const closedPort = await freePort();
   const hidden = await startApi({
