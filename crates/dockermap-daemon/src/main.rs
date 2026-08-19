@@ -48,6 +48,8 @@ const MAX_DISCOVERY_DIRS: usize = 4_096;
 const MAX_NPM_PROJECTS: usize = 64;
 const MAX_NPM_DEPENDENCIES_PER_PROJECT: usize = 64;
 const MAX_PACKAGE_JSON_BYTES: u64 = 262_144;
+const MAX_NPM_SCRIPTS: usize = 16;
+const MAX_SCRIPT_CHARS: usize = 200;
 const REDACTED_VALUE: &str = "[redacted]";
 const MAX_DOCKER_LABEL_FILTER_CHARS: usize = 256;
 
@@ -126,6 +128,8 @@ struct NpmProjectSummary {
     package_manager: Option<String>,
     lockfiles: Vec<String>,
     dependencies: Vec<PackageDependencyRecord>,
+    scripts: BTreeMap<String, String>,
+    framework_hints: Vec<String>,
     private: bool,
 }
 
@@ -1740,6 +1744,18 @@ fn collect_npm_projects(
         if !project.lockfiles.is_empty() {
             metadata.insert("lockfiles".into(), project.lockfiles.join(","));
         }
+        if !project.framework_hints.is_empty() {
+            metadata.insert("frameworks".into(), project.framework_hints.join(","));
+        }
+        if !project.scripts.is_empty() {
+            let scripts = project
+                .scripts
+                .iter()
+                .map(|(name, script)| format!("{name}={script}"))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            metadata.insert("scripts".into(), truncate_chars(&scripts, 1_600));
+        }
         nodes.push(RuntimeMapNode {
             id: node_id.clone(),
             provider: RuntimeProviderKind::Npm,
@@ -1933,6 +1949,14 @@ fn summarize_npm_project(
         RuntimeNodeKind::NodeApplication,
         ServiceEntityKind::NodeApplication,
     ));
+    let scripts = manifest
+        .as_ref()
+        .map(|value| bounded_package_scripts(&value.scripts))
+        .unwrap_or_default();
+    let framework_hints = manifest
+        .as_ref()
+        .map(classify_package_frameworks)
+        .unwrap_or_default();
 
     Ok(Some(NpmProjectSummary {
         directory: directory.to_path_buf(),
@@ -1949,11 +1973,78 @@ fn summarize_npm_project(
             .map(|value| redact_sensitive_text(&value)),
         lockfiles: lockfiles.to_vec(),
         dependencies,
+        scripts,
+        framework_hints,
         private: manifest
             .as_ref()
             .map(|value| value.private)
             .unwrap_or(false),
     }))
+}
+
+fn bounded_package_scripts(scripts: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    scripts
+        .iter()
+        .take(MAX_NPM_SCRIPTS)
+        .map(|(name, script)| {
+            (
+                redact_sensitive_text(name),
+                truncate_chars(&redact_sensitive_text(script), MAX_SCRIPT_CHARS),
+            )
+        })
+        .collect()
+}
+
+/// Known framework markers mapped to friendly names. Matched against package
+/// names (all dependency sections) and script names so common stacks surface
+/// without registry lookups. Kept bounded and offline by design.
+const FRAMEWORK_MARKERS: &[(&str, &str)] = &[
+    ("@nestjs/core", "NestJS"),
+    ("@remix-run/react", "Remix"),
+    ("@sveltejs/kit", "SvelteKit"),
+    ("@vitejs/plugin-react", "Vite"),
+    ("angular/core", "Angular"),
+    ("astro", "Astro"),
+    ("docusaurus", "Docusaurus"),
+    ("electron", "Electron"),
+    ("expo", "Expo"),
+    ("express", "Express"),
+    ("fastify", "Fastify"),
+    ("gatsby", "Gatsby"),
+    ("hono", "Hono"),
+    ("next", "Next.js"),
+    ("nuxt", "Nuxt"),
+    ("react", "React"),
+    ("solid-js", "Solid"),
+    ("svelte", "Svelte"),
+    ("tauri", "Tauri"),
+    ("vite", "Vite"),
+    ("vue", "Vue"),
+];
+
+fn classify_package_frameworks(manifest: &PackageManifestDocument) -> Vec<String> {
+    let mut haystacks = manifest.scripts.keys().cloned().collect::<Vec<_>>();
+    for section in [
+        &manifest.dependencies,
+        &manifest.dev_dependencies,
+        &manifest.optional_dependencies,
+        &manifest.peer_dependencies,
+    ] {
+        haystacks.extend(section.keys().cloned());
+    }
+
+    let mut hints = Vec::new();
+    for (marker, name) in FRAMEWORK_MARKERS {
+        if hints.len() >= 4 {
+            break;
+        }
+        if haystacks.iter().any(|value| value.contains(marker))
+            && !hints.contains(&name.to_string())
+        {
+            hints.push(name.to_string());
+        }
+    }
+    hints
 }
 
 fn read_package_manifest(path: &StdPath) -> Result<PackageManifestDocument, String> {
@@ -3311,6 +3402,42 @@ mod tests {
         assert!(!should_skip_discovery_dir("services"));
         assert!(is_node_lockfile("package-lock.json"));
         assert!(!is_node_lockfile("Cargo.lock"));
+    }
+
+    #[test]
+    fn classifies_package_framework_hints_and_bounds_scripts() {
+        let manifest = PackageManifestDocument {
+            name: Some("web-dashboard".into()),
+            private: true,
+            package_manager: Some("pnpm@9".into()),
+            scripts: (0..32)
+                .map(|index| (format!("script-{index}"), format!("echo step {index}")))
+                .collect(),
+            dependencies: BTreeMap::from([
+                ("next".into(), "^15.0.0".into()),
+                ("react".into(), "^19.0.0".into()),
+                ("express".into(), "^4.19.0".into()),
+                ("fastify".into(), "^5.0.0".into()),
+            ]),
+            optional_dependencies: BTreeMap::new(),
+            peer_dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::from([("vite".into(), "^6.0.0".into())]),
+        };
+
+        let hints = classify_package_frameworks(&manifest);
+        assert!(
+            hints.contains(&"Next.js".to_string()),
+            "next should surface"
+        );
+        assert!(hints.contains(&"React".to_string()), "react should surface");
+        assert!(
+            hints.len() <= 4,
+            "framework hints must stay bounded, got {hints:?}"
+        );
+
+        let bounded = bounded_package_scripts(&manifest.scripts);
+        assert_eq!(bounded.len(), MAX_NPM_SCRIPTS);
+        assert_eq!(bounded.get("script-0"), Some(&"echo step 0".to_string()));
     }
 
     fn assert_no_raw_secrets<T: serde::Serialize>(value: &T, secrets: &[&str]) {
