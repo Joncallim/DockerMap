@@ -16,13 +16,14 @@ use bollard::{
 };
 use dockermap_core::{
     correlate_compose_runtime, derive_compose_graph, derive_graph, derive_images,
-    derive_runtime_map, discover_compose_files, mock_logs, mock_snapshot, plan_compose_mount_edit,
-    scan_compose_files, service_entity_kind_name, unix_timestamp_millis, ComposeDiagnostic,
-    ComposeEditPlan, ComposeGraph, ComposeMountKind, ComposeScan, ContainerMount, ContainerRecord,
+    derive_runtime_map, discover_compose_files, mock_logs, mock_snapshot,
+    parse_rfc3339_nano_millis, plan_compose_mount_edit, scan_compose_files,
+    service_entity_kind_name, unix_timestamp_millis, ComposeDiagnostic, ComposeEditPlan,
+    ComposeGraph, ComposeMountKind, ComposeScan, ContainerMount, ContainerRecord,
     DiagnosticSeverity, DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogEntry,
     LogsResponse, NetworkRecord, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode,
     RuntimeMode, RuntimeNodeKind, RuntimeProviderKind, RuntimeRelationshipKind, ServiceEntityKind,
-    VolumeRecord,
+    VolumeRecord, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 use futures_util::stream::StreamExt;
 use serde::Deserialize;
@@ -65,6 +66,8 @@ struct DaemonCache {
 struct LogsQuery {
     service: Option<String>,
     q: Option<String>,
+    cursor: Option<String>,
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -342,37 +345,57 @@ impl DockerCollector {
         &self,
         service: &str,
         query: Option<&str>,
+        cursor_millis: Option<u64>,
+        limit: usize,
     ) -> Result<LogsResponse, String> {
-        let mut stream = self.client.logs(
-            service,
-            Some(
-                LogsOptionsBuilder::new()
-                    .follow(false)
-                    .stdout(true)
-                    .stderr(true)
-                    .tail("100")
-                    .timestamps(false)
-                    .build(),
-            ),
-        );
+        let limit = limit.clamp(1, MAX_LOG_PAGE_SIZE);
+        let mut options = LogsOptionsBuilder::new()
+            .follow(false)
+            .stdout(true)
+            .stderr(true)
+            .timestamps(true)
+            .tail(&limit.to_string());
+
+        if let Some(cursor_millis) = cursor_millis {
+            let cursor_seconds = (cursor_millis / 1_000).min(i32::MAX as u64) as i32;
+            options = options.until(cursor_seconds);
+        }
+
+        let mut stream = self.client.logs(service, Some(options.build()));
 
         let mut entries = Vec::new();
         let filter = query.map(|value| value.to_ascii_lowercase());
 
         while let Some(item) = stream.next().await {
             let output = item.map_err(|error| format!("docker logs failed: {error}"))?;
-            let message = match output {
+            let (timestamp, message) = match output {
                 LogOutput::StdOut { message }
                 | LogOutput::StdErr { message }
                 | LogOutput::Console { message }
-                | LogOutput::StdIn { message } => truncate_chars(
-                    String::from_utf8_lossy(&message).trim(),
-                    MAX_LOG_MESSAGE_CHARS,
-                ),
+                | LogOutput::StdIn { message } => {
+                    let text = String::from_utf8_lossy(&message);
+                    let (prefix, rest) = match text.split_once(' ') {
+                        Some((prefix, rest)) if !rest.trim().is_empty() => (prefix, rest.trim()),
+                        _ => ("", text.trim()),
+                    };
+                    let timestamp =
+                        parse_rfc3339_nano_millis(prefix).unwrap_or_else(unix_timestamp_millis);
+                    (timestamp, truncate_chars(rest, MAX_LOG_MESSAGE_CHARS))
+                }
             };
 
             if message.is_empty() {
                 continue;
+            }
+
+            if let Some(cursor_millis) = cursor_millis {
+                if timestamp <= cursor_millis {
+                    // Docker's `until` filter has one-second granularity, so
+                    // drop anything at or after the cursor ourselves to keep
+                    // pages strictly older than the previous page's newest
+                    // entry.
+                    continue;
+                }
             }
 
             if let Some(filter) = &filter {
@@ -382,8 +405,8 @@ impl DockerCollector {
             }
 
             entries.push(LogEntry {
-                id: format!("{service}-{}", entries.len()),
-                timestamp: unix_timestamp_millis(),
+                id: format!("{service}-{timestamp}"),
+                timestamp,
                 container: service.to_string(),
                 level: if message.to_ascii_lowercase().contains("error") {
                     dockermap_core::LogLevel::Error
@@ -395,15 +418,21 @@ impl DockerCollector {
                 message,
             });
 
-            if entries.len() >= 100 {
+            if entries.len() >= limit {
                 break;
             }
         }
 
+        let next_cursor = if entries.len() >= limit {
+            entries.last().map(|entry| entry.timestamp.to_string())
+        } else {
+            None
+        };
+
         Ok(LogsResponse {
             service: Some(service.to_string()),
             entries,
-            next_cursor: None,
+            next_cursor,
         })
     }
 }
@@ -2350,6 +2379,8 @@ async fn get_logs(
     let service =
         validate_optional_query(query.service.as_deref(), "service", MAX_LOG_SERVICE_CHARS)?;
     let q = validate_optional_query(query.q.as_deref(), "q", MAX_LOG_QUERY_CHARS)?;
+    let cursor = parse_log_cursor(query.cursor.as_deref())?;
+    let limit = parse_log_limit(query.limit)?;
     let cache = state.cache.read().await;
     let docker_reachable = cache.health.docker_reachable;
     let snapshot = cache.snapshot.clone();
@@ -2370,21 +2401,21 @@ async fn get_logs(
 
     let response = if docker_reachable {
         let Some(service) = service else {
-            return Ok(Json(mock_logs(&snapshot, None, q)));
+            return Ok(Json(mock_logs(&snapshot, None, q, None, limit)));
         };
         let collector = DockerCollector::connect().map_err(|message| ApiError {
             status: StatusCode::BAD_GATEWAY,
             message,
         })?;
         collector
-            .collect_logs(service, q)
+            .collect_logs(service, q, cursor, limit)
             .await
             .map_err(|message| ApiError {
                 status: StatusCode::BAD_GATEWAY,
                 message,
             })?
     } else {
-        mock_logs(&snapshot, service, q)
+        mock_logs(&snapshot, service, q, cursor, limit)
     };
 
     Ok(Json(response))
@@ -2727,6 +2758,28 @@ fn validate_optional_query<'a>(
     Ok(Some(value))
 }
 
+fn parse_log_cursor(value: Option<&str>) -> Result<Option<u64>, ApiError> {
+    validate_optional_query(value, "cursor", 32)?
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| ApiError {
+                status: StatusCode::BAD_REQUEST,
+                message: "query parameter `cursor` must be a non-negative integer".into(),
+            })
+        })
+        .transpose()
+}
+
+fn parse_log_limit(value: Option<usize>) -> Result<usize, ApiError> {
+    match value {
+        Some(value) if (1..=MAX_LOG_PAGE_SIZE).contains(&value) => Ok(value),
+        Some(_) => Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            message: format!("query parameter `limit` must be between 1 and {MAX_LOG_PAGE_SIZE}"),
+        }),
+        None => Ok(DEFAULT_LOG_PAGE_SIZE),
+    }
+}
+
 fn validate_required_value<'a>(
     value: &'a str,
     name: &str,
@@ -2792,6 +2845,41 @@ mod tests {
         let error = validate_optional_query(Some(&oversized), "q", MAX_LOG_QUERY_CHARS)
             .expect_err("oversized query should fail");
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn parses_log_cursor_values() {
+        assert_eq!(parse_log_cursor(None).expect("absent cursor is fine"), None);
+        assert_eq!(
+            parse_log_cursor(Some("1785175506123")).expect("numeric cursor should parse"),
+            Some(1_785_175_506_123)
+        );
+
+        let non_numeric =
+            parse_log_cursor(Some("abc")).expect_err("non-numeric cursor should fail");
+        assert_eq!(non_numeric.status, StatusCode::BAD_REQUEST);
+
+        let negative = parse_log_cursor(Some("-1")).expect_err("negative cursor should fail");
+        assert_eq!(negative.status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn parses_log_limit_values() {
+        assert_eq!(
+            parse_log_limit(None).expect("absent limit uses default"),
+            DEFAULT_LOG_PAGE_SIZE
+        );
+        assert_eq!(
+            parse_log_limit(Some(25)).expect("in-range limit should parse"),
+            25
+        );
+
+        let zero = parse_log_limit(Some(0)).expect_err("zero limit should fail");
+        assert_eq!(zero.status, StatusCode::BAD_REQUEST);
+
+        let oversized =
+            parse_log_limit(Some(MAX_LOG_PAGE_SIZE + 1)).expect_err("oversized limit should fail");
+        assert_eq!(oversized.status, StatusCode::BAD_REQUEST);
     }
 
     #[test]

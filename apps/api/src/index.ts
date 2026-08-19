@@ -49,6 +49,7 @@ const maxQueryLength = 256;
 const maxContainerNameLength = 128;
 const maxComposeFiles = 8;
 const maxComposeFileLength = 512;
+const maxLogPageSize = 500;
 
 function readPort(value: string | undefined, fallback: number) {
   const port = Number(value ?? fallback);
@@ -341,18 +342,25 @@ function getMockResponse<T>(path: string): T {
   }
 
   if (path.startsWith("/daemon/logs")) {
+    const logQuery = new URLSearchParams(path.includes("?") ? path.split("?")[1] : "");
+    const cursor = logQuery.get("cursor");
+    const limit = Number(logQuery.get("limit") ?? "100");
+    const cursorMillis = cursor ? Number(cursor) : null;
+    const entries = mockContainers.flatMap((container, index) => [
+      {
+        id: `${container.id}-log-${index}`,
+        timestamp: Date.now() - index * 30_000,
+        container: container.name,
+        level: "info",
+        message: `${container.name} running on ${container.image}`
+      }
+    ]);
+    const filtered = cursorMillis !== null ? entries.filter((entry) => entry.timestamp < cursorMillis) : entries;
+    const nextCursor = filtered.length > limit ? String(filtered[limit - 1].timestamp) : null;
     return {
       service: null,
-      entries: mockContainers.flatMap((container, index) => [
-        {
-          id: `${container.id}-log-${index}`,
-          timestamp: Date.now() - index * 30_000,
-          container: container.name,
-          level: "info",
-          message: `${container.name} running on ${container.image}`
-        }
-      ]),
-      nextCursor: null
+      entries: filtered.slice(0, limit),
+      nextCursor
     } as T;
   }
 
@@ -415,6 +423,8 @@ function buildLogsPath(query: express.Request["query"]) {
   const params = new URLSearchParams();
   const service = readOptionalQueryString(query.service, "service", maxQueryLength);
   const q = readOptionalQueryString(query.q, "q", maxQueryLength);
+  const cursor = readOptionalQueryString(query.cursor, "cursor", 32);
+  const limit = readOptionalQueryInt(query.limit, "limit", 1, maxLogPageSize);
 
   if (service) {
     params.set("service", service);
@@ -422,6 +432,20 @@ function buildLogsPath(query: express.Request["query"]) {
 
   if (q) {
     params.set("q", q);
+  }
+
+  if (cursor) {
+    if (!/^\d+$/.test(cursor)) {
+      throw new HttpError(400, {
+        code: "invalid_query",
+        message: "Query parameter cursor must be a non-negative integer"
+      });
+    }
+    params.set("cursor", cursor);
+  }
+
+  if (limit !== undefined) {
+    params.set("limit", String(limit));
   }
 
   const suffix = params.toString();
@@ -526,6 +550,29 @@ function readRequiredQueryString(value: unknown, name: string, maxLength: number
       message: `Query parameter ${name} is required`
     });
   }
+  return parsed;
+}
+
+function readOptionalQueryInt(value: unknown, name: string, min: number, max: number) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    throw new HttpError(400, {
+      code: "invalid_query",
+      message: `Query parameter ${name} must be an integer`
+    });
+  }
+
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new HttpError(400, {
+      code: "invalid_query",
+      message: `Query parameter ${name} must be between ${min} and ${max}`
+    });
+  }
+
   return parsed;
 }
 

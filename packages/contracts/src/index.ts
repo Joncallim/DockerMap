@@ -82,6 +82,15 @@ export interface LogsResponse {
   nextCursor: string | null;
 }
 
+export interface LogsQueryParams {
+  service?: string;
+  q?: string;
+  /** Opaque cursor returned as `nextCursor`; request entries strictly older than this position. */
+  cursor?: string;
+  /** Page size between 1 and 500; defaults to 100. */
+  limit?: number;
+}
+
 export type ComposeMountKind = "bind" | "named_volume" | "anonymous_volume" | "unsupported";
 export type DiagnosticSeverity = "info" | "warning" | "error" | "blocked";
 
