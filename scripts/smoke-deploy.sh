@@ -17,7 +17,7 @@ require_http_200() {
   local path="$1"
   local status
   shift
-  status="$(curl -fsS -o "$TMP_BODY" -w "%{http_code}" "$@" "$BASE_URL$path")"
+  status="$(curl -fsS -o "$TMP_BODY" -w "%{http_code}" "$@" "$BASE_URL$path" 2>/dev/null || true)"
   if [[ "$status" != "200" ]]; then
     echo "Expected 200 for $path, got $status" >&2
     cat "$TMP_BODY" >&2 || true
@@ -30,7 +30,7 @@ require_http_status() {
   local expected="$2"
   shift 2
   local status
-  status="$(curl -sS -o "$TMP_BODY" -w "%{http_code}" "$@" "$BASE_URL$path")"
+  status="$(curl -sS -o "$TMP_BODY" -w "%{http_code}" "$@" "$BASE_URL$path" 2>/dev/null || true)"
   if [[ "$status" != "$expected" ]]; then
     echo "Expected $expected for $path, got $status" >&2
     cat "$TMP_BODY" >&2 || true
@@ -42,7 +42,7 @@ require_auth_json() {
   local path="$1"
   local -a args=()
   if [[ -n "$TOKEN" ]]; then
-    args+=(-H "Authorization: Bearer $TOKEN")
+    args+=(-H "Authorization: Bearer ${TOKEN}")
   fi
   require_http_200 "$path" "${args[@]}"
 }
@@ -52,7 +52,7 @@ check_sse() {
   local -a args=(--no-buffer --max-time 10 -sS)
   local curl_status
   if [[ -n "$TOKEN" ]]; then
-    args+=(-H "Authorization: Bearer $TOKEN")
+    args+=(-H "Authorization: Bearer ${TOKEN}")
   fi
 
   set +e
