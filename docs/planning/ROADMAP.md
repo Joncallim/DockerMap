@@ -85,9 +85,15 @@ These items improve the product without changing host state.
 
 ### Compose And Diagnostics
 
-- Add cursor-based log pagination to daemon and API routes.
-- Add Compose validation rules for missing host paths, duplicate mount targets,
+- [x] Add cursor-based log pagination to daemon and API routes.
+  Daemon and API accept `cursor` + `limit`; Docker path streams real
+  timestamps and pages strictly older entries; mock path matches.
+- [x] Add Compose validation rules for missing host paths, duplicate mount targets,
   unresolved variables, path traversal, and unsafe source values.
+  Missing host paths, duplicate targets, unresolved variables, and parent
+  traversal were already covered; unsafe bind sources (Docker socket, daemon
+  state, credential directories, sensitive system roots) were added with
+  `compose_unsafe_bind_source` diagnostics.
 - Add a diagnostics page and JSON export once validation routes exist.
 - Keep edit plans dry-run only with `willWrite: false`.
 

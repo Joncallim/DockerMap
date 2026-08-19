@@ -1744,6 +1744,15 @@ fn validate_compose_scan(scan: &mut ComposeScan) {
 
         if matches!(mount.kind, ComposeMountKind::Bind) {
             if let Some(resolved) = &mount.resolved_source {
+                if let Some((severity, message)) = unsafe_bind_source_diagnostic(resolved) {
+                    scan.diagnostics.push(ComposeDiagnostic {
+                        id: "compose_unsafe_bind_source".into(),
+                        severity,
+                        message,
+                        origin: mount.origin.clone(),
+                    });
+                }
+
                 let path = Path::new(resolved);
                 if has_parent_traversal(path) {
                     scan.diagnostics.push(ComposeDiagnostic {
@@ -1795,6 +1804,59 @@ fn validate_compose_scan(scan: &mut ComposeScan) {
             }
         }
     }
+}
+
+/// Host directories that should never be mounted into containers because they
+/// expose system internals. Matched at path boundaries (`/etc` and `/etc/...`).
+const SENSITIVE_SYSTEM_ROOTS: &[&str] = &[
+    "/etc", "/proc", "/sys", "/dev", "/boot", "/usr", "/bin", "/sbin", "/lib", "/lib64",
+    "/var/log", "/root",
+];
+
+/// Directory names anywhere in a bind source that indicate credential material.
+const CREDENTIAL_DIR_NAMES: &[&str] = &[
+    ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".netrc", "gcloud",
+];
+
+/// Classify a resolved bind source as unsafe to expose to containers.
+/// Returns `(severity, message)` or `None` when the source looks safe.
+fn unsafe_bind_source_diagnostic(resolved: &str) -> Option<(DiagnosticSeverity, String)> {
+    let path = Path::new(resolved);
+
+    let is_docker_socket = path
+        .components()
+        .any(|component| component.as_os_str() == "docker.sock");
+    let is_docker_data = resolved == "/var/lib/docker" || resolved.starts_with("/var/lib/docker/");
+    if is_docker_socket || is_docker_data {
+        return Some((
+            DiagnosticSeverity::Blocked,
+            format!(
+                "Bind source `{resolved}` exposes Docker daemon state; a compromised container could control the host daemon."
+            ),
+        ));
+    }
+
+    if path.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        CREDENTIAL_DIR_NAMES.iter().any(|needle| name == *needle)
+    }) {
+        return Some((
+            DiagnosticSeverity::Blocked,
+            format!("Bind source `{resolved}` exposes credential material to the container."),
+        ));
+    }
+
+    if SENSITIVE_SYSTEM_ROOTS
+        .iter()
+        .any(|root| resolved == *root || resolved.starts_with(&format!("{root}/")))
+    {
+        return Some((
+            DiagnosticSeverity::Warning,
+            format!("Bind source `{resolved}` mounts a sensitive host path."),
+        ));
+    }
+
+    None
 }
 
 fn mounts_match(compose_mount: &ComposeMount, runtime_mount: &ContainerMount) -> bool {
@@ -2332,6 +2394,59 @@ services:
     }
 
     #[test]
+    fn flags_unsafe_bind_sources() {
+        let root = PathBuf::from("/tmp/dockermap-unsafe");
+        let file = root.join("compose.yaml");
+        let yaml = r#"
+services:
+  docker-cli:
+    image: docker:cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker:/var/lib/docker:ro
+      - /etc:/host/etc:ro
+      - /root/.ssh:/root/.ssh:ro
+      - ./data:/workspace
+      - /home/jon/project/data:/workspace2
+"#;
+        let scan = scan_content(&file, &root, yaml);
+
+        let unsafe_diagnostics = scan
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.id == "compose_unsafe_bind_source")
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            unsafe_diagnostics.len(),
+            4,
+            "docker.sock, docker data, /etc, and .ssh should be flagged: {unsafe_diagnostics:?}"
+        );
+        assert_eq!(
+            unsafe_diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Blocked)
+                .count(),
+            3
+        );
+        assert_eq!(
+            unsafe_diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Warning)
+                .count(),
+            1
+        );
+        let safe_paths_flagged = unsafe_diagnostics.iter().any(|diagnostic| {
+            diagnostic.message.contains("./data")
+                || diagnostic.message.contains("/home/jon/project/data")
+        });
+        assert!(
+            !safe_paths_flagged,
+            "project-local and user-project bind sources must not be flagged"
+        );
+    }
+
+    #[test]
     fn malformed_compose_fixtures_emit_expected_diagnostics() {
         let cases = [
             (
@@ -2368,6 +2483,11 @@ services:
                 "unsupported-mount.compose.yaml",
                 "compose_unsupported_mount_type",
                 DiagnosticSeverity::Warning,
+            ),
+            (
+                "unsafe-bind-source.compose.yaml",
+                "compose_unsafe_bind_source",
+                DiagnosticSeverity::Blocked,
             ),
             (
                 "yaml-parse-error.compose.yaml",
