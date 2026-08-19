@@ -233,6 +233,12 @@ export default function RuntimeScreen() {
                 </div>
               )}
 
+              {selected.service?.name && (
+                <Link className="primary-link" to={`/services/${encodeURIComponent(selected.service.name)}`}>
+                  Open service detail <Icon name="arrow" size={14} />
+                </Link>
+              )}
+
               {selected.package && (
                 <div className="inspector-section">
                   <h4>Package metadata</h4>
