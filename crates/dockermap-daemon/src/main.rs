@@ -2107,6 +2107,45 @@ fn parse_ps_table(value: &str) -> Vec<PythonProcessRecord> {
     records
 }
 
+/// Python-ownership predicate shared by the python and native providers so
+/// their coverage sets can never diverge (a `pypy3 /srv/x.py` process was
+/// once emitted by BOTH providers as a duplicate node for the same pid).
+/// Ownership is decided from the RESOLVED executable only — the
+/// wrapper-walked first command token, so `sudo -s /usr/bin/python3 ...`
+/// and `env -C /srv python3 ...` resolve to the interpreter — and never
+/// from an arbitrary `.py` token elsewhere in argv (a wrapper's own script
+/// argument, e.g. `dumb-init -- /usr/bin/node /app/tool.py`, stays
+/// non-python). All python-ownership rules live here:
+/// - python* interpreter names: any resolved executable containing "python";
+/// - pypy-style interpreters: exactly `pypy` / `pypy3` or a `pypy3.`-prefixed
+///   version binary (`pypy3`, `pypy3.10`, ...). Deliberately NOT a loose
+///   `starts_with("pypy")` prefix match: a binary named `pypy3-tool` is a
+///   tool, not an interpreter. Because the tightened name match is itself
+///   the ownership evidence, no `.py` script-token requirement is needed —
+///   the old clause paired a loose prefix match with a `.py` first-token
+///   check precisely to keep lookalike tools out — so `-m module`
+///   invocations (`pypy3 -m celery -A tasks worker`) are python-owned too;
+/// - the five framework basenames: uvicorn, gunicorn, celery, flower, daphne.
+///
+/// `_args` is the full ps args column, passed alongside the resolved
+/// executable by both callers; ownership currently rests on the executable
+/// alone, but keeping args in the signature keeps every future
+/// python-ownership refinement single-sourced here.
+fn is_python_owned(executable: &str, _args: &str) -> bool {
+    if matches!(
+        executable,
+        "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
+    ) {
+        return true; // framework processes are python-owned
+    }
+    if executable.contains("python") {
+        return true; // python* interpreter
+    }
+    // pypy interpreter binaries are `pypy`, `pypy3`, and `pypy3.x` — never
+    // pypy-prefixed tools like `pypy3-tool`.
+    executable == "pypy" || executable == "pypy3" || executable.starts_with("pypy3.")
+}
+
 fn is_python_process(args: &str) -> bool {
     // Detection resolves wrapper executables first (env, sudo, nice, nohup,
     // timeout, dumb-init, tini) and is token-based, so unrelated commands
@@ -2117,49 +2156,7 @@ fn is_python_process(args: &str) -> bool {
     let Some(executable) = effective_executable(args) else {
         return false;
     };
-    if matches!(
-        executable,
-        "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
-    ) {
-        return true;
-    }
-    if executable.contains("python") {
-        return true;
-    }
-    // Tightened .py match: only a resolved python interpreter may claim a
-    // script argument, and only the first non-option token after it — never
-    // any field of the whole argv, so a wrapper's own script argument (e.g.
-    // `dumb-init -- /usr/bin/node /app/tool.py`) cannot mis-attribute the
-    // process to the python provider. python*-named interpreters returned
-    // above; this clause keeps pypy-style interpreters (whose names lack the
-    // "python" substring) covered.
-    if executable.starts_with("pypy")
-        && first_non_option_token_after(args, executable)
-            .is_some_and(|token| token.ends_with(".py"))
-    {
-        return true;
-    }
-    false
-}
-
-/// First token after the resolved interpreter that is not an option token —
-/// interpreter flags like `-u`, `-m`, `-c`, and `--version` never name the
-/// script being run.
-fn first_non_option_token_after<'a>(args: &'a str, interpreter: &str) -> Option<&'a str> {
-    let mut seen = false;
-    for token in args.split_whitespace() {
-        let basename = token.rsplit('/').next().unwrap_or(token);
-        if !seen {
-            if basename == interpreter {
-                seen = true;
-            }
-            continue;
-        }
-        if !token.starts_with('-') {
-            return Some(token);
-        }
-    }
-    None
+    is_python_owned(executable, args)
 }
 
 fn python_entry(args: &str) -> Option<String> {
@@ -2446,14 +2443,20 @@ fn real_comm(pid: u32, fallback: &str) -> String {
 /// First executable token of a ps args column, walking past common wrapper
 /// executables (env, sudo, nice, nohup, timeout, dumb-init, tini), option
 /// tokens (including wrapper options that consume the FOLLOWING token as
-/// their argument, e.g. `sudo -u USER cmd`), env `NAME=VALUE` assignments,
-/// and numeric wrapper arguments (nice adjustment, timeout duration) — so
+/// their argument per the ACTIVE wrapper's table, e.g. `sudo -u USER cmd`),
+/// env `NAME=VALUE` assignments, and numeric wrapper arguments (nice
+/// adjustment, timeout duration) — so
 /// `env python3 script.py`, `nice -n 5 nginx ...`, `timeout 300 node ...`,
 /// `sudo -u www-data /usr/bin/python3 ...`, and
 /// `dumb-init -- /usr/local/bin/python ...` all resolve to the real command.
 fn effective_executable(args: &str) -> Option<&str> {
     // Tokens to skip as the argument of a preceding wrapper option.
     let mut skip = 0usize;
+    // The wrapper whose option tokens are currently in play: only ITS
+    // option-argument table applies, so `timeout -s/-k` consume the next
+    // token while `sudo -s`/`sudo -k` (run shell / invalidate timestamp)
+    // consume nothing and `env -C/-S` consume their argument.
+    let mut wrapper: Option<&str> = None;
     for token in args.split_whitespace() {
         if skip > 0 {
             skip -= 1;
@@ -2467,19 +2470,18 @@ fn effective_executable(args: &str) -> Option<&str> {
             basename,
             "env" | "sudo" | "nice" | "nohup" | "timeout" | "dumb-init" | "tini"
         ) {
-            continue; // wrapper executable — keep walking
+            wrapper = Some(basename); // wrapper executable — keep walking
+            continue;
         }
         if token.starts_with('-') {
-            // Option token. Some wrapper options take the NEXT token as
-            // their argument (`sudo -u USER cmd`, `env -u NAME cmd`,
-            // `timeout -s SIGNAL ...`, `timeout -k DURATION ...`); without
-            // skipping it too, the argument would be mistaken for the
-            // executable (`sudo -u www-data python3 ...` → "www-data").
-            if matches!(
-                token,
-                "-u" | "--user" | "-s" | "--signal" | "-k" | "--kill-after"
-            ) {
-                skip = 1;
+            // Option token. If the ACTIVE wrapper's option takes the NEXT
+            // token as its argument, skip it — otherwise the argument would
+            // be mistaken for the executable (`sudo -u www-data python3 ...`
+            // → "www-data").
+            if let Some(active) = wrapper {
+                if wrapper_option_arguments(active).contains(&token) {
+                    skip = 1;
+                }
             }
             continue;
         }
@@ -2492,6 +2494,21 @@ fn effective_executable(args: &str) -> Option<&str> {
         return Some(basename);
     }
     None
+}
+
+/// Option tokens of a wrapper that consume the FOLLOWING token as their
+/// argument, keyed per wrapper so a short option only skips its argument
+/// when its own wrapper is active: `timeout -s SIGNAL` / `timeout -k
+/// DURATION` take an argument, but `sudo -s` (run shell) and `sudo -k`
+/// (invalidate timestamp) take none, while `env -C DIR` / `env -S
+/// SPLIT-STRING` (and their long forms) do.
+fn wrapper_option_arguments(wrapper: &str) -> &'static [&'static str] {
+    match wrapper {
+        "sudo" => &["-u", "--user"],
+        "timeout" => &["-s", "--signal", "-k", "--kill-after"],
+        "env" => &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
+        _ => &[],
+    }
 }
 
 /// Numeric token with an optional single unit suffix (`300`, `10s`, `5m`) —
@@ -2522,12 +2539,14 @@ fn process_comm(args: &str) -> Option<String> {
     Some(executable.trim_end_matches(':').to_string())
 }
 
-/// Native-process detection: everything except kernel threads, python
-/// interpreters (owned by the python provider), the daemon itself, container
+/// Native-process detection: everything except kernel threads, python-owned
+/// processes (interpreters and frameworks — decided by the SAME
+/// `is_python_owned` predicate as the python provider, so a pypy3 process
+/// can never be claimed by both providers), the daemon itself, container
 /// runtime plumbing, and the transient `ps` process itself. Wrapper
 /// executables (env, sudo, nice, nohup, timeout, dumb-init, tini) resolve to
-/// the wrapped command, so `env python3 ...` is excluded via the python check
-/// and `nice ... nginx ...` is included as `nginx`.
+/// the wrapped command, so `env python3 ...` is excluded via the python
+/// check and `nice ... nginx ...` is included as `nginx`.
 fn is_native_process(args: &str) -> bool {
     let Some(comm) = effective_executable(args) else {
         return false;
@@ -2535,14 +2554,8 @@ fn is_native_process(args: &str) -> bool {
     if comm.starts_with('[') {
         return false; // kernel thread
     }
-    if comm.contains("python") {
-        return false; // python provider owns interpreter processes
-    }
-    if matches!(
-        comm,
-        "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
-    ) {
-        return false; // python provider owns framework processes
+    if is_python_owned(comm, args) {
+        return false; // python provider owns interpreters and frameworks
     }
     if comm == "dockermap-daemon" || comm == "ps" {
         return false;
@@ -4531,6 +4544,33 @@ mod tests {
     }
 
     #[test]
+    fn pypy_interpreters_are_python_owned_and_excluded_from_native() {
+        // pypy-style interpreters belong to the python provider — including
+        // `-m module` invocations and versioned binaries — and the native
+        // provider must exclude them: a `pypy3 /srv/x.py` process used to be
+        // emitted by BOTH providers as a duplicate node for the same pid
+        // because the native filter only excluded `python*` names. Both
+        // sides now share `is_python_owned`, so they cannot diverge.
+        for args in [
+            "pypy3 /srv/x.py",
+            "pypy3 -m celery -A tasks worker",
+            "/usr/bin/pypy3.10 /srv/x.py",
+            "pypy /srv/x.py",
+        ] {
+            assert!(is_python_process(args), "{args} must be python-owned");
+            assert!(
+                !is_native_process(args),
+                "{args} must be excluded from the native provider"
+            );
+        }
+        // A pypy-prefixed TOOL is not an interpreter: the interpreter match
+        // is exactly `pypy` / `pypy3` / a `pypy3.`-versioned binary — never
+        // a loose `starts_with("pypy")` prefix.
+        assert!(!is_python_process("/opt/pypy3-tool --serve"));
+        assert!(is_native_process("/opt/pypy3-tool --serve"));
+    }
+
+    #[test]
     fn builds_python_nodes_from_fixture() {
         let nodes = python_nodes_from_ps_output(include_str!(
             "../../../tests/fixtures/providers/parser/python-ps-table.txt"
@@ -4907,6 +4947,45 @@ mod tests {
         ));
         assert!(is_native_process("tini -- /usr/sbin/nginx -g daemon off;"));
         assert!(!is_python_process("tini -- /usr/sbin/nginx -g daemon off;"));
+    }
+
+    #[test]
+    fn wrapper_option_arguments_are_wrapper_aware() {
+        // `sudo -s` (run shell) and `sudo -k` (invalidate timestamp) consume
+        // NO argument, so the next token is the wrapped command — previously
+        // the wrapper-blind -s/-k skip list consumed it, the process
+        // resolved to None, and it was silently dropped from BOTH providers.
+        assert_eq!(process_comm("sudo -s nginx").as_deref(), Some("nginx"));
+        assert_eq!(process_comm("sudo -k nginx").as_deref(), Some("nginx"));
+        assert!(is_native_process("sudo -s nginx"));
+        assert!(is_native_process("sudo -k nginx"));
+        // `sudo -s` wrapping an interpreter still resolves to the
+        // interpreter: python-owned, never native.
+        assert!(is_python_process("sudo -s /usr/bin/python3 /srv/x.py"));
+        assert!(!is_native_process("sudo -s /usr/bin/python3 /srv/x.py"));
+        // `env -C`/`-S` (and long forms) DO consume their argument — without
+        // that the directory/split-string was resolved as the executable and
+        // the wrapped python process was misclassified native.
+        assert_eq!(
+            process_comm("env -C /srv python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        assert_eq!(
+            process_comm("env --chdir /srv python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        assert_eq!(
+            process_comm("env -S FOO=bar python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        assert!(is_python_process("env -C /srv python3 /srv/x.py"));
+        assert!(!is_native_process("env -C /srv python3 /srv/x.py"));
+        // timeout -s/-k still consume their argument (unchanged behavior).
+        assert_eq!(
+            process_comm("timeout -k 5s -s TERM 300 /usr/sbin/nginx").as_deref(),
+            Some("nginx")
+        );
+        assert!(is_native_process("timeout -s TERM 300 /usr/sbin/nginx"));
     }
 
     #[test]
