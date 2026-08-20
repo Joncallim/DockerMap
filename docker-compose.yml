@@ -5,7 +5,6 @@ services:
     ports:
       - "3233:3233"
     environment:
-      DOCKERMAP_API_TOKEN: ""
       DOCKERMAP_ALLOW_MOCK: "true"
     volumes:
       # Read-only access to Docker so DockerMap can see real containers.

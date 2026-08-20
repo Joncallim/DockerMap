@@ -174,17 +174,48 @@ impl IntoResponse for ApiError {
     }
 }
 
+const CLI_USAGE: &str = "\
+DockerMap daemon — read-only Docker/host inspector
+
+USAGE:
+    dockermap-daemon [COMMAND] [OPTIONS]
+
+COMMANDS:
+    scan       Print a Compose project scan as JSON
+    validate   Print Compose diagnostics (exits 1 when blocking findings exist)
+    export     Export a Compose project scan (--format json)
+
+OPTIONS:
+    -h, --help       Print help
+    --version        Print version
+
+With no COMMAND, the daemon starts its loopback HTTP server (default port 4100).
+";
+
 #[tokio::main]
 async fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+
     if let Some(command) = args.first() {
-        if matches!(command.as_str(), "scan" | "validate" | "export") {
-            match run_cli(command, &args[1..]) {
+        match command.as_str() {
+            "--help" | "-h" => {
+                print!("{CLI_USAGE}");
+                std::process::exit(0);
+            }
+            "--version" => {
+                println!("dockermap-daemon {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "scan" | "validate" | "export" => match run_cli(command, &args[1..]) {
                 Ok(code) => std::process::exit(code),
                 Err(error) => {
                     eprintln!("{error}");
                     std::process::exit(2);
                 }
+            },
+            unknown => {
+                eprintln!("unknown command `{unknown}`\n\n{CLI_USAGE}");
+                std::process::exit(2);
             }
         }
     }

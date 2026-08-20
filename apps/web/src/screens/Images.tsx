@@ -54,8 +54,10 @@ export default function Images() {
         />
       </div>
 
-      {visible.length === 0 ? (
+      {images.length === 0 ? (
         <EmptyState icon="image" title="No images" body="No images are backing any running service." />
+      ) : visible.length === 0 ? (
+        <EmptyState icon="search" title="No matching images" body="No images match the current filter." />
       ) : (
         <Panel title="In use" icon="image">
           <ul className="svc-list">

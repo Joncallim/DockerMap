@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import type { SystemModel } from "../lib/model";
 import Icon, { type IconName, KIND_ICON } from "./Icon";
@@ -26,12 +26,19 @@ export default function CommandPalette({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<(HTMLLIElement | null)[]>([]);
+  const triggerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (open) {
+      triggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setQuery("");
       setActive(0);
       window.setTimeout(() => inputRef.current?.focus(), 10);
+    } else if (triggerRef.current) {
+      triggerRef.current.focus();
+      triggerRef.current = null;
     }
   }, [open]);
 
@@ -85,17 +92,58 @@ export default function CommandPalette({
   const items = askCopilot ? [askCopilot, ...filtered] : filtered;
   const clampedActive = Math.min(active, Math.max(0, items.length - 1));
 
+  useEffect(() => {
+    itemRefs.current[clampedActive]?.scrollIntoView({ block: "nearest" });
+  }, [clampedActive]);
+
   if (!open) return null;
+
+  const trapFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusables = Array.from(
+      dialogRef.current?.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      ) ?? []
+    ).filter((el) => !el.hasAttribute("disabled"));
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
 
   return (
     <div className="cmdk-backdrop" onClick={onClose} role="presentation">
-      <div className="cmdk" role="dialog" aria-modal="true" aria-label="Command palette" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="cmdk"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
+        ref={dialogRef}
+        onKeyDown={trapFocus}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="cmdk-input">
           <Icon name="search" size={17} />
           <input
             ref={inputRef}
             value={query}
             placeholder="Search services, navigate, or ask Copilot…"
+            aria-activedescendant={items.length > 0 ? `cmdk-option-${clampedActive}` : undefined}
+            role="combobox"
+            aria-expanded="true"
+            aria-controls="cmdk-listbox"
+            aria-autocomplete="list"
             onChange={(e) => {
               setQuery(e.target.value);
               setActive(0);
@@ -110,17 +158,23 @@ export default function CommandPalette({
               } else if (e.key === "Enter") {
                 e.preventDefault();
                 items[clampedActive]?.run();
-              } else if (e.key === "Escape") {
-                onClose();
               }
             }}
           />
           <kbd>esc</kbd>
         </div>
-        <ul className="cmdk-list">
+        <ul id="cmdk-listbox" className="cmdk-list" role="listbox" aria-label="Commands">
           {items.length === 0 && <li className="cmdk-empty">No matches</li>}
           {items.map((c, i) => (
-            <li key={c.id}>
+            <li
+              key={c.id}
+              id={`cmdk-option-${i}`}
+              role="option"
+              aria-selected={i === clampedActive}
+              ref={(el) => {
+                itemRefs.current[i] = el;
+              }}
+            >
               <button
                 type="button"
                 className={`cmdk-item${i === clampedActive ? " is-active" : ""}`}

@@ -37,8 +37,10 @@ export default function Storage() {
         />
       </div>
 
-      {volumes.length === 0 ? (
+      {model.volumes.length === 0 ? (
         <EmptyState icon="storage" title="No volumes" body="No named volumes are attached to any service." />
+      ) : volumes.length === 0 ? (
+        <EmptyState icon="search" title="No matching volumes" body="No volumes match the current filter." />
       ) : (
         <div className="card-grid">
           {volumes.map((vol) => (

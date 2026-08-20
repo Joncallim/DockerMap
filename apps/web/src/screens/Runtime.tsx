@@ -149,6 +149,7 @@ export default function RuntimeScreen() {
                     <Icon name={PROVIDER_ICON[diagnostic.provider]} size={13} /> {diagnostic.provider}
                   </span>
                   <span className="diag-message">{diagnostic.message}</span>
+                  <Tag tone={diagnostic.severity === "info" ? "muted" : diagnostic.severity === "warning" ? "warn" : "accent"}>{diagnostic.severity}</Tag>
                 </li>
               ))}
             </ul>

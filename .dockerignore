@@ -9,4 +9,6 @@ dist
 crates/target
 tests/e2e
 coverage
+test-results/
+playwright-report/
 *.log

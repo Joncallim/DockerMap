@@ -96,6 +96,7 @@ export default function Diagnostics() {
               <li key={`${entry.source}-${entry.id ?? "entry"}-${index}`} className={`diag-row sev-${entry.severity}`}>
                 <Icon name="alert" size={13} />
                 <span className="diag-message">{entry.message}</span>
+                <Tag tone={entry.severity === "info" ? "muted" : entry.severity === "warning" ? "warn" : "accent"}>{entry.severity}</Tag>
                 <Tag tone="muted">{SOURCE_LABEL[entry.source] ?? entry.source}</Tag>
                 {entry.service && <Tag tone="muted">{entry.service}</Tag>}
                 {entry.file && <code className="diag-file">{entry.file}</code>}
