@@ -1,0 +1,18 @@
+[
+  {
+    "id": 1,
+    "name": "nas",
+    "dns_name": "nas.example.",
+    "ipAddresses": ["100.64.0.2"],
+    "online": true,
+    "user": "ops"
+  },
+  {
+    "id": 2,
+    "name": "laptop",
+    "dns_name": "laptop.example.",
+    "ipAddresses": ["100.64.0.3"],
+    "online": false,
+    "user": "alice"
+  }
+]

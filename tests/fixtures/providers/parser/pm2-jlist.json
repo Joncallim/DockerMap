@@ -1,0 +1,34 @@
+[
+  {
+    "pm_id": 0,
+    "name": "web",
+    "pm2_env": {
+      "name": "web",
+      "status": "online",
+      "pm_cwd": "/srv/app",
+      "pm_exec_path": "/srv/app/dist/index.js",
+      "restart_time": 3
+    }
+  },
+  {
+    "pm_id": 1,
+    "name": "worker",
+    "pm2_env": {
+      "name": "worker",
+      "status": "stopped",
+      "pm_cwd": "/srv/app",
+      "pm_exec_path": "/srv/app/worker.js",
+      "restart_time": 0
+    }
+  },
+  {
+    "pm_id": "2",
+    "pm2_env": {
+      "name": "cron",
+      "status": "errored",
+      "pm_cwd": "/srv/tasks",
+      "pm_exec_path": "/srv/tasks/index.js",
+      "restart_time": 12
+    }
+  }
+]

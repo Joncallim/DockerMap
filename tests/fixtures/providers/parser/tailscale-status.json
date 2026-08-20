@@ -1,0 +1,20 @@
+{
+  "Self": {
+    "DNSName": "hearth.example.",
+    "TailscaleIPs": ["100.64.0.1"],
+    "Online": true,
+    "User": "operator"
+  },
+  "Peer": {
+    "100.64.0.2": {
+      "DNSName": "nas.example.",
+      "TailscaleIPs": ["100.64.0.2"],
+      "Online": true
+    },
+    "100.64.0.3": {
+      "DNSName": "laptop.example.",
+      "TailscaleIPs": ["100.64.0.3", "fd7a:115c:a1e0::3"],
+      "Online": false
+    }
+  }
+}

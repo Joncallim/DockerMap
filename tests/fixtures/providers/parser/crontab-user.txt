@@ -1,0 +1,6 @@
+# m h  dom mon dow   command
+*/5 * * * * /usr/local/bin/healthcheck --endpoint https://example.test/health
+0 3 * * 1 /srv/backup/run.sh --bucket backups
+30 4 * * * /usr/bin/curl -fsS https://example.test/ping >/dev/null 2>&1
+@daily /srv/reports/generate.sh
+@reboot /srv/scripts/user-bootstrap.sh
