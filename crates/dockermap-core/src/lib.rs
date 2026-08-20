@@ -1,8 +1,5 @@
 pub mod compose;
 
-pub use compose::discovery::{
-    discover_compose_files as discover_compose_files_deep, discover_with_overrides,
-};
 pub use compose::parser::parse_compose_file as parse_compose_file_document;
 pub use compose::resolver::resolve_mounts;
 pub use compose::{
@@ -565,6 +562,157 @@ pub enum RuntimeRelationshipKind {
     RelatedTo,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeNodeLayer {
+    Edge,
+    Host,
+    Service,
+    Container,
+    Process,
+    Session,
+    Package,
+    Network,
+    Storage,
+    Advisory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeHealth {
+    pub state: String,
+    #[serde(rename = "checkedAt", skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeLogRef {
+    pub id: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeEventRef {
+    pub id: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeOwnership {
+    pub kind: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeLocation {
+    pub kind: String,
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeServiceEntity {
+    pub name: String,
+    pub status: String,
+    pub dependencies: Vec<String>,
+    pub dependents: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<RuntimeHealth>,
+    pub logs: Vec<RuntimeLogRef>,
+    pub events: Vec<RuntimeEventRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<RuntimeOwnership>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<RuntimeLocation>,
+}
+
+impl RuntimeServiceEntity {
+    /// Minimal entity carrying only what the daemon collectors know directly:
+    /// the service name and its reported status. Remaining fields stay empty
+    /// so consumers can rely on the full contract shape.
+    pub fn minimal(name: String, status: String) -> Self {
+        Self {
+            name,
+            status,
+            dependencies: Vec::new(),
+            dependents: Vec::new(),
+            health: None,
+            logs: Vec::new(),
+            events: Vec::new(),
+            owner: None,
+            location: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimePackageAdvisory {
+    pub id: String,
+    pub source: String,
+    pub title: String,
+    pub severity: String,
+    #[serde(rename = "fixedVersion", skip_serializing_if = "Option::is_none")]
+    pub fixed_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(rename = "publishedAt", skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimePackageUpdate {
+    #[serde(rename = "currentVersion")]
+    pub current_version: String,
+    #[serde(rename = "latestVersion", skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
+    pub available: bool,
+    pub advisories: Vec<RuntimePackageAdvisory>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimePackageEntity {
+    pub name: String,
+    pub manager: String,
+    pub version: String,
+    pub dependencies: Vec<String>,
+    pub dependents: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update: Option<RuntimePackageUpdate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<RuntimeOwnership>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<RuntimeLocation>,
+}
+
+impl RuntimePackageEntity {
+    /// Minimal entity for a package dependency node: name, version and the
+    /// package manager that declared it.
+    pub fn minimal(name: String, version: String) -> Self {
+        Self {
+            name,
+            manager: "npm".into(),
+            version,
+            dependencies: Vec::new(),
+            dependents: Vec::new(),
+            update: None,
+            owner: None,
+            location: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeMapNode {
     pub id: String,
@@ -573,7 +721,13 @@ pub struct RuntimeMapNode {
     pub kind: RuntimeNodeKind,
     pub label: String,
     pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer: Option<RuntimeNodeLayer>,
     pub metadata: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<RuntimeServiceEntity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package: Option<RuntimePackageEntity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -895,7 +1049,13 @@ pub fn derive_runtime_map(
             kind: RuntimeNodeKind::Container,
             label: container.name.clone(),
             status: Some(container.status.clone()),
+            layer: Some(RuntimeNodeLayer::Container),
             metadata,
+            service: Some(RuntimeServiceEntity::minimal(
+                container.name.clone(),
+                container.status.clone(),
+            )),
+            package: None,
         });
 
         for network_id in &container.networks {
@@ -917,7 +1077,10 @@ pub fn derive_runtime_map(
                 kind: RuntimeNodeKind::NetworkListener,
                 label: port.clone(),
                 status: Some("listening".into()),
+                layer: Some(RuntimeNodeLayer::Host),
                 metadata,
+                service: None,
+                package: None,
             });
             edges.push(RuntimeMapEdge {
                 source: format!("docker_container_{}", sanitize_id(&container.id)),
@@ -938,7 +1101,10 @@ pub fn derive_runtime_map(
             kind: RuntimeNodeKind::DockerNetwork,
             label: network.name.clone(),
             status: None,
+            layer: Some(RuntimeNodeLayer::Network),
             metadata,
+            service: None,
+            package: None,
         });
     }
 
@@ -954,7 +1120,10 @@ pub fn derive_runtime_map(
             kind: RuntimeNodeKind::DockerVolume,
             label: volume.name.clone(),
             status: None,
+            layer: Some(RuntimeNodeLayer::Storage),
             metadata,
+            service: None,
+            package: None,
         });
 
         for attached in &volume.attached_to {
@@ -2264,6 +2433,33 @@ mod tests {
                 .iter()
                 .all(|first_entry| first_entry.id != entry.id)),
             "pages must not overlap"
+        );
+    }
+
+    #[test]
+    fn mock_logs_honors_cursor_without_service_filter() {
+        // Regression: live-Docker mode with no service query used to hard-code
+        // the cursor to None, so "Load older" re-returned page 1 forever. The
+        // mock path must page older entries when given a cursor.
+        let snapshot = mock_snapshot();
+        let first = mock_logs(&snapshot, None, None, None, 3);
+        assert_eq!(first.entries.len(), 3);
+        let cursor = first.next_cursor.expect("a full first page has a cursor");
+
+        let older = mock_logs(
+            &snapshot,
+            None,
+            None,
+            Some(cursor.parse().expect("numeric cursor")),
+            3,
+        );
+        assert!(!older.entries.is_empty(), "older page must not be empty");
+        assert!(
+            older
+                .entries
+                .iter()
+                .all(|entry| entry.timestamp < first.entries[0].timestamp),
+            "older page must be strictly older than the first page"
         );
     }
 

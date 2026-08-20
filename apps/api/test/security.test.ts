@@ -247,6 +247,44 @@ test("status endpoint reports widget-friendly health and versioned alias works",
   assert.ok(doc.paths["/api/diagnostics"], "openapi should document diagnostics");
 });
 
+test("bare /api/v1 answers with a version descriptor instead of 404ing", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+
+  const bare = await request(api, "/api/v1");
+  assert.equal(bare.status, 200);
+  assert.deepEqual(await bare.json(), {
+    service: "dockermap",
+    apiVersion: "v1",
+    version: "0.1.0"
+  });
+
+  const slashed = await request(api, "/api/v1/");
+  assert.equal(slashed.status, 200);
+  assert.equal((await slashed.json()).apiVersion, "v1");
+
+  const versionedRoute = await request(api, "/api/v1/health");
+  assert.equal(versionedRoute.status, 200, "versioned routes still alias the /api surface");
+});
+
+test("runtime map mock emits layer and service entities matching the daemon", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+  const response = await request(api, "/api/runtime/map");
+  assert.equal(response.status, 200);
+
+  const map = await response.json();
+  const container = map.nodes.find((node: { type: string }) => node.type === "container");
+  assert.ok(container, "mock runtime map should include container nodes");
+  assert.equal(container.layer, "container");
+  assert.equal(container.service.name, container.label);
+  assert.ok(Array.isArray(container.service.logs), "service entity keeps the full contract shape");
+  assert.equal(container.service.dependencies.length, 0);
+
+  const network = map.nodes.find((node: { type: string }) => node.type === "docker_network");
+  assert.equal(network.layer, "network");
+  const volume = map.nodes.find((node: { type: string }) => node.type === "docker_volume");
+  assert.equal(volume.layer, "storage");
+});
+
 test("daemon failures hide details by default and expose details only when explicitly enabled", async () => {
   const closedPort = await freePort();
   const hidden = await startApi({

@@ -18,6 +18,7 @@ import type {
   LogsResponse,
   NetworkRecord,
   RuntimeMap,
+  RuntimeServiceStatus,
   StatusResponse,
   VolumeRecord
 } from "@dockermap/contracts";
@@ -196,7 +197,19 @@ app.use(express.json({ limit: "16kb" }));
 
 // Versioned alias: /api/v1/* maps to the same read-only /api/* surface so
 // consumers can pin a version. Authentication and CORS behave identically.
-app.use((req, _res, next) => {
+// The bare /api/v1 (with or without trailing slash) answers with a small
+// version descriptor instead of 404ing, matching the OpenAPI alias claim.
+const VERSION_DESCRIPTOR = {
+  service: "dockermap",
+  apiVersion: "v1",
+  version: "0.1.0"
+} as const;
+
+app.use((req, res, next) => {
+  if (req.path === "/api/v1" || req.path === "/api/v1/") {
+    res.json(VERSION_DESCRIPTOR);
+    return;
+  }
   if (req.path.startsWith("/api/v1/")) {
     req.url = req.url.replace(/^\/api\/v1/, "/api");
   }
@@ -284,6 +297,18 @@ function getMockResponse<T>(path: string): T {
         type: "container" as const,
         label: container.name,
         status: container.status,
+        layer: "container" as const,
+        service: {
+          name: container.name,
+          status: container.status as RuntimeServiceStatus,
+          dependencies: [],
+          dependents: [],
+          health: null,
+          logs: [],
+          events: [],
+          owner: null,
+          location: null
+        },
         metadata: {
           image: container.image,
           role: container.role,
@@ -296,6 +321,7 @@ function getMockResponse<T>(path: string): T {
         type: "docker_network" as const,
         label: network.name,
         status: null,
+        layer: "network" as const,
         metadata: {
           driver: network.driver,
           internal: String(network.internal)
@@ -307,6 +333,7 @@ function getMockResponse<T>(path: string): T {
         type: "docker_volume" as const,
         label: volume.name,
         status: null,
+        layer: "storage" as const,
         metadata: {}
       }))
     ];
