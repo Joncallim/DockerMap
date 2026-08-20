@@ -49,7 +49,7 @@ require_auth_json() {
 
 check_sse() {
   local path="$1"
-  local -a args=(--no-buffer --max-time 10 -sS)
+  local -a args=(--no-buffer --max-time 10 -s)
   local curl_status
   if [[ -n "$TOKEN" ]]; then
     args+=(-H "Authorization: Bearer ${TOKEN}")
