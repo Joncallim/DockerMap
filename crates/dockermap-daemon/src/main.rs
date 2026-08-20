@@ -2193,15 +2193,19 @@ fn python_entry(args: &str) -> Option<String> {
             return Some(field.to_string());
         }
         let basename = field.rsplit('/').next().unwrap_or(field);
+        // Proctitle-rewritten frameworks (e.g. "gunicorn: master [app]")
+        // carry a trailing colon; trim before matching so the entry point
+        // and label are clean, mirroring is_python_owned/process_comm.
+        let trimmed = basename.trim_end_matches(':');
         if matches!(
-            basename,
+            trimmed,
             "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
         ) {
-            return Some(basename.to_string());
+            return Some(trimmed.to_string());
         }
         if field.contains(':') && !field.starts_with("--") {
             // module:app spec passed to a framework binary.
-            return Some(field.to_string());
+            return Some(trimmed.to_string());
         }
         index += 1;
     }
@@ -4612,6 +4616,17 @@ mod tests {
         // still matches its framework basename.
         assert!(is_python_process("uvicorn: app.main:app"));
         assert!(!is_native_process("uvicorn: app.main:app"));
+
+        // The entry point (and thus the label) is clean too — no trailing
+        // colon, mirroring the native provider's process_comm.
+        assert_eq!(
+            python_entry("gunicorn: master [authentik.root.asgi:application]").as_deref(),
+            Some("gunicorn")
+        );
+        assert_eq!(
+            python_entry("uvicorn: app.main:app").as_deref(),
+            Some("uvicorn")
+        );
     }
 
     #[test]
