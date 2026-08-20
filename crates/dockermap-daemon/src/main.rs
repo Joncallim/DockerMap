@@ -2062,6 +2062,11 @@ fn pm2_app_nodes_from_jlist(value: &str) -> Option<Vec<RuntimeMapNode>> {
 struct PythonProcessRecord {
     pid: u32,
     user: String,
+    /// The ps `comm=` column — the kernel command name, never argv-derived.
+    /// A process that rewrote argv[0] (`exec -a hunter2 sleep`) still reports
+    /// its real comm here, so this is the only safe fallback for the native
+    /// provider's label/comm metadata.
+    comm: String,
     args: String,
 }
 
@@ -2073,7 +2078,9 @@ fn parse_ps_table(value: &str) -> Vec<PythonProcessRecord> {
             continue;
         }
         let fields = trimmed.split_whitespace().collect::<Vec<_>>();
-        if fields.len() < 3 {
+        // pid, user, comm, args — the comm column is REQUIRED so a
+        // 3-field table can never silently shift args into the comm slot.
+        if fields.len() < 4 {
             continue;
         }
         let Ok(pid) = fields[0].parse::<u32>() else {
@@ -2082,7 +2089,7 @@ fn parse_ps_table(value: &str) -> Vec<PythonProcessRecord> {
         // Walk to the args token's byte offset so the command keeps its
         // original spacing (sequential find cannot re-match earlier tokens).
         let mut offset = 0usize;
-        for token in &fields[..2] {
+        for token in &fields[..3] {
             match trimmed[offset..].find(token) {
                 Some(index) => offset += index + token.len(),
                 None => {
@@ -2101,6 +2108,7 @@ fn parse_ps_table(value: &str) -> Vec<PythonProcessRecord> {
         records.push(PythonProcessRecord {
             pid,
             user: fields[1].to_string(),
+            comm: fields[2].to_string(),
             args: args.to_string(),
         });
     }
@@ -2255,7 +2263,7 @@ fn collect_python_processes(
     let output = match run_command_with_timeout(
         {
             let mut command = Command::new("ps");
-            command.args(["-eo", "pid=,user:32=,args="]);
+            command.args(["-eo", "pid=,user:32=,comm=,args="]);
             command
         },
         PROVIDER_COMMAND_TIMEOUT,
@@ -2361,10 +2369,25 @@ fn collect_native_processes(
     nodes: &mut Vec<RuntimeMapNode>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
+    // In the documented Docker deployment (no `pid: host` in compose) ps runs
+    // inside the container's PID namespace: pid 1 is the entrypoint script
+    // rather than systemd/init, and discovery only ever sees the container's
+    // own processes. Say so — the diagnostic is the honest signal.
+    if let Some(init_comm) = host_init_comm() {
+        if is_container_pid_namespace(&init_comm) {
+            push_provider_diagnostic(
+                diagnostics,
+                RuntimeProviderKind::Process,
+                DiagnosticSeverity::Info,
+                "Running in a container PID namespace: native process discovery only sees the container's processes"
+                    .into(),
+            );
+        }
+    }
     let output = match run_command_with_timeout(
         {
             let mut command = Command::new("ps");
-            command.args(["-eo", "pid=,user:32=,args="]);
+            command.args(["-eo", "pid=,user:32=,comm=,args="]);
             command
         },
         PROVIDER_COMMAND_TIMEOUT,
@@ -2413,13 +2436,24 @@ fn collect_native_processes(
 fn native_process_nodes_from_ps_output(value: &str, self_pid: u32) -> (Vec<RuntimeMapNode>, bool) {
     let filtered = parse_ps_table(value)
         .into_iter()
-        .filter(|record| is_native_process(&record.args) && record.pid != self_pid)
+        .filter(|record| {
+            is_native_process(&record.args)
+                // Container internals are the docker provider's nodes, not
+                // host native processes — drop any pid whose cgroup places
+                // it inside a container.
+                && !is_container_owned(record.pid)
+                && record.pid != self_pid
+        })
         .collect::<Vec<_>>();
     let capped = filtered.len() > MAX_NATIVE_PROCESSES;
     let mut nodes = Vec::new();
     for record in filtered.into_iter().take(MAX_NATIVE_PROCESSES) {
-        let fallback_comm = process_comm(&record.args).unwrap_or_else(|| "unknown".into());
-        let comm = real_comm(record.pid, &fallback_comm);
+        // The ps comm column is the kernel command name, never argv-derived,
+        // so the fallback can never publish an attacker-rewritten argv[0]
+        // (`exec -a hunter2 sleep` still reports comm "sleep"). process_comm
+        // applies the same trailing-colon trim to it.
+        let ps_comm = process_comm(&record.comm).unwrap_or_else(|| "unknown".into());
+        let comm = real_comm(record.pid, &ps_comm);
         let mut metadata = BTreeMap::new();
         metadata.insert("pid".into(), record.pid.to_string());
         metadata.insert("user".into(), record.user);
@@ -2443,9 +2477,11 @@ fn native_process_nodes_from_ps_output(value: &str, self_pid: u32) -> (Vec<Runti
 /// entry holds the real kernel comm even when the process rewrote argv[0]
 /// (avahi-daemon renders as `avahi-daemon: running [host]` in ps args, nginx
 /// as `nginx: master process`). Truncated to 16 characters like the kernel's
-/// TASK_COMM_LEN. Falls back to `fallback` (derived from the ps args column)
-/// when the proc entry is unreadable — which is also the path exercised by
-/// fixture-based tests using fake pids.
+/// TASK_COMM_LEN. Falls back to `fallback` — the ps comm column, itself the
+/// kernel comm, never argv — when the proc entry is unreadable (also the
+/// path exercised by fixture-based tests using fake pids). When both are
+/// empty or unavailable, "unknown" is returned: argv-derived names are never
+/// published as metadata.
 fn real_comm(pid: u32, fallback: &str) -> String {
     if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
         let comm = comm.trim();
@@ -2453,7 +2489,50 @@ fn real_comm(pid: u32, fallback: &str) -> String {
             return comm.chars().take(16).collect();
         }
     }
+    if fallback.is_empty() {
+        return "unknown".into();
+    }
     fallback.to_string()
+}
+
+/// Kernel command name of pid 1, read from `/proc/1/comm`. `None` when the
+/// entry is unreadable or empty.
+fn host_init_comm() -> Option<String> {
+    std::fs::read_to_string("/proc/1/comm")
+        .ok()
+        .map(|comm| comm.trim().to_string())
+        .filter(|comm| !comm.is_empty())
+}
+
+/// True when pid 1's comm is NOT a host init: on a normal host it is
+/// systemd or init, while inside a container PID namespace (the documented
+/// compose deployment has no `pid: host`, so pid 1 is the entrypoint script,
+/// a shell, or nginx) native process discovery only sees the container's own
+/// processes. The caller surfaces that as an Info diagnostic.
+fn is_container_pid_namespace(comm: &str) -> bool {
+    !matches!(comm.trim(), "systemd" | "init")
+}
+
+/// True when a cgroup path places the process inside a container: docker
+/// (cgroup v1 `/docker/<id>` and systemd scope
+/// `/system.slice/docker-<id>.scope/...`), containerd, libpod (podman), or
+/// kubepods (Kubernetes). The docker provider owns container internals, so
+/// such pids must never surface as host native-process nodes.
+fn cgroup_implies_container(cgroup: &str) -> bool {
+    let cgroup = cgroup.trim();
+    cgroup.contains("docker")
+        || cgroup.contains("containerd")
+        || cgroup.contains("libpod")
+        || cgroup.contains("kubepods")
+}
+
+/// True when the pid's cgroup places it inside a container. An unreadable
+/// `/proc/<pid>/cgroup` means host assumption (false) — fixture pids beyond
+/// pid_max are therefore kept as host processes.
+fn is_container_owned(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .map(|cgroup| cgroup.lines().any(cgroup_implies_container))
+        .unwrap_or(false)
 }
 
 /// First executable token of a ps args column, walking past common wrapper
@@ -4478,6 +4557,7 @@ mod tests {
         assert_eq!(records.len(), 7);
         assert_eq!(records[0].pid, 1234);
         assert_eq!(records[0].user, "root");
+        assert_eq!(records[0].comm, "python3");
         assert_eq!(
             records[0].args,
             "/usr/bin/python3 /srv/app/worker.py --queue default"
@@ -4839,14 +4919,18 @@ mod tests {
             "../../../tests/fixtures/providers/parser/native-ps-table.txt"
         ));
 
-        assert_eq!(records.len(), 14);
+        assert_eq!(records.len(), 15);
         assert_eq!(records[0].pid, 9_000_001);
         assert_eq!(records[0].user, "root");
+        assert_eq!(records[0].comm, "nginx");
         assert_eq!(records[0].args, "/usr/sbin/nginx -g daemon off;");
         assert_eq!(
             process_comm(&records[6].args).as_deref(),
             Some("[kworker/0:1-events]")
         );
+        // A rewritten argv[0] ("hunter2") never leaks into the comm column.
+        assert_eq!(records[14].comm, "sleep");
+        assert_eq!(records[14].args, "hunter2 --sleep-forever");
     }
 
     #[test]
@@ -4858,13 +4942,17 @@ mod tests {
             .map(|record| record.pid)
             .collect::<Vec<_>>();
 
-        // nginx, postgres, redis, sshd, dockerd, node, cron are native;
-        // containerd-shim, kernel threads, python, the daemon itself, and the
-        // transient ps process are excluded. Pids are beyond pid_max so the
-        // fixture never collides with a live host process.
+        // nginx, postgres, redis, sshd, dockerd, node, cron, and the
+        // argv-rewritten `sleep` are native; containerd-shim, kernel threads,
+        // python, the daemon itself, and the transient ps process are
+        // excluded. Pids are beyond pid_max so the fixture never collides
+        // with a live host process.
         assert_eq!(
             natives,
-            vec![9_000_001, 9_000_002, 9_000_003, 9_000_004, 9_000_005, 9_000_013, 9_000_014]
+            vec![
+                9_000_001, 9_000_002, 9_000_003, 9_000_004, 9_000_005, 9_000_013, 9_000_014,
+                9_000_015
+            ]
         );
     }
 
@@ -4877,7 +4965,7 @@ mod tests {
         assert!(!capped);
         redact_runtime_nodes(&mut nodes);
 
-        assert_eq!(nodes.len(), 7);
+        assert_eq!(nodes.len(), 8);
 
         let nginx = &nodes[0];
         assert_eq!(nginx.id, "native_process_9000001");
@@ -4900,6 +4988,17 @@ mod tests {
         assert_eq!(node.id, "native_process_9000013");
         assert_eq!(node.label, "node");
 
+        // The argv-rewritten row (argv[0] "hunter2", kernel comm "sleep")
+        // publishes the kernel comm — never the fake argv name.
+        let hunter2 = &nodes[7];
+        assert_eq!(hunter2.id, "native_process_9000015");
+        assert_eq!(hunter2.label, "sleep");
+        assert_eq!(
+            hunter2.metadata.get("comm").map(String::as_str),
+            Some("sleep")
+        );
+        assert!(hunter2.label != "hunter2");
+
         // No daemon self-node, and raw argv is never published.
         assert!(nodes.iter().all(|node| node.id != "native_process_9000011"));
         assert!(nodes.iter().all(|node| !node.metadata.contains_key("args")));
@@ -4910,19 +5009,23 @@ mod tests {
     fn parses_long_usernames_from_ps_user_column() {
         // `ps -eo user=,` truncates usernames at 8 chars and appends '+'; the
         // providers use `user:32=` so full usernames must survive the parser.
-        let records = parse_ps_table("  4242  systemd-resolve  /usr/lib/systemd/systemd-resolved");
+        let records = parse_ps_table(
+            "  4242  systemd-resolve  systemd-resolve  /usr/lib/systemd/systemd-resolved",
+        );
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].pid, 4242);
         assert_eq!(records[0].user, "systemd-resolve");
+        assert_eq!(records[0].comm, "systemd-resolve");
         assert_eq!(records[0].args, "/usr/lib/systemd/systemd-resolved");
 
         // A padded 32-char column (as `ps` actually emits) parses identically.
         let padded = format!(
-            "  4242  {:<32}  /usr/lib/systemd/systemd-resolved",
+            "  4242  {:<32}  systemd-resolve  /usr/lib/systemd/systemd-resolved",
             "systemd-resolve"
         );
         let records = parse_ps_table(&padded);
         assert_eq!(records[0].user, "systemd-resolve");
+        assert_eq!(records[0].comm, "systemd-resolve");
         assert_eq!(records[0].args, "/usr/lib/systemd/systemd-resolved");
     }
 
@@ -5068,10 +5171,11 @@ mod tests {
     #[test]
     fn real_comm_falls_back_for_unreadable_proc_entry() {
         // 9_000_000-style pids are beyond pid_max (4_194_304) on any Linux
-        // host, so /proc/<pid>/comm cannot exist — the argv-derived fallback
-        // must win.
+        // host, so /proc/<pid>/comm cannot exist — the ps comm fallback must
+        // win, and an empty fallback resolves to "unknown" (never argv).
         assert_eq!(real_comm(9_000_000, "nginx"), "nginx");
-        assert_eq!(real_comm(9_000_000, ""), "");
+        assert_eq!(real_comm(9_000_000, "sleep"), "sleep");
+        assert_eq!(real_comm(9_000_000, ""), "unknown");
     }
 
     #[test]
@@ -5103,12 +5207,79 @@ mod tests {
     }
 
     #[test]
+    fn native_label_uses_ps_comm_never_argv_zero() {
+        // `exec -a hunter2 /usr/bin/sleep` rewrites argv[0] but not the
+        // kernel comm: the label must come from the ps comm column ("sleep"),
+        // never from the args column — a credential hidden in argv[0] would
+        // otherwise be published as label + comm metadata.
+        let table = "  9000100  root       sleep      hunter2 --sleep-forever\n";
+        let (nodes, capped) = native_process_nodes_from_ps_output(table, 9_000_000);
+        assert!(!capped);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].id, "native_process_9000100");
+        assert_eq!(nodes[0].label, "sleep");
+        assert_eq!(
+            nodes[0].metadata.get("comm").map(String::as_str),
+            Some("sleep")
+        );
+        assert!(!nodes[0].label.contains("hunter2"));
+        assert!(nodes[0]
+            .metadata
+            .values()
+            .all(|value| !value.contains("hunter2")));
+    }
+
+    #[test]
+    fn container_pid_namespace_predicate() {
+        // Host inits mean full-host discovery; anything else (entrypoint
+        // script, shell, nginx) is a container PID namespace.
+        assert!(!is_container_pid_namespace("systemd"));
+        assert!(!is_container_pid_namespace("init"));
+        assert!(is_container_pid_namespace("entrypoint"));
+        assert!(is_container_pid_namespace("sh"));
+        assert!(is_container_pid_namespace("bash"));
+        assert!(is_container_pid_namespace("nginx"));
+    }
+
+    #[test]
+    fn cgroup_implies_container_classifies_known_paths() {
+        // Docker: systemd-scope path (cgroup v2) and /docker/<id> (v1).
+        assert!(cgroup_implies_container(
+            "0::/system.slice/docker-abc123.scope/init.scope"
+        ));
+        assert!(cgroup_implies_container("11:devices:/docker/abc123def456"));
+        assert!(cgroup_implies_container("0::/system.slice/docker.service"));
+        // containerd, libpod (podman), kubepods (Kubernetes).
+        assert!(cgroup_implies_container(
+            "0::/system.slice/containerd.service"
+        ));
+        assert!(cgroup_implies_container(
+            "0::/machine.slice/libpod-abc123.scope/container"
+        ));
+        assert!(cgroup_implies_container(
+            "0::/kubepods.slice/kubepods-besteffort.slice/..."
+        ));
+        // Host cgroups and empty input are not container-owned.
+        assert!(!cgroup_implies_container("0::/system.slice/"));
+        assert!(!cgroup_implies_container("0::/init.scope"));
+        assert!(!cgroup_implies_container(""));
+        assert!(!cgroup_implies_container(
+            "0::/user.slice/user-1000.slice/..."
+        ));
+    }
+
+    #[test]
     fn native_process_cap_is_reported_and_bounded() {
+        // Pids beyond pid_max (4_194_304) are unreadable, so is_container_owned
+        // keeps them as host processes and the count is deterministic in any
+        // environment (containerized CI included).
         let mut table = String::new();
-        for pid in 1..=300 {
-            table.push_str(&format!("{pid:>7}  root  /usr/bin/benchmark-{pid}\n"));
+        for pid in 9_000_000..9_000_300 {
+            table.push_str(&format!(
+                "{pid:>7}  root  benchmark-{pid}  /usr/bin/benchmark-{pid}\n"
+            ));
         }
-        let (nodes, capped) = native_process_nodes_from_ps_output(&table, 9_000_000);
+        let (nodes, capped) = native_process_nodes_from_ps_output(&table, 9_000_500);
         assert!(
             capped,
             "300 filtered processes must exceed MAX_NATIVE_PROCESSES"
@@ -5122,7 +5293,7 @@ mod tests {
                 .metadata
                 .get("pid")
                 .map(String::as_str),
-            Some("1")
+            Some("9000000")
         );
         assert_eq!(
             nodes
@@ -5131,7 +5302,7 @@ mod tests {
                 .metadata
                 .get("pid")
                 .map(String::as_str),
-            Some(MAX_NATIVE_PROCESSES.to_string().as_str())
+            Some((9_000_000 + MAX_NATIVE_PROCESSES - 1).to_string().as_str())
         );
     }
 

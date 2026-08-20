@@ -1,7 +1,7 @@
-  1234  root       /usr/bin/python3 /srv/app/worker.py --queue default
-  2345  jon        /srv/app/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
-  3456  www-data   /usr/bin/python3 /srv/web/manage.py runserver 0.0.0.0:8001
-  4567  root       /usr/bin/python3.12 -m celery -A tasks worker --loglevel=info
-  5678  root       /usr/bin/python3 /srv/agent/agent.py --token=DOCKERMAP_TEST_FAKE_PYTHON_TOKEN
-  6789  jon        /usr/sbin/cron -f
-  7890  root       /usr/bin/containerd-shim-runc-v2 -namespace moby -id abc123
+  1234  root       python3     /usr/bin/python3 /srv/app/worker.py --queue default
+  2345  jon        uvicorn     /srv/app/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+  3456  www-data   python3     /usr/bin/python3 /srv/web/manage.py runserver 0.0.0.0:8001
+  4567  root       python3     /usr/bin/python3.12 -m celery -A tasks worker --loglevel=info
+  5678  root       python3     /usr/bin/python3 /srv/agent/agent.py --token=DOCKERMAP_TEST_FAKE_PYTHON_TOKEN
+  6789  jon        cron        /usr/sbin/cron -f
+  7890  root       containerd-shim /usr/bin/containerd-shim-runc-v2 -namespace moby -id abc123
