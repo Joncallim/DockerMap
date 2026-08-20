@@ -1,0 +1,14 @@
+   1  root       /usr/sbin/nginx -g daemon off;
+   2  postgres   /usr/lib/postgresql/15/bin/postgres -D /var/lib/postgresql/15/main
+   3  redis      /usr/bin/redis-server 127.0.0.1:6379
+   4  root       /usr/sbin/sshd -D
+   5  root       /usr/bin/dockerd -H unix:///var/run/docker.sock
+   6  root       /usr/bin/containerd-shim-runc-v2 -namespace moby -id abc123
+   7  root       [kworker/0:1-events]
+   8  root       [kthreadd]
+   9  root       /usr/bin/python3 /srv/app/worker.py --queue default
+  10  jon        /srv/app/.venv/bin/uvicorn app.main:app
+  11  root       /usr/bin/dockermap-daemon --listen 127.0.0.1:4100
+  12  root       ps -eo pid=,user=,args=
+  13  jon        /usr/bin/node /srv/www/server.js --port 8080
+  14  root       /usr/sbin/cron -f

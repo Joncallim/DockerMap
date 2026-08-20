@@ -53,6 +53,7 @@ const MAX_PACKAGE_JSON_BYTES: u64 = 262_144;
 const MAX_NPM_SCRIPTS: usize = 16;
 const MAX_SCRIPT_CHARS: usize = 200;
 const MAX_PYTHON_PROCESSES: usize = 64;
+const MAX_NATIVE_PROCESSES: usize = 64;
 const MAX_PROVIDER_OUTPUT_BYTES: usize = 1 << 20;
 const REDACTED_VALUE: &str = "[redacted]";
 const MAX_DOCKER_LABEL_FILTER_CHARS: usize = 256;
@@ -875,6 +876,7 @@ fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
     collect_scheduled_jobs(&mut nodes, &mut diagnostics);
     collect_pm2_apps(&mut nodes, &mut diagnostics);
     collect_python_processes(&mut nodes, &mut diagnostics);
+    collect_native_processes(&mut nodes, &mut diagnostics);
     collect_tmux_sessions(&mut nodes, &mut diagnostics);
     if let Some(root) = project_root.as_deref() {
         collect_npm_projects(root, &mut nodes, &mut edges, &mut diagnostics);
@@ -2308,106 +2310,109 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
     nodes
 }
 
-#[cfg(test)]
-struct ListenerRecord {
-    protocol: String,
-    address: String,
-    port: u16,
-    state: String,
-    process: Option<String>,
-    pid: Option<u32>,
+fn collect_native_processes(
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("ps");
+            command.args(["-eo", "pid=,user=,args="]);
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            push_provider_diagnostic(
+                diagnostics,
+                RuntimeProviderKind::Process,
+                DiagnosticSeverity::Info,
+                format!("Native process discovery skipped: {error}"),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        return;
+    }
+
+    nodes.extend(native_process_nodes_from_ps_output(
+        &String::from_utf8_lossy(&output.stdout),
+        std::process::id(),
+    ));
 }
 
-/// Parser layer for host listener discovery (wired into the native-process
-/// provider in #33). Exercised now via fixture tests so the formats are locked
-/// down before the collector lands.
-#[cfg(test)]
-fn parse_ss_listener_records(value: &str) -> Vec<ListenerRecord> {
-    let mut records = Vec::new();
-    for line in value.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("LISTEN") {
-            continue;
-        }
-        let parts = trimmed.split_whitespace().collect::<Vec<_>>();
-        if parts.len() < 5 {
-            continue;
-        }
-        let Some((address, port_value)) = parts[3].rsplit_once(':') else {
-            continue;
-        };
-        let Ok(port) = port_value.parse::<u16>() else {
-            continue;
-        };
-        let (process, pid) = parse_ss_process(parts.get(5..));
-        records.push(ListenerRecord {
-            protocol: "tcp".into(),
-            address: address.to_string(),
-            port,
-            state: "listen".into(),
-            process,
-            pid,
+/// Native-process node builder. `self_pid` is the daemon's own pid, which is
+/// never published. Raw argv is deliberately NOT emitted (same posture as the
+/// python provider — a credential the redaction heuristic does not recognize
+/// must not leak through /daemon/runtime/map).
+fn native_process_nodes_from_ps_output(value: &str, self_pid: u32) -> Vec<RuntimeMapNode> {
+    let mut nodes = Vec::new();
+    for record in parse_ps_table(value)
+        .into_iter()
+        .filter(|record| is_native_process(&record.args) && record.pid != self_pid)
+        .take(MAX_NATIVE_PROCESSES)
+    {
+        let comm = process_comm(&record.args).unwrap_or_else(|| "unknown".into());
+        let mut metadata = BTreeMap::new();
+        metadata.insert("pid".into(), record.pid.to_string());
+        metadata.insert("user".into(), record.user);
+        metadata.insert("comm".into(), comm.clone());
+        nodes.push(RuntimeMapNode {
+            id: format!("native_process_{}", record.pid),
+            provider: RuntimeProviderKind::Process,
+            kind: RuntimeNodeKind::Process,
+            label: comm,
+            status: Some("running".into()),
+            layer: Some(RuntimeNodeLayer::Process),
+            metadata,
+            service: None,
+            package: None,
         });
     }
-    records
+    nodes
 }
 
-#[cfg(test)]
-fn parse_ss_process(fields: Option<&[&str]>) -> (Option<String>, Option<u32>) {
-    let Some(fields) = fields else {
-        return (None, None);
+/// Extract the process command name (executable basename) from a ps args
+/// column. Kernel threads render as `[kworker/0:0]` — brackets preserved so
+/// they are never mistaken for an executable.
+fn process_comm(args: &str) -> Option<String> {
+    let executable = args.split_whitespace().next()?;
+    if executable.starts_with('[') {
+        return Some(executable.to_string());
+    }
+    let basename = executable.rsplit('/').next().unwrap_or(executable);
+    Some(basename.to_string())
+}
+
+/// Native-process detection: everything except kernel threads, python
+/// interpreters (owned by the python provider), the daemon itself, container
+/// runtime plumbing, and the transient `ps` process itself.
+fn is_native_process(args: &str) -> bool {
+    let Some(comm) = process_comm(args) else {
+        return false;
     };
-    let joined = fields.join(" ");
-    let Some(inner) = joined.strip_prefix("users:((") else {
-        return (None, None);
-    };
-    let name = inner.split('"').nth(1).unwrap_or("").to_string();
-    let pid = inner
-        .split("pid=")
-        .nth(1)
-        .and_then(|value| value.split(',').next())
-        .and_then(|value| value.parse::<u32>().ok());
-    (if name.is_empty() { None } else { Some(name) }, pid)
-}
-
-#[cfg(test)]
-fn parse_proc_net_tcp_listeners(value: &str) -> Vec<ListenerRecord> {
-    let mut records = Vec::new();
-    for line in value.lines().skip(1) {
-        let parts = line.split_whitespace().collect::<Vec<_>>();
-        if parts.len() < 4 || parts[3] != "0A" {
-            continue;
-        }
-        let Some((ip_hex, port_hex)) = parts[1].split_once(':') else {
-            continue;
-        };
-        let Ok(port) = u16::from_str_radix(port_hex, 16) else {
-            continue;
-        };
-        records.push(ListenerRecord {
-            protocol: "tcp".into(),
-            address: hex_ipv4_to_dotted(ip_hex),
-            port,
-            state: "listen".into(),
-            process: None,
-            pid: None,
-        });
+    if comm.starts_with('[') {
+        return false; // kernel thread
     }
-    records
-}
-
-#[cfg(test)]
-fn hex_ipv4_to_dotted(hex: &str) -> String {
-    if hex.len() != 8 {
-        return hex.to_string();
+    if comm.contains("python") {
+        return false; // python provider owns interpreter processes
     }
-    let mut octets = [0u8; 4];
-    for (index, octet) in octets.iter_mut().enumerate() {
-        *octet = u8::from_str_radix(&hex[2 * index..2 * index + 2], 16).unwrap_or(0);
+    if matches!(
+        comm.as_str(),
+        "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
+    ) {
+        return false; // python provider owns framework processes
     }
-    // Kernel stores the address little-endian: reverse the byte order.
-    octets.reverse();
-    format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
+    if comm == "dockermap-daemon" || comm == "ps" || comm == "dockermap-api" {
+        return false;
+    }
+    if comm.starts_with("containerd-shim") {
+        return false; // container runtime plumbing
+    }
+    true
 }
 
 fn collect_npm_projects(
@@ -3224,17 +3229,13 @@ fn collect_network_listeners(
             continue;
         };
         for line in content.lines().skip(1) {
-            let fields = line.split_whitespace().collect::<Vec<_>>();
-            if fields.len() < 10 || fields[3] != "0A" {
-                continue;
-            }
-            let Some((address, port)) = parse_proc_net_local_address(fields[1]) else {
+            let Some((address, port, socket_inode)) = parse_proc_net_listener_line(line) else {
                 continue;
             };
             let mut metadata = BTreeMap::new();
             metadata.insert("address".into(), address.clone());
             metadata.insert("port".into(), port.to_string());
-            metadata.insert("socketInode".into(), fields[9].into());
+            metadata.insert("socketInode".into(), socket_inode);
             nodes.push(RuntimeMapNode {
                 id: format!(
                     "network_listener_{}_{}",
@@ -3252,6 +3253,17 @@ fn collect_network_listeners(
             });
         }
     }
+}
+
+/// Parse one `/proc/net/tcp` (or tcp6) line into `(address, port, inode)` for
+/// a LISTEN-state socket; returns `None` for anything else.
+fn parse_proc_net_listener_line(line: &str) -> Option<(String, u16, String)> {
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 10 || fields[3] != "0A" {
+        return None;
+    }
+    let (address, port) = parse_proc_net_local_address(fields[1])?;
+    Some((address, port, fields[9].to_string()))
 }
 
 fn parse_proc_net_local_address(value: &str) -> Option<(String, u16)> {
@@ -4540,40 +4552,89 @@ mod tests {
 
     #[test]
     fn parses_proc_net_tcp_listener_fixture() {
-        let listeners = parse_proc_net_tcp_listeners(include_str!(
-            "../../../tests/fixtures/providers/parser/listeners-proc-net-tcp.txt"
-        ));
+        // The production listener collector's line parser, fed the fixture.
+        let fixture =
+            include_str!("../../../tests/fixtures/providers/parser/listeners-proc-net-tcp.txt");
+        let listeners = fixture
+            .lines()
+            .skip(1)
+            .filter_map(parse_proc_net_listener_line)
+            .collect::<Vec<_>>();
 
         assert_eq!(listeners.len(), 3);
-        assert_eq!(listeners[0].protocol, "tcp");
-        assert_eq!(listeners[0].address, "127.0.0.1");
-        assert_eq!(listeners[0].port, 8080);
-        assert_eq!(listeners[0].state, "listen");
-        assert_eq!(listeners[0].process, None);
-        assert_eq!(listeners[1].address, "0.0.0.0");
-        assert_eq!(listeners[1].port, 3000);
-        assert_eq!(listeners[2].address, "127.0.0.1");
-        assert_eq!(listeners[2].port, 4096);
+        assert_eq!(listeners[0].0, "127.0.0.1");
+        assert_eq!(listeners[0].1, 8080);
+        assert_eq!(listeners[0].2, "12345");
+        assert_eq!(listeners[1].0, "0.0.0.0");
+        assert_eq!(listeners[1].1, 3000);
+        assert_eq!(listeners[2].0, "127.0.0.1");
+        assert_eq!(listeners[2].1, 4096);
+        assert_eq!(listeners[2].2, "34567");
     }
 
     #[test]
-    fn parses_ss_listener_fixture() {
-        let listeners = parse_ss_listener_records(include_str!(
-            "../../../tests/fixtures/providers/parser/listeners-ss.txt"
+    fn parses_native_process_table_from_fixture() {
+        let records = parse_ps_table(include_str!(
+            "../../../tests/fixtures/providers/parser/native-ps-table.txt"
         ));
 
-        assert_eq!(listeners.len(), 3);
-        assert_eq!(listeners[0].protocol, "tcp");
-        assert_eq!(listeners[0].address, "127.0.0.1");
-        assert_eq!(listeners[0].port, 4000);
-        assert_eq!(listeners[0].process.as_deref(), Some("node"));
-        assert_eq!(listeners[0].pid, Some(1234));
-        assert_eq!(listeners[1].process.as_deref(), Some("dockerd"));
-        assert_eq!(listeners[1].pid, Some(5678));
-        assert_eq!(listeners[2].address, "[::]");
-        assert_eq!(listeners[2].port, 443);
-        assert_eq!(listeners[2].process.as_deref(), Some("nginx"));
-        assert_eq!(listeners[2].pid, Some(9012));
+        assert_eq!(records.len(), 14);
+        assert_eq!(records[0].pid, 1);
+        assert_eq!(records[0].user, "root");
+        assert_eq!(records[0].args, "/usr/sbin/nginx -g daemon off;");
+        assert_eq!(
+            process_comm(&records[6].args).as_deref(),
+            Some("[kworker/0:1-events]")
+        );
+    }
+
+    #[test]
+    fn filters_native_processes_and_excludes_noise() {
+        let fixture = include_str!("../../../tests/fixtures/providers/parser/native-ps-table.txt");
+        let natives = parse_ps_table(fixture)
+            .into_iter()
+            .filter(|record| is_native_process(&record.args))
+            .map(|record| record.pid)
+            .collect::<Vec<_>>();
+
+        // nginx, postgres, redis, sshd, dockerd, node, cron are native;
+        // containerd-shim, kernel threads, python, the daemon itself, and the
+        // transient ps process are excluded.
+        assert_eq!(natives, vec![1, 2, 3, 4, 5, 13, 14]);
+    }
+
+    #[test]
+    fn builds_native_process_nodes_from_fixture() {
+        let mut nodes = native_process_nodes_from_ps_output(
+            include_str!("../../../tests/fixtures/providers/parser/native-ps-table.txt"),
+            11, // the daemon's own pid (dockermap-daemon in the fixture)
+        );
+        redact_runtime_nodes(&mut nodes);
+
+        assert_eq!(nodes.len(), 7);
+
+        let nginx = &nodes[0];
+        assert_eq!(nginx.id, "native_process_1");
+        assert_eq!(nginx.provider, RuntimeProviderKind::Process);
+        assert_eq!(nginx.kind, RuntimeNodeKind::Process);
+        assert_eq!(nginx.label, "nginx");
+        assert_eq!(nginx.status.as_deref(), Some("running"));
+        assert_eq!(nginx.layer, Some(RuntimeNodeLayer::Process));
+        assert_eq!(nginx.metadata.get("pid").map(String::as_str), Some("1"));
+        assert_eq!(nginx.metadata.get("user").map(String::as_str), Some("root"));
+        assert_eq!(
+            nginx.metadata.get("comm").map(String::as_str),
+            Some("nginx")
+        );
+
+        let node = &nodes[5];
+        assert_eq!(node.id, "native_process_13");
+        assert_eq!(node.label, "node");
+
+        // No daemon self-node, and raw argv is never published.
+        assert!(nodes.iter().all(|node| node.id != "native_process_11"));
+        assert!(nodes.iter().all(|node| !node.metadata.contains_key("args")));
+        assert_no_raw_secrets(&nodes, &["dockermap-daemon"]);
     }
 
     #[test]
