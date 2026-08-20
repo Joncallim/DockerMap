@@ -29,10 +29,15 @@ If you do not use Docker Compose, plain Docker works too:
 
 ```bash
 docker build -t dockermap:local .
-docker run --rm -p 3233:3233 \
+docker run --rm -p 127.0.0.1:3233:3233 \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   dockermap:local
 ```
+
+The port is bound to loopback (127.0.0.1) because with no `DOCKERMAP_API_TOKEN`
+set the API is unauthenticated read-only — do not expose it on the LAN. For
+remote access, set `DOCKERMAP_API_TOKEN` (see `.env.example`) and publish the
+port on the interface of your choice, e.g. `-p 3233:3233`.
 
 That Docker socket mount is read-only. DockerMap needs it so it can inspect
 containers, images, networks, volumes, and logs.

@@ -22,11 +22,16 @@ Open `http://127.0.0.1:3233`.
 
 ```bash
 docker build -t dockermap:local .
-docker run --rm -p 3233:3233 \
+docker run --rm -p 127.0.0.1:3233:3233 \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -v "$PWD":/opt/dockermap/project:ro \
   dockermap:local
 ```
+
+The port is bound to loopback (127.0.0.1) because with no `DOCKERMAP_API_TOKEN`
+set the API is unauthenticated read-only — do not expose it on the LAN. For
+remote access, set `DOCKERMAP_API_TOKEN` (see `.env.example`) and publish the
+port on the interface of your choice, e.g. `-p 3233:3233`.
 
 ## What The Mounts Are For
 
