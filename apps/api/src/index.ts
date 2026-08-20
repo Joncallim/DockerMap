@@ -353,7 +353,21 @@ function getMockResponse<T>(path: string): T {
         status: null,
         layer: "storage" as const,
         metadata: {}
-      }))
+      })),
+      {
+        id: "python_process_4242",
+        provider: "python" as const,
+        type: "python_application" as const,
+        label: "worker.py",
+        status: "running",
+        layer: "process" as const,
+        metadata: {
+          pid: "4242",
+          user: "jon",
+          entry: "worker.py",
+          args: "/usr/bin/python3 /srv/app/worker.py --queue default"
+        }
+      }
     ];
 
     const runtimeMap: RuntimeMap = {

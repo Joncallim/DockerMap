@@ -25,6 +25,7 @@ const PROVIDER_ICON: Record<RuntimeProviderKind, IconName> = {
   dns_provider: "network",
   external_api: "external",
   process: "worker",
+  python: "worker",
   network: "link",
   kubernetes: "storage",
   other: "service"
