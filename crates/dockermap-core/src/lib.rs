@@ -579,6 +579,7 @@ pub enum RuntimeProviderKind {
     DnsProvider,
     ExternalApi,
     Process,
+    Python,
     Network,
     Kubernetes,
     Other,

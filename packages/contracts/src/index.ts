@@ -341,6 +341,7 @@ export type RuntimeProviderKind =
   | "dns_provider"
   | "external_api"
   | "process"
+  | "python"
   | "network"
   | "kubernetes"
   | "other";

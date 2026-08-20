@@ -52,6 +52,7 @@ const MAX_NPM_DEPENDENCIES_PER_PROJECT: usize = 64;
 const MAX_PACKAGE_JSON_BYTES: u64 = 262_144;
 const MAX_NPM_SCRIPTS: usize = 16;
 const MAX_SCRIPT_CHARS: usize = 200;
+const MAX_PYTHON_PROCESSES: usize = 64;
 const REDACTED_VALUE: &str = "[redacted]";
 const MAX_DOCKER_LABEL_FILTER_CHARS: usize = 256;
 
@@ -872,6 +873,7 @@ fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
     collect_systemd_services(&mut nodes, &mut edges, &mut diagnostics);
     collect_scheduled_jobs(&mut nodes, &mut diagnostics);
     collect_pm2_apps(&mut nodes, &mut diagnostics);
+    collect_python_processes(&mut nodes, &mut diagnostics);
     collect_tmux_sessions(&mut nodes, &mut diagnostics);
     if let Some(root) = project_root.as_deref() {
         collect_npm_projects(root, &mut nodes, &mut edges, &mut diagnostics);
@@ -2007,6 +2009,175 @@ fn pm2_app_nodes_from_jlist(value: &str) -> Option<Vec<RuntimeMapNode>> {
         });
     }
     Some(nodes)
+}
+
+struct PythonProcessRecord {
+    pid: u32,
+    user: String,
+    args: String,
+}
+
+fn parse_ps_table(value: &str) -> Vec<PythonProcessRecord> {
+    let mut records = Vec::new();
+    for line in value.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let fields = trimmed.split_whitespace().collect::<Vec<_>>();
+        if fields.len() < 3 {
+            continue;
+        }
+        let Ok(pid) = fields[0].parse::<u32>() else {
+            continue;
+        };
+        // Walk to the args token's byte offset so the command keeps its
+        // original spacing (sequential find cannot re-match earlier tokens).
+        let mut offset = 0usize;
+        for token in &fields[..2] {
+            match trimmed[offset..].find(token) {
+                Some(index) => offset += index + token.len(),
+                None => {
+                    offset = trimmed.len();
+                    break;
+                }
+            }
+        }
+        if offset >= trimmed.len() {
+            continue;
+        }
+        let args = trimmed[offset..].trim();
+        if args.is_empty() {
+            continue;
+        }
+        records.push(PythonProcessRecord {
+            pid,
+            user: fields[1].to_string(),
+            args: args.to_string(),
+        });
+    }
+    records
+}
+
+fn is_python_process(args: &str) -> bool {
+    let lower = args.to_ascii_lowercase();
+    [
+        "python",
+        "uvicorn",
+        "gunicorn",
+        "celery",
+        "flower",
+        "daphne",
+        "manage.py",
+        "flask",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn python_entry(args: &str) -> Option<String> {
+    let fields = args.split_whitespace().collect::<Vec<_>>();
+    if fields.is_empty() {
+        return None;
+    }
+    // The interpreter is usually fields[0] (python* path); start after it.
+    let start = if fields[0].contains("python") { 1 } else { 0 };
+    let mut index = start;
+    while index < fields.len() {
+        let field = fields[index];
+        if field == "-m" {
+            return fields
+                .get(index + 1)
+                .map(|module| format!("module:{module}"));
+        }
+        if field == "-c" {
+            return Some("inline:-c".into());
+        }
+        if field.ends_with(".py") {
+            return Some(field.to_string());
+        }
+        let basename = field.rsplit('/').next().unwrap_or(field);
+        if matches!(
+            basename,
+            "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
+        ) {
+            return Some(basename.to_string());
+        }
+        if field.contains(':') && !field.starts_with("--") {
+            // module:app spec passed to a framework binary.
+            return Some(field.to_string());
+        }
+        index += 1;
+    }
+    None
+}
+
+fn python_nodes_from_ps_output(value: &str) -> Vec<RuntimeMapNode> {
+    let mut nodes = Vec::new();
+    for record in parse_ps_table(value)
+        .into_iter()
+        .filter(|record| is_python_process(&record.args))
+        .take(MAX_PYTHON_PROCESSES)
+    {
+        let entry = python_entry(&record.args)
+            .map(|entry| redact_sensitive_text(&entry))
+            .unwrap_or_else(|| "python".into());
+        let safe_args = redact_sensitive_text(&record.args);
+        let mut metadata = BTreeMap::new();
+        metadata.insert("pid".into(), record.pid.to_string());
+        metadata.insert("user".into(), record.user);
+        metadata.insert("entry".into(), entry.clone());
+        metadata.insert("args".into(), safe_args);
+        metadata.insert(
+            "serviceEntityKind".into(),
+            service_entity_kind_name(&ServiceEntityKind::PythonApplication).into(),
+        );
+        nodes.push(RuntimeMapNode {
+            id: format!("python_process_{}", record.pid),
+            provider: RuntimeProviderKind::Python,
+            kind: RuntimeNodeKind::PythonApplication,
+            label: entry,
+            status: Some("running".into()),
+            layer: Some(RuntimeNodeLayer::Process),
+            metadata,
+            service: None,
+            package: None,
+        });
+    }
+    nodes
+}
+
+fn collect_python_processes(
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("ps");
+            command.args(["-eo", "pid=,user=,args="]);
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            push_provider_diagnostic(
+                diagnostics,
+                RuntimeProviderKind::Python,
+                DiagnosticSeverity::Info,
+                format!("Python process discovery skipped: {error}"),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        return;
+    }
+
+    nodes.extend(python_nodes_from_ps_output(&String::from_utf8_lossy(
+        &output.stdout,
+    )));
 }
 
 fn collect_tmux_sessions(
@@ -4059,6 +4230,111 @@ mod tests {
             nodes[2].metadata.get("restartCount").map(String::as_str),
             Some("12")
         );
+    }
+
+    #[test]
+    fn parses_python_process_table_from_fixture() {
+        let records = parse_ps_table(include_str!(
+            "../../../tests/fixtures/providers/parser/python-ps-table.txt"
+        ));
+
+        assert_eq!(records.len(), 7);
+        assert_eq!(records[0].pid, 1234);
+        assert_eq!(records[0].user, "root");
+        assert_eq!(
+            records[0].args,
+            "/usr/bin/python3 /srv/app/worker.py --queue default"
+        );
+        assert_eq!(records[5].args, "/usr/sbin/cron -f");
+        assert_eq!(records[6].pid, 7890);
+    }
+
+    #[test]
+    fn filters_and_classifies_python_processes_from_fixture() {
+        let records = parse_ps_table(include_str!(
+            "../../../tests/fixtures/providers/parser/python-ps-table.txt"
+        ));
+
+        let python = records
+            .iter()
+            .filter(|record| is_python_process(&record.args))
+            .collect::<Vec<_>>();
+        // cron and containerd-shim are not python processes.
+        assert_eq!(python.len(), 5);
+        assert_eq!(
+            python.iter().map(|record| record.pid).collect::<Vec<_>>(),
+            vec![1234, 2345, 3456, 4567, 5678]
+        );
+
+        assert_eq!(
+            python_entry(&python[0].args).as_deref(),
+            Some("/srv/app/worker.py")
+        );
+        assert_eq!(python_entry(&python[1].args).as_deref(), Some("uvicorn"));
+        assert_eq!(
+            python_entry(&python[2].args).as_deref(),
+            Some("/srv/web/manage.py")
+        );
+        assert_eq!(
+            python_entry(&python[3].args).as_deref(),
+            Some("module:celery")
+        );
+        assert_eq!(
+            python_entry(&python[4].args).as_deref(),
+            Some("/srv/agent/agent.py")
+        );
+    }
+
+    #[test]
+    fn builds_python_nodes_from_fixture() {
+        let nodes = python_nodes_from_ps_output(include_str!(
+            "../../../tests/fixtures/providers/parser/python-ps-table.txt"
+        ));
+
+        assert_eq!(nodes.len(), 5);
+
+        let worker = &nodes[0];
+        assert_eq!(worker.id, "python_process_1234");
+        assert_eq!(worker.provider, RuntimeProviderKind::Python);
+        assert_eq!(worker.kind, RuntimeNodeKind::PythonApplication);
+        assert_eq!(worker.label, "/srv/app/worker.py");
+        assert_eq!(worker.status.as_deref(), Some("running"));
+        assert_eq!(worker.layer, Some(RuntimeNodeLayer::Process));
+        assert_eq!(
+            worker.metadata.get("entry").map(String::as_str),
+            Some("/srv/app/worker.py")
+        );
+        assert_eq!(
+            worker.metadata.get("user").map(String::as_str),
+            Some("root")
+        );
+        assert_eq!(
+            worker.metadata.get("serviceEntityKind").map(String::as_str),
+            Some("python_application")
+        );
+
+        assert_eq!(nodes[1].label, "uvicorn");
+        assert_eq!(nodes[3].id, "python_process_4567");
+        assert_eq!(
+            nodes[3].metadata.get("entry").map(String::as_str),
+            Some("module:celery")
+        );
+    }
+
+    #[test]
+    fn redacts_python_process_args_with_tokens() {
+        let mut nodes = python_nodes_from_ps_output(include_str!(
+            "../../../tests/fixtures/providers/parser/python-ps-table.txt"
+        ));
+        redact_runtime_nodes(&mut nodes);
+
+        // The agent process carries --token=... in its args; the whole value
+        // is collapsed and the sentinel never surfaces in labels/metadata/ids.
+        assert_eq!(
+            nodes[4].metadata.get("args").map(String::as_str),
+            Some(REDACTED_VALUE)
+        );
+        assert_no_raw_secrets(&nodes, &["DOCKERMAP_TEST_FAKE_PYTHON_TOKEN"]);
     }
 
     #[test]
