@@ -69,15 +69,24 @@ export default function Logs() {
           return data.entries;
         }
         const newest = current[0].timestamp;
-        // Prepend only entries strictly newer than the newest loaded entry;
-        // everything already on screen (including pages loaded via "Load
-        // older") is preserved. Dedupe by id as a safety net.
+        // Prepend entries at or after the newest loaded entry; everything
+        // already on screen (including pages loaded via "Load older") is
+        // preserved. `>=` (not `>`) matters because Docker timestamps are
+        // ms-truncated: a newly-arrived line sharing the top entry's
+        // millisecond would be filtered out by a strict comparison and,
+        // being newer than the cursor, never surface via Load older either —
+        // permanently lost from the live tail. The id-dedupe below skips the
+        // already-present top entry (and any other known line), so `>=`
+        // cannot duplicate; it relies on ids being unique per PHYSICAL line
+        // (round-8 F1), otherwise identical same-ms lines would collapse.
         const fresh = data.entries.filter(
-          (entry) => entry.timestamp > newest && !current.some((known) => known.id === entry.id)
+          (entry) => entry.timestamp >= newest && !current.some((known) => known.id === entry.id)
         );
         if (fresh.length === 0) {
           return current;
         }
+        // fresh is newest-first from the API; prepending keeps newer lines
+        // above, while already-loaded older pages stay below untouched.
         return [...fresh, ...current];
       });
       // Adopt the poll's cursor ONLY when none exists yet (e.g. the first

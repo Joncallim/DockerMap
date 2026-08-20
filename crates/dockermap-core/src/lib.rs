@@ -1370,6 +1370,21 @@ pub fn derive_runtime_map(
     }
 }
 
+/// Base timestamp for mock log entries, captured ONCE per process.
+///
+/// A fresh `now` per request would shift the whole mock timeline by the
+/// request-to-request delta: a compound cursor (`millis:offset`) produced
+/// from page N would land between entries on page N+1, so the boundary
+/// entry would be misclassified as already-emitted and skipped, and the
+/// same-ms offset logic would never engage in mock mode. A process-wide
+/// base keeps the timeline — and therefore cursor matching — stable across
+/// requests.
+static MOCK_LOG_BASE_MILLIS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+fn mock_log_base_millis() -> u64 {
+    *MOCK_LOG_BASE_MILLIS.get_or_init(unix_timestamp_millis)
+}
+
 pub fn mock_logs(
     snapshot: &DockerSnapshot,
     service: Option<&str>,
@@ -1378,7 +1393,7 @@ pub fn mock_logs(
     limit: usize,
 ) -> LogsResponse {
     let mut entries = Vec::new();
-    let now = unix_timestamp_millis();
+    let now = mock_log_base_millis();
 
     for (index, container) in snapshot.containers.iter().enumerate() {
         if let Some(service_filter) = service {
@@ -2738,6 +2753,65 @@ mod tests {
                 .iter()
                 .all(|entry| entry.timestamp < first.entries[0].timestamp),
             "older page must be strictly older than the first page"
+        );
+    }
+
+    #[test]
+    fn mock_log_timestamps_are_stable_across_requests() {
+        // Regression (round 8, F3): mock entry timestamps used to derive
+        // from a FRESH `now` per request, so a compound cursor from page N
+        // never matched an entry on page N+1 — the boundary entry was
+        // misclassified as already-emitted and skipped, and the same-ms
+        // offset logic never engaged in mock mode. The base must be captured
+        // once per process.
+        let snapshot = mock_snapshot();
+        let first = mock_logs(&snapshot, None, None, None, 2);
+        let cursor = first
+            .next_cursor
+            .clone()
+            .expect("a full first page has a cursor");
+
+        // The same cursor must select the identical entries on every
+        // subsequent request (the timeline must not drift between requests).
+        let again = mock_logs(&snapshot, None, None, LogCursor::parse(&cursor), 2);
+        let again_2 = mock_logs(&snapshot, None, None, LogCursor::parse(&cursor), 2);
+        assert_eq!(
+            again.entries, again_2.entries,
+            "the same cursor must yield identical entries across requests"
+        );
+
+        // Paginating through the compound cursor must return strictly older
+        // pages and cover every mock entry exactly once (no loss, no
+        // overlap).
+        let mut seen = first
+            .entries
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut next = Some(cursor);
+        let mut pages = 1usize;
+        while let Some(current) = next {
+            let page = mock_logs(&snapshot, None, None, LogCursor::parse(&current), 2);
+            assert!(!page.entries.is_empty(), "cursor pagination must not stall");
+            assert!(
+                page.entries
+                    .iter()
+                    .all(|entry| entry.timestamp < first.entries[0].timestamp),
+                "every cursor page must be strictly older than the first page"
+            );
+            for entry in &page.entries {
+                assert!(seen.insert(entry.id.clone()), "pages must not overlap");
+            }
+            next = page.next_cursor;
+            pages += 1;
+            assert!(pages < 100, "cursor pagination must terminate");
+        }
+
+        let all = mock_logs(&snapshot, None, None, None, MAX_LOG_PAGE_SIZE);
+        assert_eq!(
+            seen.len(),
+            all.entries.len(),
+            "no mock entry may be lost across pages"
         );
     }
 

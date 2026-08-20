@@ -32,7 +32,6 @@ use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
-    hash::{Hash, Hasher},
     net::{IpAddr, SocketAddr},
     path::{Component, Path as StdPath, PathBuf},
     process::{Command, Output},
@@ -472,6 +471,15 @@ impl DockerCollector {
         // (bounded server-side by `tail`, plus a defensive cap in case Docker
         // returns more than requested), then page it in a pure function.
         let mut entries = Vec::new();
+        // Same-millisecond ordinal, assigned in stream order. Docker returns
+        // the tail window in stable chronological order, so a physical line's
+        // ordinal (how many same-ms lines PRECEDE it in the stream) is the
+        // same on every request — unlike a per-request sequence counter,
+        // which would change the id and defeat the client's dedupe-by-id.
+        // The ordinal is what keeps two distinct physical lines that share a
+        // service, an ms-truncated timestamp, and identical message text
+        // from collapsing onto one id.
+        let mut same_timestamp_seen = HashMap::<u64, usize>::new();
 
         while let Some(item) = stream.next().await {
             let output = item.map_err(|error| format!("docker logs failed: {error}"))?;
@@ -487,8 +495,9 @@ impl DockerCollector {
                 }
             };
 
+            let ordinal = same_timestamp_seen.entry(timestamp).or_insert(0);
             entries.push(LogEntry {
-                id: log_entry_id(service, timestamp, &message),
+                id: log_entry_id(service, timestamp, *ordinal),
                 timestamp,
                 container: service.to_string(),
                 level: if message.to_ascii_lowercase().contains("error") {
@@ -500,6 +509,7 @@ impl DockerCollector {
                 },
                 message,
             });
+            *ordinal += 1;
 
             if entries.len() >= MAX_LOG_STREAM_CAP {
                 break;
@@ -586,17 +596,21 @@ const MAX_LOG_CURSOR_TAIL: usize = 4_096;
 /// be truncated before `page_log_entries` sees it.
 const MAX_LOG_STREAM_CAP: usize = MAX_LOG_CURSOR_TAIL + 1;
 
-/// Stable id for a live-Docker log entry, derived from content
-/// (service + timestamp + message) instead of the per-request stream
-/// sequence. The old sequence-based ids changed on every request, so the
-/// client's dedupe-by-id either filtered whole pages or duplicated entries.
-/// Same-timestamp lines stay distinct as long as their messages differ.
-fn log_entry_id(service: &str, timestamp: u64, message: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    service.hash(&mut hasher);
-    timestamp.hash(&mut hasher);
-    message.hash(&mut hasher);
-    format!("{service}-{timestamp}-{:016x}", hasher.finish())
+/// Stable id for a live-Docker log entry, unique per PHYSICAL line.
+///
+/// The id is `service-timestamp-ordinal`, where `ordinal` is the line's
+/// index among same-millisecond entries in stream order (how many same-ms
+/// lines precede it). Docker streams a log's tail window in stable
+/// chronological order, so the ordinal — unlike a per-request sequence
+/// counter — is deterministic across requests: the same physical line
+/// always gets the same id, while two DISTINCT lines sharing a service, an
+/// ms-truncated timestamp, and identical message text still get distinct
+/// ids. Content hashing alone (service + timestamp + message) collapsed
+/// such lines onto one id, and the client's dedupe-by-id silently dropped
+/// the second one — even though the compound cursor was built to preserve
+/// same-ms entries at page boundaries.
+fn log_entry_id(service: &str, timestamp: u64, ordinal: usize) -> String {
+    format!("{service}-{timestamp}-{ordinal:04x}")
 }
 
 // Log page boundaries are decided by `dockermap_core::page_log_entries`
@@ -4021,22 +4035,34 @@ mod tests {
     }
 
     #[test]
-    fn log_entry_ids_are_stable_and_unique_for_same_timestamp_lines() {
-        let first = log_entry_id("api", 1_787_198_706_123, "line one");
-        let second = log_entry_id("api", 1_787_198_706_123, "line two");
+    fn log_entry_ids_are_stable_and_unique_per_physical_line() {
+        // Regression (round 8, F1): content hashing (service + timestamp +
+        // message) gave two DISTINCT physical lines with the same service,
+        // the same ms-truncated timestamp, and identical message text the
+        // SAME id, so the UI's dedupe-by-id silently dropped the second line.
+        // The within-ms ordinal — the line's index among same-ms entries in
+        // stream order — must disambiguate identical-content same-ms lines
+        // while staying stable for the same physical line across requests.
+        let first = log_entry_id("api", 1_787_198_706_123, 0);
+        let second = log_entry_id("api", 1_787_198_706_123, 1);
         assert_ne!(
             first, second,
-            "same-ms lines with different content must not collide"
+            "identical-content same-ms lines must get distinct ids"
         );
         assert_eq!(
-            log_entry_id("api", 1_787_198_706_123, "line one"),
+            log_entry_id("api", 1_787_198_706_123, 0),
             first,
-            "identical content must yield the identical id across calls"
+            "the same physical line re-fetched must keep its id (stable ordinal)"
         );
         assert_ne!(
-            log_entry_id("web", 1_787_198_706_123, "line one"),
+            log_entry_id("web", 1_787_198_706_123, 0),
             first,
             "different services must not collide"
+        );
+        assert_ne!(
+            log_entry_id("api", 1_787_198_706_122, 0),
+            first,
+            "different timestamps must not collide"
         );
     }
 
@@ -4044,21 +4070,21 @@ mod tests {
     fn pages_log_entries_with_query_filter_and_sparse_last_page() {
         let entries = vec![
             LogEntry {
-                id: log_entry_id("svc", 100, "boot ok"),
+                id: log_entry_id("svc", 100, 0),
                 timestamp: 100,
                 container: "svc".into(),
                 level: dockermap_core::LogLevel::Info,
                 message: "boot ok".into(),
             },
             LogEntry {
-                id: log_entry_id("svc", 100, "token=DOCKERMAP_TEST_FAKE_LOG_LINE"),
+                id: log_entry_id("svc", 100, 1),
                 timestamp: 100,
                 container: "svc".into(),
                 level: dockermap_core::LogLevel::Info,
                 message: "token=DOCKERMAP_TEST_FAKE_LOG_LINE".into(),
             },
             LogEntry {
-                id: log_entry_id("svc", 99, "retry"),
+                id: log_entry_id("svc", 99, 0),
                 timestamp: 99,
                 container: "svc".into(),
                 level: dockermap_core::LogLevel::Warn,

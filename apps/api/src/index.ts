@@ -54,6 +54,12 @@ const maxContainerNameLength = 128;
 const maxComposeFiles = 8;
 const maxComposeFileLength = 512;
 const maxLogPageSize = 500;
+// Base timestamp for the mock log timeline, fixed once per process so a
+// compound "millis:offset" cursor taken from one request still matches
+// entries on the next. A fresh Date.now() per request shifts the whole
+// timeline by the request-to-request delta, so the boundary entry lands
+// between two timestamps and is skipped by the cursor filter.
+const MOCK_LOG_BASE_MILLIS = Date.now();
 
 function readPort(value: string | undefined, fallback: number) {
   const port = Number(value ?? fallback);
@@ -405,7 +411,7 @@ function getMockResponse<T>(path: string): T {
     const entries = mockContainers.flatMap((container, index) => [
       {
         id: `${container.id}-log-${index}`,
-        timestamp: Date.now() - index * 30_000,
+        timestamp: MOCK_LOG_BASE_MILLIS - index * 30_000,
         container: container.name,
         level: "info",
         message: `${container.name} running on ${container.image}`
