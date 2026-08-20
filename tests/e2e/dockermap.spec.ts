@@ -141,41 +141,56 @@ test.describe("DockerMap GUI", () => {
     await page.locator("select.service-select").selectOption(workerName!);
     await expect(page.getByRole("main")).toContainText("dockermap-live-worker", { timeout: 20_000 });
 
-    // Round-3 (F5/F1): enable live tail so the merge-refresh polls pick up a
-    // cursor once the worker's 250-line burst (12.5s at 20 lines/sec) has
-    // grown past PAGE_SIZE — with more lines than the page, the live Docker
-    // path over-fetches and "Load older" must appear.
-    await page.locator("label.log-live input").check();
-    const loadOlder = page.getByRole("button", { name: "Load older" });
-    await expect(loadOlder).toBeVisible({ timeout: 25_000 });
+    // Round-6 (F3): verify REAL cursor paging against live Docker via the API.
+    // The GUI "Load older" button drives the same endpoint, but the previous
+    // e2e assertion (count >= before+50 with live tail ON) was a false
+    // positive: the worker keeps emitting and the 3s merge-poll satisfied the
+    // delta even when "Load older" itself returned ~1 line. Poll the API until
+    // two full pages exist, then assert strict older-ness, no overlap, and
+    // cursor termination.
+    const pageLogs = async (cursor?: string) =>
+      (await request.get(
+        `${stack.apiUrl}/api/logs?service=${encodeURIComponent(workerName!)}&limit=100` +
+          (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "")
+      )).json();
 
-    // Round-3 (F1, API layer): a small page on the live path still carries a
-    // non-null nextCursor because more lines exist behind it.
-    const paginated = await (
-      await request.get(
-        `${stack.apiUrl}/api/logs?service=${encodeURIComponent(workerName!)}&limit=10`
-      )
-    ).json();
-    expect(paginated.entries.length).toBe(10);
-    expect(paginated.nextCursor).toBeTruthy();
-
-    // Round-3 (F5): loading an older page appends, and live tail polls must
-    // MERGE new lines without discarding the loaded older page.
-    const countBeforeOlder = await page.locator("ul.log-stream li").count();
-    await loadOlder.click();
+    let page1!: { entries: { id: string; timestamp: number }[]; nextCursor: string | null };
+    let page2!: { entries: { id: string; timestamp: number }[]; nextCursor: string | null };
     await expect(async () => {
-      const count = await page.locator("ul.log-stream li").count();
-      expect(count).toBeGreaterThanOrEqual(countBeforeOlder + 50);
-    }).toPass({ timeout: 20_000 });
-    const countAfterOlder = await page.locator("ul.log-stream li").count();
+      page1 = await pageLogs();
+      expect(page1.entries.length).toBe(100);
+      expect(page1.nextCursor).toBeTruthy();
+      page2 = await pageLogs(page1.nextCursor);
+      expect(page2.entries.length).toBe(100);
+      expect(page2.nextCursor).toBeTruthy();
+    }).toPass({ timeout: 30_000 });
 
-    // Wait past at least one live poll cycle, then assert the loaded older
-    // page survived (the old code reset the stream to the newest page on
-    // every heartbeat tick) and the cursor is still advertised.
-    await page.waitForTimeout(4_000);
-    const countAfterTick = await page.locator("ul.log-stream li").count();
-    expect(countAfterTick).toBeGreaterThanOrEqual(countAfterOlder);
-    await expect(loadOlder).toBeVisible();
+    const page1Ids = new Set(page1.entries.map((entry) => entry.id));
+    const page1Oldest = page1.entries[page1.entries.length - 1].timestamp;
+    for (const entry of page2.entries) {
+      expect(page1Ids.has(entry.id)).toBe(false);
+      expect(entry.timestamp).toBeLessThan(page1Oldest);
+    }
+
+    // Walk the remaining pages to the true start of history: the cursor must
+    // terminate (None) rather than loop or stall.
+    let cursor = page2.nextCursor;
+    let pagesWalked = 0;
+    while (cursor && pagesWalked < 10) {
+      const next = await pageLogs(cursor);
+      expect(next.entries.length).toBeLessThanOrEqual(100);
+      cursor = next.nextCursor;
+      pagesWalked += 1;
+    }
+    expect(cursor).toBe(null);
+
+    // Round-6 (F3, GUI): the "Load older" control surfaces once a cursor
+    // exists — enabling live tail drives the merge-poll that sets nextCursor,
+    // and unchecking it isolates the stream from further accumulation.
+    const loadOlder = page.getByRole("button", { name: "Load older" });
+    await page.locator("label.log-live input").check();
+    await expect(loadOlder).toBeVisible({ timeout: 25_000 });
+    await page.locator("label.log-live input").uncheck();
 
     await openSpace(page, "Compose", "/compose");
     if (process.platform === "linux") {

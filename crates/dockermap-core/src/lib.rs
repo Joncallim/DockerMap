@@ -2219,6 +2219,7 @@ fn resolve_source(
     }
 
     let interpolated = interpolate_default(source);
+    let interpolated = expand_tilde(&interpolated);
     let source_path = Path::new(&interpolated);
     let resolved = if source_path.is_absolute() || is_windows_absolute_path(&interpolated) {
         PathBuf::from(interpolated)
@@ -2226,6 +2227,25 @@ fn resolve_source(
         base_dir.join(interpolated)
     };
     Some(display_path(&normalize_lexical(&resolved)))
+}
+
+/// Docker Compose expands a leading `~` or `~/...` in a bind source to the
+/// user's home directory. Without this, `~/data:/data` would resolve under the
+/// project directory as `<project>/~/data`, so unsafe-bind and missing-source
+/// checks would operate on the wrong path.
+fn expand_tilde(value: &str) -> String {
+    let home = match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => home,
+        _ => return value.to_string(),
+    };
+
+    if value == "~" {
+        return home;
+    }
+    match value.strip_prefix("~/") {
+        Some(rest) => format!("{home}/{rest}"),
+        None => value.to_string(),
+    }
 }
 
 fn interpolate_default(value: &str) -> String {
@@ -2825,6 +2845,31 @@ services:
             !safe_paths_flagged,
             "project-local and user-project bind sources must not be flagged"
         );
+    }
+
+    #[test]
+    fn tilde_bind_sources_resolve_under_home_and_flag_credentials() {
+        let base_dir = Path::new("/project");
+        let home = std::env::var("HOME").expect("HOME must be set for this test");
+
+        let data = resolve_source(base_dir, &ComposeMountKind::Bind, Some("~/data"))
+            .expect("~/data should resolve");
+        assert_eq!(data, format!("{home}/data"));
+        assert!(
+            !data.contains("/project/"),
+            "~/data must resolve under $HOME, not the project dir: {data}"
+        );
+
+        let ssh = resolve_source(base_dir, &ComposeMountKind::Bind, Some("~/.ssh"))
+            .expect("~/.ssh should resolve");
+        assert_eq!(ssh, format!("{home}/.ssh"));
+
+        // The unsafe-bind check operates on the EXPANDED path, so `~/.ssh` is
+        // flagged as credential material instead of being reported "missing".
+        let (severity, message) = unsafe_bind_source_diagnostic(&ssh)
+            .expect("~/.ssh must be flagged as credential material");
+        assert_eq!(severity, DiagnosticSeverity::Blocked);
+        assert!(message.contains("credential material"), "{message}");
     }
 
     #[test]

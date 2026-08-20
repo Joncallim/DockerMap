@@ -458,7 +458,7 @@ impl DockerCollector {
             .stdout(true)
             .stderr(true)
             .timestamps(true)
-            .tail(&log_tail_count(limit).to_string());
+            .tail(&log_tail_count(limit, cursor_millis.is_some()).to_string());
 
         if let Some(cursor_millis) = cursor_millis {
             options = options.until(log_until_seconds(cursor_millis));
@@ -480,20 +480,12 @@ impl DockerCollector {
                 | LogOutput::StdErr { message }
                 | LogOutput::Console { message }
                 | LogOutput::StdIn { message } => {
-                    let text = String::from_utf8_lossy(&message);
-                    let (prefix, rest) = match text.split_once(' ') {
-                        Some((prefix, rest)) if !rest.trim().is_empty() => (prefix, rest.trim()),
-                        _ => ("", text.trim()),
+                    let Some((timestamp, message)) = parse_timestamped_log_line(&message) else {
+                        continue;
                     };
-                    let timestamp =
-                        parse_rfc3339_nano_millis(prefix).unwrap_or_else(unix_timestamp_millis);
-                    (timestamp, truncate_chars(rest, MAX_LOG_MESSAGE_CHARS))
+                    (timestamp, message)
                 }
             };
-
-            if message.is_empty() {
-                continue;
-            }
 
             entries.push(LogEntry {
                 id: log_entry_id(service, timestamp, sequence),
@@ -525,16 +517,51 @@ impl DockerCollector {
     }
 }
 
-/// Number of lines requested from Docker's `tail` for one log page. We
-/// over-fetch by one so `page_log_entries` can decide "a next page exists"
-/// (`entries.len() > limit`) from the live stream: with a plain
-/// `tail(limit)` the collected window is exactly `limit` lines, so
-/// `next_cursor` could never be emitted for real Docker logs and "Load
-/// older" stayed permanently hidden in live mode. The extra line is
+/// Parse one timestamped Docker log line (collected with `--timestamps`) into
+/// a `(timestamp_millis, message)` pair, or `None` when the line carries no
+/// message. A blank line arrives from Docker as `"<timestamp> "` (timestamp,
+/// space, empty body); it must be SKIPPED rather than fabricated into a
+/// now-timestamped entry whose message is the raw timestamp string.
+fn parse_timestamped_log_line(line: &[u8]) -> Option<(u64, String)> {
+    let text = String::from_utf8_lossy(line);
+    // Always split on the first space. A blank line's empty `rest` trims to
+    // "", which we skip below; a line with no space falls back to the whole
+    // text as the message (no timestamp prefix).
+    let (prefix, rest) = match text.split_once(' ') {
+        Some((prefix, rest)) => (prefix, rest.trim()),
+        None => ("", text.trim()),
+    };
+    let timestamp = parse_rfc3339_nano_millis(prefix).unwrap_or_else(unix_timestamp_millis);
+    let message = truncate_chars(rest, MAX_LOG_MESSAGE_CHARS);
+    if message.is_empty() {
+        return None;
+    }
+    Some((timestamp, message))
+}
+
+/// Number of lines requested from Docker's `tail` for one log page.
+///
+/// First page (`cursor == false`): over-fetch by one so `page_log_entries`
+/// can decide "a next page exists" (`entries.len() > limit`) from the live
+/// stream: with a plain `tail(limit)` the collected window is exactly `limit`
+/// lines, so `next_cursor` could never be emitted for real Docker logs and
+/// "Load older" stayed permanently hidden in live mode. The extra line is
 /// truncated by `page_log_entries`, which is the single source of truth for
 /// page boundaries across every log source.
-fn log_tail_count(limit: usize) -> usize {
-    limit.clamp(1, MAX_LOG_PAGE_SIZE) + 1
+///
+/// Cursor page (`cursor == true`): open a much larger fixed window
+/// (`MAX_LOG_CURSOR_TAIL`). Docker's `--tail N` selects the last N lines of
+/// the FULL log and `--until` only FILTERS that fixed window — it never moves
+/// the window older — so a cursor page bounded by `tail(limit + 1)` could
+/// surface at most one older line. The larger window lets `until(cursor)` and
+/// `page_log_entries`' precise `< cursor` filter select the correct older
+/// page. Trade-off: history older than `MAX_LOG_CURSOR_TAIL` is unreachable.
+fn log_tail_count(limit: usize, cursor: bool) -> usize {
+    if cursor {
+        MAX_LOG_CURSOR_TAIL
+    } else {
+        limit.clamp(1, MAX_LOG_PAGE_SIZE) + 1
+    }
 }
 
 /// Docker's `until` filter is second-resolution and EXCLUSIVE: a line at
@@ -547,10 +574,16 @@ fn log_until_seconds(cursor_millis: u64) -> i32 {
     cursor_millis.div_ceil(1_000).min(i32::MAX as u64) as i32
 }
 
+/// Fixed `tail` window opened for cursor ("Load older") pages. See
+/// `log_tail_count` for why a cursor page needs a large window.
+const MAX_LOG_CURSOR_TAIL: usize = 4_096;
+
 /// Defensive cap on the raw log stream collected from Docker. The stream is
-/// already bounded by `tail(limit + 1)`, so this only guards against a daemon
-/// returning more than requested.
-const MAX_LOG_STREAM_CAP: usize = MAX_LOG_PAGE_SIZE * 4 + 2;
+/// already bounded by `tail(...)`, so this only guards against a daemon
+/// returning more than requested — but it must be at least as large as the
+/// widest tail window (`MAX_LOG_CURSOR_TAIL`), or a cursor page's window would
+/// be truncated before `page_log_entries` sees it.
+const MAX_LOG_STREAM_CAP: usize = MAX_LOG_CURSOR_TAIL + 1;
 
 /// Unique id for a live-Docker log entry. Same-timestamp lines (Docker's
 /// millisecond timestamps can collide) stay unique thanks to the per-stream
@@ -4088,9 +4121,16 @@ mod tests {
         // The live-Docker path over-fetches `limit + 1` lines so a next page
         // can be detected (`entries.len() > limit`) — a plain `tail(limit)`
         // window could never produce a cursor.
-        assert_eq!(log_tail_count(100), 101);
-        assert_eq!(log_tail_count(0), 2, "limit is clamped to the valid range");
-        assert_eq!(log_tail_count(MAX_LOG_PAGE_SIZE), MAX_LOG_PAGE_SIZE + 1);
+        assert_eq!(log_tail_count(100, false), 101);
+        assert_eq!(
+            log_tail_count(0, false),
+            2,
+            "limit is clamped to the valid range"
+        );
+        assert_eq!(
+            log_tail_count(MAX_LOG_PAGE_SIZE, false),
+            MAX_LOG_PAGE_SIZE + 1
+        );
 
         // Feeding the over-fetched window into page_log_entries must yield a
         // page of exactly `limit` entries plus a cursor.
@@ -4108,6 +4148,45 @@ mod tests {
         assert_eq!(page.len(), 100, "over-fetch is truncated to the page size");
         let cursor = cursor.expect("a full page with more behind it carries a cursor");
         assert_eq!(cursor, "9901", "cursor is the oldest kept entry");
+    }
+
+    #[test]
+    fn log_tail_window_differs_for_first_and_cursor_pages() {
+        // First page over-fetches by one; cursor pages open a large fixed
+        // window because Docker's `--tail` never moves older under `--until`.
+        assert_eq!(log_tail_count(100, false), 101);
+        assert_eq!(log_tail_count(0, false), 2);
+        assert_eq!(
+            log_tail_count(MAX_LOG_PAGE_SIZE, false),
+            MAX_LOG_PAGE_SIZE + 1
+        );
+
+        assert_eq!(log_tail_count(100, true), MAX_LOG_CURSOR_TAIL);
+        assert_eq!(log_tail_count(MAX_LOG_PAGE_SIZE, true), MAX_LOG_CURSOR_TAIL);
+        assert_eq!(log_tail_count(0, true), MAX_LOG_CURSOR_TAIL);
+    }
+
+    #[test]
+    fn skips_blank_timestamped_log_lines_and_keeps_real_timestamps() {
+        // Docker emits a blank line as "<timestamp> " (timestamp, space, empty
+        // body). It must be skipped, not fabricated into a now-stamped entry
+        // whose message is the raw timestamp string.
+        assert_eq!(
+            parse_timestamped_log_line(b"2026-08-20T03:03:02.538671807Z "),
+            None,
+            "blank lines must be skipped"
+        );
+
+        // A normal line keeps its real timestamp rather than falling back to
+        // now().
+        let (timestamp, message) =
+            parse_timestamped_log_line(b"2026-08-20T03:03:02.538671807Z hello")
+                .expect("a normal line should parse");
+        assert_eq!(message, "hello");
+        assert_eq!(
+            timestamp, 1_787_194_982_538,
+            "the real timestamp must be preserved, not replaced with now()"
+        );
     }
 
     #[test]

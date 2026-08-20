@@ -484,7 +484,10 @@ function sendError(res: express.Response, error: unknown) {
 
 function buildLogsPath(query: express.Request["query"]) {
   const params = new URLSearchParams();
-  const service = readOptionalQueryString(query.service, "service", maxQueryLength);
+  // The daemon caps a log `service` (a container name) at
+  // MAX_LOG_SERVICE_CHARS = 128; mirror that so the API rejects the value
+  // with a 400 instead of forwarding it and surfacing the daemon's 400.
+  const service = readOptionalQueryString(query.service, "service", maxContainerNameLength);
   const q = readOptionalQueryString(query.q, "q", maxQueryLength);
   const cursor = readOptionalQueryString(query.cursor, "cursor", 32);
   const limit = readOptionalQueryInt(query.limit, "limit", 1, maxLogPageSize);

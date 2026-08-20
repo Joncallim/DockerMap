@@ -205,6 +205,23 @@ test("log pagination rejects invalid cursor and limit values", async () => {
   assert.equal(oversizedCursor.status, 400);
 });
 
+test("log service param caps at the daemon's 128-char container-name limit", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+
+  // 128 chars is the daemon's MAX_LOG_SERVICE_CHARS; the API must accept it.
+  const atCap = await request(api, `/api/logs?service=${"a".repeat(128)}`);
+  assert.equal(atCap.status, 200);
+
+  // 129 chars previously passed the API's 256-char query cap only to 400 at
+  // the daemon; the API now rejects it directly.
+  const overCap = await request(api, `/api/logs?service=${"a".repeat(129)}`);
+  assert.equal(overCap.status, 400);
+  assert.equal(
+    (await overCap.json()).message,
+    "Query parameter service must be 128 characters or fewer"
+  );
+});
+
 test("diagnostics aggregates compose and runtime findings", async () => {
   const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
 
