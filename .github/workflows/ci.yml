@@ -93,3 +93,16 @@ jobs:
 
       - name: Run GUI smoke tests
         run: npm run test:e2e
+
+  docker-image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Issue #42: the runtime stage must mirror the lockfile's nested
+      # workspace layout (apps/api/node_modules) or the API cannot resolve
+      # express. Build the image on every PR so regressions ship nowhere.
+      - name: Build image
+        run: docker build -t dockermap:ci .
