@@ -195,6 +195,18 @@ app.use(
 );
 app.use(express.json({ limit: "16kb" }));
 
+// Minimal redacted access log: method, pathname (never query strings, which
+// can carry tokens), status, and duration. Logged for every request so
+// auth failures and daemon errors are visible in the API's stderr.
+app.use((req, res, next) => {
+  const started = process.hrtime.bigint();
+  res.on("finish", () => {
+    const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
+    console.log(`${req.method} ${req.path} ${res.statusCode} ${durationMs.toFixed(1)}ms`);
+  });
+  next();
+});
+
 // Versioned alias: /api/v1/* maps to the same read-only /api/* surface so
 // consumers can pin a version. Authentication and CORS behave identically.
 // The bare /api/v1 (with or without trailing slash) answers with a small
@@ -649,6 +661,19 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
+/**
+ * Classify a Docker container status text for /api/status. Docker's
+ * ContainerSummary.status is free-form ("Up 3 hours", "Exited (0) ..."),
+ * so normalize on the first whitespace/paren-delimited token, mirroring
+ * the web model's stateForStatus.
+ */
+function containerStatusKind(status: string): "running" | "offline" | "attention" {
+  const key = status.toLowerCase().split(/[\s(]/)[0];
+  if (key === "up" || key === "running") return "running";
+  if (key === "exited" || key === "dead") return "offline";
+  return "attention";
+}
+
 app.get("/api/status", async (_req, res) => {
   try {
     const [health, snapshot] = await Promise.all([
@@ -658,16 +683,13 @@ app.get("/api/status", async (_req, res) => {
 
     const containers = snapshot.containers.length;
     const containersRunning = snapshot.containers.filter(
-      (container) => container.status === "running"
+      (container) => containerStatusKind(container.status) === "running"
     ).length;
     const offline = snapshot.containers.filter(
-      (container) => container.status === "exited" || container.status === "dead"
+      (container) => containerStatusKind(container.status) === "offline"
     ).length;
     const attention = snapshot.containers.filter(
-      (container) =>
-        container.status !== "running" &&
-        container.status !== "exited" &&
-        container.status !== "dead"
+      (container) => containerStatusKind(container.status) === "attention"
     ).length;
     const healthy = containers - offline - attention;
 
@@ -1043,3 +1065,14 @@ const server = app.listen(port, "127.0.0.1", () => {
 server.requestTimeout = 10_000;
 server.headersTimeout = 11_000;
 server.keepAliveTimeout = 5_000;
+
+// Unhandled async rejections must be visible in the API's stderr instead of
+// vanishing; uncaught exceptions crash loudly (exit 1) so a supervisor
+// restarts the process rather than serving a half-broken API.
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandledRejection:", reason);
+});
+process.on("uncaughtException", (error) => {
+  console.error("uncaughtException:", error);
+  process.exit(1);
+});

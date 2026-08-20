@@ -211,12 +211,16 @@ export function hashString(value: string): number {
 export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): SystemModel {
   const networkNameById = new Map(snapshot.networks.map((n) => [n.id, n.name]));
 
-  // dependsOn references can be either container ids or names; normalise to ids.
+  // dependsOn references can be container ids, container names, or compose
+  // service names (the container's role — com.docker.compose.service label);
+  // normalise all of them to ids so live depends_on edges resolve even when
+  // names are project-prefixed (`immich_redis` vs role `redis`).
   const idByAlias = new Map<string, string>();
   for (const c of snapshot.containers) {
     idByAlias.set(c.id, c.id);
     idByAlias.set(c.name, c.id);
     idByAlias.set(c.id.replace(/^container_/, ""), c.id);
+    if (c.role) idByAlias.set(c.role, c.id);
   }
   const resolveId = (ref: string) => idByAlias.get(ref) ?? idByAlias.get(ref.replace(/^container_/, "")) ?? ref;
 

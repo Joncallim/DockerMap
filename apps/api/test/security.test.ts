@@ -247,6 +247,97 @@ test("status endpoint reports widget-friendly health and versioned alias works",
   assert.ok(doc.paths["/api/diagnostics"], "openapi should document diagnostics");
 });
 
+test("status endpoint classifies free-form docker status texts", async () => {
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") {
+      sendJson(res, 200, {
+        status: "ok",
+        mode: "live",
+        dockerReachable: true,
+        lastUpdated: 1,
+        snapshotVersion: "1",
+        message: "stub daemon"
+      });
+      return;
+    }
+
+    if (req.url === "/daemon/snapshot") {
+      sendJson(res, 200, {
+        containers: [
+          {
+            id: "c1",
+            name: "web",
+            image: "nginx:1.27",
+            status: "Up 3 hours",
+            role: "web",
+            networks: [],
+            ports: [],
+            mounts: [],
+            dependsOn: []
+          },
+          {
+            id: "c2",
+            name: "db",
+            image: "postgres:16",
+            status: "Exited (0) 1 minute ago",
+            role: "db",
+            networks: [],
+            ports: [],
+            mounts: [],
+            dependsOn: []
+          },
+          {
+            id: "c3",
+            name: "cache",
+            image: "redis:7",
+            status: "running",
+            role: "cache",
+            networks: [],
+            ports: [],
+            mounts: [],
+            dependsOn: []
+          },
+          {
+            id: "c4",
+            name: "job",
+            image: "busybox:1.36",
+            status: "Created",
+            role: "job",
+            networks: [],
+            ports: [],
+            mounts: [],
+            dependsOn: []
+          }
+        ],
+        images: [],
+        networks: [],
+        volumes: [],
+        lastUpdated: 1
+      });
+      return;
+    }
+
+    sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  const response = await request(api, "/api/status", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.containers, 4);
+  assert.equal(body.containersRunning, 2, "Up 3 hours and running count as running");
+  assert.equal(body.offline, 1, "Exited (0) counts as offline");
+  assert.equal(body.attention, 1, "Created counts as attention");
+  assert.equal(body.healthy, 2);
+  assert.equal(body.status, "degraded");
+});
+
 test("bare /api/v1 answers with a version descriptor instead of 404ing", async () => {
   const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
 

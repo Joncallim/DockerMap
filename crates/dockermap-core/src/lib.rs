@@ -1042,6 +1042,17 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
         .map(|container| (container.name.as_str(), container))
         .collect();
 
+    // Compose depends_on refs name the compose SERVICE, which the daemon
+    // records as the container's `role` (the com.docker.compose.service
+    // label) — live container names are project-prefixed (`immich_redis`)
+    // and never match the ref directly. Resolve by role first, then by
+    // name, then by full id.
+    let container_by_role: BTreeMap<&str, &ContainerRecord> = snapshot
+        .containers
+        .iter()
+        .map(|container| (container.role.as_str(), container))
+        .collect();
+
     let volume_by_attached_container: BTreeMap<&str, Vec<&VolumeRecord>> = {
         let mut mapping: BTreeMap<&str, Vec<&VolumeRecord>> = BTreeMap::new();
         for volume in &snapshot.volumes {
@@ -1073,12 +1084,16 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
 
         for dependency in &container.depends_on {
             let dependency_name = dependency.strip_prefix("container_").unwrap_or(dependency);
-            let target = container_by_name.get(dependency_name).copied().or_else(|| {
-                snapshot
-                    .containers
-                    .iter()
-                    .find(|item| item.id == *dependency)
-            });
+            let target = container_by_role
+                .get(dependency_name)
+                .copied()
+                .or_else(|| container_by_name.get(dependency_name).copied())
+                .or_else(|| {
+                    snapshot
+                        .containers
+                        .iter()
+                        .find(|item| item.id == *dependency)
+                });
 
             if let Some(target) = target {
                 edges.push(GraphEdge {
@@ -2457,6 +2472,73 @@ mod tests {
             .edges
             .iter()
             .any(|edge| edge.target == "volume_postgres_data"));
+    }
+
+    #[test]
+    fn resolves_depends_on_by_role_when_names_differ() {
+        // Real-world shape: compose depends_on refs name the compose SERVICE
+        // (the daemon's `container_<service>` refs), while live container
+        // names are project-prefixed and the service name is recorded as the
+        // container's role (com.docker.compose.service label).
+        let snapshot = DockerSnapshot {
+            containers: vec![
+                ContainerRecord {
+                    id: "deadbeef_api".into(),
+                    name: "immich_api".into(),
+                    image: "immich-server:latest".into(),
+                    status: "running".into(),
+                    role: "api".into(),
+                    networks: vec![],
+                    ports: vec![],
+                    mounts: vec![],
+                    depends_on: vec!["container_redis".into(), "container_database".into()],
+                },
+                ContainerRecord {
+                    id: "deadbeef_redis".into(),
+                    name: "immich_redis".into(),
+                    image: "redis:7-alpine".into(),
+                    status: "running".into(),
+                    role: "redis".into(),
+                    networks: vec![],
+                    ports: vec![],
+                    mounts: vec![],
+                    depends_on: vec![],
+                },
+                ContainerRecord {
+                    id: "deadbeef_db".into(),
+                    name: "immich_database".into(),
+                    image: "postgres:16-alpine".into(),
+                    status: "running".into(),
+                    role: "database".into(),
+                    networks: vec![],
+                    ports: vec![],
+                    mounts: vec![],
+                    depends_on: vec![],
+                },
+            ],
+            images: vec![],
+            networks: vec![],
+            volumes: vec![],
+            last_updated: unix_timestamp_millis(),
+        };
+
+        let graph = derive_graph(&snapshot);
+        let api_dependencies = graph
+            .edges
+            .iter()
+            .filter(|edge| edge.source == "deadbeef_api")
+            .map(|edge| edge.target.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(api_dependencies.len(), 2);
+        assert!(api_dependencies.contains(&"deadbeef_redis"));
+        assert!(api_dependencies.contains(&"deadbeef_db"));
+        assert!(
+            !graph
+                .edges
+                .iter()
+                .any(|edge| edge.target.starts_with("container_")),
+            "unresolved depends_on refs must not leak into the graph"
+        );
     }
 
     #[test]

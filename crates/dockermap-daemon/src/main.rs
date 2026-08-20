@@ -637,6 +637,23 @@ fn parse_docker_label_filter(value: &str) -> Result<Option<String>, String> {
     Ok(Some(trimmed.to_string()))
 }
 
+/// Parse the `com.docker.compose.depends_on` label into container refs.
+///
+/// Compose stores the label as `service:condition:required,service2:...`
+/// (e.g. `redis:service_started:false,database:service_started:false`) where
+/// each item is the compose SERVICE name plus a condition suffix. Only the
+/// service name matters for graph derivation — the suffix must be stripped
+/// before the ref can resolve (the refs match compose service names, which
+/// the snapshot records as each container's `role`).
+fn parse_depends_on_label(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|item| item.split(':').next().unwrap_or("").trim())
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("container_{name}"))
+        .collect()
+}
+
 fn build_snapshot(
     containers: Vec<ContainerSummary>,
     networks: Vec<bollard::models::Network>,
@@ -689,13 +706,7 @@ fn build_snapshot(
             .labels
             .as_ref()
             .and_then(|labels| labels.get("com.docker.compose.depends_on"))
-            .map(|value| {
-                value
-                    .split(',')
-                    .filter(|item| !item.is_empty())
-                    .map(|item| format!("container_{}", item.trim()))
-                    .collect::<Vec<_>>()
-            })
+            .map(|value| parse_depends_on_label(value))
             .unwrap_or_default();
 
         container_records.push(ContainerRecord {
@@ -2896,6 +2907,11 @@ fn push_provider_diagnostic(
     severity: DiagnosticSeverity,
     message: String,
 ) {
+    // Provider failures (tailscale/systemd/pm2/tmux/crontab/... subprocesses)
+    // must be visible in the daemon's stderr, not just in-band in the runtime
+    // map. Messages here are static or spawn/timeout error strings — no
+    // provider output is included, so nothing secret can leak.
+    eprintln!("provider diagnostic ({provider:?}, {severity:?}): {message}");
     diagnostics.push(RuntimeMapDiagnostic {
         provider,
         severity,
@@ -3007,7 +3023,14 @@ async fn get_logs(
 
     let response = if docker_reachable {
         let Some(service) = service else {
-            return Ok(Json(mock_logs(&snapshot, None, q, cursor, limit)));
+            // Live mode has no service-scoped view of "all logs" — fabricating
+            // mock entries would attribute invented lines to real containers.
+            // Clients must name a service (or run in explicit mock mode).
+            return Ok(Json(LogsResponse {
+                service: None,
+                entries: Vec::new(),
+                next_cursor: None,
+            }));
         };
         let collector = docker_collector(&state).await.map_err(|message| ApiError {
             status: StatusCode::BAD_GATEWAY,
@@ -3508,6 +3531,31 @@ mod tests {
         assert_eq!(
             parse_docker_label_filter("   ").expect("empty filter should be disabled"),
             None
+        );
+    }
+
+    #[test]
+    fn parses_depends_on_label_with_condition_suffixes() {
+        assert_eq!(
+            parse_depends_on_label("redis:service_started:false,database:service_started:false"),
+            vec![
+                "container_redis".to_string(),
+                "container_database".to_string()
+            ]
+        );
+        assert_eq!(
+            parse_depends_on_label(" api ,  db:condition_started:true "),
+            vec!["container_api".to_string(), "container_db".to_string()]
+        );
+        assert_eq!(
+            parse_depends_on_label(""),
+            Vec::<String>::new(),
+            "empty labels produce no refs"
+        );
+        assert_eq!(
+            parse_depends_on_label(",,"),
+            Vec::<String>::new(),
+            "bare separators produce no refs"
         );
     }
 

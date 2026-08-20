@@ -87,6 +87,25 @@ test.describe("DockerMap GUI", () => {
     expect(workerName).toBeTruthy();
     expect(containerNames).not.toContain(stack.controlContainerName);
 
+    // Round-5 (F1): container→container depends_on edges resolve by ROLE
+    // (compose service name), not by container name — the fixture's worker
+    // depends_on api, and live names are project-prefixed.
+    const graph = await (await request.get(`${stack.apiUrl}/api/graph`)).json();
+    const nodeIdByLabel = new Map(
+      graph.nodes.map((node: { id: string; label: string }) => [node.label, node.id])
+    );
+    const workerNodeId = nodeIdByLabel.get(workerName!);
+    const apiNodeId = nodeIdByLabel.get(apiName!);
+    expect(workerNodeId).toBeTruthy();
+    expect(apiNodeId).toBeTruthy();
+    expect(
+      graph.edges.some(
+        (edge: { source: string; target: string }) =>
+          edge.source === workerNodeId && edge.target === apiNodeId
+      ),
+      "live graph should contain the worker→api depends_on edge"
+    ).toBe(true);
+
     const runtimeMap = await (await request.get(`${stack.apiUrl}/api/runtime/map`)).json();
     const runtimeProviders = new Set(runtimeMap.nodes.map((node: { provider: string }) => node.provider));
     for (const provider of ["docker", "reverse_proxy", "local_dns", "tailscale", "headscale", "npm", "tmux", "systemd", "pm2", "scheduled_job"]) {
