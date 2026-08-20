@@ -1887,13 +1887,29 @@ fn cron_command(line: &str, user_crontab: bool) -> Option<String> {
     }
     if trimmed.starts_with('@') {
         // System crontabs (@reboot in /etc/crontab and cron.d) carry a user
-        // column after the schedule; user crontabs do not.
+        // column after the schedule; user crontabs do not. Skip the schedule
+        // (and user) token(s) but preserve the command's original whitespace —
+        // reconstructing with join(" ") would collapse repeated spaces inside
+        // quoted arguments.
         let fields = trimmed.split_whitespace().collect::<Vec<_>>();
         let command_start = if user_crontab { 1 } else { 2 };
         if fields.len() <= command_start {
             return None;
         }
-        return Some(fields[command_start..].join(" "));
+        // Walk the original line to find the command token's byte offset
+        // (sequential find cannot match an earlier token again), then take
+        // the remainder verbatim.
+        let mut offset = 0usize;
+        for token in &fields[..command_start] {
+            offset = trimmed[offset..]
+                .find(token)
+                .map(|index| offset + index + token.len())?;
+        }
+        let command = trimmed[offset..].trim();
+        if command.is_empty() {
+            return None;
+        }
+        return Some(command.to_string());
     }
 
     let fields = trimmed.split_whitespace().collect::<Vec<_>>();
@@ -3969,8 +3985,16 @@ mod tests {
                 "test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.weekly )",
                 "test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.monthly )",
                 "/srv/scripts/bootstrap.sh --env production",
+                "/usr/bin/env APP_MODE=\"prod  sealed\" /srv/scripts/daemon.sh",
             ]
         );
+        // Macro commands preserve the original command substring, including
+        // repeated whitespace inside quoted arguments.
+        assert_eq!(
+            system_commands[5],
+            "/usr/bin/env APP_MODE=\"prod  sealed\" /srv/scripts/daemon.sh"
+        );
+        assert!(system_commands[5].contains("prod  sealed"));
 
         let user = include_str!("../../../tests/fixtures/providers/parser/crontab-user.txt");
         let user_commands = user
