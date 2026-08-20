@@ -437,6 +437,53 @@ test("daemon HTTP errors stay redacted on JSON routes and event streams unless e
   assert.equal((await exposedJson.json()).details, "tmux pane SECRET=alpha-secret");
 });
 
+test("SSE stream survives a client disconnect mid-emit without crashing the API", async () => {
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") {
+      // Slow daemon: the first emit is still awaiting this response when the
+      // client disconnects, so a write-after-end would fire on resolution.
+      setTimeout(() => {
+        sendJson(res, 200, {
+          status: "ok",
+          mode: "live",
+          dockerReachable: true,
+          lastUpdated: 1,
+          snapshotVersion: "1",
+          message: "stub daemon"
+        });
+      }, 2_000);
+      return;
+    }
+    sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token",
+    DOCKERMAP_SSE_INTERVAL_MS: "1000"
+  });
+
+  const controller = new AbortController();
+  const streamPromise = request(api, "/api/events/stream", {
+    headers: { Authorization: "Bearer test-token" },
+    signal: controller.signal
+  });
+  const stream = await streamPromise;
+  const reader = stream.body?.getReader();
+  assert.ok(reader, "expected a streaming response body");
+  await reader.cancel().catch(() => undefined);
+
+  // Disconnect while the first emit is still awaiting the slow daemon, then
+  // wait past the daemon's response — the window in which a write-after-end
+  // (and the catch block writing again) would have crashed the process.
+  controller.abort();
+  await delay(2_500);
+
+  assert.equal(api.child.exitCode, null, "API must not crash on write-after-end");
+  const health = await request(api, "/api/health");
+  assert.equal(health.status, 200, "API must keep serving routes after the disconnect");
+});
+
 test("unsafe startup configuration fails before listening", async () => {
   await assertStartupFailure({ DOCKERMAP_DAEMON_URL: "ftp://127.0.0.1:4100" }, "must use http or https");
   await assertStartupFailure({ DOCKERMAP_DAEMON_URL: "http://192.0.2.10:4100" }, "must be loopback");

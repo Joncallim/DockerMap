@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { LogEntry, LogsResponse } from "@dockermap/contracts";
 import { useApp } from "../context";
 import { fetchJson } from "../utils/api";
@@ -10,7 +10,7 @@ type LevelFilter = "all" | "info" | "warn" | "error";
 const PAGE_SIZE = 100;
 
 export default function Logs() {
-  const { model, tick } = useApp();
+  const { model } = useApp();
   const [service, setService] = useState("");
   const [level, setLevel] = useState<LevelFilter>("all");
   const [search, setSearch] = useState("");
@@ -23,33 +23,82 @@ export default function Logs() {
 
   const path = service ? `/api/logs?service=${encodeURIComponent(service)}` : "/api/logs";
 
+  // Cancels any in-flight log request when the screen unmounts or a newer
+  // request supersedes it, so a slow response can never clobber newer state.
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const fetchLogs = useCallback((requestPath: string) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    return fetchJson<LogsResponse>(requestPath, { signal: controller.signal });
+  }, []);
+
   const loadFirstPage = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await fetchJson<LogsResponse>(path);
+      const data = await fetchLogs(path);
       setEntries(data.entries);
       setNextCursor(data.nextCursor);
       setError(null);
     } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") {
+        return;
+      }
       setError(cause instanceof Error ? cause.message : "Log stream request failed");
     } finally {
       setLoading(false);
     }
-  }, [path]);
+  }, [path, fetchLogs]);
 
+  // The first page loads on mount and when the path/service changes ONLY —
+  // the daemon heartbeat tick must not wipe accumulated older pages every
+  // ~2s (live updates go through the merge-refresh below instead).
   useEffect(() => {
     void loadFirstPage();
-  }, [loadFirstPage, tick]);
+  }, [loadFirstPage]);
 
+  const refreshLive = useCallback(async () => {
+    try {
+      const data = await fetchLogs(path);
+      setEntries((current) => {
+        if (current.length === 0) {
+          return data.entries;
+        }
+        const newest = current[0].timestamp;
+        // Prepend only entries strictly newer than the newest loaded entry;
+        // everything already on screen (including pages loaded via "Load
+        // older") is preserved. Dedupe by id as a safety net.
+        const fresh = data.entries.filter(
+          (entry) => entry.timestamp > newest && !current.some((known) => known.id === entry.id)
+        );
+        if (fresh.length === 0) {
+          return current;
+        }
+        return [...fresh, ...current];
+      });
+      setNextCursor(data.nextCursor);
+      setError(null);
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") {
+        return;
+      }
+      setError(cause instanceof Error ? cause.message : "Live log refresh failed");
+    }
+  }, [path, fetchLogs]);
+
+  // One live tail loop: every 3s fetch the newest page and merge new lines
+  // above the already-loaded stream instead of replacing it.
   useEffect(() => {
     if (!live) {
       return undefined;
     }
     const timer = window.setInterval(() => {
-      void loadFirstPage();
+      void refreshLive();
     }, 3_000);
     return () => window.clearInterval(timer);
-  }, [live, loadFirstPage]);
+  }, [live, refreshLive]);
 
   const loadOlder = useCallback(async () => {
     if (!nextCursor || loadingOlder) {
@@ -58,17 +107,24 @@ export default function Logs() {
     setLoadingOlder(true);
     try {
       const separator = path.includes("?") ? "&" : "?";
-      const data = await fetchJson<LogsResponse>(
+      const data = await fetchLogs(
         `${path}${separator}cursor=${encodeURIComponent(nextCursor)}&limit=${PAGE_SIZE}`
       );
-      setEntries((current) => [...current, ...data.entries]);
+      setEntries((current) => {
+        const known = new Set(current.map((entry) => entry.id));
+        const older = data.entries.filter((entry) => !known.has(entry.id));
+        return [...current, ...older];
+      });
       setNextCursor(data.nextCursor);
     } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") {
+        return;
+      }
       setError(cause instanceof Error ? cause.message : "Older log request failed");
     } finally {
       setLoadingOlder(false);
     }
-  }, [nextCursor, loadingOlder, path]);
+  }, [nextCursor, loadingOlder, path, fetchLogs]);
 
   const needle = search.trim().toLowerCase();
   const visible = entries.filter(

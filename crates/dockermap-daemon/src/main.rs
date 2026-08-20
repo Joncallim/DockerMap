@@ -34,7 +34,7 @@ use std::{
     fs,
     net::{IpAddr, SocketAddr},
     path::{Component, Path as StdPath, PathBuf},
-    process::Command,
+    process::{Command, Output},
     sync::Arc,
     time::Duration,
 };
@@ -58,12 +58,18 @@ const MAX_DOCKER_LABEL_FILTER_CHARS: usize = 256;
 #[derive(Clone)]
 struct AppState {
     cache: Arc<RwLock<DaemonCache>>,
+    /// Reused bollard Docker client (connection pooling), created on first
+    /// use and recreated after a failed interaction so a restarted Docker
+    /// daemon is picked up. `None` means "not connected yet / previous
+    /// attempt failed".
+    docker: Arc<RwLock<Option<DockerCollector>>>,
 }
 
 #[derive(Clone)]
 struct DaemonCache {
     snapshot: DockerSnapshot,
     health: HealthResponse,
+    runtime_map: RuntimeMap,
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,6 +191,7 @@ async fn main() {
 
     let state = AppState {
         cache: Arc::new(RwLock::new(DaemonCache::mock())),
+        docker: Arc::new(RwLock::new(None)),
     };
 
     refresh_cache(&state).await;
@@ -236,7 +243,18 @@ impl DaemonCache {
             message: Some("Docker unavailable, serving mock data".into()),
         };
 
-        Self { snapshot, health }
+        let last_updated = snapshot.last_updated;
+
+        Self {
+            snapshot,
+            health,
+            runtime_map: RuntimeMap {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                diagnostics: Vec::new(),
+                last_updated,
+            },
+        }
     }
 }
 
@@ -252,19 +270,43 @@ async fn refresh_loop(state: AppState) {
 }
 
 async fn refresh_cache(state: &AppState) {
-    let updated = collect_snapshot().await;
+    let updated = collect_snapshot(state).await;
     let mut cache = state.cache.write().await;
     *cache = updated;
 }
 
-async fn collect_snapshot() -> DaemonCache {
+/// Returns the cached Docker collector, connecting on first use. The client
+/// is reused across refresh ticks and log requests (bollard pools the Unix
+/// socket connection) instead of being recreated on every call, which churned
+/// connections and added per-request latency.
+async fn docker_collector(state: &AppState) -> Result<DockerCollector, String> {
+    {
+        let guard = state.docker.read().await;
+        if let Some(collector) = guard.as_ref() {
+            return Ok(collector.clone());
+        }
+    }
+    let collector = DockerCollector::connect()?;
+    *state.docker.write().await = Some(collector.clone());
+    Ok(collector)
+}
+
+/// Drop the cached collector after a failed interaction so the next refresh
+/// reconnects — a pooled Unix-socket connection can go stale when the Docker
+/// daemon restarts.
+async fn invalidate_docker_collector(state: &AppState) {
+    *state.docker.write().await = None;
+}
+
+async fn collect_snapshot(state: &AppState) -> DaemonCache {
     if std::env::var("DOCKERMAP_FORCE_MOCK").ok().as_deref() == Some("true") {
         let mut cache = DaemonCache::mock();
         cache.health.message = Some("Mock mode forced by DOCKERMAP_FORCE_MOCK".into());
+        cache.runtime_map = collect_runtime_map_bounded(&cache.snapshot).await;
         return cache;
     }
 
-    match DockerCollector::connect() {
+    let mut cache = match docker_collector(state).await {
         Ok(collector) => match collector.collect_snapshot().await {
             Ok(mut snapshot) => {
                 snapshot.images = derive_images(&snapshot);
@@ -276,9 +318,14 @@ async fn collect_snapshot() -> DaemonCache {
                     snapshot_version: snapshot.last_updated.to_string(),
                     message: Some("Docker engine connected".into()),
                 };
-                DaemonCache { snapshot, health }
+                DaemonCache {
+                    snapshot,
+                    health,
+                    runtime_map: empty_runtime_map(0),
+                }
             }
             Err(error) => {
+                invalidate_docker_collector(state).await;
                 let mut cache = DaemonCache::mock();
                 cache.health.message =
                     Some(format!("Docker read failed, serving mock data: {error}"));
@@ -290,9 +337,26 @@ async fn collect_snapshot() -> DaemonCache {
             cache.health.message = Some(format!("Docker unavailable, serving mock data: {error}"));
             cache
         }
+    };
+
+    // The runtime map is expensive (provider subprocesses, filesystem walk)
+    // and must never run on a Tokio worker thread, so it is computed once per
+    // refresh cycle — same cadence as the snapshot — and served from the
+    // cache by `get_runtime_map`.
+    cache.runtime_map = collect_runtime_map_bounded(&cache.snapshot).await;
+    cache
+}
+
+fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
+    RuntimeMap {
+        nodes: Vec::new(),
+        edges: Vec::new(),
+        diagnostics: Vec::new(),
+        last_updated,
     }
 }
 
+#[derive(Clone)]
 struct DockerCollector {
     client: Docker,
     label_filter: Option<String>,
@@ -363,11 +427,10 @@ impl DockerCollector {
             .stdout(true)
             .stderr(true)
             .timestamps(true)
-            .tail(&limit.to_string());
+            .tail(&log_tail_count(limit).to_string());
 
         if let Some(cursor_millis) = cursor_millis {
-            let cursor_seconds = (cursor_millis / 1_000).min(i32::MAX as u64) as i32;
-            options = options.until(cursor_seconds);
+            options = options.until(log_until_seconds(cursor_millis));
         }
 
         let mut stream = self.client.logs(service, Some(options.build()));
@@ -431,10 +494,32 @@ impl DockerCollector {
     }
 }
 
+/// Number of lines requested from Docker's `tail` for one log page. We
+/// over-fetch by one so `page_log_entries` can decide "a next page exists"
+/// (`entries.len() > limit`) from the live stream: with a plain
+/// `tail(limit)` the collected window is exactly `limit` lines, so
+/// `next_cursor` could never be emitted for real Docker logs and "Load
+/// older" stayed permanently hidden in live mode. The extra line is
+/// truncated by `page_log_entries`, which is the single source of truth for
+/// page boundaries across every log source.
+fn log_tail_count(limit: usize) -> usize {
+    limit.clamp(1, MAX_LOG_PAGE_SIZE) + 1
+}
+
+/// Docker's `until` filter is second-resolution and EXCLUSIVE: a line at
+/// exactly `until` seconds is omitted. Floor-truncating a millisecond cursor
+/// (`cursor_millis / 1_000`) therefore silently drops every entry in the
+/// boundary second that is still older than the cursor. Round UP instead so
+/// Docker returns the whole boundary second and `page_log_entries`' precise
+/// `< cursor` filter is the sole arbiter of what belongs to the next page.
+fn log_until_seconds(cursor_millis: u64) -> i32 {
+    cursor_millis.div_ceil(1_000).min(i32::MAX as u64) as i32
+}
+
 /// Defensive cap on the raw log stream collected from Docker. The stream is
-/// already bounded by `tail(limit)`, so this only guards against a daemon
+/// already bounded by `tail(limit + 1)`, so this only guards against a daemon
 /// returning more than requested.
-const MAX_LOG_STREAM_CAP: usize = MAX_LOG_PAGE_SIZE * 4;
+const MAX_LOG_STREAM_CAP: usize = MAX_LOG_PAGE_SIZE * 4 + 2;
 
 /// Unique id for a live-Docker log entry. Same-timestamp lines (Docker's
 /// millisecond timestamps can collide) stay unique thanks to the per-stream
@@ -654,13 +739,10 @@ fn build_snapshot(
         .collect::<Vec<_>>();
 
     DockerSnapshot {
-        images: derive_images(&DockerSnapshot {
-            containers: container_records.clone(),
-            images: Vec::new(),
-            networks: Vec::new(),
-            volumes: Vec::new(),
-            last_updated: unix_timestamp_millis(),
-        }),
+        // Images are derived once by the caller (`collect_snapshot`) after
+        // the snapshot is built — deriving here would deep-clone the
+        // container records and re-derive O(n) on every refresh for nothing.
+        images: Vec::new(),
         containers: container_records,
         networks: network_records,
         volumes: volume_records,
@@ -740,6 +822,95 @@ fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
     runtime_map
 }
 
+/// Wall-clock budget for each provider subprocess. Provider binaries
+/// (tailscale, headscale, systemctl, crontab, pm2, tmux) can hang on network
+/// calls, stale locks, or waits; every command must be bounded so a stuck
+/// provider cannot stall the runtime-map refresh or a request thread.
+const PROVIDER_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Overall budget for one full runtime-map collection (all provider
+/// subprocesses, the npm filesystem walk, and /proc reads) when it runs off
+/// the async runtime.
+const RUNTIME_MAP_COLLECTION_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Run a provider command with a hard wall-clock timeout. Returns the child's
+/// output on success; `Err` on spawn failure or when the command outlives the
+/// budget (the child is killed and reaped). Callers push a provider
+/// diagnostic instead of failing the whole runtime map.
+fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, String> {
+    // `Command::spawn` does NOT pipe stdio like `Command::output` does, so
+    // the pipes must be requested explicitly to collect provider output.
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to spawn provider command: {error}"))?;
+    let started = std::time::Instant::now();
+    loop {
+        match child
+            .try_wait()
+            .map_err(|error| format!("provider command wait failed: {error}"))?
+        {
+            Some(_status) => break,
+            None if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "provider command timed out after {}s",
+                    timeout.as_secs()
+                ));
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+    child
+        .wait_with_output()
+        .map_err(|error| format!("failed to read provider command output: {error}"))
+}
+
+/// Collect the runtime map off the async runtime: the provider commands are
+/// blocking `std::process` calls, so they must never run on a Tokio worker
+/// thread, and the whole collection is bounded so a pathological provider (or
+/// npm walk) degrades the map instead of stalling refresh.
+async fn collect_runtime_map_bounded(snapshot: &DockerSnapshot) -> RuntimeMap {
+    let snapshot = snapshot.clone();
+    let work = {
+        let snapshot = snapshot.clone();
+        tokio::task::spawn_blocking(move || collect_runtime_map(&snapshot))
+    };
+    match tokio::time::timeout(RUNTIME_MAP_COLLECTION_TIMEOUT, work).await {
+        Ok(Ok(runtime_map)) => runtime_map,
+        Ok(Err(join_error)) => {
+            eprintln!("runtime map collection task failed: {join_error}");
+            fallback_runtime_map(&snapshot)
+        }
+        Err(_elapsed) => {
+            eprintln!("runtime map collection timed out after {RUNTIME_MAP_COLLECTION_TIMEOUT:?}");
+            fallback_runtime_map(&snapshot)
+        }
+    }
+}
+
+/// Minimal runtime map served when provider collection fails or times out:
+/// the Docker-derived nodes are still useful, and a warning diagnostic
+/// explains why host providers are missing.
+fn fallback_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
+    let mut runtime_map = derive_runtime_map(
+        snapshot,
+        Vec::new(),
+        Vec::new(),
+        vec![RuntimeMapDiagnostic {
+            provider: RuntimeProviderKind::Other,
+            severity: DiagnosticSeverity::Warning,
+            message: "Runtime map collection failed or timed out; host provider nodes omitted"
+                .into(),
+        }],
+    );
+    redact_runtime_map(&mut runtime_map);
+    runtime_map
+}
+
 fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapNode>) {
     let hostname = local_hostname();
     let mut metadata = BTreeMap::new();
@@ -777,10 +948,14 @@ fn collect_network_infrastructure(
 }
 
 fn collect_tailscale(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<RuntimeMapDiagnostic>) {
-    let output = match Command::new("tailscale")
-        .args(["status", "--json"])
-        .output()
-    {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("tailscale");
+            command.args(["status", "--json"]);
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -830,10 +1005,14 @@ fn collect_tailscale(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<Runt
 }
 
 fn collect_headscale(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<RuntimeMapDiagnostic>) {
-    let output = match Command::new("headscale")
-        .args(["nodes", "list", "--output", "json"])
-        .output()
-    {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("headscale");
+            command.args(["nodes", "list", "--output", "json"]);
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -1218,17 +1397,21 @@ fn collect_systemd_services(
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
     let system_uptime = system_uptime_seconds_from_proc();
-    let output = match Command::new("systemctl")
-        .args([
-            "list-units",
-            "--type=service",
-            "--all",
-            "--no-legend",
-            "--no-pager",
-            "--plain",
-        ])
-        .output()
-    {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("systemctl");
+            command.args([
+                "list-units",
+                "--type=service",
+                "--all",
+                "--no-legend",
+                "--no-pager",
+                "--plain",
+            ]);
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -1268,17 +1451,23 @@ fn collect_systemd_services(
             .iter()
             .map(|summary| summary.unit.as_str())
             .collect::<Vec<_>>();
-        match Command::new("systemctl")
-            .arg("show")
-            .arg("--no-pager")
-            .arg(
-                "--property=Id,ActiveState,SubState,Description,FragmentPath,LoadState,ExecStart,Restart,ActiveEnterTimestamp,ActiveEnterTimestampMonotonic,Requires,Wants,PartOf",
-            )
-            .args(units)
-            .output()
-        {
+        match run_command_with_timeout(
+            {
+                let mut command = Command::new("systemctl");
+                command.arg("show");
+                command.arg("--no-pager");
+                command.arg(
+                    "--property=Id,ActiveState,SubState,Description,FragmentPath,LoadState,ExecStart,Restart,ActiveEnterTimestamp,ActiveEnterTimestampMonotonic,Requires,Wants,PartOf",
+                );
+                command.args(units);
+                command
+            },
+            PROVIDER_COMMAND_TIMEOUT,
+        ) {
             Ok(show_output) if show_output.status.success() => {
-                for detail in parse_systemd_show_records(&String::from_utf8_lossy(&show_output.stdout)) {
+                for detail in
+                    parse_systemd_show_records(&String::from_utf8_lossy(&show_output.stdout))
+                {
                     if !detail.id.is_empty() {
                         details_by_unit.insert(detail.id.clone(), detail);
                     }
@@ -1565,7 +1754,14 @@ fn collect_scheduled_jobs(
         }
     }
 
-    match Command::new("crontab").arg("-l").output() {
+    match run_command_with_timeout(
+        {
+            let mut command = Command::new("crontab");
+            command.arg("-l");
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) if output.status.success() => {
             for (index, line) in String::from_utf8_lossy(&output.stdout).lines().enumerate() {
                 if let Some(command) = cron_command(line, true) {
@@ -1638,7 +1834,14 @@ fn cron_command(line: &str, user_crontab: bool) -> Option<String> {
 }
 
 fn collect_pm2_apps(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<RuntimeMapDiagnostic>) {
-    let output = match Command::new("pm2").arg("jlist").output() {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("pm2");
+            command.arg("jlist");
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -1715,14 +1918,18 @@ fn collect_tmux_sessions(
     nodes: &mut Vec<RuntimeMapNode>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
-    let output = match Command::new("tmux")
-        .args([
-            "list-sessions",
-            "-F",
-            "#{session_id}\t#{session_name}\t#{session_attached}\t#{session_windows}",
-        ])
-        .output()
-    {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("tmux");
+            command.args([
+                "list-sessions",
+                "-F",
+                "#{session_id}\t#{session_name}\t#{session_attached}\t#{session_windows}",
+            ]);
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -2693,11 +2900,12 @@ async fn get_graph(State(state): State<AppState>) -> Json<GraphResponse> {
 }
 
 async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
+    // Served from the cache: the map is recomputed on the refresh cadence
+    // (off the async runtime, with per-provider timeouts) instead of on every
+    // request, which previously ran ~8 blocking provider subprocesses
+    // synchronously on a Tokio worker per call.
     let cache = state.cache.read().await;
-    let snapshot = cache.snapshot.clone();
-    drop(cache);
-
-    Json(collect_runtime_map(&snapshot))
+    Json(cache.runtime_map.clone())
 }
 
 async fn get_containers(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -2770,7 +2978,7 @@ async fn get_logs(
         let Some(service) = service else {
             return Ok(Json(mock_logs(&snapshot, None, q, cursor, limit)));
         };
-        let collector = DockerCollector::connect().map_err(|message| ApiError {
+        let collector = docker_collector(&state).await.map_err(|message| ApiError {
             status: StatusCode::BAD_GATEWAY,
             message,
         })?;
@@ -3794,6 +4002,110 @@ mod tests {
             first_cursor, "997",
             "first cursor keeps pointing at its own oldest entry"
         );
+    }
+
+    #[test]
+    fn log_over_fetch_contract_emits_cursor_for_live_docker() {
+        // The live-Docker path over-fetches `limit + 1` lines so a next page
+        // can be detected (`entries.len() > limit`) — a plain `tail(limit)`
+        // window could never produce a cursor.
+        assert_eq!(log_tail_count(100), 101);
+        assert_eq!(log_tail_count(0), 2, "limit is clamped to the valid range");
+        assert_eq!(log_tail_count(MAX_LOG_PAGE_SIZE), MAX_LOG_PAGE_SIZE + 1);
+
+        // Feeding the over-fetched window into page_log_entries must yield a
+        // page of exactly `limit` entries plus a cursor.
+        let entries = (0..=100)
+            .map(|index| LogEntry {
+                id: format!("svc-{index}"),
+                timestamp: 10_000 - index,
+                container: "svc".into(),
+                level: dockermap_core::LogLevel::Info,
+                message: format!("line {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        let (page, cursor) = page_log_entries(entries, None, None, 100);
+        assert_eq!(page.len(), 100, "over-fetch is truncated to the page size");
+        let cursor = cursor.expect("a full page with more behind it carries a cursor");
+        assert_eq!(cursor, "9901", "cursor is the oldest kept entry");
+    }
+
+    #[test]
+    fn log_until_rounds_cursor_up_to_second_boundary() {
+        // Docker's `until` is second-resolution and exclusive: floor
+        // truncation would drop every entry in the boundary second older than
+        // the cursor. Rounding up returns the whole boundary second and lets
+        // the precise ms filter arbitrate.
+        assert_eq!(log_until_seconds(1_785_175_506_123), 1_785_175_507);
+        assert_eq!(
+            log_until_seconds(1_785_175_506_000),
+            1_785_175_506,
+            "an exact second boundary rounds to itself"
+        );
+        assert_eq!(log_until_seconds(1_000), 1);
+        assert_eq!(log_until_seconds(999), 1);
+        assert_eq!(log_until_seconds(0), 0);
+    }
+
+    #[test]
+    fn log_until_boundary_keeps_same_second_entries_before_cursor() {
+        // Entries in the boundary second before the cursor survive the ms
+        // filter, so a cursor at S.123 keeps [S.000, S.123) and drops the
+        // rest — mirroring the div_ceil `until` contract.
+        let entries = (0..6)
+            .map(|index| LogEntry {
+                id: format!("svc-{index}"),
+                timestamp: 1_000_123 - index,
+                container: "svc".into(),
+                level: dockermap_core::LogLevel::Info,
+                message: format!("line {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        let (page, _) = page_log_entries(entries, None, Some(1_000_123), 10);
+        assert_eq!(
+            page.len(),
+            5,
+            "all entries strictly older than the cursor are kept"
+        );
+        assert!(page.iter().all(|entry| entry.timestamp < 1_000_123));
+        assert_eq!(page.last().map(|entry| entry.timestamp), Some(1_000_118));
+    }
+
+    #[test]
+    fn provider_commands_time_out_and_report_diagnostics() {
+        let started = std::time::Instant::now();
+        let error = run_command_with_timeout(
+            {
+                let mut command = Command::new("sleep");
+                command.arg("30");
+                command
+            },
+            Duration::from_millis(200),
+        )
+        .expect_err("a hung provider command must time out");
+        assert!(error.contains("timed out"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the timeout must bound the wait, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn provider_commands_succeed_within_timeout() {
+        let output = run_command_with_timeout(
+            {
+                let mut command = Command::new("sh");
+                command.arg("-c").arg("echo ok");
+                command
+            },
+            Duration::from_secs(5),
+        )
+        .expect("a fast provider command should succeed");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
     }
 
     #[test]

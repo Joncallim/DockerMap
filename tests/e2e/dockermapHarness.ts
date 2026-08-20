@@ -395,7 +395,10 @@ function liveComposeYaml(projectName: string) {
 
   worker:
     image: busybox:1.36.1
-    command: sh -c "while true; do echo dockermap-live-worker; sleep 2; done"
+    # >PAGE_SIZE log lines (250, spaced across seconds so cursor pagination
+    # sees full pages) so the live log path exercises Load older. The $$i
+    # escapes survive Compose interpolation as literal $i in sh.
+    command: sh -c "i=0; while [ $$i -lt 250 ]; do echo dockermap-live-worker; sleep 0.05; i=$$((i+1)); done; while true; do echo dockermap-live-worker; sleep 2; done"
     depends_on:
       - api
     labels:

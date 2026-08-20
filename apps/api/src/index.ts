@@ -963,12 +963,29 @@ app.get("/api/events/stream", async (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
+  // Serialize emits: fetchDaemon can take up to 4s, so without a busy guard
+  // a slow daemon stacks overlapping emits. And a client that disconnects
+  // mid-emit must never be written to — write-after-end throws, and the
+  // catch block writing AGAIN becomes an unhandled rejection (a crash on
+  // Node >= 15), so every write path checks writableEnded/destroyed first.
+  let busy = false;
+
   const emit = async () => {
+    if (busy || res.writableEnded || res.destroyed) {
+      return;
+    }
+    busy = true;
     try {
       const health = await fetchDaemon<HealthResponse>("/daemon/health");
+      if (res.writableEnded || res.destroyed) {
+        return;
+      }
       res.write(`event: snapshot\n`);
       res.write(`data: ${JSON.stringify(health)}\n\n`);
     } catch (error) {
+      if (res.writableEnded || res.destroyed) {
+        return;
+      }
       const payload =
         error instanceof HttpError
           ? error.body
@@ -978,14 +995,25 @@ app.get("/api/events/stream", async (req, res) => {
             };
       res.write(`event: error\n`);
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } finally {
+      busy = false;
     }
   };
 
   const timer = setInterval(emit, pollIntervalMs);
+  // Comment-frame keepalive so proxies do not idle out the stream between
+  // snapshot emits (SSE comments are ignored by EventSource clients).
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(": ping\n\n");
+    }
+  }, 15_000);
+
   void emit();
 
   req.on("close", () => {
     clearInterval(timer);
+    clearInterval(heartbeat);
     res.end();
   });
 });

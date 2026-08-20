@@ -122,6 +122,42 @@ test.describe("DockerMap GUI", () => {
     await page.locator("select.service-select").selectOption(workerName!);
     await expect(page.getByRole("main")).toContainText("dockermap-live-worker", { timeout: 20_000 });
 
+    // Round-3 (F5/F1): enable live tail so the merge-refresh polls pick up a
+    // cursor once the worker's 250-line burst (12.5s at 20 lines/sec) has
+    // grown past PAGE_SIZE — with more lines than the page, the live Docker
+    // path over-fetches and "Load older" must appear.
+    await page.locator("label.log-live input").check();
+    const loadOlder = page.getByRole("button", { name: "Load older" });
+    await expect(loadOlder).toBeVisible({ timeout: 25_000 });
+
+    // Round-3 (F1, API layer): a small page on the live path still carries a
+    // non-null nextCursor because more lines exist behind it.
+    const paginated = await (
+      await request.get(
+        `${stack.apiUrl}/api/logs?service=${encodeURIComponent(workerName!)}&limit=10`
+      )
+    ).json();
+    expect(paginated.entries.length).toBe(10);
+    expect(paginated.nextCursor).toBeTruthy();
+
+    // Round-3 (F5): loading an older page appends, and live tail polls must
+    // MERGE new lines without discarding the loaded older page.
+    const countBeforeOlder = await page.locator("ul.log-stream li").count();
+    await loadOlder.click();
+    await expect(async () => {
+      const count = await page.locator("ul.log-stream li").count();
+      expect(count).toBeGreaterThanOrEqual(countBeforeOlder + 50);
+    }).toPass({ timeout: 20_000 });
+    const countAfterOlder = await page.locator("ul.log-stream li").count();
+
+    // Wait past at least one live poll cycle, then assert the loaded older
+    // page survived (the old code reset the stream to the newest page on
+    // every heartbeat tick) and the cursor is still advertised.
+    await page.waitForTimeout(4_000);
+    const countAfterTick = await page.locator("ul.log-stream li").count();
+    expect(countAfterTick).toBeGreaterThanOrEqual(countAfterOlder);
+    await expect(loadOlder).toBeVisible();
+
     await openSpace(page, "Compose", "/compose");
     if (process.platform === "linux") {
       await expect(page.getByRole("main")).toContainText("matched");

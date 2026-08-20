@@ -17,17 +17,20 @@ export function useApiResource<T>(path: string, refreshTick = 0): ResourceState<
   });
 
   useEffect(() => {
-    let cancelled = false;
+    // Abort on unmount/path change: a slow response can never clobber newer
+    // state, and the underlying fetch is actually cancelled instead of just
+    // having its result discarded.
+    const controller = new AbortController();
     setState((current) => ({ ...current, loading: true, error: null }));
 
-    fetchJson<T>(path)
+    fetchJson<T>(path, { signal: controller.signal })
       .then((data) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setState({ data, error: null, loading: false });
         }
       })
       .catch((error) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setState({
             data: null,
             error: error instanceof Error ? error.message : "Unknown request failure",
@@ -36,9 +39,7 @@ export function useApiResource<T>(path: string, refreshTick = 0): ResourceState<
         }
       });
 
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [path, refreshTick, settings.demoMode]);
 
   return state;
