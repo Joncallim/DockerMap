@@ -399,7 +399,8 @@ function getMockResponse<T>(path: string): T {
     const q = logQuery.get("q");
     const cursor = logQuery.get("cursor");
     const limit = Number(logQuery.get("limit") ?? "100");
-    const cursorMillis = cursor ? Number(cursor) : null;
+    const cursorMillis = cursor ? Number(cursor.split(":")[0]) : null;
+    const cursorOffset = cursor ? Number(cursor.split(":")[1] ?? "0") : 0;
     const filter = q?.toLowerCase() ?? null;
     const entries = mockContainers.flatMap((container, index) => [
       {
@@ -410,16 +411,39 @@ function getMockResponse<T>(path: string): T {
         message: `${container.name} running on ${container.image}`
       }
     ]);
-    const filtered = entries.filter((entry) => {
+    // Sort newest-first so the compound "millis:offset" cursor logic below
+    // agrees with the daemon's page_log_entries (same-ms runs are contiguous).
+    const sorted = [...entries].sort((left, right) => right.timestamp - left.timestamp);
+    const filtered = sorted.filter((entry) => {
       if (service !== null && entry.container !== service) {
         return false;
       }
       if (filter !== null && !entry.message.toLowerCase().includes(filter)) {
         return false;
       }
-      return cursorMillis === null || entry.timestamp < cursorMillis;
+      if (cursorMillis === null) {
+        return true;
+      }
+      if (entry.timestamp < cursorMillis) {
+        return true;
+      }
+      if (entry.timestamp > cursorMillis) {
+        return false;
+      }
+      const sameTimestampIndex = sorted.filter((other) => other.timestamp === cursorMillis).indexOf(entry);
+      return sameTimestampIndex >= cursorOffset;
     });
-    const nextCursor = filtered.length > limit ? String(filtered[limit - 1].timestamp) : null;
+    const nextCursor =
+      filtered.length > limit
+        ? (() => {
+            const boundary = filtered[limit - 1];
+            const firstAtBoundary = filtered
+              .slice(0, limit)
+              .findIndex((entry) => entry.timestamp === boundary.timestamp);
+            const previouslyEmitted = cursorMillis === boundary.timestamp ? cursorOffset : 0;
+            return `${boundary.timestamp}:${previouslyEmitted + limit - firstAtBoundary}`;
+          })()
+        : null;
     return {
       service,
       entries: filtered.slice(0, limit),
@@ -501,10 +525,13 @@ function buildLogsPath(query: express.Request["query"]) {
   }
 
   if (cursor) {
-    if (!/^\d+$/.test(cursor)) {
+    // Compound cursor "millis:offset" (plain "millis" also accepted) —
+    // mirrors the daemon's parse_log_cursor so same-millisecond entries can
+    // be resumed mid-run instead of silently dropped at page boundaries.
+    if (!/^\d+(:\d+)?$/.test(cursor)) {
       throw new HttpError(400, {
         code: "invalid_query",
-        message: "Query parameter cursor must be a non-negative integer"
+        message: "Query parameter cursor must be `millis` or `millis:offset`"
       });
     }
     params.set("cursor", cursor);
@@ -732,6 +759,12 @@ app.get("/api/openapi.json", (_req, res) => {
         "Read-only inventory, topology, runtime, compose, logs, and diagnostics endpoints. All /api/v1/* routes alias these paths. Protected routes require a Bearer token (or reverse-proxy forward-auth)."
     },
     paths: {
+      "/health": {
+        get: { summary: "Liveness probe (unauthenticated)", tags: ["system"] }
+      },
+      "/api/v1": {
+        get: { summary: "Version descriptor for the /api/v1 alias", tags: ["system"] }
+      },
       "/api/health": {
         get: { summary: "API and daemon health", tags: ["system"] }
       },

@@ -198,11 +198,18 @@ test("log pagination rejects invalid cursor and limit values", async () => {
   assert.equal(nonNumericCursor.status, 400);
   assert.equal(
     (await nonNumericCursor.json()).message,
-    "Query parameter cursor must be a non-negative integer"
+    "Query parameter cursor must be `millis` or `millis:offset`"
   );
+
+  const badOffsetCursor = await request(api, "/api/logs?cursor=123:not-a-number");
+  assert.equal(badOffsetCursor.status, 400);
 
   const oversizedCursor = await request(api, `/api/logs?cursor=${"9".repeat(33)}`);
   assert.equal(oversizedCursor.status, 400);
+
+  // Compound "millis:offset" cursors are the emitted format and must pass.
+  const compoundCursor = await request(api, "/api/logs?cursor=1787198706123:2&limit=5");
+  assert.equal(compoundCursor.status, 200);
 });
 
 test("log service param caps at the daemon's 128-char container-name limit", async () => {

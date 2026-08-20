@@ -16,22 +16,23 @@ use bollard::{
 };
 use dockermap_core::{
     correlate_compose_runtime, derive_compose_graph, derive_graph, derive_images,
-    derive_runtime_map, discover_compose_files, mock_logs, mock_snapshot,
+    derive_runtime_map, discover_compose_files, mock_logs, mock_snapshot, page_log_entries,
     parse_rfc3339_nano_millis, plan_compose_mount_edit, scan_compose_files,
     service_entity_kind_name, unix_timestamp_millis, ComposeDiagnostic, ComposeEditPlan,
     ComposeGraph, ComposeMountKind, ComposeScan, ContainerMount, ContainerRecord,
-    DiagnosticSeverity, DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogEntry,
-    LogsResponse, NetworkRecord, RuntimeLocation, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
-    RuntimeMapNode, RuntimeMode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeOwnership,
-    RuntimePackageEntity, RuntimeProviderKind, RuntimeRelationshipKind, RuntimeServiceEntity,
-    RuntimeServiceStatus, ServiceEntityKind, VolumeRecord, DEFAULT_LOG_PAGE_SIZE,
-    MAX_LOG_PAGE_SIZE,
+    DiagnosticSeverity, DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogCursor,
+    LogEntry, LogsResponse, NetworkRecord, RuntimeLocation, RuntimeMap, RuntimeMapDiagnostic,
+    RuntimeMapEdge, RuntimeMapNode, RuntimeMode, RuntimeNodeKind, RuntimeNodeLayer,
+    RuntimeOwnership, RuntimePackageEntity, RuntimeProviderKind, RuntimeRelationshipKind,
+    RuntimeServiceEntity, RuntimeServiceStatus, ServiceEntityKind, VolumeRecord,
+    DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 use futures_util::stream::StreamExt;
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
+    hash::{Hash, Hasher},
     net::{IpAddr, SocketAddr},
     path::{Component, Path as StdPath, PathBuf},
     process::{Command, Output},
@@ -449,7 +450,7 @@ impl DockerCollector {
         &self,
         service: &str,
         query: Option<&str>,
-        cursor_millis: Option<u64>,
+        cursor: Option<LogCursor>,
         limit: usize,
     ) -> Result<LogsResponse, String> {
         let limit = limit.clamp(1, MAX_LOG_PAGE_SIZE);
@@ -458,10 +459,10 @@ impl DockerCollector {
             .stdout(true)
             .stderr(true)
             .timestamps(true)
-            .tail(&log_tail_count(limit, cursor_millis.is_some()).to_string());
+            .tail(&log_tail_count(limit, cursor.is_some()).to_string());
 
-        if let Some(cursor_millis) = cursor_millis {
-            options = options.until(log_until_seconds(cursor_millis));
+        if let Some(cursor) = cursor {
+            options = options.until(log_until_seconds(cursor.millis));
         }
 
         let mut stream = self.client.logs(service, Some(options.build()));
@@ -471,7 +472,6 @@ impl DockerCollector {
         // (bounded server-side by `tail`, plus a defensive cap in case Docker
         // returns more than requested), then page it in a pure function.
         let mut entries = Vec::new();
-        let mut sequence = 0usize;
 
         while let Some(item) = stream.next().await {
             let output = item.map_err(|error| format!("docker logs failed: {error}"))?;
@@ -488,7 +488,7 @@ impl DockerCollector {
             };
 
             entries.push(LogEntry {
-                id: log_entry_id(service, timestamp, sequence),
+                id: log_entry_id(service, timestamp, &message),
                 timestamp,
                 container: service.to_string(),
                 level: if message.to_ascii_lowercase().contains("error") {
@@ -500,14 +500,13 @@ impl DockerCollector {
                 },
                 message,
             });
-            sequence += 1;
 
             if entries.len() >= MAX_LOG_STREAM_CAP {
                 break;
             }
         }
 
-        let (entries, next_cursor) = page_log_entries(entries, query, cursor_millis, limit);
+        let (entries, next_cursor) = page_log_entries(entries, query, cursor, limit);
 
         Ok(LogsResponse {
             service: Some(service.to_string()),
@@ -519,20 +518,20 @@ impl DockerCollector {
 
 /// Parse one timestamped Docker log line (collected with `--timestamps`) into
 /// a `(timestamp_millis, message)` pair, or `None` when the line carries no
-/// message. A blank line arrives from Docker as `"<timestamp> "` (timestamp,
-/// space, empty body); it must be SKIPPED rather than fabricated into a
-/// now-timestamped entry whose message is the raw timestamp string.
+/// usable message.
+///
+/// Docker prefixes ONLY the first line of a multi-line message with a
+/// timestamp; continuation lines are bare text. A prefix is therefore only
+/// stripped when it actually parses as an RFC 3339 timestamp — continuation
+/// lines and blank lines are SKIPPED (`None`) rather than fabricated into a
+/// now()-timestamped entry, and their first token is never eaten. A blank
+/// line arrives from Docker as `"<timestamp> "` (timestamp, space, empty
+/// body); the empty body also yields `None`.
 fn parse_timestamped_log_line(line: &[u8]) -> Option<(u64, String)> {
     let text = String::from_utf8_lossy(line);
-    // Always split on the first space. A blank line's empty `rest` trims to
-    // "", which we skip below; a line with no space falls back to the whole
-    // text as the message (no timestamp prefix).
-    let (prefix, rest) = match text.split_once(' ') {
-        Some((prefix, rest)) => (prefix, rest.trim()),
-        None => ("", text.trim()),
-    };
-    let timestamp = parse_rfc3339_nano_millis(prefix).unwrap_or_else(unix_timestamp_millis);
-    let message = truncate_chars(rest, MAX_LOG_MESSAGE_CHARS);
+    let (prefix, rest) = text.split_once(' ')?;
+    let timestamp = parse_rfc3339_nano_millis(prefix)?;
+    let message = truncate_chars(rest.trim(), MAX_LOG_MESSAGE_CHARS);
     if message.is_empty() {
         return None;
     }
@@ -565,13 +564,15 @@ fn log_tail_count(limit: usize, cursor: bool) -> usize {
 }
 
 /// Docker's `until` filter is second-resolution and EXCLUSIVE: a line at
-/// exactly `until` seconds is omitted. Floor-truncating a millisecond cursor
-/// (`cursor_millis / 1_000`) therefore silently drops every entry in the
-/// boundary second that is still older than the cursor. Round UP instead so
-/// Docker returns the whole boundary second and `page_log_entries`' precise
-/// `< cursor` filter is the sole arbiter of what belongs to the next page.
+/// exactly `until` seconds is omitted. The cursor is compound (`millis:offset`,
+/// see `LogCursor`), so the boundary millisecond's not-yet-emitted entries
+/// must still be returned: `until` must cover the second that CONTAINS the
+/// boundary millisecond, i.e. `floor(millis / 1000) + 1`. That also returns
+/// the rest of the boundary second (entries newer than the boundary that were
+/// already emitted) — `page_log_entries`' precise cursor filter is the sole
+/// arbiter of what belongs to the next page.
 fn log_until_seconds(cursor_millis: u64) -> i32 {
-    cursor_millis.div_ceil(1_000).min(i32::MAX as u64) as i32
+    (cursor_millis / 1_000 + 1).min(i32::MAX as u64) as i32
 }
 
 /// Fixed `tail` window opened for cursor ("Load older") pages. See
@@ -585,59 +586,22 @@ const MAX_LOG_CURSOR_TAIL: usize = 4_096;
 /// be truncated before `page_log_entries` sees it.
 const MAX_LOG_STREAM_CAP: usize = MAX_LOG_CURSOR_TAIL + 1;
 
-/// Unique id for a live-Docker log entry. Same-timestamp lines (Docker's
-/// millisecond timestamps can collide) stay unique thanks to the per-stream
-/// monotonic sequence number, which keeps React keys stable.
-fn log_entry_id(service: &str, timestamp: u64, sequence: usize) -> String {
-    format!("{service}-{timestamp}-{sequence}")
+/// Stable id for a live-Docker log entry, derived from content
+/// (service + timestamp + message) instead of the per-request stream
+/// sequence. The old sequence-based ids changed on every request, so the
+/// client's dedupe-by-id either filtered whole pages or duplicated entries.
+/// Same-timestamp lines stay distinct as long as their messages differ.
+fn log_entry_id(service: &str, timestamp: u64, message: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    service.hash(&mut hasher);
+    timestamp.hash(&mut hasher);
+    message.hash(&mut hasher);
+    format!("{service}-{timestamp}-{:016x}", hasher.finish())
 }
 
-/// Pure log pagination shared by every log source (no Docker socket needed).
-///
-/// Mirrors the mock semantics exactly: entries are filtered to those strictly
-/// older than the cursor, sorted NEWEST-first, and `next_cursor` is the oldest
-/// kept entry's timestamp — set only when more entries exist behind the page,
-/// so "Load older" terminates with `None` on the last page (including pages
-/// that end exactly on a multiple of `limit`) and never overlaps the previous
-/// one.
-fn page_log_entries(
-    entries: Vec<LogEntry>,
-    query: Option<&str>,
-    cursor_millis: Option<u64>,
-    limit: usize,
-) -> (Vec<LogEntry>, Option<String>) {
-    let limit = limit.clamp(1, MAX_LOG_PAGE_SIZE);
-    let filter = query.map(|value| value.to_ascii_lowercase());
-
-    let mut entries = entries
-        .into_iter()
-        .filter(|entry| cursor_millis.is_none_or(|cursor| entry.timestamp < cursor))
-        .filter(|entry| {
-            filter
-                .as_ref()
-                .is_none_or(|needle| entry.message.to_ascii_lowercase().contains(needle))
-        })
-        .collect::<Vec<_>>();
-
-    entries.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
-
-    // Decide whether older entries can exist BEHIND this page BEFORE
-    // truncating: a cursor is emitted only when the filtered page holds more
-    // than `limit` entries, mirroring mock_logs. On totals that are exact
-    // multiples of limit, the last page is exactly full but nothing is older
-    // behind it, so a full-page heuristic would emit a trailing cursor that
-    // yields an empty next page. The cursor points at the oldest kept entry.
-    let has_more = entries.len() > limit;
-    entries.truncate(limit);
-
-    let next_cursor = if has_more {
-        entries.last().map(|entry| entry.timestamp.to_string())
-    } else {
-        None
-    };
-
-    (entries, next_cursor)
-}
+// Log page boundaries are decided by `dockermap_core::page_log_entries`
+// (imported above) — the single source of truth shared with mock_logs so the
+// live-Docker, daemon-mock, and Node-API-mock paths agree on cursor format.
 
 fn docker_label_filter_from_env() -> Result<Option<String>, String> {
     match std::env::var("DOCKERMAP_DOCKER_LABEL_FILTER") {
@@ -3425,12 +3389,12 @@ fn validate_optional_query<'a>(
     Ok(Some(value))
 }
 
-fn parse_log_cursor(value: Option<&str>) -> Result<Option<u64>, ApiError> {
+fn parse_log_cursor(value: Option<&str>) -> Result<Option<LogCursor>, ApiError> {
     validate_optional_query(value, "cursor", 32)?
         .map(|value| {
-            value.parse::<u64>().map_err(|_| ApiError {
+            LogCursor::parse(value).ok_or_else(|| ApiError {
                 status: StatusCode::BAD_REQUEST,
-                message: "query parameter `cursor` must be a non-negative integer".into(),
+                message: "query parameter `cursor` must be `millis` or `millis:offset`".into(),
             })
         })
         .transpose()
@@ -3518,8 +3482,18 @@ mod tests {
     fn parses_log_cursor_values() {
         assert_eq!(parse_log_cursor(None).expect("absent cursor is fine"), None);
         assert_eq!(
-            parse_log_cursor(Some("1785175506123")).expect("numeric cursor should parse"),
-            Some(1_785_175_506_123)
+            parse_log_cursor(Some("1785175506123")).expect("plain numeric cursor should parse"),
+            Some(LogCursor {
+                millis: 1_785_175_506_123,
+                offset: 0
+            })
+        );
+        assert_eq!(
+            parse_log_cursor(Some("1785175506123:2")).expect("compound cursor should parse"),
+            Some(LogCursor {
+                millis: 1_785_175_506_123,
+                offset: 2
+            })
         );
 
         let non_numeric =
@@ -3528,6 +3502,10 @@ mod tests {
 
         let negative = parse_log_cursor(Some("-1")).expect_err("negative cursor should fail");
         assert_eq!(negative.status, StatusCode::BAD_REQUEST);
+
+        let bad_offset =
+            parse_log_cursor(Some("123:x")).expect_err("non-numeric offset should fail");
+        assert_eq!(bad_offset.status, StatusCode::BAD_REQUEST);
     }
 
     #[test]
@@ -4014,9 +3992,13 @@ mod tests {
         assert_eq!(first[0].timestamp, 1_000, "page is sorted newest-first");
         assert_eq!(first[1].timestamp, 999);
         let first_cursor = first_cursor.expect("a full page carries a cursor");
-        assert_eq!(first_cursor, "999", "cursor is the oldest kept entry");
+        assert_eq!(
+            first_cursor, "999:1",
+            "cursor is the oldest kept entry's ms plus its same-ms count emitted"
+        );
 
-        let (second, second_cursor) = page_log_entries(entries.clone(), None, Some(999), 2);
+        let (second, second_cursor) =
+            page_log_entries(entries.clone(), None, LogCursor::parse(&first_cursor), 2);
         assert_eq!(second.len(), 2);
         assert!(
             second.iter().all(|entry| entry.timestamp < 999),
@@ -4029,42 +4011,54 @@ mod tests {
             "pages must not overlap"
         );
         let second_cursor = second_cursor.expect("a full page carries a cursor");
-        assert_eq!(second_cursor, "997");
+        assert_eq!(second_cursor, "997:1");
 
-        let (last, last_cursor) = page_log_entries(entries.clone(), None, Some(997), 2);
+        let (last, last_cursor) =
+            page_log_entries(entries.clone(), None, LogCursor::parse(&second_cursor), 2);
         assert_eq!(last.len(), 1, "last page holds the remaining entry");
         assert_eq!(last[0].timestamp, 996);
         assert_eq!(last_cursor, None, "the last page has no cursor");
     }
 
     #[test]
-    fn log_entry_ids_are_unique_for_same_timestamp_lines() {
-        let first = log_entry_id("api", 1_787_198_706_123, 0);
-        let second = log_entry_id("api", 1_787_198_706_123, 1);
-        assert_ne!(first, second, "same-ms lines must not collide");
-        assert!(first.ends_with("-0"));
-        assert!(second.ends_with("-1"));
+    fn log_entry_ids_are_stable_and_unique_for_same_timestamp_lines() {
+        let first = log_entry_id("api", 1_787_198_706_123, "line one");
+        let second = log_entry_id("api", 1_787_198_706_123, "line two");
+        assert_ne!(
+            first, second,
+            "same-ms lines with different content must not collide"
+        );
+        assert_eq!(
+            log_entry_id("api", 1_787_198_706_123, "line one"),
+            first,
+            "identical content must yield the identical id across calls"
+        );
+        assert_ne!(
+            log_entry_id("web", 1_787_198_706_123, "line one"),
+            first,
+            "different services must not collide"
+        );
     }
 
     #[test]
     fn pages_log_entries_with_query_filter_and_sparse_last_page() {
         let entries = vec![
             LogEntry {
-                id: log_entry_id("svc", 100, 0),
+                id: log_entry_id("svc", 100, "boot ok"),
                 timestamp: 100,
                 container: "svc".into(),
                 level: dockermap_core::LogLevel::Info,
                 message: "boot ok".into(),
             },
             LogEntry {
-                id: log_entry_id("svc", 100, 1),
+                id: log_entry_id("svc", 100, "token=DOCKERMAP_TEST_FAKE_LOG_LINE"),
                 timestamp: 100,
                 container: "svc".into(),
                 level: dockermap_core::LogLevel::Info,
                 message: "token=DOCKERMAP_TEST_FAKE_LOG_LINE".into(),
             },
             LogEntry {
-                id: log_entry_id("svc", 99, 2),
+                id: log_entry_id("svc", 99, "retry"),
                 timestamp: 99,
                 container: "svc".into(),
                 level: dockermap_core::LogLevel::Warn,
@@ -4077,7 +4071,15 @@ mod tests {
         assert_eq!(kept[0].message, "boot ok");
         assert_eq!(cursor, None, "an unfilled page has no cursor");
 
-        let (kept, cursor) = page_log_entries(entries.clone(), None, Some(100), 2);
+        let (kept, cursor) = page_log_entries(
+            entries.clone(),
+            None,
+            Some(LogCursor {
+                millis: 100,
+                offset: 2,
+            }),
+            2,
+        );
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].timestamp, 99);
         assert_eq!(cursor, None, "an unfilled page has no cursor");
@@ -4099,7 +4101,8 @@ mod tests {
         assert_eq!(first.len(), 2);
         let first_cursor = first_cursor.expect("a full page with more behind it carries a cursor");
 
-        let (second, second_cursor) = page_log_entries(entries.clone(), None, Some(999), 2);
+        let (second, second_cursor) =
+            page_log_entries(entries.clone(), None, LogCursor::parse(&first_cursor), 2);
         assert_eq!(second.len(), 2, "exact-multiple last page is exactly full");
         assert!(
             second_cursor.is_none(),
@@ -4111,7 +4114,7 @@ mod tests {
             "the final entry is still delivered on the last page"
         );
         assert_ne!(
-            first_cursor, "997",
+            first_cursor, "997:1",
             "first cursor keeps pointing at its own oldest entry"
         );
     }
@@ -4147,7 +4150,7 @@ mod tests {
         let (page, cursor) = page_log_entries(entries, None, None, 100);
         assert_eq!(page.len(), 100, "over-fetch is truncated to the page size");
         let cursor = cursor.expect("a full page with more behind it carries a cursor");
-        assert_eq!(cursor, "9901", "cursor is the oldest kept entry");
+        assert_eq!(cursor, "9901:1", "cursor is the oldest kept entry");
     }
 
     #[test]
@@ -4167,7 +4170,7 @@ mod tests {
     }
 
     #[test]
-    fn skips_blank_timestamped_log_lines_and_keeps_real_timestamps() {
+    fn skips_blank_and_unprefixed_log_lines_and_keeps_real_timestamps() {
         // Docker emits a blank line as "<timestamp> " (timestamp, space, empty
         // body). It must be skipped, not fabricated into a now-stamped entry
         // whose message is the raw timestamp string.
@@ -4175,6 +4178,26 @@ mod tests {
             parse_timestamped_log_line(b"2026-08-20T03:03:02.538671807Z "),
             None,
             "blank lines must be skipped"
+        );
+
+        // Docker prefixes ONLY the first line of a multi-line message;
+        // continuation lines are bare text with no timestamp. They must be
+        // skipped — NOT stamped with now() — and their first token must not
+        // be eaten as if it were a prefix.
+        assert_eq!(
+            parse_timestamped_log_line(b"hello world"),
+            None,
+            "a continuation line without a timestamp prefix must be skipped"
+        );
+        assert_eq!(
+            parse_timestamped_log_line(b""),
+            None,
+            "a completely empty line must be skipped"
+        );
+        assert_eq!(
+            parse_timestamped_log_line(b"   "),
+            None,
+            "a whitespace-only line must be skipped"
         );
 
         // A normal line keeps its real timestamp rather than falling back to
@@ -4190,20 +4213,22 @@ mod tests {
     }
 
     #[test]
-    fn log_until_rounds_cursor_up_to_second_boundary() {
-        // Docker's `until` is second-resolution and exclusive: floor
-        // truncation would drop every entry in the boundary second older than
-        // the cursor. Rounding up returns the whole boundary second and lets
-        // the precise ms filter arbitrate.
+    fn log_until_covers_the_boundary_millisecond() {
+        // Docker's `until` is second-resolution and exclusive. The compound
+        // cursor's boundary millisecond must still be returned (its
+        // not-yet-emitted same-ms entries resume via the offset), so `until`
+        // is `floor(millis / 1000) + 1` — it covers the second CONTAINING
+        // the boundary. Entries in that second that are newer than the
+        // boundary are filtered out by page_log_entries afterwards.
         assert_eq!(log_until_seconds(1_785_175_506_123), 1_785_175_507);
         assert_eq!(
             log_until_seconds(1_785_175_506_000),
-            1_785_175_506,
-            "an exact second boundary rounds to itself"
+            1_785_175_507,
+            "an exact second boundary must still include its own second"
         );
-        assert_eq!(log_until_seconds(1_000), 1);
+        assert_eq!(log_until_seconds(1_000), 2);
         assert_eq!(log_until_seconds(999), 1);
-        assert_eq!(log_until_seconds(0), 0);
+        assert_eq!(log_until_seconds(0), 1);
     }
 
     #[test]
@@ -4221,7 +4246,15 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let (page, _) = page_log_entries(entries, None, Some(1_000_123), 10);
+        let (page, _) = page_log_entries(
+            entries,
+            None,
+            Some(LogCursor {
+                millis: 1_000_123,
+                offset: 1,
+            }),
+            10,
+        );
         assert_eq!(
             page.len(),
             5,

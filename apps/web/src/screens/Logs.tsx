@@ -64,6 +64,8 @@ export default function Logs() {
       const data = await fetchLogs(path);
       setEntries((current) => {
         if (current.length === 0) {
+          // Nothing on screen yet (e.g. a first load that raced the stream):
+          // adopt the fresh page wholesale.
           return data.entries;
         }
         const newest = current[0].timestamp;
@@ -78,7 +80,13 @@ export default function Logs() {
         }
         return [...fresh, ...current];
       });
-      setNextCursor(data.nextCursor);
+      // Adopt the poll's cursor ONLY when none exists yet (e.g. the first
+      // page loaded before the stream had enough history for one). A
+      // non-null cursor — in particular one "Load older" has advanced
+      // deeper — is never overwritten by a live poll's shallow first-page
+      // cursor, which would make the next click re-fetch an
+      // already-displayed page.
+      setNextCursor((current) => current ?? data.nextCursor);
       setError(null);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") {

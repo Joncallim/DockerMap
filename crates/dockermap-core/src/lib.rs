@@ -158,6 +158,130 @@ pub const MAX_LOG_PAGE_SIZE: usize = 500;
 /// Default page size when the caller does not request one.
 pub const DEFAULT_LOG_PAGE_SIZE: usize = 100;
 
+/// Compound log cursor: a boundary timestamp (milliseconds) plus how many
+/// entries at that exact millisecond were already emitted on previous pages.
+///
+/// Serialized as `"<millis>:<offset>"` (e.g. `"1787198706123:2"`); a bare
+/// `"<millis>"` parses as offset 0. The offset lets cursor pagination resume
+/// mid-run when many lines share one millisecond (Docker timestamps are
+/// truncated to ms) instead of silently dropping every same-ms entry beyond
+/// the page boundary — a plain `timestamp < cursor` filter could never
+/// revisit them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogCursor {
+    pub millis: u64,
+    pub offset: usize,
+}
+
+impl LogCursor {
+    pub fn parse(value: &str) -> Option<Self> {
+        let (millis, offset) = value.split_once(':').unwrap_or((value, ""));
+        let millis = millis.parse::<u64>().ok()?;
+        let offset = if offset.is_empty() {
+            0
+        } else {
+            offset.parse::<usize>().ok()?
+        };
+        Some(Self { millis, offset })
+    }
+}
+
+impl std::fmt::Display for LogCursor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}:{}", self.millis, self.offset)
+    }
+}
+
+/// Pure log pagination shared by every log source (live Docker, daemon mock,
+/// Node API mock) so all three paths agree on page boundaries.
+///
+/// Entries are filtered by query, sorted NEWEST-first, and truncated to
+/// `limit`. The returned `next_cursor` is a compound `"millis:offset"` cursor
+/// (see `LogCursor`): entries sharing the boundary millisecond are resumed
+/// exactly where the previous page stopped. A cursor is emitted only when
+/// more entries exist behind the page, so "Load older" terminates with
+/// `None` on the last page (including pages that end exactly on a multiple of
+/// `limit`) and never overlaps the previous one.
+pub fn page_log_entries(
+    entries: Vec<LogEntry>,
+    query: Option<&str>,
+    cursor: Option<LogCursor>,
+    limit: usize,
+) -> (Vec<LogEntry>, Option<String>) {
+    let limit = limit.clamp(1, MAX_LOG_PAGE_SIZE);
+    let filter = query.map(|value| value.to_ascii_lowercase());
+
+    let mut entries = entries
+        .into_iter()
+        .filter(|entry| {
+            filter
+                .as_ref()
+                .is_none_or(|needle| entry.message.to_ascii_lowercase().contains(needle))
+        })
+        .collect::<Vec<_>>();
+
+    // Stable sort: same-millisecond entries keep their stream order, so the
+    // per-timestamp index below is deterministic across requests.
+    entries.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+
+    if let Some(cursor) = cursor {
+        // Newest-first order means entries newer than the boundary come
+        // first (already emitted — drop), then the boundary millisecond's
+        // run (keep from `offset` onward), then everything older (keep).
+        let mut same_timestamp_seen = 0usize;
+        entries = entries
+            .into_iter()
+            .filter(|entry| {
+                if entry.timestamp < cursor.millis {
+                    true
+                } else if entry.timestamp > cursor.millis {
+                    false
+                } else {
+                    let keep = same_timestamp_seen >= cursor.offset;
+                    same_timestamp_seen += 1;
+                    keep
+                }
+            })
+            .collect::<Vec<_>>();
+    }
+
+    // Decide whether older entries exist BEHIND this page BEFORE truncating:
+    // a cursor is emitted only when the filtered page holds more than `limit`
+    // entries. On totals that are exact multiples of limit, the last page is
+    // exactly full but nothing is older behind it, so a full-page heuristic
+    // would emit a trailing cursor that yields an empty next page.
+    let has_more = entries.len() > limit;
+
+    let next_cursor = if has_more {
+        // The cursor points at the oldest kept entry: its millisecond plus
+        // how many entries at that millisecond were emitted through THIS
+        // page — the incoming cursor's count for that ms (if it is the same
+        // ms) plus the same-ms entries this page keeps — so the next page
+        // resumes past them.
+        let boundary = &entries[limit - 1];
+        let first_at_boundary = entries[..limit]
+            .iter()
+            .position(|entry| entry.timestamp == boundary.timestamp)
+            .unwrap_or(limit - 1);
+        let previously_emitted = cursor
+            .filter(|cursor| cursor.millis == boundary.timestamp)
+            .map_or(0, |cursor| cursor.offset);
+        Some(
+            LogCursor {
+                millis: boundary.timestamp,
+                offset: previously_emitted + limit - first_at_boundary,
+            }
+            .to_string(),
+        )
+    } else {
+        None
+    };
+
+    entries.truncate(limit);
+
+    (entries, next_cursor)
+}
+
 /// Parse an RFC 3339 / RFC 3339 Nano timestamp prefix (as emitted by
 /// `docker logs --timestamps`, e.g. `2026-08-20T04:05:06.123456789Z`) into
 /// milliseconds since the Unix epoch. Returns `None` when the value does not
@@ -1250,13 +1374,11 @@ pub fn mock_logs(
     snapshot: &DockerSnapshot,
     service: Option<&str>,
     query: Option<&str>,
-    cursor_millis: Option<u64>,
+    cursor: Option<LogCursor>,
     limit: usize,
 ) -> LogsResponse {
     let mut entries = Vec::new();
     let now = unix_timestamp_millis();
-    let filter = query.map(|value| value.to_ascii_lowercase());
-    let limit = limit.clamp(1, MAX_LOG_PAGE_SIZE);
 
     for (index, container) in snapshot.containers.iter().enumerate() {
         if let Some(service_filter) = service {
@@ -1284,12 +1406,6 @@ pub fn mock_logs(
         ];
 
         for (offset, (level, message)) in candidates.into_iter().enumerate() {
-            if let Some(filter) = &filter {
-                if !message.to_ascii_lowercase().contains(filter) {
-                    continue;
-                }
-            }
-
             entries.push(LogEntry {
                 id: format!("{}-{}", container.id, offset),
                 timestamp: now.saturating_sub(((index * 3 + offset) as u64) * 15_000),
@@ -1300,18 +1416,10 @@ pub fn mock_logs(
         }
     }
 
-    entries.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
-
-    if let Some(cursor_millis) = cursor_millis {
-        entries.retain(|entry| entry.timestamp < cursor_millis);
-    }
-
-    let next_cursor = if entries.len() > limit {
-        Some(entries[limit - 1].timestamp.to_string())
-    } else {
-        None
-    };
-    entries.truncate(limit);
+    // Query filtering, sorting, and compound-cursor paging all live in the
+    // shared helper so this mock agrees with the live-Docker daemon path and
+    // the Node API mock on page boundaries.
+    let (entries, next_cursor) = page_log_entries(entries, query, cursor, limit);
 
     LogsResponse {
         service: service.map(str::to_string),
@@ -2586,7 +2694,7 @@ mod tests {
             &snapshot,
             None,
             None,
-            Some(cursor.parse().expect("numeric cursor")),
+            Some(LogCursor::parse(&cursor).expect("compound cursor")),
             2,
         );
         assert!(!second.entries.is_empty());
@@ -2620,7 +2728,7 @@ mod tests {
             &snapshot,
             None,
             None,
-            Some(cursor.parse().expect("numeric cursor")),
+            Some(LogCursor::parse(&cursor).expect("compound cursor")),
             3,
         );
         assert!(!older.entries.is_empty(), "older page must not be empty");
@@ -2631,6 +2739,84 @@ mod tests {
                 .all(|entry| entry.timestamp < first.entries[0].timestamp),
             "older page must be strictly older than the first page"
         );
+    }
+
+    #[test]
+    fn paginates_same_timestamp_entries_with_compound_cursor() {
+        // Regression (round 7, F3): entries sharing one millisecond used to
+        // be silently dropped at page boundaries — a plain `ts` cursor could
+        // never resume mid-run, so 5 entries at ts=1000 with limit=2 lost
+        // three entries. The compound "ts:offset" cursor must page them all.
+        let entries = (0..5)
+            .map(|index| LogEntry {
+                id: format!("svc-{index}"),
+                timestamp: 1_000,
+                container: "svc".into(),
+                level: LogLevel::Info,
+                message: format!("line {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        let (page1, cursor1) = page_log_entries(entries.clone(), None, None, 2);
+        assert_eq!(page1.len(), 2);
+        assert_eq!(
+            cursor1.as_deref(),
+            Some("1000:2"),
+            "cursor encodes the boundary ms and the 2 entries already emitted at it"
+        );
+
+        let (page2, cursor2) = page_log_entries(
+            entries.clone(),
+            None,
+            LogCursor::parse("1000:2").as_ref().copied(),
+            2,
+        );
+        assert_eq!(page2.len(), 2);
+        assert_eq!(
+            cursor2.as_deref(),
+            Some("1000:4"),
+            "the second page resumes past the first 2 same-ms entries"
+        );
+        assert!(
+            page2
+                .iter()
+                .all(|entry| page1.iter().all(|first| first.id != entry.id)),
+            "pages must not overlap"
+        );
+
+        let (page3, cursor3) = page_log_entries(
+            entries.clone(),
+            None,
+            LogCursor::parse("1000:4").as_ref().copied(),
+            2,
+        );
+        assert_eq!(page3.len(), 1, "the last same-ms entry is still delivered");
+        assert_eq!(page3[0].id, "svc-4");
+        assert_eq!(cursor3, None, "the last page has no cursor");
+
+        // A plain "ts" cursor (backward compatible) still pages older entries.
+        let (page_plain, _) = page_log_entries(
+            entries.clone(),
+            None,
+            LogCursor::parse("999").as_ref().copied(),
+            2,
+        );
+        assert!(page_plain.is_empty(), "nothing is older than 999 here");
+        assert_eq!(
+            LogCursor::parse("1000"),
+            Some(LogCursor {
+                millis: 1_000,
+                offset: 0
+            })
+        );
+        assert_eq!(
+            LogCursor::parse("1000:7"),
+            Some(LogCursor {
+                millis: 1_000,
+                offset: 7
+            })
+        );
+        assert_eq!(LogCursor::parse("not-a-cursor"), None);
     }
 
     #[test]
