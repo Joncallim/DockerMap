@@ -53,7 +53,7 @@ const MAX_PACKAGE_JSON_BYTES: u64 = 262_144;
 const MAX_NPM_SCRIPTS: usize = 16;
 const MAX_SCRIPT_CHARS: usize = 200;
 const MAX_PYTHON_PROCESSES: usize = 64;
-const MAX_NATIVE_PROCESSES: usize = 64;
+const MAX_NATIVE_PROCESSES: usize = 256;
 const MAX_PROVIDER_OUTPUT_BYTES: usize = 1 << 20;
 const REDACTED_VALUE: &str = "[redacted]";
 const MAX_DOCKER_LABEL_FILTER_CHARS: usize = 256;
@@ -2208,7 +2208,7 @@ fn collect_python_processes(
     let output = match run_command_with_timeout(
         {
             let mut command = Command::new("ps");
-            command.args(["-eo", "pid=,user=,args="]);
+            command.args(["-eo", "pid=,user:32=,args="]);
             command
         },
         PROVIDER_COMMAND_TIMEOUT,
@@ -2317,7 +2317,7 @@ fn collect_native_processes(
     let output = match run_command_with_timeout(
         {
             let mut command = Command::new("ps");
-            command.args(["-eo", "pid=,user=,args="]);
+            command.args(["-eo", "pid=,user:32=,args="]);
             command
         },
         PROVIDER_COMMAND_TIMEOUT,
@@ -2338,24 +2338,41 @@ fn collect_native_processes(
         return;
     }
 
-    nodes.extend(native_process_nodes_from_ps_output(
+    let (native_nodes, capped) = native_process_nodes_from_ps_output(
         &String::from_utf8_lossy(&output.stdout),
         std::process::id(),
-    ));
+    );
+    if capped {
+        // ps emits pids in ascending order, so when the cap is hit the first
+        // MAX_NATIVE_PROCESSES pids are surfaced and later-started services
+        // (nginx, postgres, node, ...) are omitted — say so instead of
+        // silently dropping them.
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Process,
+            DiagnosticSeverity::Info,
+            format!("Native process discovery capped at {MAX_NATIVE_PROCESSES} processes"),
+        );
+    }
+    nodes.extend(native_nodes);
 }
 
 /// Native-process node builder. `self_pid` is the daemon's own pid, which is
 /// never published. Raw argv is deliberately NOT emitted (same posture as the
 /// python provider — a credential the redaction heuristic does not recognize
-/// must not leak through /daemon/runtime/map).
-fn native_process_nodes_from_ps_output(value: &str, self_pid: u32) -> Vec<RuntimeMapNode> {
-    let mut nodes = Vec::new();
-    for record in parse_ps_table(value)
+/// must not leak through /daemon/runtime/map). Returns the nodes and whether
+/// the filtered process count exceeded `MAX_NATIVE_PROCESSES` (the caller
+/// turns that into the "Process count capped" diagnostic).
+fn native_process_nodes_from_ps_output(value: &str, self_pid: u32) -> (Vec<RuntimeMapNode>, bool) {
+    let filtered = parse_ps_table(value)
         .into_iter()
         .filter(|record| is_native_process(&record.args) && record.pid != self_pid)
-        .take(MAX_NATIVE_PROCESSES)
-    {
-        let comm = process_comm(&record.args).unwrap_or_else(|| "unknown".into());
+        .collect::<Vec<_>>();
+    let capped = filtered.len() > MAX_NATIVE_PROCESSES;
+    let mut nodes = Vec::new();
+    for record in filtered.into_iter().take(MAX_NATIVE_PROCESSES) {
+        let fallback_comm = process_comm(&record.args).unwrap_or_else(|| "unknown".into());
+        let comm = real_comm(record.pid, &fallback_comm);
         let mut metadata = BTreeMap::new();
         metadata.insert("pid".into(), record.pid.to_string());
         metadata.insert("user".into(), record.user);
@@ -2372,26 +2389,90 @@ fn native_process_nodes_from_ps_output(value: &str, self_pid: u32) -> Vec<Runtim
             package: None,
         });
     }
-    nodes
+    (nodes, capped)
+}
+
+/// Kernel command name for a pid, read from `/proc/<pid>/comm`. The proc
+/// entry holds the real kernel comm even when the process rewrote argv[0]
+/// (avahi-daemon renders as `avahi-daemon: running [host]` in ps args, nginx
+/// as `nginx: master process`). Truncated to 16 characters like the kernel's
+/// TASK_COMM_LEN. Falls back to `fallback` (derived from the ps args column)
+/// when the proc entry is unreadable — which is also the path exercised by
+/// fixture-based tests using fake pids.
+fn real_comm(pid: u32, fallback: &str) -> String {
+    if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+        let comm = comm.trim();
+        if !comm.is_empty() {
+            return comm.chars().take(16).collect();
+        }
+    }
+    fallback.to_string()
+}
+
+/// First executable token of a ps args column, walking past common wrapper
+/// executables (env, sudo, nice, nohup, timeout), option tokens, env
+/// `NAME=VALUE` assignments, and numeric wrapper arguments (nice adjustment,
+/// timeout duration) — so `env python3 script.py`, `nice -n 5 nginx ...`,
+/// and `timeout 300 node ...` all resolve to the real command.
+fn effective_executable(args: &str) -> Option<&str> {
+    for token in args.split_whitespace() {
+        if token.starts_with('[') {
+            return Some(token); // kernel thread — brackets and slashes preserved
+        }
+        let basename = token.rsplit('/').next().unwrap_or(token);
+        if matches!(basename, "env" | "sudo" | "nice" | "nohup" | "timeout") {
+            continue; // wrapper executable — keep walking
+        }
+        if token.starts_with('-') {
+            continue; // option token
+        }
+        if token.contains('=') {
+            continue; // env NAME=VALUE assignment
+        }
+        if is_duration_like(token) {
+            continue; // nice adjustment / timeout duration
+        }
+        return Some(basename);
+    }
+    None
+}
+
+/// Numeric token with an optional single unit suffix (`300`, `10s`, `5m`) —
+/// i.e. a `nice` adjustment or `timeout` duration, never an executable.
+/// Requires at least one leading digit so ordinary names like `sshd` (whose
+/// letters all look like duration units) are never skipped.
+fn is_duration_like(token: &str) -> bool {
+    let digits = token
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    digits > 0
+        && (digits == token.len()
+            || (digits + 1 == token.len()
+                && matches!(token.as_bytes()[digits], b's' | b'm' | b'h' | b'd')))
 }
 
 /// Extract the process command name (executable basename) from a ps args
-/// column. Kernel threads render as `[kworker/0:0]` — brackets preserved so
-/// they are never mistaken for an executable.
+/// column, resolving wrapper executables to the wrapped command. Kernel
+/// threads render as `[kworker/0:0]` — brackets preserved so they are never
+/// mistaken for an executable. A trailing `:` (daemons that rewrite argv[0],
+/// e.g. `avahi-daemon: running [host]`) is stripped.
 fn process_comm(args: &str) -> Option<String> {
-    let executable = args.split_whitespace().next()?;
+    let executable = effective_executable(args)?;
     if executable.starts_with('[') {
         return Some(executable.to_string());
     }
-    let basename = executable.rsplit('/').next().unwrap_or(executable);
-    Some(basename.to_string())
+    Some(executable.trim_end_matches(':').to_string())
 }
 
 /// Native-process detection: everything except kernel threads, python
 /// interpreters (owned by the python provider), the daemon itself, container
-/// runtime plumbing, and the transient `ps` process itself.
+/// runtime plumbing, and the transient `ps` process itself. Wrapper
+/// executables (env, sudo, nice, nohup, timeout) resolve to the wrapped
+/// command, so `env python3 ...` is excluded via the python check and
+/// `nice ... nginx ...` is included as `nginx`.
 fn is_native_process(args: &str) -> bool {
-    let Some(comm) = process_comm(args) else {
+    let Some(comm) = effective_executable(args) else {
         return false;
     };
     if comm.starts_with('[') {
@@ -2401,12 +2482,12 @@ fn is_native_process(args: &str) -> bool {
         return false; // python provider owns interpreter processes
     }
     if matches!(
-        comm.as_str(),
+        comm,
         "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
     ) {
         return false; // python provider owns framework processes
     }
-    if comm == "dockermap-daemon" || comm == "ps" || comm == "dockermap-api" {
+    if comm == "dockermap-daemon" || comm == "ps" {
         return false;
     }
     if comm.starts_with("containerd-shim") {
@@ -4579,7 +4660,7 @@ mod tests {
         ));
 
         assert_eq!(records.len(), 14);
-        assert_eq!(records[0].pid, 1);
+        assert_eq!(records[0].pid, 9_000_001);
         assert_eq!(records[0].user, "root");
         assert_eq!(records[0].args, "/usr/sbin/nginx -g daemon off;");
         assert_eq!(
@@ -4599,28 +4680,36 @@ mod tests {
 
         // nginx, postgres, redis, sshd, dockerd, node, cron are native;
         // containerd-shim, kernel threads, python, the daemon itself, and the
-        // transient ps process are excluded.
-        assert_eq!(natives, vec![1, 2, 3, 4, 5, 13, 14]);
+        // transient ps process are excluded. Pids are beyond pid_max so the
+        // fixture never collides with a live host process.
+        assert_eq!(
+            natives,
+            vec![9_000_001, 9_000_002, 9_000_003, 9_000_004, 9_000_005, 9_000_013, 9_000_014]
+        );
     }
 
     #[test]
     fn builds_native_process_nodes_from_fixture() {
-        let mut nodes = native_process_nodes_from_ps_output(
+        let (mut nodes, capped) = native_process_nodes_from_ps_output(
             include_str!("../../../tests/fixtures/providers/parser/native-ps-table.txt"),
-            11, // the daemon's own pid (dockermap-daemon in the fixture)
+            9_000_011, // the daemon's own pid (dockermap-daemon in the fixture)
         );
+        assert!(!capped);
         redact_runtime_nodes(&mut nodes);
 
         assert_eq!(nodes.len(), 7);
 
         let nginx = &nodes[0];
-        assert_eq!(nginx.id, "native_process_1");
+        assert_eq!(nginx.id, "native_process_9000001");
         assert_eq!(nginx.provider, RuntimeProviderKind::Process);
         assert_eq!(nginx.kind, RuntimeNodeKind::Process);
         assert_eq!(nginx.label, "nginx");
         assert_eq!(nginx.status.as_deref(), Some("running"));
         assert_eq!(nginx.layer, Some(RuntimeNodeLayer::Process));
-        assert_eq!(nginx.metadata.get("pid").map(String::as_str), Some("1"));
+        assert_eq!(
+            nginx.metadata.get("pid").map(String::as_str),
+            Some("9000001")
+        );
         assert_eq!(nginx.metadata.get("user").map(String::as_str), Some("root"));
         assert_eq!(
             nginx.metadata.get("comm").map(String::as_str),
@@ -4628,13 +4717,146 @@ mod tests {
         );
 
         let node = &nodes[5];
-        assert_eq!(node.id, "native_process_13");
+        assert_eq!(node.id, "native_process_9000013");
         assert_eq!(node.label, "node");
 
         // No daemon self-node, and raw argv is never published.
-        assert!(nodes.iter().all(|node| node.id != "native_process_11"));
+        assert!(nodes.iter().all(|node| node.id != "native_process_9000011"));
         assert!(nodes.iter().all(|node| !node.metadata.contains_key("args")));
         assert_no_raw_secrets(&nodes, &["dockermap-daemon"]);
+    }
+
+    #[test]
+    fn parses_long_usernames_from_ps_user_column() {
+        // `ps -eo user=,` truncates usernames at 8 chars and appends '+'; the
+        // providers use `user:32=` so full usernames must survive the parser.
+        let records = parse_ps_table("  4242  systemd-resolve  /usr/lib/systemd/systemd-resolved");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].pid, 4242);
+        assert_eq!(records[0].user, "systemd-resolve");
+        assert_eq!(records[0].args, "/usr/lib/systemd/systemd-resolved");
+
+        // A padded 32-char column (as `ps` actually emits) parses identically.
+        let padded = format!(
+            "  4242  {:<32}  /usr/lib/systemd/systemd-resolved",
+            "systemd-resolve"
+        );
+        let records = parse_ps_table(&padded);
+        assert_eq!(records[0].user, "systemd-resolve");
+        assert_eq!(records[0].args, "/usr/lib/systemd/systemd-resolved");
+    }
+
+    #[test]
+    fn process_comm_strips_argv_zero_rewrites_and_resolves_wrappers() {
+        // Daemons that rewrite argv[0] (`avahi-daemon: running [host]`, nginx
+        // master) must not leak a trailing colon into the comm.
+        assert_eq!(
+            process_comm("/usr/sbin/avahi-daemon: running [HEARTH.local]").as_deref(),
+            Some("avahi-daemon")
+        );
+        assert_eq!(
+            process_comm("/usr/sbin/nginx: master process").as_deref(),
+            Some("nginx")
+        );
+        // Wrapper executables resolve to the wrapped command.
+        assert_eq!(
+            process_comm("/usr/bin/nice -n 5 /usr/sbin/nginx -g daemon off;").as_deref(),
+            Some("nginx")
+        );
+        assert_eq!(
+            process_comm("timeout 300 node /srv/server.js").as_deref(),
+            Some("node")
+        );
+        assert_eq!(
+            process_comm("env FOO=bar /usr/bin/python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+    }
+
+    #[test]
+    fn wrapper_executables_classify_as_the_wrapped_command() {
+        // env-wrapped interpreters and frameworks belong to the python
+        // provider, never to the native provider.
+        assert!(!is_native_process("env python3 /srv/x.py"));
+        assert!(!is_native_process(
+            "env /srv/app/.venv/bin/uvicorn app.main:app"
+        ));
+        assert!(!is_native_process("env uvicorn app.main:app --port 8000"));
+        // nice/timeout-wrapped daemons are native.
+        assert!(is_native_process(
+            "/usr/bin/nice -n 5 /usr/sbin/nginx -g daemon off;"
+        ));
+        assert!(is_native_process("timeout 300 node /srv/server.js"));
+    }
+
+    #[test]
+    fn real_comm_falls_back_for_unreadable_proc_entry() {
+        // 9_000_000-style pids are beyond pid_max (4_194_304) on any Linux
+        // host, so /proc/<pid>/comm cannot exist — the argv-derived fallback
+        // must win.
+        assert_eq!(real_comm(9_000_000, "nginx"), "nginx");
+        assert_eq!(real_comm(9_000_000, ""), "");
+    }
+
+    #[test]
+    fn real_comm_prefers_proc_comm_over_rewritten_argv() {
+        // The child rewrites argv[0] via `exec -a`, so the argv-derived
+        // fallback ("fake-name") differs from the kernel comm ("sleep"); the
+        // /proc/<pid>/comm entry must win.
+        let Ok(mut child) = Command::new("bash")
+            .arg("-c")
+            .arg("exec -a /tmp/fake-name sleep 30")
+            .spawn()
+        else {
+            return; // no bash/sleep in this environment — nothing to assert
+        };
+        // The child forks from this test thread, inheriting its comm
+        // ("tests::real_com" — 15 chars) until bash execs; poll until the
+        // exec'd comm is visible.
+        let mut comm = String::new();
+        for _ in 0..100 {
+            comm = real_comm(child.id(), "fake-name");
+            if comm == "sleep" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(comm, "sleep");
+    }
+
+    #[test]
+    fn native_process_cap_is_reported_and_bounded() {
+        let mut table = String::new();
+        for pid in 1..=300 {
+            table.push_str(&format!("{pid:>7}  root  /usr/bin/benchmark-{pid}\n"));
+        }
+        let (nodes, capped) = native_process_nodes_from_ps_output(&table, 9_000_000);
+        assert!(
+            capped,
+            "300 filtered processes must exceed MAX_NATIVE_PROCESSES"
+        );
+        assert_eq!(nodes.len(), MAX_NATIVE_PROCESSES);
+        // ps emits pids ascending, so the first MAX_NATIVE_PROCESSES surface.
+        assert_eq!(
+            nodes
+                .first()
+                .unwrap()
+                .metadata
+                .get("pid")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            nodes
+                .last()
+                .unwrap()
+                .metadata
+                .get("pid")
+                .map(String::as_str),
+            Some(MAX_NATIVE_PROCESSES.to_string().as_str())
+        );
     }
 
     #[test]

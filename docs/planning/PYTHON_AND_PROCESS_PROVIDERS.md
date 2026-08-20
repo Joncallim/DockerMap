@@ -64,18 +64,17 @@ Python application nodes may expose:
 
 Native process nodes may expose:
 
-- Stable node id derived from pid plus safe process identity for the current snapshot.
-- Pid and parent pid.
-- Executable basename or command name.
+- Stable node id derived from pid for the current snapshot.
+- Pid, user, and command name (kernel `/proc/<pid>/comm` when readable, else the
+  executable basename from the fixed `ps` args column, with wrapper executables such as
+  `env`/`sudo`/`nice`/`nohup`/`timeout` resolved to the wrapped command).
 - Sanitized command summary. Raw argv and raw `ps args` must never leave the provider
   boundary in API responses, fixtures, logs, diagnostics, screenshots, docs, or issue
   comments.
-- Process status and start-time or uptime fields when read from fixed local sources.
-- User or uid if readable without privilege escalation.
-- Cwd only when the resolved path is inside a documented project root; otherwise expose a
-  redacted or omitted location.
-- Runtime hints such as `python`, `node`, `binary`, or `shell` when derived from command
-  basename and not from sensitive args.
+- Process status.
+- Parent pid, start-time or uptime, cwd, and runtime hints such as `python`, `node`,
+  `binary`, or `shell` are deferred follow-ups (see Follow-Up Issues), not part of the
+  first shipped collector.
 
 Edges may expose:
 
@@ -106,18 +105,21 @@ Providers must not expose:
 
 ## Fixed Read-Only Sources
 
-Preferred native-process sources on Linux:
-
-- `/proc/<pid>/stat`
-- `/proc/<pid>/status`
-- `/proc/<pid>/cmdline`
-- `/proc/<pid>/cwd` symlink target
-
-If `/proc` is unavailable, a future fallback may use only a fixed command with no user input:
+Native-process discovery uses one fixed `ps` invocation with no user input:
 
 ```bash
-ps -eo pid,ppid,user,stat,lstart,comm,args
+ps -eo pid=,user:32=,args=
 ```
+
+The `user:32=` column width avoids truncating usernames longer than eight characters
+(`ps`'s default `user` column renders `systemd-resolve` as `systemd+`). Per matched pid,
+`/proc/<pid>/comm` is read for the kernel command name when available (it survives argv[0]
+rewrites such as `avahi-daemon: running [host]`). The daemon's own pid and the transient
+`ps` process are excluded from results.
+
+`/proc/<pid>/stat`, `/proc/<pid>/status`, `/proc/<pid>/cmdline`, and `/proc/<pid>/cwd`
+remain the preferred sources for a richer future collector (parent pid, uptime, cwd,
+runtime hints) — see Follow-Up Issues.
 
 Preferred Python project files under the configured project root:
 
@@ -147,15 +149,16 @@ Python project discovery must follow the existing npm provider pattern:
   `.mypy_cache`, `.pytest_cache`, `.tox`, `.ruff_cache`, `dist`, `build`, `target`,
   `node_modules`, `coverage`, and cache directories.
 
-Native process discovery should be Linux-first, use `/proc`, cap the number of process
-entries inspected, and never recurse into cwd trees. Unreadable or short-lived processes are
+Native process discovery is Linux-first: the shipped collector parses the fixed `ps` table
+above and reads `/proc/<pid>/comm` per matched pid, caps the number of process entries
+inspected, and never recurses into cwd trees. Unreadable or short-lived processes are
 normal and should produce capped diagnostics instead of failing the runtime-map endpoint.
 Enforce these minimum hard caps before implementation:
 
 - `MAX_NATIVE_PROCESSES = 256`
-- `MAX_PROCESS_CMDLINE_BYTES = 8192`
-- `MAX_PROCESS_STATUS_BYTES = 65536`
-- `MAX_PROCESS_CWD_BYTES = 4096`
+- `MAX_PROCESS_CMDLINE_BYTES = 8192` (deferred `/proc` follow-up)
+- `MAX_PROCESS_STATUS_BYTES = 65536` (deferred `/proc` follow-up)
+- `MAX_PROCESS_CWD_BYTES = 4096` (deferred `/proc` follow-up)
 - `MAX_PROVIDER_DIAGNOSTICS = 128`
 
 ## Diagnostics
@@ -201,7 +204,10 @@ or external network access.
 ## Follow-Up Issues
 
 1. Add bounded Python project manifest parser fixtures and redaction tests.
-2. Add Linux `/proc` native-process parser fixtures with caps and soft diagnostics.
+2. Add Linux `/proc` native-process parser fixtures (stat/status/cmdline/cwd) for the
+   deferred richer-metadata follow-up (parent pid, uptime, cwd, runtime hints), with caps
+   and soft diagnostics. The shipped collector is `ps`-based with pid/user/comm metadata;
+   see "Fixed Read-Only Sources" above.
 3. Add shared runtime-map fixture examples for Python application and native-process nodes;
    expand contracts only if fixtures prove the existing vocabulary is insufficient.
 4. Implement the bounded Python project collector under `DOCKERMAP_PROJECT_ROOT`.
