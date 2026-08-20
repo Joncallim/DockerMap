@@ -24,7 +24,8 @@ use dockermap_core::{
     LogsResponse, NetworkRecord, RuntimeLocation, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
     RuntimeMapNode, RuntimeMode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeOwnership,
     RuntimePackageEntity, RuntimeProviderKind, RuntimeRelationshipKind, RuntimeServiceEntity,
-    ServiceEntityKind, VolumeRecord, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+    RuntimeServiceStatus, ServiceEntityKind, VolumeRecord, DEFAULT_LOG_PAGE_SIZE,
+    MAX_LOG_PAGE_SIZE,
 };
 use futures_util::stream::StreamExt;
 use serde::Deserialize;
@@ -446,8 +447,10 @@ fn log_entry_id(service: &str, timestamp: u64, sequence: usize) -> String {
 ///
 /// Mirrors the mock semantics exactly: entries are filtered to those strictly
 /// older than the cursor, sorted NEWEST-first, and `next_cursor` is the oldest
-/// kept entry's timestamp — set only when the page is full, so "Load older"
-/// terminates with `None` on the last page and never overlaps the previous one.
+/// kept entry's timestamp — set only when more entries exist behind the page,
+/// so "Load older" terminates with `None` on the last page (including pages
+/// that end exactly on a multiple of `limit`) and never overlaps the previous
+/// one.
 fn page_log_entries(
     entries: Vec<LogEntry>,
     query: Option<&str>,
@@ -468,12 +471,17 @@ fn page_log_entries(
         .collect::<Vec<_>>();
 
     entries.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+
+    // Decide whether older entries can exist BEHIND this page BEFORE
+    // truncating: a cursor is emitted only when the filtered page holds more
+    // than `limit` entries, mirroring mock_logs. On totals that are exact
+    // multiples of limit, the last page is exactly full but nothing is older
+    // behind it, so a full-page heuristic would emit a trailing cursor that
+    // yields an empty next page. The cursor points at the oldest kept entry.
+    let has_more = entries.len() > limit;
     entries.truncate(limit);
 
-    // The page is full when it still holds `limit` entries after truncation;
-    // only then is there a chance older entries exist behind it, so only a
-    // full page carries a cursor (pointing at the oldest kept entry).
-    let next_cursor = if entries.len() == limit {
+    let next_cursor = if has_more {
         entries.last().map(|entry| entry.timestamp.to_string())
     } else {
         None
@@ -938,7 +946,7 @@ fn push_tailnet_node(
         kind: RuntimeNodeKind::TailnetNode,
         label,
         status: online.map(|value| if value { "online" } else { "offline" }.into()),
-        layer: None,
+        layer: Some(RuntimeNodeLayer::Edge),
         metadata,
         service: None,
         package: None,
@@ -996,7 +1004,7 @@ fn network_marker_node(
         kind,
         label: marker.product.into(),
         status: Some("configured".into()),
-        layer: None,
+        layer: Some(RuntimeNodeLayer::Network),
         metadata,
         service: None,
         package: None,
@@ -1096,7 +1104,7 @@ fn push_network_container_node(
         metadata,
         service: Some(RuntimeServiceEntity::minimal(
             container.name.clone(),
-            container.status.clone(),
+            RuntimeServiceStatus::from_status_text(&container.status),
         )),
         package: None,
     });
@@ -1590,7 +1598,7 @@ fn collect_scheduled_jobs(
             kind: RuntimeNodeKind::ScheduledJob,
             label: safe_command,
             status: Some("scheduled".into()),
-            layer: Some(RuntimeNodeLayer::Session),
+            layer: Some(RuntimeNodeLayer::Process),
             metadata,
             service: None,
             package: None,
@@ -1695,7 +1703,7 @@ fn collect_pm2_apps(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<Runti
             kind: RuntimeNodeKind::Pm2App,
             label: name.into(),
             status,
-            layer: Some(RuntimeNodeLayer::Session),
+            layer: Some(RuntimeNodeLayer::Process),
             metadata,
             service: None,
             package: None,
@@ -2304,7 +2312,9 @@ fn redact_service_entity(service: Option<&mut RuntimeServiceEntity>) {
         return;
     };
     service.name = redact_sensitive_text(&service.name);
-    service.status = redact_sensitive_text(&service.status);
+    // service.status is the closed RuntimeServiceStatus enum: raw provider
+    // text is normalized through from_status_text before it ever reaches the
+    // struct, so it cannot carry secrets and needs no redaction.
     for value in &mut service.dependencies {
         *value = redact_sensitive_text(value);
     }
@@ -2312,7 +2322,7 @@ fn redact_service_entity(service: Option<&mut RuntimeServiceEntity>) {
         *value = redact_sensitive_text(value);
     }
     if let Some(health) = &mut service.health {
-        health.state = redact_sensitive_text(&health.state);
+        // health.state is the closed RuntimeHealthState enum (safe by construction).
         if let Some(source) = &mut health.source {
             *source = redact_sensitive_text(source);
         }
@@ -2322,9 +2332,7 @@ fn redact_service_entity(service: Option<&mut RuntimeServiceEntity>) {
     }
     for log in &mut service.logs {
         log.source = redact_sensitive_text(&log.source);
-        if let Some(level) = &mut log.level {
-            *level = redact_sensitive_text(level);
-        }
+        // log.level is the closed RuntimeLogLevel enum (safe by construction).
     }
     for event in &mut service.events {
         event.kind = redact_sensitive_text(&event.kind);
@@ -2794,7 +2802,11 @@ async fn get_compose_scan(
 async fn get_compose_graph(
     Query(query): Query<ComposeScanQuery>,
 ) -> Result<Json<ComposeGraph>, ApiError> {
-    let scan = scan_compose_query(query).await?;
+    let mut scan = scan_compose_query(query).await?;
+    // Bind sources are embedded in graph node ids and labels, so the scan must
+    // be redacted BEFORE deriving the graph — otherwise secrets in mount
+    // sources (inline auth URLs, token= patterns) leak through this endpoint.
+    redact_compose_scan(&mut scan);
     Ok(Json(derive_compose_graph(&scan)))
 }
 
@@ -3752,6 +3764,39 @@ mod tests {
     }
 
     #[test]
+    fn pages_log_entries_exact_multiple_of_limit_has_no_trailing_cursor() {
+        let entries = (0..4)
+            .map(|index| LogEntry {
+                id: format!("svc-{index}"),
+                timestamp: 1_000 - index,
+                container: "svc".into(),
+                level: dockermap_core::LogLevel::Info,
+                message: format!("line {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        let (first, first_cursor) = page_log_entries(entries.clone(), None, None, 2);
+        assert_eq!(first.len(), 2);
+        let first_cursor = first_cursor.expect("a full page with more behind it carries a cursor");
+
+        let (second, second_cursor) = page_log_entries(entries.clone(), None, Some(999), 2);
+        assert_eq!(second.len(), 2, "exact-multiple last page is exactly full");
+        assert!(
+            second_cursor.is_none(),
+            "an exactly-full final page must NOT carry a cursor that would yield an empty next page"
+        );
+        assert_eq!(
+            second.last().map(|entry| entry.timestamp),
+            Some(997),
+            "the final entry is still delivered on the last page"
+        );
+        assert_ne!(
+            first_cursor, "997",
+            "first cursor keeps pointing at its own oldest entry"
+        );
+    }
+
+    #[test]
     fn docker_container_nodes_carry_layer_and_service_entity() {
         let snapshot = mock_snapshot();
         let map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
@@ -3769,7 +3814,7 @@ mod tests {
         assert!(!service.name.is_empty());
         assert_eq!(
             service.status,
-            container.status.as_deref().unwrap_or_default()
+            RuntimeServiceStatus::from_status_text(container.status.as_deref().unwrap_or_default())
         );
 
         assert!(map.nodes.iter().any(|node| {
@@ -3800,7 +3845,7 @@ mod tests {
             .package
             .as_ref()
             .expect("dependency nodes carry a package entity");
-        assert_eq!(package.manager, "npm");
+        assert_eq!(package.manager, dockermap_core::RuntimePackageManager::Npm);
         assert!(!package.name.is_empty());
         assert!(!package.version.is_empty());
         assert_eq!(
@@ -3842,6 +3887,35 @@ mod tests {
                 "DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN",
                 "DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD",
             ],
+        );
+    }
+
+    #[test]
+    fn redacts_compose_graph_fixture_output() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/providers/redaction");
+        let file = project_root.join("compose-environment.yaml");
+        let content = fs::read_to_string(&file).expect("compose redaction fixture");
+        assert!(content.contains("DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN"));
+        assert!(content.contains("DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD"));
+
+        let mut scan =
+            scan_compose_files(&project_root, std::slice::from_ref(&file)).expect("fixture scans");
+        redact_compose_scan(&mut scan);
+        let graph = derive_compose_graph(&scan);
+
+        let serialized = serde_json::to_string(&graph).expect("graph should serialize");
+        assert!(
+            !serialized.contains("DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN"),
+            "graph JSON leaked the token sentinel: {serialized}"
+        );
+        assert!(
+            !serialized.contains("DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD"),
+            "graph JSON leaked the password sentinel: {serialized}"
+        );
+        assert!(
+            serialized.contains("compose_host_path_"),
+            "bind-source host-path nodes still appear with redacted ids/labels: {serialized}"
         );
     }
 

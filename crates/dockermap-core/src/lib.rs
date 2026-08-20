@@ -1,12 +1,3 @@
-pub mod compose;
-
-pub use compose::parser::parse_compose_file as parse_compose_file_document;
-pub use compose::resolver::resolve_mounts;
-pub use compose::{
-    ComposeDiagnostic as ComposeDocumentDiagnostic, ComposeFile as ComposeDocument,
-    ComposeMountDeclaration, ComposeService as ComposeDocumentService,
-};
-
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -428,43 +419,6 @@ pub enum ServiceEntityKind {
     PackageDependency,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ServiceEntityRelationshipKind {
-    DependsOn,
-    RunsOn,
-    StoresDataIn,
-    Calls,
-    ResolvesVia,
-    ProxiesTo,
-    Contains,
-    RelatedTo,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceEntity {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub kind: ServiceEntityKind,
-    pub label: String,
-    pub status: Option<String>,
-    pub metadata: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceEntityRelationship {
-    pub source: String,
-    pub target: String,
-    pub relationship: ServiceEntityRelationshipKind,
-    pub metadata: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OperationalMap {
-    pub services: Vec<ServiceEntity>,
-    pub relationships: Vec<ServiceEntityRelationship>,
-}
-
 pub fn service_entity_kind_name(kind: &ServiceEntityKind) -> &'static str {
     match kind {
         ServiceEntityKind::Service => "service",
@@ -578,8 +532,114 @@ pub enum RuntimeNodeLayer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeHealthState {
+    Healthy,
+    Degraded,
+    Unhealthy,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeLogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeOwnershipKind {
+    Person,
+    Team,
+    System,
+    Automation,
+    Vendor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeLocationKind {
+    Host,
+    Container,
+    Path,
+    Cluster,
+    Region,
+    Workspace,
+    Tailnet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeServiceStatus {
+    Running,
+    Starting,
+    Stopping,
+    Stopped,
+    Degraded,
+    Failed,
+    Unknown,
+}
+
+impl RuntimeServiceStatus {
+    /// Normalize a provider-reported status string into the contract enum.
+    /// Docker status text is free-form ("Up 3 hours", "Exited (0) ..."), so
+    /// anything unrecognized maps to `Unknown` instead of failing to
+    /// serialize.
+    pub fn from_status_text(value: &str) -> Self {
+        let lower = value.to_ascii_lowercase();
+        if lower.starts_with("up") || lower == "running" {
+            RuntimeServiceStatus::Running
+        } else if lower == "starting" || lower == "created" || lower == "restarting" {
+            RuntimeServiceStatus::Starting
+        } else if lower == "stopping" {
+            RuntimeServiceStatus::Stopping
+        } else if lower == "stopped"
+            || lower == "exited"
+            || lower.starts_with("exited")
+            || lower == "dead"
+            || lower == "paused"
+            || lower == "removing"
+        {
+            RuntimeServiceStatus::Stopped
+        } else if lower == "degraded" {
+            RuntimeServiceStatus::Degraded
+        } else if lower == "failed" || lower == "error" {
+            RuntimeServiceStatus::Failed
+        } else {
+            RuntimeServiceStatus::Unknown
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePackageManager {
+    Npm,
+    Pnpm,
+    Yarn,
+    Pip,
+    Apt,
+    Apk,
+    Brew,
+    Cargo,
+    System,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAdvisorySeverity {
+    Low,
+    Moderate,
+    High,
+    Critical,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeHealth {
-    pub state: String,
+    pub state: RuntimeHealthState,
     #[serde(rename = "checkedAt", skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -593,7 +653,7 @@ pub struct RuntimeLogRef {
     pub id: String,
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub level: Option<String>,
+    pub level: Option<RuntimeLogLevel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -608,7 +668,7 @@ pub struct RuntimeEventRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeOwnership {
-    pub kind: String,
+    pub kind: RuntimeOwnershipKind,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -616,7 +676,7 @@ pub struct RuntimeOwnership {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeLocation {
-    pub kind: String,
+    pub kind: RuntimeLocationKind,
     pub value: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
@@ -625,15 +685,20 @@ pub struct RuntimeLocation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeServiceEntity {
     pub name: String,
-    pub status: String,
+    pub status: RuntimeServiceStatus,
     pub dependencies: Vec<String>,
     pub dependents: Vec<String>,
+    /// Reserved — not emitted by current collectors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<RuntimeHealth>,
+    /// Reserved — not emitted by current collectors.
     pub logs: Vec<RuntimeLogRef>,
+    /// Reserved — not emitted by current collectors.
     pub events: Vec<RuntimeEventRef>,
+    /// Reserved — not emitted by current collectors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<RuntimeOwnership>,
+    /// Reserved — not emitted by current collectors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<RuntimeLocation>,
 }
@@ -642,7 +707,7 @@ impl RuntimeServiceEntity {
     /// Minimal entity carrying only what the daemon collectors know directly:
     /// the service name and its reported status. Remaining fields stay empty
     /// so consumers can rely on the full contract shape.
-    pub fn minimal(name: String, status: String) -> Self {
+    pub fn minimal(name: String, status: RuntimeServiceStatus) -> Self {
         Self {
             name,
             status,
@@ -662,7 +727,7 @@ pub struct RuntimePackageAdvisory {
     pub id: String,
     pub source: String,
     pub title: String,
-    pub severity: String,
+    pub severity: RuntimeAdvisorySeverity,
     #[serde(rename = "fixedVersion", skip_serializing_if = "Option::is_none")]
     pub fixed_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -684,14 +749,17 @@ pub struct RuntimePackageUpdate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimePackageEntity {
     pub name: String,
-    pub manager: String,
+    pub manager: RuntimePackageManager,
     pub version: String,
     pub dependencies: Vec<String>,
     pub dependents: Vec<String>,
+    /// Reserved — not emitted by current collectors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update: Option<RuntimePackageUpdate>,
+    /// Reserved — not emitted by current collectors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<RuntimeOwnership>,
+    /// Reserved — not emitted by current collectors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<RuntimeLocation>,
 }
@@ -702,7 +770,7 @@ impl RuntimePackageEntity {
     pub fn minimal(name: String, version: String) -> Self {
         Self {
             name,
-            manager: "npm".into(),
+            manager: RuntimePackageManager::Npm,
             version,
             dependencies: Vec::new(),
             dependents: Vec::new(),
@@ -1053,7 +1121,7 @@ pub fn derive_runtime_map(
             metadata,
             service: Some(RuntimeServiceEntity::minimal(
                 container.name.clone(),
-                container.status.clone(),
+                RuntimeServiceStatus::from_status_text(&container.status),
             )),
             package: None,
         });
@@ -2504,6 +2572,41 @@ mod tests {
             .edges
             .iter()
             .any(|edge| edge.relationship == RuntimeRelationshipKind::ConnectedTo));
+    }
+
+    #[test]
+    fn daemon_emitted_runtime_map_round_trips_through_json() {
+        // Round-trip the REAL daemon derivation path (mock snapshot → map →
+        // JSON → Rust) instead of a hand-written fixture, so the contract test
+        // validates output collectors actually produce.
+        let snapshot = mock_snapshot();
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+
+        let serialized = serde_json::to_string(&runtime_map).expect("map should serialize");
+        let deserialized: RuntimeMap =
+            serde_json::from_str(&serialized).expect("map JSON should deserialize");
+        assert_eq!(
+            deserialized, runtime_map,
+            "JSON round-trip must be lossless"
+        );
+
+        assert!(
+            !serialized.contains("\"status\":\"unknown\""),
+            "mock containers serialize their real status"
+        );
+
+        let container = deserialized
+            .nodes
+            .iter()
+            .find(|node| node.kind == RuntimeNodeKind::Container)
+            .expect("mock snapshot yields container nodes");
+        assert_eq!(container.layer, Some(RuntimeNodeLayer::Container));
+        let service = container
+            .service
+            .as_ref()
+            .expect("container nodes carry a service entity");
+        assert_eq!(service.status, RuntimeServiceStatus::Running);
+        assert_eq!(service.name, container.label);
     }
 
     #[test]

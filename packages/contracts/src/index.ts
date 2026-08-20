@@ -280,10 +280,15 @@ export interface RuntimeServiceEntity {
   status: RuntimeServiceStatus;
   dependencies: string[];
   dependents: string[];
+  /** Reserved — not emitted by current collectors. */
   health: RuntimeHealth | null;
+  /** Reserved — not emitted by current collectors. */
   logs: RuntimeLogRef[];
+  /** Reserved — not emitted by current collectors. */
   events: RuntimeEventRef[];
+  /** Reserved — not emitted by current collectors. */
   owner: RuntimeOwnership | null;
+  /** Reserved — not emitted by current collectors. */
   location: RuntimeLocation | null;
 }
 
@@ -310,8 +315,11 @@ export interface RuntimePackageEntity {
   version: string;
   dependencies: string[];
   dependents: string[];
+  /** Reserved — not emitted by current collectors. */
   update: RuntimePackageUpdate | null;
+  /** Reserved — not emitted by current collectors. */
   owner: RuntimeOwnership | null;
+  /** Reserved — not emitted by current collectors. */
   location: RuntimeLocation | null;
 }
 

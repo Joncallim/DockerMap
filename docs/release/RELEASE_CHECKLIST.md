@@ -70,7 +70,8 @@ before a broader beta.
 
 - [ ] Generate TypeScript API contracts from Rust models or add a CI drift check that fails when fixtures and types diverge.
 - [ ] Add reverse-proxy integration tests for bearer-token injection and SSE streaming.
-- [ ] Add OpenAPI or equivalent machine-readable route documentation for read-only endpoints.
+- [x] Add OpenAPI or equivalent machine-readable route documentation for read-only endpoints.
+  `/api/openapi.json` (OpenAPI 3.0.3) ships on the read-only API surface; see commit `5fcadd3`.
 - [ ] Split `crates/dockermap-daemon/src/main.rs` into route, config, Docker collector, host-provider, and CLI modules.
 - [ ] Add parser-level tests for systemd, cron, PM2, tmux, Tailscale, Headscale, reverse-proxy, DNS, and listener provider output fixtures.
 - [ ] Add provider-fixture redaction tests for npm/package metadata, Python apps, native processes, and service/unit inspection before enabling those routes by default.

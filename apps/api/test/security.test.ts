@@ -285,6 +285,52 @@ test("runtime map mock emits layer and service entities matching the daemon", as
   assert.equal(volume.layer, "storage");
 });
 
+test("mock logs honor service and q filters like the daemon mock", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${await freePort()}`
+  });
+
+  const all = await request(api, "/api/logs");
+  assert.equal(all.status, 200);
+  const allBody = await all.json();
+  assert.ok(allBody.entries.length > 1, "unfiltered mock logs span every container");
+
+  const byService = await request(api, "/api/logs?service=api");
+  assert.equal(byService.status, 200);
+  const serviceBody = await byService.json();
+  assert.ok(serviceBody.entries.length > 0, "api container has mock log entries");
+  assert.ok(
+    serviceBody.entries.every((entry: { container: string }) => entry.container === "api"),
+    "service filter returns only the requested container's entries"
+  );
+
+  const byQuery = await request(api, "/api/logs?q=postgres");
+  assert.equal(byQuery.status, 200);
+  const queryBody = await byQuery.json();
+  assert.ok(queryBody.entries.length > 0, "substring filter matches at least one entry");
+  assert.ok(
+    queryBody.entries.every((entry: { message: string }) =>
+      entry.message.toLowerCase().includes("postgres")
+    ),
+    "q filter is a case-insensitive message substring"
+  );
+  assert.ok(
+    queryBody.entries.every((entry: { container: string }) => entry.container === "postgres"),
+    "the postgres message substring only exists on postgres entries"
+  );
+
+  const combined = await request(api, "/api/logs?service=worker&q=worker");
+  const combinedBody = await combined.json();
+  assert.ok(
+    combinedBody.entries.every(
+      (entry: { container: string; message: string }) =>
+        entry.container === "worker" && entry.message.toLowerCase().includes("worker")
+    ),
+    "service and q filters compose"
+  );
+});
+
 test("daemon failures hide details by default and expose details only when explicitly enabled", async () => {
   const closedPort = await freePort();
   const hidden = await startApi({

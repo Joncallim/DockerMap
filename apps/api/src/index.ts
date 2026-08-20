@@ -383,9 +383,12 @@ function getMockResponse<T>(path: string): T {
 
   if (path.startsWith("/daemon/logs")) {
     const logQuery = new URLSearchParams(path.includes("?") ? path.split("?")[1] : "");
+    const service = logQuery.get("service");
+    const q = logQuery.get("q");
     const cursor = logQuery.get("cursor");
     const limit = Number(logQuery.get("limit") ?? "100");
     const cursorMillis = cursor ? Number(cursor) : null;
+    const filter = q?.toLowerCase() ?? null;
     const entries = mockContainers.flatMap((container, index) => [
       {
         id: `${container.id}-log-${index}`,
@@ -395,10 +398,18 @@ function getMockResponse<T>(path: string): T {
         message: `${container.name} running on ${container.image}`
       }
     ]);
-    const filtered = cursorMillis !== null ? entries.filter((entry) => entry.timestamp < cursorMillis) : entries;
+    const filtered = entries.filter((entry) => {
+      if (service !== null && entry.container !== service) {
+        return false;
+      }
+      if (filter !== null && !entry.message.toLowerCase().includes(filter)) {
+        return false;
+      }
+      return cursorMillis === null || entry.timestamp < cursorMillis;
+    });
     const nextCursor = filtered.length > limit ? String(filtered[limit - 1].timestamp) : null;
     return {
-      service: null,
+      service,
       entries: filtered.slice(0, limit),
       nextCursor
     } as T;
