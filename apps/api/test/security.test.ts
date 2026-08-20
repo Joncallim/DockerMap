@@ -198,11 +198,252 @@ test("log pagination rejects invalid cursor and limit values", async () => {
   assert.equal(nonNumericCursor.status, 400);
   assert.equal(
     (await nonNumericCursor.json()).message,
-    "Query parameter cursor must be a non-negative integer"
+    "Query parameter cursor must be `millis` or `millis:offset`"
   );
+
+  const badOffsetCursor = await request(api, "/api/logs?cursor=123:not-a-number");
+  assert.equal(badOffsetCursor.status, 400);
 
   const oversizedCursor = await request(api, `/api/logs?cursor=${"9".repeat(33)}`);
   assert.equal(oversizedCursor.status, 400);
+
+  // Compound "millis:offset" cursors are the emitted format and must pass.
+  const compoundCursor = await request(api, "/api/logs?cursor=1787198706123:2&limit=5");
+  assert.equal(compoundCursor.status, 200);
+});
+
+test("log service param caps at the daemon's 128-char container-name limit", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+
+  // 128 chars is the daemon's MAX_LOG_SERVICE_CHARS; the API must accept it.
+  const atCap = await request(api, `/api/logs?service=${"a".repeat(128)}`);
+  assert.equal(atCap.status, 200);
+
+  // 129 chars previously passed the API's 256-char query cap only to 400 at
+  // the daemon; the API now rejects it directly.
+  const overCap = await request(api, `/api/logs?service=${"a".repeat(129)}`);
+  assert.equal(overCap.status, 400);
+  assert.equal(
+    (await overCap.json()).message,
+    "Query parameter service must be 128 characters or fewer"
+  );
+});
+
+test("diagnostics aggregates compose and runtime findings", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+
+  const response = await request(api, "/api/diagnostics");
+  assert.equal(response.status, 200);
+
+  const body = await response.json();
+  assert.equal(typeof body.generatedAt, "number");
+  assert.ok(Array.isArray(body.entries));
+  assert.ok(
+    body.entries.some((entry: { source: string }) => entry.source === "compose"),
+    "compose diagnostics should be aggregated"
+  );
+  assert.ok(
+    body.entries.some((entry: { source: string }) => entry.source === "runtime"),
+    "runtime diagnostics should be aggregated"
+  );
+});
+
+test("status endpoint reports widget-friendly health and versioned alias works", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+
+  const status = await request(api, "/api/status");
+  assert.equal(status.status, 200);
+  const body = await status.json();
+  assert.equal(body.service, "dockermap");
+  assert.equal(typeof body.containers, "number");
+  assert.equal(typeof body.containersRunning, "number");
+  assert.equal(typeof body.version, "string");
+
+  const versioned = await request(api, "/api/v1/status");
+  assert.equal(versioned.status, 200);
+  assert.deepEqual(await versioned.json(), body);
+
+  const openapi = await request(api, "/api/openapi.json");
+  assert.equal(openapi.status, 200);
+  const doc = await openapi.json();
+  assert.equal(doc.openapi, "3.0.3");
+  assert.ok(doc.paths["/api/logs"], "openapi should document the logs route");
+  assert.ok(doc.paths["/api/diagnostics"], "openapi should document diagnostics");
+});
+
+test("status endpoint classifies free-form docker status texts", async () => {
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") {
+      sendJson(res, 200, {
+        status: "ok",
+        mode: "live",
+        dockerReachable: true,
+        lastUpdated: 1,
+        snapshotVersion: "1",
+        message: "stub daemon"
+      });
+      return;
+    }
+
+    if (req.url === "/daemon/snapshot") {
+      sendJson(res, 200, {
+        containers: [
+          {
+            id: "c1",
+            name: "web",
+            image: "nginx:1.27",
+            status: "Up 3 hours",
+            role: "web",
+            networks: [],
+            ports: [],
+            mounts: [],
+            dependsOn: []
+          },
+          {
+            id: "c2",
+            name: "db",
+            image: "postgres:16",
+            status: "Exited (0) 1 minute ago",
+            role: "db",
+            networks: [],
+            ports: [],
+            mounts: [],
+            dependsOn: []
+          },
+          {
+            id: "c3",
+            name: "cache",
+            image: "redis:7",
+            status: "running",
+            role: "cache",
+            networks: [],
+            ports: [],
+            mounts: [],
+            dependsOn: []
+          },
+          {
+            id: "c4",
+            name: "job",
+            image: "busybox:1.36",
+            status: "Created",
+            role: "job",
+            networks: [],
+            ports: [],
+            mounts: [],
+            dependsOn: []
+          }
+        ],
+        images: [],
+        networks: [],
+        volumes: [],
+        lastUpdated: 1
+      });
+      return;
+    }
+
+    sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  const response = await request(api, "/api/status", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.containers, 4);
+  assert.equal(body.containersRunning, 2, "Up 3 hours and running count as running");
+  assert.equal(body.offline, 1, "Exited (0) counts as offline");
+  assert.equal(body.attention, 1, "Created counts as attention");
+  assert.equal(body.healthy, 2);
+  assert.equal(body.status, "degraded");
+});
+
+test("bare /api/v1 answers with a version descriptor instead of 404ing", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+
+  const bare = await request(api, "/api/v1");
+  assert.equal(bare.status, 200);
+  assert.deepEqual(await bare.json(), {
+    service: "dockermap",
+    apiVersion: "v1",
+    version: "0.1.0"
+  });
+
+  const slashed = await request(api, "/api/v1/");
+  assert.equal(slashed.status, 200);
+  assert.equal((await slashed.json()).apiVersion, "v1");
+
+  const versionedRoute = await request(api, "/api/v1/health");
+  assert.equal(versionedRoute.status, 200, "versioned routes still alias the /api surface");
+});
+
+test("runtime map mock emits layer and service entities matching the daemon", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+  const response = await request(api, "/api/runtime/map");
+  assert.equal(response.status, 200);
+
+  const map = await response.json();
+  const container = map.nodes.find((node: { type: string }) => node.type === "container");
+  assert.ok(container, "mock runtime map should include container nodes");
+  assert.equal(container.layer, "container");
+  assert.equal(container.service.name, container.label);
+  assert.ok(Array.isArray(container.service.logs), "service entity keeps the full contract shape");
+  assert.equal(container.service.dependencies.length, 0);
+
+  const network = map.nodes.find((node: { type: string }) => node.type === "docker_network");
+  assert.equal(network.layer, "network");
+  const volume = map.nodes.find((node: { type: string }) => node.type === "docker_volume");
+  assert.equal(volume.layer, "storage");
+});
+
+test("mock logs honor service and q filters like the daemon mock", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${await freePort()}`
+  });
+
+  const all = await request(api, "/api/logs");
+  assert.equal(all.status, 200);
+  const allBody = await all.json();
+  assert.ok(allBody.entries.length > 1, "unfiltered mock logs span every container");
+
+  const byService = await request(api, "/api/logs?service=api");
+  assert.equal(byService.status, 200);
+  const serviceBody = await byService.json();
+  assert.ok(serviceBody.entries.length > 0, "api container has mock log entries");
+  assert.ok(
+    serviceBody.entries.every((entry: { container: string }) => entry.container === "api"),
+    "service filter returns only the requested container's entries"
+  );
+
+  const byQuery = await request(api, "/api/logs?q=postgres");
+  assert.equal(byQuery.status, 200);
+  const queryBody = await byQuery.json();
+  assert.ok(queryBody.entries.length > 0, "substring filter matches at least one entry");
+  assert.ok(
+    queryBody.entries.every((entry: { message: string }) =>
+      entry.message.toLowerCase().includes("postgres")
+    ),
+    "q filter is a case-insensitive message substring"
+  );
+  assert.ok(
+    queryBody.entries.every((entry: { container: string }) => entry.container === "postgres"),
+    "the postgres message substring only exists on postgres entries"
+  );
+
+  const combined = await request(api, "/api/logs?service=worker&q=worker");
+  const combinedBody = await combined.json();
+  assert.ok(
+    combinedBody.entries.every(
+      (entry: { container: string; message: string }) =>
+        entry.container === "worker" && entry.message.toLowerCase().includes("worker")
+    ),
+    "service and q filters compose"
+  );
 });
 
 test("daemon failures hide details by default and expose details only when explicitly enabled", async () => {
@@ -309,6 +550,53 @@ test("daemon HTTP errors stay redacted on JSON routes and event streams unless e
   });
   assert.equal(exposedJson.status, 500);
   assert.equal((await exposedJson.json()).details, "tmux pane SECRET=alpha-secret");
+});
+
+test("SSE stream survives a client disconnect mid-emit without crashing the API", async () => {
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") {
+      // Slow daemon: the first emit is still awaiting this response when the
+      // client disconnects, so a write-after-end would fire on resolution.
+      setTimeout(() => {
+        sendJson(res, 200, {
+          status: "ok",
+          mode: "live",
+          dockerReachable: true,
+          lastUpdated: 1,
+          snapshotVersion: "1",
+          message: "stub daemon"
+        });
+      }, 2_000);
+      return;
+    }
+    sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token",
+    DOCKERMAP_SSE_INTERVAL_MS: "1000"
+  });
+
+  const controller = new AbortController();
+  const streamPromise = request(api, "/api/events/stream", {
+    headers: { Authorization: "Bearer test-token" },
+    signal: controller.signal
+  });
+  const stream = await streamPromise;
+  const reader = stream.body?.getReader();
+  assert.ok(reader, "expected a streaming response body");
+  await reader.cancel().catch(() => undefined);
+
+  // Disconnect while the first emit is still awaiting the slow daemon, then
+  // wait past the daemon's response — the window in which a write-after-end
+  // (and the catch block writing again) would have crashed the process.
+  controller.abort();
+  await delay(2_500);
+
+  assert.equal(api.child.exitCode, null, "API must not crash on write-after-end");
+  const health = await request(api, "/api/health");
+  assert.equal(health.status, 200, "API must keep serving routes after the disconnect");
 });
 
 test("unsafe startup configuration fails before listening", async () => {

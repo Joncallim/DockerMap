@@ -1,0 +1,11 @@
+# Redaction fixture for compose scans: environment values and a mount path
+# carry sentinel secrets that must never appear in API responses.
+services:
+  redaction-app:
+    image: alpine:3.20
+    environment:
+      POSTGRES_PASSWORD: DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD
+      API_TOKEN: DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN
+      DATABASE_URL: postgres://dockermap:DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD@db:5432/app
+    volumes:
+      - ./DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN-secrets:/run/secrets:ro

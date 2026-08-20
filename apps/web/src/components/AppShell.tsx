@@ -42,7 +42,10 @@ const SPACES: { heading: string; items: NavItem[] }[] = [
   },
   {
     heading: "System",
-    items: [{ to: "/settings", label: "Settings", icon: "settings" }]
+    items: [
+      { to: "/diagnostics", label: "Diagnostics", icon: "alert" },
+      { to: "/settings", label: "Settings", icon: "settings" }
+    ]
   }
 ];
 
@@ -200,7 +203,7 @@ export default function AppShell() {
                   {summary.attention > 0 && <span className="sys-attn">{summary.attention} need attention</span>}
                 </div>
               )}
-              {settings.auth.showStatus && <AuthStatus />}
+              {settings.auth.showStatus && !settings.demoMode && <AuthStatus />}
               <span className="topbar-clock">{formatClock(clock)}</span>
             </div>
           </header>

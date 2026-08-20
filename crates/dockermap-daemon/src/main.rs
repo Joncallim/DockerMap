@@ -16,14 +16,16 @@ use bollard::{
 };
 use dockermap_core::{
     correlate_compose_runtime, derive_compose_graph, derive_graph, derive_images,
-    derive_runtime_map, discover_compose_files, mock_logs, mock_snapshot,
+    derive_runtime_map, discover_compose_files, mock_logs, mock_snapshot, page_log_entries,
     parse_rfc3339_nano_millis, plan_compose_mount_edit, scan_compose_files,
     service_entity_kind_name, unix_timestamp_millis, ComposeDiagnostic, ComposeEditPlan,
     ComposeGraph, ComposeMountKind, ComposeScan, ContainerMount, ContainerRecord,
-    DiagnosticSeverity, DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogEntry,
-    LogsResponse, NetworkRecord, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode,
-    RuntimeMode, RuntimeNodeKind, RuntimeProviderKind, RuntimeRelationshipKind, ServiceEntityKind,
-    VolumeRecord, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+    DiagnosticSeverity, DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogCursor,
+    LogEntry, LogsResponse, NetworkRecord, RuntimeLocation, RuntimeMap, RuntimeMapDiagnostic,
+    RuntimeMapEdge, RuntimeMapNode, RuntimeMode, RuntimeNodeKind, RuntimeNodeLayer,
+    RuntimeOwnership, RuntimePackageEntity, RuntimeProviderKind, RuntimeRelationshipKind,
+    RuntimeServiceEntity, RuntimeServiceStatus, ServiceEntityKind, VolumeRecord,
+    DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 use futures_util::stream::StreamExt;
 use serde::Deserialize;
@@ -32,7 +34,7 @@ use std::{
     fs,
     net::{IpAddr, SocketAddr},
     path::{Component, Path as StdPath, PathBuf},
-    process::Command,
+    process::{Command, Output},
     sync::Arc,
     time::Duration,
 };
@@ -48,18 +50,26 @@ const MAX_DISCOVERY_DIRS: usize = 4_096;
 const MAX_NPM_PROJECTS: usize = 64;
 const MAX_NPM_DEPENDENCIES_PER_PROJECT: usize = 64;
 const MAX_PACKAGE_JSON_BYTES: u64 = 262_144;
+const MAX_NPM_SCRIPTS: usize = 16;
+const MAX_SCRIPT_CHARS: usize = 200;
 const REDACTED_VALUE: &str = "[redacted]";
 const MAX_DOCKER_LABEL_FILTER_CHARS: usize = 256;
 
 #[derive(Clone)]
 struct AppState {
     cache: Arc<RwLock<DaemonCache>>,
+    /// Reused bollard Docker client (connection pooling), created on first
+    /// use and recreated after a failed interaction so a restarted Docker
+    /// daemon is picked up. `None` means "not connected yet / previous
+    /// attempt failed".
+    docker: Arc<RwLock<Option<DockerCollector>>>,
 }
 
 #[derive(Clone)]
 struct DaemonCache {
     snapshot: DockerSnapshot,
     health: HealthResponse,
+    runtime_map: RuntimeMap,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,6 +111,9 @@ struct SystemdUnitDetails {
     fragment_path: Option<String>,
     load_state: Option<String>,
     exec_start: Option<String>,
+    restart: Option<String>,
+    active_enter_timestamp: Option<String>,
+    active_enter_monotonic_us: Option<u64>,
     requires: Vec<String>,
     wants: Vec<String>,
     part_of: Vec<String>,
@@ -123,6 +136,8 @@ struct NpmProjectSummary {
     package_manager: Option<String>,
     lockfiles: Vec<String>,
     dependencies: Vec<PackageDependencyRecord>,
+    scripts: BTreeMap<String, String>,
+    framework_hints: Vec<String>,
     private: bool,
 }
 
@@ -159,23 +174,55 @@ impl IntoResponse for ApiError {
     }
 }
 
+const CLI_USAGE: &str = "\
+DockerMap daemon — read-only Docker/host inspector
+
+USAGE:
+    dockermap-daemon [COMMAND] [OPTIONS]
+
+COMMANDS:
+    scan       Print a Compose project scan as JSON
+    validate   Print Compose diagnostics (exits 1 when blocking findings exist)
+    export     Export a Compose project scan (--format json)
+
+OPTIONS:
+    -h, --help       Print help
+    --version        Print version
+
+With no COMMAND, the daemon starts its loopback HTTP server (default port 4100).
+";
+
 #[tokio::main]
 async fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+
     if let Some(command) = args.first() {
-        if matches!(command.as_str(), "scan" | "validate" | "export") {
-            match run_cli(command, &args[1..]) {
+        match command.as_str() {
+            "--help" | "-h" => {
+                print!("{CLI_USAGE}");
+                std::process::exit(0);
+            }
+            "--version" => {
+                println!("dockermap-daemon {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "scan" | "validate" | "export" => match run_cli(command, &args[1..]) {
                 Ok(code) => std::process::exit(code),
                 Err(error) => {
                     eprintln!("{error}");
                     std::process::exit(2);
                 }
+            },
+            unknown => {
+                eprintln!("unknown command `{unknown}`\n\n{CLI_USAGE}");
+                std::process::exit(2);
             }
         }
     }
 
     let state = AppState {
         cache: Arc::new(RwLock::new(DaemonCache::mock())),
+        docker: Arc::new(RwLock::new(None)),
     };
 
     refresh_cache(&state).await;
@@ -227,12 +274,30 @@ impl DaemonCache {
             message: Some("Docker unavailable, serving mock data".into()),
         };
 
-        Self { snapshot, health }
+        let last_updated = snapshot.last_updated;
+
+        Self {
+            snapshot,
+            health,
+            runtime_map: RuntimeMap {
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                diagnostics: Vec::new(),
+                last_updated,
+            },
+        }
     }
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    // systemd sends SIGTERM (KillSignal) and Docker's stop signal defaults to
+    // SIGTERM; ctrl_c alone left `systemctl stop` hanging until SIGKILL.
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("SIGTERM handler should install");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
 }
 
 async fn refresh_loop(state: AppState) {
@@ -243,19 +308,43 @@ async fn refresh_loop(state: AppState) {
 }
 
 async fn refresh_cache(state: &AppState) {
-    let updated = collect_snapshot().await;
+    let updated = collect_snapshot(state).await;
     let mut cache = state.cache.write().await;
     *cache = updated;
 }
 
-async fn collect_snapshot() -> DaemonCache {
+/// Returns the cached Docker collector, connecting on first use. The client
+/// is reused across refresh ticks and log requests (bollard pools the Unix
+/// socket connection) instead of being recreated on every call, which churned
+/// connections and added per-request latency.
+async fn docker_collector(state: &AppState) -> Result<DockerCollector, String> {
+    {
+        let guard = state.docker.read().await;
+        if let Some(collector) = guard.as_ref() {
+            return Ok(collector.clone());
+        }
+    }
+    let collector = DockerCollector::connect()?;
+    *state.docker.write().await = Some(collector.clone());
+    Ok(collector)
+}
+
+/// Drop the cached collector after a failed interaction so the next refresh
+/// reconnects — a pooled Unix-socket connection can go stale when the Docker
+/// daemon restarts.
+async fn invalidate_docker_collector(state: &AppState) {
+    *state.docker.write().await = None;
+}
+
+async fn collect_snapshot(state: &AppState) -> DaemonCache {
     if std::env::var("DOCKERMAP_FORCE_MOCK").ok().as_deref() == Some("true") {
         let mut cache = DaemonCache::mock();
         cache.health.message = Some("Mock mode forced by DOCKERMAP_FORCE_MOCK".into());
+        cache.runtime_map = collect_runtime_map_bounded(&cache.snapshot).await;
         return cache;
     }
 
-    match DockerCollector::connect() {
+    let mut cache = match docker_collector(state).await {
         Ok(collector) => match collector.collect_snapshot().await {
             Ok(mut snapshot) => {
                 snapshot.images = derive_images(&snapshot);
@@ -267,9 +356,14 @@ async fn collect_snapshot() -> DaemonCache {
                     snapshot_version: snapshot.last_updated.to_string(),
                     message: Some("Docker engine connected".into()),
                 };
-                DaemonCache { snapshot, health }
+                DaemonCache {
+                    snapshot,
+                    health,
+                    runtime_map: empty_runtime_map(0),
+                }
             }
             Err(error) => {
+                invalidate_docker_collector(state).await;
                 let mut cache = DaemonCache::mock();
                 cache.health.message =
                     Some(format!("Docker read failed, serving mock data: {error}"));
@@ -281,9 +375,26 @@ async fn collect_snapshot() -> DaemonCache {
             cache.health.message = Some(format!("Docker unavailable, serving mock data: {error}"));
             cache
         }
+    };
+
+    // The runtime map is expensive (provider subprocesses, filesystem walk)
+    // and must never run on a Tokio worker thread, so it is computed once per
+    // refresh cycle — same cadence as the snapshot — and served from the
+    // cache by `get_runtime_map`.
+    cache.runtime_map = collect_runtime_map_bounded(&cache.snapshot).await;
+    cache
+}
+
+fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
+    RuntimeMap {
+        nodes: Vec::new(),
+        edges: Vec::new(),
+        diagnostics: Vec::new(),
+        last_updated,
     }
 }
 
+#[derive(Clone)]
 struct DockerCollector {
     client: Docker,
     label_filter: Option<String>,
@@ -345,7 +456,7 @@ impl DockerCollector {
         &self,
         service: &str,
         query: Option<&str>,
-        cursor_millis: Option<u64>,
+        cursor: Option<LogCursor>,
         limit: usize,
     ) -> Result<LogsResponse, String> {
         let limit = limit.clamp(1, MAX_LOG_PAGE_SIZE);
@@ -354,17 +465,30 @@ impl DockerCollector {
             .stdout(true)
             .stderr(true)
             .timestamps(true)
-            .tail(&limit.to_string());
+            .tail(&log_tail_count().to_string());
 
-        if let Some(cursor_millis) = cursor_millis {
-            let cursor_seconds = (cursor_millis / 1_000).min(i32::MAX as u64) as i32;
-            options = options.until(cursor_seconds);
+        if let Some(cursor) = cursor {
+            options = options.until(log_until_seconds(cursor.millis));
         }
 
         let mut stream = self.client.logs(service, Some(options.build()));
 
+        // Docker streams the `tail(limit)` window OLDEST-first, so we cannot
+        // decide page boundaries while streaming: collect the whole window
+        // (bounded server-side by `tail`, plus a defensive cap in case Docker
+        // returns more than requested), then page it in a pure function.
         let mut entries = Vec::new();
-        let filter = query.map(|value| value.to_ascii_lowercase());
+        // Same-millisecond ordinal, assigned in stream order. Every request
+        // opens the SAME fixed tail window (MAX_LOG_CURSOR_TAIL), so a
+        // physical line's ordinal (how many same-ms lines PRECEDE it in the
+        // stream) is stable across requests: new lines append chronologically
+        // and never re-order existing same-ms lines, so the id is a property
+        // of the physical line — unlike a per-request sequence counter,
+        // which would change the id and defeat the client's dedupe-by-id.
+        // The ordinal is what keeps two distinct physical lines that share a
+        // service, an ms-truncated timestamp, and identical message text
+        // from collapsing onto one id.
+        let mut same_timestamp_seen = HashMap::<u64, usize>::new();
 
         while let Some(item) = stream.next().await {
             let output = item.map_err(|error| format!("docker logs failed: {error}"))?;
@@ -373,39 +497,16 @@ impl DockerCollector {
                 | LogOutput::StdErr { message }
                 | LogOutput::Console { message }
                 | LogOutput::StdIn { message } => {
-                    let text = String::from_utf8_lossy(&message);
-                    let (prefix, rest) = match text.split_once(' ') {
-                        Some((prefix, rest)) if !rest.trim().is_empty() => (prefix, rest.trim()),
-                        _ => ("", text.trim()),
+                    let Some((timestamp, message)) = parse_timestamped_log_line(&message) else {
+                        continue;
                     };
-                    let timestamp =
-                        parse_rfc3339_nano_millis(prefix).unwrap_or_else(unix_timestamp_millis);
-                    (timestamp, truncate_chars(rest, MAX_LOG_MESSAGE_CHARS))
+                    (timestamp, message)
                 }
             };
 
-            if message.is_empty() {
-                continue;
-            }
-
-            if let Some(cursor_millis) = cursor_millis {
-                if timestamp <= cursor_millis {
-                    // Docker's `until` filter has one-second granularity, so
-                    // drop anything at or after the cursor ourselves to keep
-                    // pages strictly older than the previous page's newest
-                    // entry.
-                    continue;
-                }
-            }
-
-            if let Some(filter) = &filter {
-                if !message.to_ascii_lowercase().contains(filter) {
-                    continue;
-                }
-            }
-
+            let ordinal = same_timestamp_seen.entry(timestamp).or_insert(0);
             entries.push(LogEntry {
-                id: format!("{service}-{timestamp}"),
+                id: log_entry_id(service, timestamp, *ordinal),
                 timestamp,
                 container: service.to_string(),
                 level: if message.to_ascii_lowercase().contains("error") {
@@ -417,17 +518,14 @@ impl DockerCollector {
                 },
                 message,
             });
+            *ordinal += 1;
 
-            if entries.len() >= limit {
+            if entries.len() >= MAX_LOG_STREAM_CAP {
                 break;
             }
         }
 
-        let next_cursor = if entries.len() >= limit {
-            entries.last().map(|entry| entry.timestamp.to_string())
-        } else {
-            None
-        };
+        let (entries, next_cursor) = page_log_entries(entries, query, cursor, limit);
 
         Ok(LogsResponse {
             service: Some(service.to_string()),
@@ -436,6 +534,102 @@ impl DockerCollector {
         })
     }
 }
+
+/// Parse one timestamped Docker log line (collected with `--timestamps`) into
+/// a `(timestamp_millis, message)` pair, or `None` when the line carries no
+/// usable message.
+///
+/// Docker prefixes ONLY the first line of a multi-line message with a
+/// timestamp; continuation lines are bare text. A prefix is therefore only
+/// stripped when it actually parses as an RFC 3339 timestamp — continuation
+/// lines and blank lines are SKIPPED (`None`) rather than fabricated into a
+/// now()-timestamped entry, and their first token is never eaten. A blank
+/// line arrives from Docker as `"<timestamp> "` (timestamp, space, empty
+/// body); the empty body also yields `None`.
+fn parse_timestamped_log_line(line: &[u8]) -> Option<(u64, String)> {
+    let text = String::from_utf8_lossy(line);
+    let (prefix, rest) = text.split_once(' ')?;
+    let timestamp = parse_rfc3339_nano_millis(prefix)?;
+    let message = truncate_chars(rest.trim(), MAX_LOG_MESSAGE_CHARS);
+    if message.is_empty() {
+        return None;
+    }
+    Some((timestamp, message))
+}
+
+/// Number of lines requested from Docker's `tail` for one log page.
+///
+/// EVERY page — first and cursor — opens the same fixed window
+/// (`MAX_LOG_CURSOR_TAIL`). Docker's `--tail N` selects the last N lines of
+/// the FULL log and `--until` only FILTERS that fixed window — it never moves
+/// the window older — so a cursor page needs a large window for
+/// `until(cursor)` and `page_log_entries`' precise `< cursor` filter to reach
+/// older lines. The FIRST page must open the very same window: the
+/// same-millisecond ordinal counts the same-ms lines PRECEDING a line in the
+/// collected window, so a narrower first-page window (the old `limit + 1`)
+/// assigned different ordinals to the same physical lines than a cursor
+/// page's window did — the two id sets collided, and the client's
+/// dedupe-by-id silently discarded whole cursor pages. With one fixed window,
+/// a same-ms run of up to `MAX_LOG_CURSOR_TAIL` lines gets identical ids on
+/// every fetch.
+///
+/// `page_log_entries` truncates the collected window to `limit` and emits a
+/// cursor whenever the window holds more than `limit` entries; the fixed
+/// window is wider than any page, so a next page is still detected for live
+/// Docker logs and "Load older" stays visible. Trade-off: history older than
+/// `MAX_LOG_CURSOR_TAIL` is unreachable.
+fn log_tail_count() -> usize {
+    MAX_LOG_CURSOR_TAIL
+}
+
+/// Docker's `until` filter is second-resolution and EXCLUSIVE: a line at
+/// exactly `until` seconds is omitted. The cursor is compound (`millis:offset`,
+/// see `LogCursor`), so the boundary millisecond's not-yet-emitted entries
+/// must still be returned: `until` must cover the second that CONTAINS the
+/// boundary millisecond, i.e. `floor(millis / 1000) + 1`. That also returns
+/// the rest of the boundary second (entries newer than the boundary that were
+/// already emitted) — `page_log_entries`' precise cursor filter is the sole
+/// arbiter of what belongs to the next page.
+fn log_until_seconds(cursor_millis: u64) -> i32 {
+    (cursor_millis / 1_000 + 1).min(i32::MAX as u64) as i32
+}
+
+/// Fixed `tail` window opened for EVERY log page (first page and cursor
+/// pages alike). See `log_tail_count` for why the window must be identical
+/// across requests: a window-relative same-ms ordinal would make log entry
+/// ids unstable, colliding id sets between pages and defeating the client's
+/// dedupe-by-id.
+const MAX_LOG_CURSOR_TAIL: usize = 4_096;
+
+/// Defensive cap on the raw log stream collected from Docker. The stream is
+/// already bounded by `tail(...)`, so this only guards against a daemon
+/// returning more than requested — but it must be at least as large as the
+/// tail window (`MAX_LOG_CURSOR_TAIL`), or a page's window would be truncated
+/// before `page_log_entries` sees it.
+const MAX_LOG_STREAM_CAP: usize = MAX_LOG_CURSOR_TAIL + 1;
+
+/// Stable id for a live-Docker log entry, unique per PHYSICAL line.
+///
+/// The id is `service-timestamp-ordinal`, where `ordinal` is the line's
+/// index among same-millisecond entries in stream order (how many same-ms
+/// lines precede it). Docker streams a log's tail window in stable
+/// chronological order and every request opens the same fixed window
+/// (`MAX_LOG_CURSOR_TAIL`, see `log_tail_count`), so the ordinal — unlike a
+/// per-request sequence counter — is deterministic across requests: the same
+/// physical line always gets the same id, while two DISTINCT lines sharing a
+/// service, an
+/// ms-truncated timestamp, and identical message text still get distinct
+/// ids. Content hashing alone (service + timestamp + message) collapsed
+/// such lines onto one id, and the client's dedupe-by-id silently dropped
+/// the second one — even though the compound cursor was built to preserve
+/// same-ms entries at page boundaries.
+fn log_entry_id(service: &str, timestamp: u64, ordinal: usize) -> String {
+    format!("{service}-{timestamp}-{ordinal:04x}")
+}
+
+// Log page boundaries are decided by `dockermap_core::page_log_entries`
+// (imported above) — the single source of truth shared with mock_logs so the
+// live-Docker, daemon-mock, and Node-API-mock paths agree on cursor format.
 
 fn docker_label_filter_from_env() -> Result<Option<String>, String> {
     match std::env::var("DOCKERMAP_DOCKER_LABEL_FILTER") {
@@ -466,6 +660,23 @@ fn parse_docker_label_filter(value: &str) -> Result<Option<String>, String> {
     }
 
     Ok(Some(trimmed.to_string()))
+}
+
+/// Parse the `com.docker.compose.depends_on` label into container refs.
+///
+/// Compose stores the label as `service:condition:required,service2:...`
+/// (e.g. `redis:service_started:false,database:service_started:false`) where
+/// each item is the compose SERVICE name plus a condition suffix. Only the
+/// service name matters for graph derivation — the suffix must be stripped
+/// before the ref can resolve (the refs match compose service names, which
+/// the snapshot records as each container's `role`).
+fn parse_depends_on_label(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|item| item.split(':').next().unwrap_or("").trim())
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("container_{name}"))
+        .collect()
 }
 
 fn build_snapshot(
@@ -520,13 +731,7 @@ fn build_snapshot(
             .labels
             .as_ref()
             .and_then(|labels| labels.get("com.docker.compose.depends_on"))
-            .map(|value| {
-                value
-                    .split(',')
-                    .filter(|item| !item.is_empty())
-                    .map(|item| format!("container_{}", item.trim()))
-                    .collect::<Vec<_>>()
-            })
+            .map(|value| parse_depends_on_label(value))
             .unwrap_or_default();
 
         container_records.push(ContainerRecord {
@@ -601,13 +806,10 @@ fn build_snapshot(
         .collect::<Vec<_>>();
 
     DockerSnapshot {
-        images: derive_images(&DockerSnapshot {
-            containers: container_records.clone(),
-            images: Vec::new(),
-            networks: Vec::new(),
-            volumes: Vec::new(),
-            last_updated: unix_timestamp_millis(),
-        }),
+        // Images are derived once by the caller (`collect_snapshot`) after
+        // the snapshot is built — deriving here would deep-clone the
+        // container records and re-derive O(n) on every refresh for nothing.
+        images: Vec::new(),
         containers: container_records,
         networks: network_records,
         volumes: volume_records,
@@ -687,6 +889,95 @@ fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
     runtime_map
 }
 
+/// Wall-clock budget for each provider subprocess. Provider binaries
+/// (tailscale, headscale, systemctl, crontab, pm2, tmux) can hang on network
+/// calls, stale locks, or waits; every command must be bounded so a stuck
+/// provider cannot stall the runtime-map refresh or a request thread.
+const PROVIDER_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Overall budget for one full runtime-map collection (all provider
+/// subprocesses, the npm filesystem walk, and /proc reads) when it runs off
+/// the async runtime.
+const RUNTIME_MAP_COLLECTION_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Run a provider command with a hard wall-clock timeout. Returns the child's
+/// output on success; `Err` on spawn failure or when the command outlives the
+/// budget (the child is killed and reaped). Callers push a provider
+/// diagnostic instead of failing the whole runtime map.
+fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, String> {
+    // `Command::spawn` does NOT pipe stdio like `Command::output` does, so
+    // the pipes must be requested explicitly to collect provider output.
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to spawn provider command: {error}"))?;
+    let started = std::time::Instant::now();
+    loop {
+        match child
+            .try_wait()
+            .map_err(|error| format!("provider command wait failed: {error}"))?
+        {
+            Some(_status) => break,
+            None if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "provider command timed out after {}s",
+                    timeout.as_secs()
+                ));
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+    child
+        .wait_with_output()
+        .map_err(|error| format!("failed to read provider command output: {error}"))
+}
+
+/// Collect the runtime map off the async runtime: the provider commands are
+/// blocking `std::process` calls, so they must never run on a Tokio worker
+/// thread, and the whole collection is bounded so a pathological provider (or
+/// npm walk) degrades the map instead of stalling refresh.
+async fn collect_runtime_map_bounded(snapshot: &DockerSnapshot) -> RuntimeMap {
+    let snapshot = snapshot.clone();
+    let work = {
+        let snapshot = snapshot.clone();
+        tokio::task::spawn_blocking(move || collect_runtime_map(&snapshot))
+    };
+    match tokio::time::timeout(RUNTIME_MAP_COLLECTION_TIMEOUT, work).await {
+        Ok(Ok(runtime_map)) => runtime_map,
+        Ok(Err(join_error)) => {
+            eprintln!("runtime map collection task failed: {join_error}");
+            fallback_runtime_map(&snapshot)
+        }
+        Err(_elapsed) => {
+            eprintln!("runtime map collection timed out after {RUNTIME_MAP_COLLECTION_TIMEOUT:?}");
+            fallback_runtime_map(&snapshot)
+        }
+    }
+}
+
+/// Minimal runtime map served when provider collection fails or times out:
+/// the Docker-derived nodes are still useful, and a warning diagnostic
+/// explains why host providers are missing.
+fn fallback_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
+    let mut runtime_map = derive_runtime_map(
+        snapshot,
+        Vec::new(),
+        Vec::new(),
+        vec![RuntimeMapDiagnostic {
+            provider: RuntimeProviderKind::Other,
+            severity: DiagnosticSeverity::Warning,
+            message: "Runtime map collection failed or timed out; host provider nodes omitted"
+                .into(),
+        }],
+    );
+    redact_runtime_map(&mut runtime_map);
+    runtime_map
+}
+
 fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapNode>) {
     let hostname = local_hostname();
     let mut metadata = BTreeMap::new();
@@ -704,7 +995,10 @@ fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapN
         kind: RuntimeNodeKind::Host,
         label: hostname,
         status: Some("online".into()),
+        layer: Some(RuntimeNodeLayer::Host),
         metadata,
+        service: None,
+        package: None,
     });
 }
 
@@ -721,10 +1015,14 @@ fn collect_network_infrastructure(
 }
 
 fn collect_tailscale(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<RuntimeMapDiagnostic>) {
-    let output = match Command::new("tailscale")
-        .args(["status", "--json"])
-        .output()
-    {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("tailscale");
+            command.args(["status", "--json"]);
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -774,10 +1072,14 @@ fn collect_tailscale(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<Runt
 }
 
 fn collect_headscale(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<RuntimeMapDiagnostic>) {
-    let output = match Command::new("headscale")
-        .args(["nodes", "list", "--output", "json"])
-        .output()
-    {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("headscale");
+            command.args(["nodes", "list", "--output", "json"]);
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -890,7 +1192,10 @@ fn push_tailnet_node(
         kind: RuntimeNodeKind::TailnetNode,
         label,
         status: online.map(|value| if value { "online" } else { "offline" }.into()),
+        layer: Some(RuntimeNodeLayer::Edge),
         metadata,
+        service: None,
+        package: None,
     });
 }
 
@@ -945,7 +1250,10 @@ fn network_marker_node(
         kind,
         label: marker.product.into(),
         status: Some("configured".into()),
+        layer: Some(RuntimeNodeLayer::Network),
         metadata,
+        service: None,
+        package: None,
     }
 }
 
@@ -1038,7 +1346,13 @@ fn push_network_container_node(
         kind,
         label: format!("{product}: {}", container.name),
         status: Some(container.status.clone()),
+        layer: Some(RuntimeNodeLayer::Container),
         metadata,
+        service: Some(RuntimeServiceEntity::minimal(
+            container.name.clone(),
+            RuntimeServiceStatus::from_status_text(&container.status),
+        )),
+        package: None,
     });
     edges.push(RuntimeMapEdge {
         source: id,
@@ -1149,17 +1463,22 @@ fn collect_systemd_services(
     edges: &mut Vec<RuntimeMapEdge>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
-    let output = match Command::new("systemctl")
-        .args([
-            "list-units",
-            "--type=service",
-            "--all",
-            "--no-legend",
-            "--no-pager",
-            "--plain",
-        ])
-        .output()
-    {
+    let system_uptime = system_uptime_seconds_from_proc();
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("systemctl");
+            command.args([
+                "list-units",
+                "--type=service",
+                "--all",
+                "--no-legend",
+                "--no-pager",
+                "--plain",
+            ]);
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -1199,17 +1518,23 @@ fn collect_systemd_services(
             .iter()
             .map(|summary| summary.unit.as_str())
             .collect::<Vec<_>>();
-        match Command::new("systemctl")
-            .arg("show")
-            .arg("--no-pager")
-            .arg(
-                "--property=Id,ActiveState,SubState,Description,FragmentPath,LoadState,ExecStart,Requires,Wants,PartOf",
-            )
-            .args(units)
-            .output()
-        {
+        match run_command_with_timeout(
+            {
+                let mut command = Command::new("systemctl");
+                command.arg("show");
+                command.arg("--no-pager");
+                command.arg(
+                    "--property=Id,ActiveState,SubState,Description,FragmentPath,LoadState,ExecStart,Restart,ActiveEnterTimestamp,ActiveEnterTimestampMonotonic,Requires,Wants,PartOf",
+                );
+                command.args(units);
+                command
+            },
+            PROVIDER_COMMAND_TIMEOUT,
+        ) {
             Ok(show_output) if show_output.status.success() => {
-                for detail in parse_systemd_show_records(&String::from_utf8_lossy(&show_output.stdout)) {
+                for detail in
+                    parse_systemd_show_records(&String::from_utf8_lossy(&show_output.stdout))
+                {
                     if !detail.id.is_empty() {
                         details_by_unit.insert(detail.id.clone(), detail);
                     }
@@ -1237,7 +1562,12 @@ fn collect_systemd_services(
 
     for summary in &summaries {
         let detail = details_by_unit.get(&summary.unit);
-        nodes.push(systemd_runtime_node(&summary.unit, Some(summary), detail));
+        nodes.push(systemd_runtime_node(
+            &summary.unit,
+            Some(summary),
+            detail,
+            system_uptime,
+        ));
     }
 
     let mut dependency_reasons = BTreeMap::<(String, String), BTreeSet<String>>::new();
@@ -1253,7 +1583,7 @@ fn collect_systemd_services(
                 .or_default()
                 .insert(property);
             if !summary_by_unit.contains_key(&dependency) {
-                nodes.push(systemd_runtime_node(&dependency, None, None));
+                nodes.push(systemd_runtime_node(&dependency, None, None, system_uptime));
             }
         }
     }
@@ -1320,6 +1650,13 @@ fn parse_systemd_show_records(value: &str) -> Vec<SystemdUnitDetails> {
             "FragmentPath" => current.fragment_path = non_empty_string(parsed_value),
             "LoadState" => current.load_state = non_empty_string(parsed_value),
             "ExecStart" => current.exec_start = non_empty_string(parsed_value),
+            "Restart" => current.restart = non_empty_string(parsed_value),
+            "ActiveEnterTimestamp" => {
+                current.active_enter_timestamp = non_empty_string(parsed_value);
+            }
+            "ActiveEnterTimestampMonotonic" => {
+                current.active_enter_monotonic_us = parsed_value.parse::<u64>().ok();
+            }
             "Requires" => current.requires = parse_systemd_unit_list(parsed_value),
             "Wants" => current.wants = parse_systemd_unit_list(parsed_value),
             "PartOf" => current.part_of = parse_systemd_unit_list(parsed_value),
@@ -1362,6 +1699,7 @@ fn systemd_runtime_node(
     unit: &str,
     summary: Option<&SystemdUnitSummary>,
     detail: Option<&SystemdUnitDetails>,
+    system_uptime: Option<f64>,
 ) -> RuntimeMapNode {
     let active_state = detail
         .and_then(|value| value.active_state.as_deref())
@@ -1393,6 +1731,18 @@ fn systemd_runtime_node(
     if let Some(load_state) = detail.and_then(|value| value.load_state.as_deref()) {
         metadata.insert("loadState".into(), load_state.to_string());
     }
+    if let Some(restart) = detail
+        .and_then(|value| value.restart.as_deref())
+        .filter(|value| !value.is_empty() && *value != "no")
+    {
+        metadata.insert("restartPolicy".into(), restart.to_string());
+    }
+    if let Some(active_enter) = detail.and_then(|value| value.active_enter_timestamp.as_deref()) {
+        metadata.insert("activeEnter".into(), active_enter.to_string());
+    }
+    if let Some(uptime) = detail.and_then(|value| systemd_uptime_seconds(value, system_uptime)) {
+        metadata.insert("uptimeSeconds".into(), uptime.to_string());
+    }
 
     RuntimeMapNode {
         id: systemd_node_id(unit),
@@ -1400,8 +1750,29 @@ fn systemd_runtime_node(
         kind: RuntimeNodeKind::SystemdService,
         label: unit.trim_end_matches(".service").to_string(),
         status: active_state,
+        layer: Some(RuntimeNodeLayer::Service),
         metadata,
+        service: None,
+        package: None,
     }
+}
+
+/// Uptime of an active unit in whole seconds, derived from the monotonic
+/// active-enter clock and `/proc/uptime`. Returns `None` when the unit is not
+/// currently active or the host does not expose `/proc/uptime`.
+fn systemd_uptime_seconds(detail: &SystemdUnitDetails, system_uptime: Option<f64>) -> Option<u64> {
+    if detail.active_state.as_deref() != Some("active") {
+        return None;
+    }
+    let monotonic_us = detail.active_enter_monotonic_us?;
+    let uptime = system_uptime?;
+    let seconds = (uptime - monotonic_us as f64 / 1_000_000.0).max(0.0);
+    Some(seconds.round() as u64)
+}
+
+fn system_uptime_seconds_from_proc() -> Option<f64> {
+    let content = fs::read_to_string("/proc/uptime").ok()?;
+    content.split_whitespace().next()?.parse::<f64>().ok()
 }
 
 fn classify_systemd_service_entity(detail: Option<&SystemdUnitDetails>) -> ServiceEntityKind {
@@ -1450,7 +1821,14 @@ fn collect_scheduled_jobs(
         }
     }
 
-    match Command::new("crontab").arg("-l").output() {
+    match run_command_with_timeout(
+        {
+            let mut command = Command::new("crontab");
+            command.arg("-l");
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) if output.status.success() => {
             for (index, line) in String::from_utf8_lossy(&output.stdout).lines().enumerate() {
                 if let Some(command) = cron_command(line, true) {
@@ -1483,7 +1861,10 @@ fn collect_scheduled_jobs(
             kind: RuntimeNodeKind::ScheduledJob,
             label: safe_command,
             status: Some("scheduled".into()),
+            layer: Some(RuntimeNodeLayer::Process),
             metadata,
+            service: None,
+            package: None,
         });
     }
 }
@@ -1520,7 +1901,14 @@ fn cron_command(line: &str, user_crontab: bool) -> Option<String> {
 }
 
 fn collect_pm2_apps(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<RuntimeMapDiagnostic>) {
-    let output = match Command::new("pm2").arg("jlist").output() {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("pm2");
+            command.arg("jlist");
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -1585,7 +1973,10 @@ fn collect_pm2_apps(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<Runti
             kind: RuntimeNodeKind::Pm2App,
             label: name.into(),
             status,
+            layer: Some(RuntimeNodeLayer::Process),
             metadata,
+            service: None,
+            package: None,
         });
     }
 }
@@ -1594,14 +1985,18 @@ fn collect_tmux_sessions(
     nodes: &mut Vec<RuntimeMapNode>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
-    let output = match Command::new("tmux")
-        .args([
-            "list-sessions",
-            "-F",
-            "#{session_id}\t#{session_name}\t#{session_attached}\t#{session_windows}",
-        ])
-        .output()
-    {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("tmux");
+            command.args([
+                "list-sessions",
+                "-F",
+                "#{session_id}\t#{session_name}\t#{session_attached}\t#{session_windows}",
+            ]);
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -1653,7 +2048,10 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
                 }
                 .into(),
             ),
+            layer: Some(RuntimeNodeLayer::Session),
             metadata,
+            service: None,
+            package: None,
         });
     }
     nodes
@@ -1693,13 +2091,28 @@ fn collect_npm_projects(
         if !project.lockfiles.is_empty() {
             metadata.insert("lockfiles".into(), project.lockfiles.join(","));
         }
+        if !project.framework_hints.is_empty() {
+            metadata.insert("frameworks".into(), project.framework_hints.join(","));
+        }
+        if !project.scripts.is_empty() {
+            let scripts = project
+                .scripts
+                .iter()
+                .map(|(name, script)| format!("{name}={script}"))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            metadata.insert("scripts".into(), truncate_chars(&scripts, 1_600));
+        }
         nodes.push(RuntimeMapNode {
             id: node_id.clone(),
             provider: RuntimeProviderKind::Npm,
             kind: project.kind.clone(),
             label: project.display_name.clone(),
             status: Some("discovered".into()),
+            layer: Some(RuntimeNodeLayer::Package),
             metadata,
+            service: None,
+            package: None,
         });
         edges.push(RuntimeMapEdge {
             source: node_id.clone(),
@@ -1735,7 +2148,13 @@ fn collect_npm_projects(
                 kind: RuntimeNodeKind::PackageDependency,
                 label: safe_package_name.clone(),
                 status: None,
+                layer: Some(RuntimeNodeLayer::Package),
                 metadata: package_metadata,
+                service: None,
+                package: Some(RuntimePackageEntity::minimal(
+                    safe_package_name.clone(),
+                    safe_version.clone(),
+                )),
             });
 
             let mut dependency_metadata = BTreeMap::new();
@@ -1886,6 +2305,14 @@ fn summarize_npm_project(
         RuntimeNodeKind::NodeApplication,
         ServiceEntityKind::NodeApplication,
     ));
+    let scripts = manifest
+        .as_ref()
+        .map(|value| bounded_package_scripts(&value.scripts))
+        .unwrap_or_default();
+    let framework_hints = manifest
+        .as_ref()
+        .map(classify_package_frameworks)
+        .unwrap_or_default();
 
     Ok(Some(NpmProjectSummary {
         directory: directory.to_path_buf(),
@@ -1902,11 +2329,78 @@ fn summarize_npm_project(
             .map(|value| redact_sensitive_text(&value)),
         lockfiles: lockfiles.to_vec(),
         dependencies,
+        scripts,
+        framework_hints,
         private: manifest
             .as_ref()
             .map(|value| value.private)
             .unwrap_or(false),
     }))
+}
+
+fn bounded_package_scripts(scripts: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    scripts
+        .iter()
+        .take(MAX_NPM_SCRIPTS)
+        .map(|(name, script)| {
+            (
+                redact_sensitive_text(name),
+                truncate_chars(&redact_sensitive_text(script), MAX_SCRIPT_CHARS),
+            )
+        })
+        .collect()
+}
+
+/// Known framework markers mapped to friendly names. Matched against package
+/// names (all dependency sections) and script names so common stacks surface
+/// without registry lookups. Kept bounded and offline by design.
+const FRAMEWORK_MARKERS: &[(&str, &str)] = &[
+    ("@nestjs/core", "NestJS"),
+    ("@remix-run/react", "Remix"),
+    ("@sveltejs/kit", "SvelteKit"),
+    ("@vitejs/plugin-react", "Vite"),
+    ("angular/core", "Angular"),
+    ("astro", "Astro"),
+    ("docusaurus", "Docusaurus"),
+    ("electron", "Electron"),
+    ("expo", "Expo"),
+    ("express", "Express"),
+    ("fastify", "Fastify"),
+    ("gatsby", "Gatsby"),
+    ("hono", "Hono"),
+    ("next", "Next.js"),
+    ("nuxt", "Nuxt"),
+    ("react", "React"),
+    ("solid-js", "Solid"),
+    ("svelte", "Svelte"),
+    ("tauri", "Tauri"),
+    ("vite", "Vite"),
+    ("vue", "Vue"),
+];
+
+fn classify_package_frameworks(manifest: &PackageManifestDocument) -> Vec<String> {
+    let mut haystacks = manifest.scripts.keys().cloned().collect::<Vec<_>>();
+    for section in [
+        &manifest.dependencies,
+        &manifest.dev_dependencies,
+        &manifest.optional_dependencies,
+        &manifest.peer_dependencies,
+    ] {
+        haystacks.extend(section.keys().cloned());
+    }
+
+    let mut hints = Vec::new();
+    for (marker, name) in FRAMEWORK_MARKERS {
+        if hints.len() >= 4 {
+            break;
+        }
+        if haystacks.iter().any(|value| value.contains(marker))
+            && !hints.contains(&name.to_string())
+        {
+            hints.push(name.to_string());
+        }
+    }
+    hints
 }
 
 fn read_package_manifest(path: &StdPath) -> Result<PackageManifestDocument, String> {
@@ -2083,6 +2577,97 @@ fn redact_runtime_node(node: &mut RuntimeMapNode) {
     for value in node.metadata.values_mut() {
         *value = redact_sensitive_text(value);
     }
+    redact_service_entity(node.service.as_mut());
+    redact_package_entity(node.package.as_mut());
+}
+
+fn redact_service_entity(service: Option<&mut RuntimeServiceEntity>) {
+    let Some(service) = service else {
+        return;
+    };
+    service.name = redact_sensitive_text(&service.name);
+    // service.status is the closed RuntimeServiceStatus enum: raw provider
+    // text is normalized through from_status_text before it ever reaches the
+    // struct, so it cannot carry secrets and needs no redaction.
+    for value in &mut service.dependencies {
+        *value = redact_sensitive_text(value);
+    }
+    for value in &mut service.dependents {
+        *value = redact_sensitive_text(value);
+    }
+    if let Some(health) = &mut service.health {
+        // health.state is the closed RuntimeHealthState enum (safe by construction).
+        if let Some(source) = &mut health.source {
+            *source = redact_sensitive_text(source);
+        }
+        if let Some(message) = &mut health.message {
+            *message = redact_sensitive_text(message);
+        }
+    }
+    for log in &mut service.logs {
+        log.source = redact_sensitive_text(&log.source);
+        // log.level is the closed RuntimeLogLevel enum (safe by construction).
+    }
+    for event in &mut service.events {
+        event.kind = redact_sensitive_text(&event.kind);
+        if let Some(message) = &mut event.message {
+            *message = redact_sensitive_text(message);
+        }
+    }
+    redact_ownership(service.owner.as_mut());
+    redact_location(service.location.as_mut());
+}
+
+fn redact_package_entity(package: Option<&mut RuntimePackageEntity>) {
+    let Some(package) = package else {
+        return;
+    };
+    package.name = redact_sensitive_text(&package.name);
+    package.version = redact_sensitive_text(&package.version);
+    for value in &mut package.dependencies {
+        *value = redact_sensitive_text(value);
+    }
+    for value in &mut package.dependents {
+        *value = redact_sensitive_text(value);
+    }
+    if let Some(update) = &mut package.update {
+        update.current_version = redact_sensitive_text(&update.current_version);
+        if let Some(latest) = &mut update.latest_version {
+            *latest = redact_sensitive_text(latest);
+        }
+        for advisory in &mut update.advisories {
+            advisory.title = redact_sensitive_text(&advisory.title);
+            advisory.source = redact_sensitive_text(&advisory.source);
+            if let Some(fixed) = &mut advisory.fixed_version {
+                *fixed = redact_sensitive_text(fixed);
+            }
+            if let Some(url) = &mut advisory.url {
+                *url = redact_sensitive_text(url);
+            }
+        }
+    }
+    redact_ownership(package.owner.as_mut());
+    redact_location(package.location.as_mut());
+}
+
+fn redact_ownership(owner: Option<&mut RuntimeOwnership>) {
+    let Some(owner) = owner else {
+        return;
+    };
+    owner.name = redact_sensitive_text(&owner.name);
+    if let Some(id) = &mut owner.id {
+        *id = redact_sensitive_text(id);
+    }
+}
+
+fn redact_location(location: Option<&mut RuntimeLocation>) {
+    let Some(location) = location else {
+        return;
+    };
+    location.value = redact_sensitive_text(&location.value);
+    if let Some(detail) = &mut location.detail {
+        *detail = redact_sensitive_text(detail);
+    }
 }
 
 fn redact_runtime_edges(edges: &mut [RuntimeMapEdge]) {
@@ -2097,6 +2682,59 @@ fn redact_runtime_diagnostics(diagnostics: &mut [RuntimeMapDiagnostic]) {
     for diagnostic in diagnostics {
         diagnostic.message = redact_sensitive_text(&diagnostic.message);
     }
+}
+
+/// Redact secret-bearing free-text fields from a compose scan before it is
+/// returned by the API. Environment VALUES are redacted (keys stay so the
+/// shape remains useful), and mount/correlation path fields are redacted for
+/// consistency with provider metadata redaction.
+fn redact_compose_scan(scan: &mut ComposeScan) {
+    for service in &mut scan.services {
+        for value in service.environment.values_mut() {
+            *value = redact_sensitive_text(value);
+        }
+    }
+    for mount in &mut scan.mounts {
+        if let Some(source) = &mut mount.source {
+            *source = redact_sensitive_text(source);
+        }
+        if let Some(source) = &mut mount.resolved_source {
+            *source = redact_sensitive_text(source);
+        }
+    }
+    for correlation in &mut scan.correlations {
+        if let Some(source) = &mut correlation.declared_source {
+            *source = redact_sensitive_text(source);
+        }
+        if let Some(source) = &mut correlation.runtime_source {
+            *source = redact_sensitive_text(source);
+        }
+    }
+    for diagnostic in &mut scan.diagnostics {
+        diagnostic.message = redact_sensitive_text(&diagnostic.message);
+    }
+}
+
+/// Redact secret-bearing lines from a unified diff body while keeping the
+/// diff readable: each `+`/`-`/context line keeps its marker, but its content
+/// is replaced with `[redacted]` when it looks sensitive.
+fn redact_unified_diff(diff: &str) -> String {
+    diff.lines()
+        .map(|line| {
+            let (marker, rest) = match line.chars().next() {
+                Some('+') => ("+", &line[1..]),
+                Some('-') => ("-", &line[1..]),
+                Some(' ') => (" ", &line[1..]),
+                _ => ("", line),
+            };
+            if is_sensitive_text(rest) {
+                format!("{marker}{REDACTED_VALUE}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn redact_sensitive_text(value: &str) -> String {
@@ -2254,7 +2892,10 @@ fn collect_network_listeners(
                 kind: RuntimeNodeKind::NetworkListener,
                 label: format!("{address}:{port}"),
                 status: Some("listening".into()),
+                layer: Some(RuntimeNodeLayer::Host),
                 metadata,
+                service: None,
+                package: None,
             });
         }
     }
@@ -2291,6 +2932,11 @@ fn push_provider_diagnostic(
     severity: DiagnosticSeverity,
     message: String,
 ) {
+    // Provider failures (tailscale/systemd/pm2/tmux/crontab/... subprocesses)
+    // must be visible in the daemon's stderr, not just in-band in the runtime
+    // map. Messages here are static or spawn/timeout error strings — no
+    // provider output is included, so nothing secret can leak.
+    eprintln!("provider diagnostic ({provider:?}, {severity:?}): {message}");
     diagnostics.push(RuntimeMapDiagnostic {
         provider,
         severity,
@@ -2326,11 +2972,12 @@ async fn get_graph(State(state): State<AppState>) -> Json<GraphResponse> {
 }
 
 async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
+    // Served from the cache: the map is recomputed on the refresh cadence
+    // (off the async runtime, with per-provider timeouts) instead of on every
+    // request, which previously ran ~8 blocking provider subprocesses
+    // synchronously on a Tokio worker per call.
     let cache = state.cache.read().await;
-    let snapshot = cache.snapshot.clone();
-    drop(cache);
-
-    Json(collect_runtime_map(&snapshot))
+    Json(cache.runtime_map.clone())
 }
 
 async fn get_containers(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -2401,9 +3048,16 @@ async fn get_logs(
 
     let response = if docker_reachable {
         let Some(service) = service else {
-            return Ok(Json(mock_logs(&snapshot, None, q, None, limit)));
+            // Live mode has no service-scoped view of "all logs" — fabricating
+            // mock entries would attribute invented lines to real containers.
+            // Clients must name a service (or run in explicit mock mode).
+            return Ok(Json(LogsResponse {
+                service: None,
+                entries: Vec::new(),
+                next_cursor: None,
+            }));
         };
-        let collector = DockerCollector::connect().map_err(|message| ApiError {
+        let collector = docker_collector(&state).await.map_err(|message| ApiError {
             status: StatusCode::BAD_GATEWAY,
             message,
         })?;
@@ -2428,13 +3082,18 @@ async fn get_compose_scan(
     let mut scan = scan_compose_query(query).await?;
     let cache = state.cache.read().await;
     scan.correlations = correlate_compose_runtime(&scan, &cache.snapshot);
+    redact_compose_scan(&mut scan);
     Ok(Json(scan))
 }
 
 async fn get_compose_graph(
     Query(query): Query<ComposeScanQuery>,
 ) -> Result<Json<ComposeGraph>, ApiError> {
-    let scan = scan_compose_query(query).await?;
+    let mut scan = scan_compose_query(query).await?;
+    // Bind sources are embedded in graph node ids and labels, so the scan must
+    // be redacted BEFORE deriving the graph — otherwise secrets in mount
+    // sources (inline auth URLs, token= patterns) leak through this endpoint.
+    redact_compose_scan(&mut scan);
     Ok(Json(derive_compose_graph(&scan)))
 }
 
@@ -2480,9 +3139,9 @@ async fn get_compose_edit_plan(
         message: format!("failed to read compose file `{}`: {error}", file.display()),
     })?;
 
-    Ok(Json(plan_compose_mount_edit(
-        &file, &content, mount, source, target,
-    )))
+    let mut plan = plan_compose_mount_edit(&file, &content, mount, source, target);
+    plan.unified_diff = redact_unified_diff(&plan.unified_diff);
+    Ok(Json(plan))
 }
 
 async fn scan_compose_query(query: ComposeScanQuery) -> Result<ComposeScan, ApiError> {
@@ -2758,12 +3417,12 @@ fn validate_optional_query<'a>(
     Ok(Some(value))
 }
 
-fn parse_log_cursor(value: Option<&str>) -> Result<Option<u64>, ApiError> {
+fn parse_log_cursor(value: Option<&str>) -> Result<Option<LogCursor>, ApiError> {
     validate_optional_query(value, "cursor", 32)?
         .map(|value| {
-            value.parse::<u64>().map_err(|_| ApiError {
+            LogCursor::parse(value).ok_or_else(|| ApiError {
                 status: StatusCode::BAD_REQUEST,
-                message: "query parameter `cursor` must be a non-negative integer".into(),
+                message: "query parameter `cursor` must be `millis` or `millis:offset`".into(),
             })
         })
         .transpose()
@@ -2827,6 +3486,7 @@ fn reject_symlink_path(project_root: &StdPath, canonical: &StdPath) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn rejects_too_many_compose_files() {
@@ -2851,8 +3511,18 @@ mod tests {
     fn parses_log_cursor_values() {
         assert_eq!(parse_log_cursor(None).expect("absent cursor is fine"), None);
         assert_eq!(
-            parse_log_cursor(Some("1785175506123")).expect("numeric cursor should parse"),
-            Some(1_785_175_506_123)
+            parse_log_cursor(Some("1785175506123")).expect("plain numeric cursor should parse"),
+            Some(LogCursor {
+                millis: 1_785_175_506_123,
+                offset: 0
+            })
+        );
+        assert_eq!(
+            parse_log_cursor(Some("1785175506123:2")).expect("compound cursor should parse"),
+            Some(LogCursor {
+                millis: 1_785_175_506_123,
+                offset: 2
+            })
         );
 
         let non_numeric =
@@ -2861,6 +3531,10 @@ mod tests {
 
         let negative = parse_log_cursor(Some("-1")).expect_err("negative cursor should fail");
         assert_eq!(negative.status, StatusCode::BAD_REQUEST);
+
+        let bad_offset =
+            parse_log_cursor(Some("123:x")).expect_err("non-numeric offset should fail");
+        assert_eq!(bad_offset.status, StatusCode::BAD_REQUEST);
     }
 
     #[test]
@@ -2897,6 +3571,31 @@ mod tests {
         assert_eq!(
             parse_docker_label_filter("   ").expect("empty filter should be disabled"),
             None
+        );
+    }
+
+    #[test]
+    fn parses_depends_on_label_with_condition_suffixes() {
+        assert_eq!(
+            parse_depends_on_label("redis:service_started:false,database:service_started:false"),
+            vec![
+                "container_redis".to_string(),
+                "container_database".to_string()
+            ]
+        );
+        assert_eq!(
+            parse_depends_on_label(" api ,  db:condition_started:true "),
+            vec!["container_api".to_string(), "container_db".to_string()]
+        );
+        assert_eq!(
+            parse_depends_on_label(""),
+            Vec::<String>::new(),
+            "empty labels produce no refs"
+        );
+        assert_eq!(
+            parse_depends_on_label(",,"),
+            Vec::<String>::new(),
+            "bare separators produce no refs"
         );
     }
 
@@ -2943,6 +3642,9 @@ mod tests {
              SubState=running\n\
              Description=App Service\n\
              ExecStart={ path=/usr/bin/python ; argv[]=python app.py ; }\n\
+             Restart=always\n\
+             ActiveEnterTimestamp=Wed 2026-08-19 04:05:06 UTC\n\
+             ActiveEnterTimestampMonotonic=1200000000\n\
              Requires=network-online.target redis.service\n\
              Wants=postgres.service\n\
              PartOf=worker.service\n\
@@ -2965,6 +3667,36 @@ mod tests {
             classify_systemd_service_entity(records.first()),
             ServiceEntityKind::PythonApplication
         );
+        assert_eq!(records[0].restart.as_deref(), Some("always"));
+        assert_eq!(
+            records[0].active_enter_timestamp.as_deref(),
+            Some("Wed 2026-08-19 04:05:06 UTC")
+        );
+        assert_eq!(records[0].active_enter_monotonic_us, Some(1_200_000_000));
+    }
+
+    #[test]
+    fn computes_systemd_uptime_only_for_active_units() {
+        let active = SystemdUnitDetails {
+            id: "app.service".into(),
+            active_state: Some("active".into()),
+            active_enter_monotonic_us: Some(10_000_000),
+            ..SystemdUnitDetails::default()
+        };
+        let inactive = SystemdUnitDetails {
+            id: "idle.service".into(),
+            active_state: Some("inactive".into()),
+            active_enter_monotonic_us: Some(10_000_000),
+            ..SystemdUnitDetails::default()
+        };
+
+        assert_eq!(
+            systemd_uptime_seconds(&active, Some(1_010.0)),
+            Some(1_000),
+            "uptime is system uptime minus monotonic active-enter clock"
+        );
+        assert_eq!(systemd_uptime_seconds(&active, None), None);
+        assert_eq!(systemd_uptime_seconds(&inactive, Some(1_010.0)), None);
     }
 
     #[test]
@@ -2980,8 +3712,12 @@ mod tests {
                 .into(),
         };
 
-        let mut node =
-            systemd_runtime_node("redaction-worker.service", Some(&summary), details.first());
+        let mut node = systemd_runtime_node(
+            "redaction-worker.service",
+            Some(&summary),
+            details.first(),
+            None,
+        );
         redact_runtime_node(&mut node);
 
         assert_eq!(
@@ -3084,10 +3820,13 @@ mod tests {
             kind: RuntimeNodeKind::Process,
             label: command.into(),
             status: Some("running".into()),
+            layer: None,
             metadata: BTreeMap::from([
                 ("pid".into(), "2412".into()),
                 ("command".into(), command.into()),
             ]),
+            service: None,
+            package: None,
         };
         let mut edges = vec![RuntimeMapEdge {
             source: "process_2412".into(),
@@ -3227,6 +3966,594 @@ mod tests {
         assert!(!should_skip_discovery_dir("services"));
         assert!(is_node_lockfile("package-lock.json"));
         assert!(!is_node_lockfile("Cargo.lock"));
+    }
+
+    #[test]
+    fn classifies_package_framework_hints_and_bounds_scripts() {
+        let manifest = PackageManifestDocument {
+            name: Some("web-dashboard".into()),
+            private: true,
+            package_manager: Some("pnpm@9".into()),
+            scripts: (0..32)
+                .map(|index| (format!("script-{index}"), format!("echo step {index}")))
+                .collect(),
+            dependencies: BTreeMap::from([
+                ("next".into(), "^15.0.0".into()),
+                ("react".into(), "^19.0.0".into()),
+                ("express".into(), "^4.19.0".into()),
+                ("fastify".into(), "^5.0.0".into()),
+            ]),
+            optional_dependencies: BTreeMap::new(),
+            peer_dependencies: BTreeMap::new(),
+            dev_dependencies: BTreeMap::from([("vite".into(), "^6.0.0".into())]),
+        };
+
+        let hints = classify_package_frameworks(&manifest);
+        assert!(
+            hints.contains(&"Next.js".to_string()),
+            "next should surface"
+        );
+        assert!(hints.contains(&"React".to_string()), "react should surface");
+        assert!(
+            hints.len() <= 4,
+            "framework hints must stay bounded, got {hints:?}"
+        );
+
+        let bounded = bounded_package_scripts(&manifest.scripts);
+        assert_eq!(bounded.len(), MAX_NPM_SCRIPTS);
+        assert_eq!(bounded.get("script-0"), Some(&"echo step 0".to_string()));
+    }
+
+    #[test]
+    fn pages_log_entries_to_strictly_older_pages() {
+        let entries = (0..5)
+            .map(|index| LogEntry {
+                id: format!("svc-{index}"),
+                timestamp: 1_000 - index,
+                container: "svc".into(),
+                level: dockermap_core::LogLevel::Info,
+                message: format!("line {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        let (first, first_cursor) = page_log_entries(entries.clone(), None, None, 2);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].timestamp, 1_000, "page is sorted newest-first");
+        assert_eq!(first[1].timestamp, 999);
+        let first_cursor = first_cursor.expect("a full page carries a cursor");
+        assert_eq!(
+            first_cursor, "999:1",
+            "cursor is the oldest kept entry's ms plus its same-ms count emitted"
+        );
+
+        let (second, second_cursor) =
+            page_log_entries(entries.clone(), None, LogCursor::parse(&first_cursor), 2);
+        assert_eq!(second.len(), 2);
+        assert!(
+            second.iter().all(|entry| entry.timestamp < 999),
+            "next page must be strictly older than the cursor"
+        );
+        assert!(
+            second
+                .iter()
+                .all(|entry| first.iter().all(|first_entry| first_entry.id != entry.id)),
+            "pages must not overlap"
+        );
+        let second_cursor = second_cursor.expect("a full page carries a cursor");
+        assert_eq!(second_cursor, "997:1");
+
+        let (last, last_cursor) =
+            page_log_entries(entries.clone(), None, LogCursor::parse(&second_cursor), 2);
+        assert_eq!(last.len(), 1, "last page holds the remaining entry");
+        assert_eq!(last[0].timestamp, 996);
+        assert_eq!(last_cursor, None, "the last page has no cursor");
+    }
+
+    #[test]
+    fn log_entry_ids_are_stable_and_unique_per_physical_line() {
+        // Regression (round 8, F1): content hashing (service + timestamp +
+        // message) gave two DISTINCT physical lines with the same service,
+        // the same ms-truncated timestamp, and identical message text the
+        // SAME id, so the UI's dedupe-by-id silently dropped the second line.
+        // The within-ms ordinal — the line's index among same-ms entries in
+        // stream order — must disambiguate identical-content same-ms lines
+        // while staying stable for the same physical line across requests.
+        let first = log_entry_id("api", 1_787_198_706_123, 0);
+        let second = log_entry_id("api", 1_787_198_706_123, 1);
+        assert_ne!(
+            first, second,
+            "identical-content same-ms lines must get distinct ids"
+        );
+        assert_eq!(
+            log_entry_id("api", 1_787_198_706_123, 0),
+            first,
+            "the same physical line re-fetched must keep its id (stable ordinal)"
+        );
+        assert_ne!(
+            log_entry_id("web", 1_787_198_706_123, 0),
+            first,
+            "different services must not collide"
+        );
+        assert_ne!(
+            log_entry_id("api", 1_787_198_706_122, 0),
+            first,
+            "different timestamps must not collide"
+        );
+    }
+
+    #[test]
+    fn pages_log_entries_with_query_filter_and_sparse_last_page() {
+        let entries = vec![
+            LogEntry {
+                id: log_entry_id("svc", 100, 0),
+                timestamp: 100,
+                container: "svc".into(),
+                level: dockermap_core::LogLevel::Info,
+                message: "boot ok".into(),
+            },
+            LogEntry {
+                id: log_entry_id("svc", 100, 1),
+                timestamp: 100,
+                container: "svc".into(),
+                level: dockermap_core::LogLevel::Info,
+                message: "token=DOCKERMAP_TEST_FAKE_LOG_LINE".into(),
+            },
+            LogEntry {
+                id: log_entry_id("svc", 99, 0),
+                timestamp: 99,
+                container: "svc".into(),
+                level: dockermap_core::LogLevel::Warn,
+                message: "retry".into(),
+            },
+        ];
+
+        let (kept, cursor) = page_log_entries(entries.clone(), Some("boot"), None, 10);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].message, "boot ok");
+        assert_eq!(cursor, None, "an unfilled page has no cursor");
+
+        let (kept, cursor) = page_log_entries(
+            entries.clone(),
+            None,
+            Some(LogCursor {
+                millis: 100,
+                offset: 2,
+            }),
+            2,
+        );
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].timestamp, 99);
+        assert_eq!(cursor, None, "an unfilled page has no cursor");
+    }
+
+    #[test]
+    fn pages_log_entries_exact_multiple_of_limit_has_no_trailing_cursor() {
+        let entries = (0..4)
+            .map(|index| LogEntry {
+                id: format!("svc-{index}"),
+                timestamp: 1_000 - index,
+                container: "svc".into(),
+                level: dockermap_core::LogLevel::Info,
+                message: format!("line {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        let (first, first_cursor) = page_log_entries(entries.clone(), None, None, 2);
+        assert_eq!(first.len(), 2);
+        let first_cursor = first_cursor.expect("a full page with more behind it carries a cursor");
+
+        let (second, second_cursor) =
+            page_log_entries(entries.clone(), None, LogCursor::parse(&first_cursor), 2);
+        assert_eq!(second.len(), 2, "exact-multiple last page is exactly full");
+        assert!(
+            second_cursor.is_none(),
+            "an exactly-full final page must NOT carry a cursor that would yield an empty next page"
+        );
+        assert_eq!(
+            second.last().map(|entry| entry.timestamp),
+            Some(997),
+            "the final entry is still delivered on the last page"
+        );
+        assert_ne!(
+            first_cursor, "997:1",
+            "first cursor keeps pointing at its own oldest entry"
+        );
+    }
+
+    #[test]
+    fn log_window_contract_emits_cursor_for_live_docker() {
+        // Every page — first and cursor — opens the same fixed window, which
+        // is far wider than any page size, so page_log_entries can always
+        // detect "a next page exists" (`entries.len() > limit`) for the live
+        // stream — a plain `tail(limit)` window could never produce a cursor.
+        assert_eq!(log_tail_count(), MAX_LOG_CURSOR_TAIL);
+        assert!(
+            log_tail_count() > MAX_LOG_PAGE_SIZE,
+            "the fixed window must exceed any page size so a next page is detectable"
+        );
+
+        // Feeding a window wider than `limit` into page_log_entries must
+        // yield a page of exactly `limit` entries plus a cursor.
+        let entries = (0..=100)
+            .map(|index| LogEntry {
+                id: format!("svc-{index}"),
+                timestamp: 10_000 - index,
+                container: "svc".into(),
+                level: dockermap_core::LogLevel::Info,
+                message: format!("line {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        let (page, cursor) = page_log_entries(entries, None, None, 100);
+        assert_eq!(page.len(), 100, "the window is truncated to the page size");
+        let cursor = cursor.expect("a full page with more behind it carries a cursor");
+        assert_eq!(cursor, "9901:1", "cursor is the oldest kept entry");
+    }
+
+    #[test]
+    fn same_ms_ordinals_are_stable_across_page_windows() {
+        // Round-9 F1 regression: the same-millisecond ordinal used to be
+        // window-relative — the first page tailed `limit + 1` lines while a
+        // cursor page tailed MAX_LOG_CURSOR_TAIL. With a same-ms run longer
+        // than the first page's window, the SAME physical lines got DIFFERENT
+        // ordinals depending on which window collected them, so a cursor page
+        // produced the SAME id set as the first page; the client's
+        // dedupe-by-id then discarded the whole cursor page (silent data
+        // loss) and live refreshes double-showed lines whose ordinal shifted.
+        // With one fixed window the ordinal is a property of the physical
+        // line: line i of a same-ms run is always `service-timestamp-i` on
+        // every fetch.
+        let service = "svc";
+        let timestamp = 1_000_000u64;
+        // 250 same-ms lines — longer than the OLD first-page window of
+        // limit + 1 = 101, which is what made the id sets collide.
+        let lines = (0..250)
+            .map(|index| LogEntry {
+                id: String::new(),
+                timestamp,
+                container: service.into(),
+                level: dockermap_core::LogLevel::Info,
+                message: format!("burst line {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        // Fetch through the same fixed window exactly like collect_logs:
+        // assign stream-order ordinals and ids, then page the window.
+        let fetch = |window: &[LogEntry], cursor: Option<LogCursor>, limit: usize| {
+            let mut seen = HashMap::<u64, usize>::new();
+            let entries = window
+                .iter()
+                .map(|entry| {
+                    let ordinal = seen.entry(entry.timestamp).or_insert(0);
+                    let id = log_entry_id(&entry.container, entry.timestamp, *ordinal);
+                    *ordinal += 1;
+                    LogEntry {
+                        id,
+                        ..entry.clone()
+                    }
+                })
+                .collect::<Vec<_>>();
+            page_log_entries(entries, None, cursor, limit)
+        };
+
+        let window = lines.clone();
+        let (first_page, first_cursor) = fetch(&window, None, 100);
+        let first_cursor = first_cursor.expect("a full first page carries a cursor");
+        let (second_page, second_cursor) = fetch(&window, LogCursor::parse(&first_cursor), 100);
+        let second_cursor = second_cursor.expect("a full second page carries a cursor");
+        let (third_page, third_cursor) = fetch(&window, LogCursor::parse(&second_cursor), 100);
+        assert!(
+            third_cursor.is_none(),
+            "the run ends with a cursor-less page"
+        );
+
+        // Walk the pages: no id overlap between pages, no duplicates, and
+        // every physical line keeps its TRUE ordinal — line i is
+        // `service-timestamp-i` no matter which fetch saw it.
+        let mut ids = HashSet::new();
+        let mut id_by_line = HashMap::<usize, String>::new();
+        for page in [&first_page, &second_page, &third_page] {
+            for entry in page {
+                let id = &entry.id;
+                assert!(
+                    ids.insert(id.clone()),
+                    "id {id} delivered twice across pages"
+                );
+                let index = entry
+                    .message
+                    .strip_prefix("burst line ")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .expect("every entry carries its physical line index");
+                assert!(
+                    id_by_line.insert(index, id.clone()).is_none(),
+                    "physical line {index} delivered twice"
+                );
+            }
+        }
+        for (index, id) in id_by_line {
+            assert_eq!(
+                id,
+                log_entry_id(service, timestamp, index),
+                "line {index} must keep its true ordinal on every fetch"
+            );
+        }
+    }
+
+    #[test]
+    fn skips_blank_and_unprefixed_log_lines_and_keeps_real_timestamps() {
+        // Docker emits a blank line as "<timestamp> " (timestamp, space, empty
+        // body). It must be skipped, not fabricated into a now-stamped entry
+        // whose message is the raw timestamp string.
+        assert_eq!(
+            parse_timestamped_log_line(b"2026-08-20T03:03:02.538671807Z "),
+            None,
+            "blank lines must be skipped"
+        );
+
+        // Docker prefixes ONLY the first line of a multi-line message;
+        // continuation lines are bare text with no timestamp. They must be
+        // skipped — NOT stamped with now() — and their first token must not
+        // be eaten as if it were a prefix.
+        assert_eq!(
+            parse_timestamped_log_line(b"hello world"),
+            None,
+            "a continuation line without a timestamp prefix must be skipped"
+        );
+        assert_eq!(
+            parse_timestamped_log_line(b""),
+            None,
+            "a completely empty line must be skipped"
+        );
+        assert_eq!(
+            parse_timestamped_log_line(b"   "),
+            None,
+            "a whitespace-only line must be skipped"
+        );
+
+        // A normal line keeps its real timestamp rather than falling back to
+        // now().
+        let (timestamp, message) =
+            parse_timestamped_log_line(b"2026-08-20T03:03:02.538671807Z hello")
+                .expect("a normal line should parse");
+        assert_eq!(message, "hello");
+        assert_eq!(
+            timestamp, 1_787_194_982_538,
+            "the real timestamp must be preserved, not replaced with now()"
+        );
+    }
+
+    #[test]
+    fn log_until_covers_the_boundary_millisecond() {
+        // Docker's `until` is second-resolution and exclusive. The compound
+        // cursor's boundary millisecond must still be returned (its
+        // not-yet-emitted same-ms entries resume via the offset), so `until`
+        // is `floor(millis / 1000) + 1` — it covers the second CONTAINING
+        // the boundary. Entries in that second that are newer than the
+        // boundary are filtered out by page_log_entries afterwards.
+        assert_eq!(log_until_seconds(1_785_175_506_123), 1_785_175_507);
+        assert_eq!(
+            log_until_seconds(1_785_175_506_000),
+            1_785_175_507,
+            "an exact second boundary must still include its own second"
+        );
+        assert_eq!(log_until_seconds(1_000), 2);
+        assert_eq!(log_until_seconds(999), 1);
+        assert_eq!(log_until_seconds(0), 1);
+    }
+
+    #[test]
+    fn log_until_boundary_keeps_same_second_entries_before_cursor() {
+        // Entries in the boundary second before the cursor survive the ms
+        // filter, so a cursor at S.123 keeps [S.000, S.123) and drops the
+        // rest — mirroring the div_ceil `until` contract.
+        let entries = (0..6)
+            .map(|index| LogEntry {
+                id: format!("svc-{index}"),
+                timestamp: 1_000_123 - index,
+                container: "svc".into(),
+                level: dockermap_core::LogLevel::Info,
+                message: format!("line {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        let (page, _) = page_log_entries(
+            entries,
+            None,
+            Some(LogCursor {
+                millis: 1_000_123,
+                offset: 1,
+            }),
+            10,
+        );
+        assert_eq!(
+            page.len(),
+            5,
+            "all entries strictly older than the cursor are kept"
+        );
+        assert!(page.iter().all(|entry| entry.timestamp < 1_000_123));
+        assert_eq!(page.last().map(|entry| entry.timestamp), Some(1_000_118));
+    }
+
+    #[test]
+    fn provider_commands_time_out_and_report_diagnostics() {
+        let started = std::time::Instant::now();
+        let error = run_command_with_timeout(
+            {
+                let mut command = Command::new("sleep");
+                command.arg("30");
+                command
+            },
+            Duration::from_millis(200),
+        )
+        .expect_err("a hung provider command must time out");
+        assert!(error.contains("timed out"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the timeout must bound the wait, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn provider_commands_succeed_within_timeout() {
+        let output = run_command_with_timeout(
+            {
+                let mut command = Command::new("sh");
+                command.arg("-c").arg("echo ok");
+                command
+            },
+            Duration::from_secs(5),
+        )
+        .expect("a fast provider command should succeed");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+    }
+
+    #[test]
+    fn docker_container_nodes_carry_layer_and_service_entity() {
+        let snapshot = mock_snapshot();
+        let map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+
+        let container = map
+            .nodes
+            .iter()
+            .find(|node| node.kind == RuntimeNodeKind::Container)
+            .expect("derive_runtime_map should emit container nodes");
+        assert_eq!(container.layer, Some(RuntimeNodeLayer::Container));
+        let service = container
+            .service
+            .as_ref()
+            .expect("container nodes carry a service entity");
+        assert!(!service.name.is_empty());
+        assert_eq!(
+            service.status,
+            RuntimeServiceStatus::from_status_text(container.status.as_deref().unwrap_or_default())
+        );
+
+        assert!(map.nodes.iter().any(|node| {
+            node.kind == RuntimeNodeKind::DockerNetwork
+                && node.layer == Some(RuntimeNodeLayer::Network)
+        }));
+        assert!(map.nodes.iter().any(|node| {
+            node.kind == RuntimeNodeKind::DockerVolume
+                && node.layer == Some(RuntimeNodeLayer::Storage)
+        }));
+    }
+
+    #[test]
+    fn npm_dependency_nodes_carry_package_entity_and_layer() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/providers/redaction");
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut diagnostics = Vec::new();
+        collect_npm_projects(&project_root, &mut nodes, &mut edges, &mut diagnostics);
+
+        let dependency = nodes
+            .iter()
+            .find(|node| node.kind == RuntimeNodeKind::PackageDependency)
+            .expect("npm fixture should yield dependency nodes");
+        assert_eq!(dependency.layer, Some(RuntimeNodeLayer::Package));
+        let package = dependency
+            .package
+            .as_ref()
+            .expect("dependency nodes carry a package entity");
+        assert_eq!(package.manager, dockermap_core::RuntimePackageManager::Npm);
+        assert!(!package.name.is_empty());
+        assert!(!package.version.is_empty());
+        assert_eq!(
+            dependency.metadata.get("version").map(String::as_str),
+            Some(package.version.as_str()),
+            "package entity version matches the node metadata"
+        );
+    }
+
+    #[test]
+    fn redacts_compose_environment_fixture_output() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/providers/redaction");
+        let file = project_root.join("compose-environment.yaml");
+        let content = fs::read_to_string(&file).expect("compose redaction fixture");
+        assert!(content.contains("DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN"));
+        assert!(content.contains("DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD"));
+
+        let mut scan =
+            scan_compose_files(&project_root, std::slice::from_ref(&file)).expect("fixture scans");
+        redact_compose_scan(&mut scan);
+
+        let serialized = serde_json::to_string(&scan).expect("scan should serialize");
+        assert!(
+            !serialized.contains("DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN"),
+            "scan JSON leaked the token sentinel: {serialized}"
+        );
+        assert!(
+            !serialized.contains("DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD"),
+            "scan JSON leaked the password sentinel: {serialized}"
+        );
+        assert!(
+            serialized.contains("POSTGRES_PASSWORD"),
+            "environment keys stay visible so the shape remains useful"
+        );
+        assert_no_raw_secrets(
+            &scan,
+            &[
+                "DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN",
+                "DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD",
+            ],
+        );
+    }
+
+    #[test]
+    fn redacts_compose_graph_fixture_output() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/providers/redaction");
+        let file = project_root.join("compose-environment.yaml");
+        let content = fs::read_to_string(&file).expect("compose redaction fixture");
+        assert!(content.contains("DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN"));
+        assert!(content.contains("DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD"));
+
+        let mut scan =
+            scan_compose_files(&project_root, std::slice::from_ref(&file)).expect("fixture scans");
+        redact_compose_scan(&mut scan);
+        let graph = derive_compose_graph(&scan);
+
+        let serialized = serde_json::to_string(&graph).expect("graph should serialize");
+        assert!(
+            !serialized.contains("DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN"),
+            "graph JSON leaked the token sentinel: {serialized}"
+        );
+        assert!(
+            !serialized.contains("DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD"),
+            "graph JSON leaked the password sentinel: {serialized}"
+        );
+        assert!(
+            serialized.contains("compose_host_path_"),
+            "bind-source host-path nodes still appear with redacted ids/labels: {serialized}"
+        );
+    }
+
+    #[test]
+    fn redacts_sensitive_lines_in_unified_diffs() {
+        let diff = "@@ -1,5 +1,5 @@\nservices:\n  app:\n    image: alpine\n-    - POSTGRES_PASSWORD=DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD\n+    - API_TOKEN=DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN\n";
+        // The literal above uses explicit `\n` escapes (no source line
+        // continuations), so context-line leading spaces survive.
+        let lines = diff.split('\n').count();
+        assert_eq!(lines, 7, "diff should keep its line structure: {lines}");
+        let redacted = redact_unified_diff(diff);
+        assert!(!redacted.contains("DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD"));
+        assert!(!redacted.contains("DOCKERMAP_TEST_FAKE_COMPOSE_TOKEN"));
+        assert!(
+            redacted.contains("-[redacted]"),
+            "sensitive removal line keeps its marker: {redacted}"
+        );
+        assert!(
+            redacted.contains("+[redacted]"),
+            "sensitive addition line keeps its marker: {redacted}"
+        );
+        assert!(
+            redacted.contains("  image: alpine"),
+            "safe context lines stay intact: {redacted}"
+        );
     }
 
     fn assert_no_raw_secrets<T: serde::Serialize>(value: &T, secrets: &[&str]) {

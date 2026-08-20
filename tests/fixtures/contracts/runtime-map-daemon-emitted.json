@@ -1,0 +1,309 @@
+{
+  "nodes": [
+    {
+      "id": "docker_container_container_api",
+      "provider": "docker",
+      "type": "container",
+      "label": "api",
+      "status": "running",
+      "layer": "container",
+      "metadata": {
+        "image": "python:3.11-slim",
+        "ports": "3233:3233/tcp",
+        "role": "api",
+        "serviceEntityKind": "service"
+      },
+      "service": {
+        "name": "api",
+        "status": "running",
+        "dependencies": [],
+        "dependents": [],
+        "logs": [],
+        "events": []
+      }
+    },
+    {
+      "id": "docker_container_container_cache",
+      "provider": "docker",
+      "type": "container",
+      "label": "redis",
+      "status": "running",
+      "layer": "container",
+      "metadata": {
+        "image": "redis:7-alpine",
+        "ports": "6379:6379/tcp",
+        "role": "cache and queue broker",
+        "serviceEntityKind": "service"
+      },
+      "service": {
+        "name": "redis",
+        "status": "running",
+        "dependencies": [],
+        "dependents": [],
+        "logs": [],
+        "events": []
+      }
+    },
+    {
+      "id": "docker_container_container_db",
+      "provider": "docker",
+      "type": "container",
+      "label": "postgres",
+      "status": "running",
+      "layer": "container",
+      "metadata": {
+        "image": "postgres:16-alpine",
+        "ports": "5432:5432/tcp",
+        "role": "primary database",
+        "serviceEntityKind": "service"
+      },
+      "service": {
+        "name": "postgres",
+        "status": "running",
+        "dependencies": [],
+        "dependents": [],
+        "logs": [],
+        "events": []
+      }
+    },
+    {
+      "id": "docker_container_container_gateway",
+      "provider": "docker",
+      "type": "container",
+      "label": "gateway",
+      "status": "running",
+      "layer": "container",
+      "metadata": {
+        "image": "nginx:1.27-alpine",
+        "ports": "3233:80/tcp",
+        "role": "edge proxy",
+        "serviceEntityKind": "service"
+      },
+      "service": {
+        "name": "gateway",
+        "status": "running",
+        "dependencies": [],
+        "dependents": [],
+        "logs": [],
+        "events": []
+      }
+    },
+    {
+      "id": "docker_container_container_worker",
+      "provider": "docker",
+      "type": "container",
+      "label": "worker",
+      "status": "running",
+      "layer": "container",
+      "metadata": {
+        "image": "python:3.11-slim",
+        "role": "worker",
+        "serviceEntityKind": "service"
+      },
+      "service": {
+        "name": "worker",
+        "status": "running",
+        "dependencies": [],
+        "dependents": [],
+        "logs": [],
+        "events": []
+      }
+    },
+    {
+      "id": "docker_network_network_app",
+      "provider": "docker",
+      "type": "docker_network",
+      "label": "application",
+      "status": null,
+      "layer": "network",
+      "metadata": {
+        "driver": "bridge",
+        "internal": "false"
+      }
+    },
+    {
+      "id": "docker_network_network_data",
+      "provider": "docker",
+      "type": "docker_network",
+      "label": "data",
+      "status": null,
+      "layer": "network",
+      "metadata": {
+        "driver": "bridge",
+        "internal": "true"
+      }
+    },
+    {
+      "id": "docker_network_network_edge",
+      "provider": "docker",
+      "type": "docker_network",
+      "label": "edge",
+      "status": null,
+      "layer": "network",
+      "metadata": {
+        "driver": "bridge",
+        "internal": "false"
+      }
+    },
+    {
+      "id": "docker_volume_volume_app_cache",
+      "provider": "docker",
+      "type": "docker_volume",
+      "label": "app_cache",
+      "status": null,
+      "layer": "storage",
+      "metadata": {
+        "serviceEntityKind": "storage"
+      }
+    },
+    {
+      "id": "docker_volume_volume_postgres_data",
+      "provider": "docker",
+      "type": "docker_volume",
+      "label": "postgres_data",
+      "status": null,
+      "layer": "storage",
+      "metadata": {
+        "serviceEntityKind": "storage"
+      }
+    },
+    {
+      "id": "network_listener_3233_3233_tcp",
+      "provider": "network",
+      "type": "network_listener",
+      "label": "3233:3233/tcp",
+      "status": "listening",
+      "layer": "host",
+      "metadata": {
+        "port": "3233:3233/tcp"
+      }
+    },
+    {
+      "id": "network_listener_3233_80_tcp",
+      "provider": "network",
+      "type": "network_listener",
+      "label": "3233:80/tcp",
+      "status": "listening",
+      "layer": "host",
+      "metadata": {
+        "port": "3233:80/tcp"
+      }
+    },
+    {
+      "id": "network_listener_5432_5432_tcp",
+      "provider": "network",
+      "type": "network_listener",
+      "label": "5432:5432/tcp",
+      "status": "listening",
+      "layer": "host",
+      "metadata": {
+        "port": "5432:5432/tcp"
+      }
+    },
+    {
+      "id": "network_listener_6379_6379_tcp",
+      "provider": "network",
+      "type": "network_listener",
+      "label": "6379:6379/tcp",
+      "status": "listening",
+      "layer": "host",
+      "metadata": {
+        "port": "6379:6379/tcp"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "docker_container_container_api",
+      "target": "docker_network_network_app",
+      "relationship": "connected_to",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_api",
+      "target": "docker_network_network_data",
+      "relationship": "connected_to",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_api",
+      "target": "docker_volume_volume_app_cache",
+      "relationship": "mounts",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_api",
+      "target": "network_listener_3233_3233_tcp",
+      "relationship": "exposes",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_cache",
+      "target": "docker_network_network_data",
+      "relationship": "connected_to",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_cache",
+      "target": "network_listener_6379_6379_tcp",
+      "relationship": "exposes",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_db",
+      "target": "docker_network_network_data",
+      "relationship": "connected_to",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_db",
+      "target": "docker_volume_volume_postgres_data",
+      "relationship": "mounts",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_db",
+      "target": "network_listener_5432_5432_tcp",
+      "relationship": "exposes",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_gateway",
+      "target": "docker_network_network_app",
+      "relationship": "connected_to",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_gateway",
+      "target": "docker_network_network_edge",
+      "relationship": "connected_to",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_gateway",
+      "target": "network_listener_3233_80_tcp",
+      "relationship": "exposes",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_worker",
+      "target": "docker_network_network_app",
+      "relationship": "connected_to",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_worker",
+      "target": "docker_network_network_data",
+      "relationship": "connected_to",
+      "metadata": {}
+    },
+    {
+      "source": "docker_container_container_worker",
+      "target": "docker_volume_volume_app_cache",
+      "relationship": "mounts",
+      "metadata": {}
+    }
+  ],
+  "diagnostics": [],
+  "lastUpdated": 1787196125766
+}

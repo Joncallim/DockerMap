@@ -11,6 +11,7 @@ import Storage from "./screens/Storage";
 import Images from "./screens/Images";
 import Logs from "./screens/Logs";
 import Compose from "./screens/Compose";
+import Diagnostics from "./screens/Diagnostics";
 import Settings from "./screens/Settings";
 import NotFound from "./screens/NotFound";
 import { useSettings } from "./hooks/useSettings";
@@ -38,6 +39,7 @@ export function App() {
         <Route path="images" element={<Images />} />
         <Route path="logs" element={<Logs />} />
         <Route path="compose" element={<Compose />} />
+        <Route path="diagnostics" element={<Diagnostics />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<NotFound />} />
       </Route>

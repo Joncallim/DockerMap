@@ -29,10 +29,15 @@ If you do not use Docker Compose, plain Docker works too:
 
 ```bash
 docker build -t dockermap:local .
-docker run --rm -p 3233:3233 \
+docker run --rm -p 127.0.0.1:3233:3233 \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   dockermap:local
 ```
+
+The port is bound to loopback (127.0.0.1) because with no `DOCKERMAP_API_TOKEN`
+set the API is unauthenticated read-only — do not expose it on the LAN. For
+remote access, set `DOCKERMAP_API_TOKEN` (see `.env.example`) and publish the
+port on the interface of your choice, e.g. `-p 3233:3233`.
 
 That Docker socket mount is read-only. DockerMap needs it so it can inspect
 containers, images, networks, volumes, and logs.
@@ -103,6 +108,68 @@ If the app opens but looks empty:
 
 If Docker is not reachable, DockerMap should still start with safe fallback data
 so the UI can be inspected.
+
+## Status Widget
+
+`GET /api/status` returns a compact, widget-friendly summary of the whole
+host, intended for dashboards such as [Homepage](https://gethomepage.dev)
+rather than the main UI. It is also available at the versioned alias
+`/api/v1/status`.
+
+```json
+{
+  "service": "dockermap",
+  "status": "ok",
+  "mode": "live",
+  "dockerReachable": true,
+  "containers": 12,
+  "containersRunning": 11,
+  "networks": 3,
+  "volumes": 5,
+  "images": 14,
+  "healthy": 10,
+  "attention": 1,
+  "offline": 1,
+  "version": "0.1.0"
+}
+```
+
+Field meanings:
+
+- `status` — `ok`, `degraded`, or `offline` (derived from Docker reachability
+  and container state).
+- `mode` — `live` (real Docker data) or `mock` (fallback demo data).
+- `healthy` / `attention` / `offline` — container counts by state, where
+  `containers = healthy + attention + offline`.
+
+Like every non-health API route, `/api/status` requires a Bearer token when
+`DOCKERMAP_API_TOKEN` is set (or equivalent reverse-proxy forward-auth).
+
+Homepage custom-widget example (place under your Homepage `services.yaml`):
+
+```yaml
+- DockerMap:
+    icon: docker
+    href: http://127.0.0.1:3233
+    widget:
+      type: customapi
+      url: http://127.0.0.1:4000/api/status
+      headers:
+        Authorization: Bearer ${DOCKERMAP_API_TOKEN}
+      display: list
+      mappings:
+        - field: status
+          label: Status
+        - field: containersRunning
+          label: Running
+          format: number
+        - field: containers
+          label: Containers
+          format: number
+        - field: attention
+          label: Needs attention
+          format: number
+```
 
 ## Safety Model
 

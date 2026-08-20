@@ -34,8 +34,6 @@ Not finished:
 
 - Richer metadata for systemd and npm/package providers.
 - Python and native-process provider implementation.
-- List sorting, advanced filters, clickable graph nodes, and richer logs UI.
-- OpenAPI docs, route versioning, and dashboard/widget endpoints.
 - Safe write mode.
 
 ## Guiding Rules
@@ -94,7 +92,8 @@ These items improve the product without changing host state.
   traversal were already covered; unsafe bind sources (Docker socket, daemon
   state, credential directories, sensitive system roots) were added with
   `compose_unsafe_bind_source` diagnostics.
-- Add a diagnostics page and JSON export once validation routes exist.
+- [x] Add a diagnostics page and JSON export once validation routes exist.
+  Shipped with commit `f2d631b` (diagnostics page + JSON export).
 - Keep edit plans dry-run only with `willWrite: false`.
 
 ### Runtime Providers
@@ -110,18 +109,24 @@ These items improve the product without changing host state.
 
 ### UI And Navigation
 
-- Add sorting and filters to list pages.
-- Make graph nodes and chips route to the relevant detail pages.
+- [x] Add sorting and filters to list pages.
+  Shipped with commit `16c8b80` (list sorting/filters on Images, Runtime, and Storage).
+- [x] Make graph nodes and chips route to the relevant detail pages.
+  Shipped with commit `16c8b80` (runtime node detail routing).
 - Improve container, network, volume, and image detail pages.
-- Add log level filtering, message search, live-tail controls, and pagination.
+- [x] Add log level filtering, message search, live-tail controls, and pagination.
+  Shipped with commit `8321b0c` (Logs screen level filter, search, live tail, load-older).
 - Improve responsive and accessibility coverage for the primary pages.
 
 ### API And Integrations
 
-- Add versioned API routes while keeping current aliases.
-- Add OpenAPI or equivalent machine-readable route documentation.
-- Add a small status/widget endpoint for external dashboards such as Homepage
+- [x] Add versioned API routes while keeping current aliases.
+  Shipped with commit `5fcadd3` (`/api/v1/*` alias surface).
+- [x] Add OpenAPI or equivalent machine-readable route documentation.
+  Shipped with commit `5fcadd3` (`/api/openapi.json`).
+- [x] Add a small status/widget endpoint for external dashboards such as Homepage
   or Grafana-style panels.
+  Shipped with commit `5fcadd3` (`/api/status`).
 
 ## Later: Safe Write Mode
 

@@ -149,6 +149,7 @@ export default function RuntimeScreen() {
                     <Icon name={PROVIDER_ICON[diagnostic.provider]} size={13} /> {diagnostic.provider}
                   </span>
                   <span className="diag-message">{diagnostic.message}</span>
+                  <Tag tone={diagnostic.severity === "info" ? "muted" : diagnostic.severity === "warning" ? "warn" : "accent"}>{diagnostic.severity}</Tag>
                 </li>
               ))}
             </ul>
@@ -231,6 +232,12 @@ export default function RuntimeScreen() {
                   <KeyValue label="Owner" value={selected.service.owner?.name ?? "—"} />
                   <KeyValue label="Location" value={selected.service.location ? `${selected.service.location.kind}: ${selected.service.location.value}` : "—"} />
                 </div>
+              )}
+
+              {selected.service?.name && (
+                <Link className="primary-link" to={`/services/${encodeURIComponent(selected.service.name)}`}>
+                  Open service detail <Icon name="arrow" size={14} />
+                </Link>
               )}
 
               {selected.package && (

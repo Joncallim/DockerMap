@@ -180,7 +180,15 @@ export const graph: GraphResponse = {
     { source: "container_cache", target: "network_data", relationship: "connected_to" },
     { source: "container_db", target: "volume_postgres_data", relationship: "mounts" },
     { source: "container_api", target: "volume_app_cache", relationship: "mounts" },
-    { source: "container_worker", target: "volume_app_cache", relationship: "mounts" }
+    { source: "container_worker", target: "volume_app_cache", relationship: "mounts" },
+    // depends_on edges — mirror the Rust derive_graph output for the same
+    // snapshot (16 edges total): gateway→api, api→db, api→cache,
+    // worker→db, worker→cache.
+    { source: "container_gateway", target: "container_api", relationship: "connected_to" },
+    { source: "container_api", target: "container_db", relationship: "connected_to" },
+    { source: "container_api", target: "container_cache", relationship: "connected_to" },
+    { source: "container_worker", target: "container_db", relationship: "connected_to" },
+    { source: "container_worker", target: "container_cache", relationship: "connected_to" }
   ]
 };
 

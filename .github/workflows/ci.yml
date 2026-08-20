@@ -32,6 +32,16 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Round-11 (F7): the deploy artifact build (VITE_API_BASE_URL="") is the
+      # exact path where the R7 base-URL bug lived; verify it on every PR.
+      - name: Setup Rust (deploy build)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+
+      - name: Build deploy artifact
+        run: npm run build:deploy
+
       - name: Test
         run: npm run test:js
 

@@ -1,0 +1,29 @@
+{
+  "generatedAt": 1785175506123,
+  "entries": [
+    {
+      "id": "compose_missing_bind_source",
+      "source": "compose",
+      "severity": "warning",
+      "message": "Bind mount source ./data does not exist on the host",
+      "file": "docker-compose.yml",
+      "service": "api"
+    },
+    {
+      "id": null,
+      "source": "runtime",
+      "severity": "info",
+      "message": "Tailscale discovery skipped: provider command timed out after 3s",
+      "file": null,
+      "service": null
+    },
+    {
+      "id": "api_daemon_unavailable",
+      "source": "api",
+      "severity": "error",
+      "message": "Unable to reach DockerMap daemon at http://127.0.0.1:4100",
+      "file": null,
+      "service": null
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import Icon from "../components/Icon";
@@ -5,9 +6,15 @@ import { EmptyState, ErrorState, Loading, Panel, StateDot, Tag } from "../compon
 
 export default function Storage() {
   const { model, loading, error } = useApp();
+  const [search, setSearch] = useState("");
   if (loading && !model) return <Loading label="Mapping persistent state…" />;
   if (error && !model) return <ErrorState title="Storage unavailable" body={error} />;
   if (!model) return <EmptyState icon="storage" title="No volumes" body="Connect a Docker host to see persistent storage." />;
+
+  const needle = search.trim().toLowerCase();
+  const volumes = model.volumes.filter(
+    (vol) => needle === "" || vol.name.toLowerCase().includes(needle)
+  );
 
   return (
     <div className="screen">
@@ -16,14 +23,27 @@ export default function Storage() {
           <div className="eyebrow">Persistent state</div>
           <h1 className="screen-title">Storage</h1>
         </div>
-        <span className="muted-line">{model.volumes.length} volumes</span>
+        <span className="muted-line">{volumes.length} of {model.volumes.length} volumes</span>
       </header>
+
+      <div className="log-controls">
+        <input
+          className="log-search"
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Filter volumes…"
+          aria-label="Filter volumes"
+        />
+      </div>
 
       {model.volumes.length === 0 ? (
         <EmptyState icon="storage" title="No volumes" body="No named volumes are attached to any service." />
+      ) : volumes.length === 0 ? (
+        <EmptyState icon="search" title="No matching volumes" body="No volumes match the current filter." />
       ) : (
         <div className="card-grid">
-          {model.volumes.map((vol) => (
+          {volumes.map((vol) => (
             <Panel key={vol.id} title={vol.name} icon="storage">
               <div className="tag-wrap">
                 <Tag tone={vol.attachedTo.length ? "accent" : "muted"}>

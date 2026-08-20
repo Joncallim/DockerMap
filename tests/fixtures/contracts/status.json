@@ -1,0 +1,15 @@
+{
+  "service": "dockermap",
+  "status": "degraded",
+  "mode": "live",
+  "dockerReachable": true,
+  "containers": 43,
+  "containersRunning": 40,
+  "networks": 5,
+  "volumes": 8,
+  "images": 21,
+  "healthy": 40,
+  "attention": 2,
+  "offline": 1,
+  "version": "0.1.0"
+}

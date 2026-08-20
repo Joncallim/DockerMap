@@ -1,15 +1,3 @@
-pub mod compose;
-
-pub use compose::discovery::{
-    discover_compose_files as discover_compose_files_deep, discover_with_overrides,
-};
-pub use compose::parser::parse_compose_file as parse_compose_file_document;
-pub use compose::resolver::resolve_mounts;
-pub use compose::{
-    ComposeDiagnostic as ComposeDocumentDiagnostic, ComposeFile as ComposeDocument,
-    ComposeMountDeclaration, ComposeService as ComposeDocumentService,
-};
-
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -169,6 +157,130 @@ pub const MAX_LOG_PAGE_SIZE: usize = 500;
 
 /// Default page size when the caller does not request one.
 pub const DEFAULT_LOG_PAGE_SIZE: usize = 100;
+
+/// Compound log cursor: a boundary timestamp (milliseconds) plus how many
+/// entries at that exact millisecond were already emitted on previous pages.
+///
+/// Serialized as `"<millis>:<offset>"` (e.g. `"1787198706123:2"`); a bare
+/// `"<millis>"` parses as offset 0. The offset lets cursor pagination resume
+/// mid-run when many lines share one millisecond (Docker timestamps are
+/// truncated to ms) instead of silently dropping every same-ms entry beyond
+/// the page boundary — a plain `timestamp < cursor` filter could never
+/// revisit them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogCursor {
+    pub millis: u64,
+    pub offset: usize,
+}
+
+impl LogCursor {
+    pub fn parse(value: &str) -> Option<Self> {
+        let (millis, offset) = value.split_once(':').unwrap_or((value, ""));
+        let millis = millis.parse::<u64>().ok()?;
+        let offset = if offset.is_empty() {
+            0
+        } else {
+            offset.parse::<usize>().ok()?
+        };
+        Some(Self { millis, offset })
+    }
+}
+
+impl std::fmt::Display for LogCursor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}:{}", self.millis, self.offset)
+    }
+}
+
+/// Pure log pagination shared by every log source (live Docker, daemon mock,
+/// Node API mock) so all three paths agree on page boundaries.
+///
+/// Entries are filtered by query, sorted NEWEST-first, and truncated to
+/// `limit`. The returned `next_cursor` is a compound `"millis:offset"` cursor
+/// (see `LogCursor`): entries sharing the boundary millisecond are resumed
+/// exactly where the previous page stopped. A cursor is emitted only when
+/// more entries exist behind the page, so "Load older" terminates with
+/// `None` on the last page (including pages that end exactly on a multiple of
+/// `limit`) and never overlaps the previous one.
+pub fn page_log_entries(
+    entries: Vec<LogEntry>,
+    query: Option<&str>,
+    cursor: Option<LogCursor>,
+    limit: usize,
+) -> (Vec<LogEntry>, Option<String>) {
+    let limit = limit.clamp(1, MAX_LOG_PAGE_SIZE);
+    let filter = query.map(|value| value.to_ascii_lowercase());
+
+    let mut entries = entries
+        .into_iter()
+        .filter(|entry| {
+            filter
+                .as_ref()
+                .is_none_or(|needle| entry.message.to_ascii_lowercase().contains(needle))
+        })
+        .collect::<Vec<_>>();
+
+    // Stable sort: same-millisecond entries keep their stream order, so the
+    // per-timestamp index below is deterministic across requests.
+    entries.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+
+    if let Some(cursor) = cursor {
+        // Newest-first order means entries newer than the boundary come
+        // first (already emitted — drop), then the boundary millisecond's
+        // run (keep from `offset` onward), then everything older (keep).
+        let mut same_timestamp_seen = 0usize;
+        entries = entries
+            .into_iter()
+            .filter(|entry| {
+                if entry.timestamp < cursor.millis {
+                    true
+                } else if entry.timestamp > cursor.millis {
+                    false
+                } else {
+                    let keep = same_timestamp_seen >= cursor.offset;
+                    same_timestamp_seen += 1;
+                    keep
+                }
+            })
+            .collect::<Vec<_>>();
+    }
+
+    // Decide whether older entries exist BEHIND this page BEFORE truncating:
+    // a cursor is emitted only when the filtered page holds more than `limit`
+    // entries. On totals that are exact multiples of limit, the last page is
+    // exactly full but nothing is older behind it, so a full-page heuristic
+    // would emit a trailing cursor that yields an empty next page.
+    let has_more = entries.len() > limit;
+
+    let next_cursor = if has_more {
+        // The cursor points at the oldest kept entry: its millisecond plus
+        // how many entries at that millisecond were emitted through THIS
+        // page — the incoming cursor's count for that ms (if it is the same
+        // ms) plus the same-ms entries this page keeps — so the next page
+        // resumes past them.
+        let boundary = &entries[limit - 1];
+        let first_at_boundary = entries[..limit]
+            .iter()
+            .position(|entry| entry.timestamp == boundary.timestamp)
+            .unwrap_or(limit - 1);
+        let previously_emitted = cursor
+            .filter(|cursor| cursor.millis == boundary.timestamp)
+            .map_or(0, |cursor| cursor.offset);
+        Some(
+            LogCursor {
+                millis: boundary.timestamp,
+                offset: previously_emitted + limit - first_at_boundary,
+            }
+            .to_string(),
+        )
+    } else {
+        None
+    };
+
+    entries.truncate(limit);
+
+    (entries, next_cursor)
+}
 
 /// Parse an RFC 3339 / RFC 3339 Nano timestamp prefix (as emitted by
 /// `docker logs --timestamps`, e.g. `2026-08-20T04:05:06.123456789Z`) into
@@ -431,43 +543,6 @@ pub enum ServiceEntityKind {
     PackageDependency,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ServiceEntityRelationshipKind {
-    DependsOn,
-    RunsOn,
-    StoresDataIn,
-    Calls,
-    ResolvesVia,
-    ProxiesTo,
-    Contains,
-    RelatedTo,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceEntity {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub kind: ServiceEntityKind,
-    pub label: String,
-    pub status: Option<String>,
-    pub metadata: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceEntityRelationship {
-    pub source: String,
-    pub target: String,
-    pub relationship: ServiceEntityRelationshipKind,
-    pub metadata: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OperationalMap {
-    pub services: Vec<ServiceEntity>,
-    pub relationships: Vec<ServiceEntityRelationship>,
-}
-
 pub fn service_entity_kind_name(kind: &ServiceEntityKind) -> &'static str {
     match kind {
         ServiceEntityKind::Service => "service",
@@ -565,6 +640,271 @@ pub enum RuntimeRelationshipKind {
     RelatedTo,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeNodeLayer {
+    Edge,
+    Host,
+    Service,
+    Container,
+    Process,
+    Session,
+    Package,
+    Network,
+    Storage,
+    Advisory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeHealthState {
+    Healthy,
+    Degraded,
+    Unhealthy,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeLogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeOwnershipKind {
+    Person,
+    Team,
+    System,
+    Automation,
+    Vendor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeLocationKind {
+    Host,
+    Container,
+    Path,
+    Cluster,
+    Region,
+    Workspace,
+    Tailnet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeServiceStatus {
+    Running,
+    Starting,
+    Stopping,
+    Stopped,
+    Degraded,
+    Failed,
+    Unknown,
+}
+
+impl RuntimeServiceStatus {
+    /// Normalize a provider-reported status string into the contract enum.
+    /// Docker status text is free-form ("Up 3 hours", "Exited (0) ..."), so
+    /// anything unrecognized maps to `Unknown` instead of failing to
+    /// serialize.
+    pub fn from_status_text(value: &str) -> Self {
+        let lower = value.to_ascii_lowercase();
+        if lower.starts_with("up") || lower == "running" {
+            RuntimeServiceStatus::Running
+        } else if lower == "starting" || lower == "created" || lower == "restarting" {
+            RuntimeServiceStatus::Starting
+        } else if lower == "stopping" {
+            RuntimeServiceStatus::Stopping
+        } else if lower == "stopped"
+            || lower == "exited"
+            || lower.starts_with("exited")
+            || lower == "dead"
+            || lower == "paused"
+            || lower == "removing"
+        {
+            RuntimeServiceStatus::Stopped
+        } else if lower == "degraded" {
+            RuntimeServiceStatus::Degraded
+        } else if lower == "failed" || lower == "error" {
+            RuntimeServiceStatus::Failed
+        } else {
+            RuntimeServiceStatus::Unknown
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePackageManager {
+    Npm,
+    Pnpm,
+    Yarn,
+    Pip,
+    Apt,
+    Apk,
+    Brew,
+    Cargo,
+    System,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeAdvisorySeverity {
+    Low,
+    Moderate,
+    High,
+    Critical,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeHealth {
+    pub state: RuntimeHealthState,
+    #[serde(rename = "checkedAt", skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeLogRef {
+    pub id: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<RuntimeLogLevel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeEventRef {
+    pub id: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeOwnership {
+    pub kind: RuntimeOwnershipKind,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeLocation {
+    pub kind: RuntimeLocationKind,
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeServiceEntity {
+    pub name: String,
+    pub status: RuntimeServiceStatus,
+    pub dependencies: Vec<String>,
+    pub dependents: Vec<String>,
+    /// Reserved — not emitted by current collectors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<RuntimeHealth>,
+    /// Reserved — not emitted by current collectors.
+    pub logs: Vec<RuntimeLogRef>,
+    /// Reserved — not emitted by current collectors.
+    pub events: Vec<RuntimeEventRef>,
+    /// Reserved — not emitted by current collectors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<RuntimeOwnership>,
+    /// Reserved — not emitted by current collectors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<RuntimeLocation>,
+}
+
+impl RuntimeServiceEntity {
+    /// Minimal entity carrying only what the daemon collectors know directly:
+    /// the service name and its reported status. Remaining fields stay empty
+    /// so consumers can rely on the full contract shape.
+    pub fn minimal(name: String, status: RuntimeServiceStatus) -> Self {
+        Self {
+            name,
+            status,
+            dependencies: Vec::new(),
+            dependents: Vec::new(),
+            health: None,
+            logs: Vec::new(),
+            events: Vec::new(),
+            owner: None,
+            location: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimePackageAdvisory {
+    pub id: String,
+    pub source: String,
+    pub title: String,
+    pub severity: RuntimeAdvisorySeverity,
+    #[serde(rename = "fixedVersion", skip_serializing_if = "Option::is_none")]
+    pub fixed_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(rename = "publishedAt", skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimePackageUpdate {
+    #[serde(rename = "currentVersion")]
+    pub current_version: String,
+    #[serde(rename = "latestVersion", skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
+    pub available: bool,
+    pub advisories: Vec<RuntimePackageAdvisory>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimePackageEntity {
+    pub name: String,
+    pub manager: RuntimePackageManager,
+    pub version: String,
+    pub dependencies: Vec<String>,
+    pub dependents: Vec<String>,
+    /// Reserved — not emitted by current collectors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update: Option<RuntimePackageUpdate>,
+    /// Reserved — not emitted by current collectors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<RuntimeOwnership>,
+    /// Reserved — not emitted by current collectors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<RuntimeLocation>,
+}
+
+impl RuntimePackageEntity {
+    /// Minimal entity for a package dependency node: name, version and the
+    /// package manager that declared it.
+    pub fn minimal(name: String, version: String) -> Self {
+        Self {
+            name,
+            manager: RuntimePackageManager::Npm,
+            version,
+            dependencies: Vec::new(),
+            dependents: Vec::new(),
+            update: None,
+            owner: None,
+            location: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeMapNode {
     pub id: String,
@@ -573,7 +913,13 @@ pub struct RuntimeMapNode {
     pub kind: RuntimeNodeKind,
     pub label: String,
     pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer: Option<RuntimeNodeLayer>,
     pub metadata: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<RuntimeServiceEntity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package: Option<RuntimePackageEntity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -820,6 +1166,17 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
         .map(|container| (container.name.as_str(), container))
         .collect();
 
+    // Compose depends_on refs name the compose SERVICE, which the daemon
+    // records as the container's `role` (the com.docker.compose.service
+    // label) — live container names are project-prefixed (`immich_redis`)
+    // and never match the ref directly. Resolve by role first, then by
+    // name, then by full id.
+    let container_by_role: BTreeMap<&str, &ContainerRecord> = snapshot
+        .containers
+        .iter()
+        .map(|container| (container.role.as_str(), container))
+        .collect();
+
     let volume_by_attached_container: BTreeMap<&str, Vec<&VolumeRecord>> = {
         let mut mapping: BTreeMap<&str, Vec<&VolumeRecord>> = BTreeMap::new();
         for volume in &snapshot.volumes {
@@ -851,12 +1208,16 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
 
         for dependency in &container.depends_on {
             let dependency_name = dependency.strip_prefix("container_").unwrap_or(dependency);
-            let target = container_by_name.get(dependency_name).copied().or_else(|| {
-                snapshot
-                    .containers
-                    .iter()
-                    .find(|item| item.id == *dependency)
-            });
+            let target = container_by_role
+                .get(dependency_name)
+                .copied()
+                .or_else(|| container_by_name.get(dependency_name).copied())
+                .or_else(|| {
+                    snapshot
+                        .containers
+                        .iter()
+                        .find(|item| item.id == *dependency)
+                });
 
             if let Some(target) = target {
                 edges.push(GraphEdge {
@@ -895,7 +1256,13 @@ pub fn derive_runtime_map(
             kind: RuntimeNodeKind::Container,
             label: container.name.clone(),
             status: Some(container.status.clone()),
+            layer: Some(RuntimeNodeLayer::Container),
             metadata,
+            service: Some(RuntimeServiceEntity::minimal(
+                container.name.clone(),
+                RuntimeServiceStatus::from_status_text(&container.status),
+            )),
+            package: None,
         });
 
         for network_id in &container.networks {
@@ -917,7 +1284,10 @@ pub fn derive_runtime_map(
                 kind: RuntimeNodeKind::NetworkListener,
                 label: port.clone(),
                 status: Some("listening".into()),
+                layer: Some(RuntimeNodeLayer::Host),
                 metadata,
+                service: None,
+                package: None,
             });
             edges.push(RuntimeMapEdge {
                 source: format!("docker_container_{}", sanitize_id(&container.id)),
@@ -938,7 +1308,10 @@ pub fn derive_runtime_map(
             kind: RuntimeNodeKind::DockerNetwork,
             label: network.name.clone(),
             status: None,
+            layer: Some(RuntimeNodeLayer::Network),
             metadata,
+            service: None,
+            package: None,
         });
     }
 
@@ -954,7 +1327,10 @@ pub fn derive_runtime_map(
             kind: RuntimeNodeKind::DockerVolume,
             label: volume.name.clone(),
             status: None,
+            layer: Some(RuntimeNodeLayer::Storage),
             metadata,
+            service: None,
+            package: None,
         });
 
         for attached in &volume.attached_to {
@@ -994,17 +1370,30 @@ pub fn derive_runtime_map(
     }
 }
 
+/// Base timestamp for mock log entries, captured ONCE per process.
+///
+/// A fresh `now` per request would shift the whole mock timeline by the
+/// request-to-request delta: a compound cursor (`millis:offset`) produced
+/// from page N would land between entries on page N+1, so the boundary
+/// entry would be misclassified as already-emitted and skipped, and the
+/// same-ms offset logic would never engage in mock mode. A process-wide
+/// base keeps the timeline — and therefore cursor matching — stable across
+/// requests.
+static MOCK_LOG_BASE_MILLIS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+fn mock_log_base_millis() -> u64 {
+    *MOCK_LOG_BASE_MILLIS.get_or_init(unix_timestamp_millis)
+}
+
 pub fn mock_logs(
     snapshot: &DockerSnapshot,
     service: Option<&str>,
     query: Option<&str>,
-    cursor_millis: Option<u64>,
+    cursor: Option<LogCursor>,
     limit: usize,
 ) -> LogsResponse {
     let mut entries = Vec::new();
-    let now = unix_timestamp_millis();
-    let filter = query.map(|value| value.to_ascii_lowercase());
-    let limit = limit.clamp(1, MAX_LOG_PAGE_SIZE);
+    let now = mock_log_base_millis();
 
     for (index, container) in snapshot.containers.iter().enumerate() {
         if let Some(service_filter) = service {
@@ -1032,12 +1421,6 @@ pub fn mock_logs(
         ];
 
         for (offset, (level, message)) in candidates.into_iter().enumerate() {
-            if let Some(filter) = &filter {
-                if !message.to_ascii_lowercase().contains(filter) {
-                    continue;
-                }
-            }
-
             entries.push(LogEntry {
                 id: format!("{}-{}", container.id, offset),
                 timestamp: now.saturating_sub(((index * 3 + offset) as u64) * 15_000),
@@ -1048,18 +1431,10 @@ pub fn mock_logs(
         }
     }
 
-    entries.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
-
-    if let Some(cursor_millis) = cursor_millis {
-        entries.retain(|entry| entry.timestamp < cursor_millis);
-    }
-
-    let next_cursor = if entries.len() > limit {
-        Some(entries[limit - 1].timestamp.to_string())
-    } else {
-        None
-    };
-    entries.truncate(limit);
+    // Query filtering, sorting, and compound-cursor paging all live in the
+    // shared helper so this mock agrees with the live-Docker daemon path and
+    // the Node API mock on page boundaries.
+    let (entries, next_cursor) = page_log_entries(entries, query, cursor, limit);
 
     LogsResponse {
         service: service.map(str::to_string),
@@ -1967,6 +2342,7 @@ fn resolve_source(
     }
 
     let interpolated = interpolate_default(source);
+    let interpolated = expand_tilde(&interpolated);
     let source_path = Path::new(&interpolated);
     let resolved = if source_path.is_absolute() || is_windows_absolute_path(&interpolated) {
         PathBuf::from(interpolated)
@@ -1974,6 +2350,25 @@ fn resolve_source(
         base_dir.join(interpolated)
     };
     Some(display_path(&normalize_lexical(&resolved)))
+}
+
+/// Docker Compose expands a leading `~` or `~/...` in a bind source to the
+/// user's home directory. Without this, `~/data:/data` would resolve under the
+/// project directory as `<project>/~/data`, so unsafe-bind and missing-source
+/// checks would operate on the wrong path.
+fn expand_tilde(value: &str) -> String {
+    let home = match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => home,
+        _ => return value.to_string(),
+    };
+
+    if value == "~" {
+        return home;
+    }
+    match value.strip_prefix("~/") {
+        Some(rest) => format!("{home}/{rest}"),
+        None => value.to_string(),
+    }
 }
 
 fn interpolate_default(value: &str) -> String {
@@ -2223,6 +2618,73 @@ mod tests {
     }
 
     #[test]
+    fn resolves_depends_on_by_role_when_names_differ() {
+        // Real-world shape: compose depends_on refs name the compose SERVICE
+        // (the daemon's `container_<service>` refs), while live container
+        // names are project-prefixed and the service name is recorded as the
+        // container's role (com.docker.compose.service label).
+        let snapshot = DockerSnapshot {
+            containers: vec![
+                ContainerRecord {
+                    id: "deadbeef_api".into(),
+                    name: "immich_api".into(),
+                    image: "immich-server:latest".into(),
+                    status: "running".into(),
+                    role: "api".into(),
+                    networks: vec![],
+                    ports: vec![],
+                    mounts: vec![],
+                    depends_on: vec!["container_redis".into(), "container_database".into()],
+                },
+                ContainerRecord {
+                    id: "deadbeef_redis".into(),
+                    name: "immich_redis".into(),
+                    image: "redis:7-alpine".into(),
+                    status: "running".into(),
+                    role: "redis".into(),
+                    networks: vec![],
+                    ports: vec![],
+                    mounts: vec![],
+                    depends_on: vec![],
+                },
+                ContainerRecord {
+                    id: "deadbeef_db".into(),
+                    name: "immich_database".into(),
+                    image: "postgres:16-alpine".into(),
+                    status: "running".into(),
+                    role: "database".into(),
+                    networks: vec![],
+                    ports: vec![],
+                    mounts: vec![],
+                    depends_on: vec![],
+                },
+            ],
+            images: vec![],
+            networks: vec![],
+            volumes: vec![],
+            last_updated: unix_timestamp_millis(),
+        };
+
+        let graph = derive_graph(&snapshot);
+        let api_dependencies = graph
+            .edges
+            .iter()
+            .filter(|edge| edge.source == "deadbeef_api")
+            .map(|edge| edge.target.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(api_dependencies.len(), 2);
+        assert!(api_dependencies.contains(&"deadbeef_redis"));
+        assert!(api_dependencies.contains(&"deadbeef_db"));
+        assert!(
+            !graph
+                .edges
+                .iter()
+                .any(|edge| edge.target.starts_with("container_")),
+            "unresolved depends_on refs must not leak into the graph"
+        );
+    }
+
+    #[test]
     fn filters_mock_logs_by_service_and_query() {
         let snapshot = mock_snapshot();
         let logs = mock_logs(
@@ -2247,7 +2709,7 @@ mod tests {
             &snapshot,
             None,
             None,
-            Some(cursor.parse().expect("numeric cursor")),
+            Some(LogCursor::parse(&cursor).expect("compound cursor")),
             2,
         );
         assert!(!second.entries.is_empty());
@@ -2265,6 +2727,170 @@ mod tests {
                 .all(|first_entry| first_entry.id != entry.id)),
             "pages must not overlap"
         );
+    }
+
+    #[test]
+    fn mock_logs_honors_cursor_without_service_filter() {
+        // Regression: live-Docker mode with no service query used to hard-code
+        // the cursor to None, so "Load older" re-returned page 1 forever. The
+        // mock path must page older entries when given a cursor.
+        let snapshot = mock_snapshot();
+        let first = mock_logs(&snapshot, None, None, None, 3);
+        assert_eq!(first.entries.len(), 3);
+        let cursor = first.next_cursor.expect("a full first page has a cursor");
+
+        let older = mock_logs(
+            &snapshot,
+            None,
+            None,
+            Some(LogCursor::parse(&cursor).expect("compound cursor")),
+            3,
+        );
+        assert!(!older.entries.is_empty(), "older page must not be empty");
+        assert!(
+            older
+                .entries
+                .iter()
+                .all(|entry| entry.timestamp < first.entries[0].timestamp),
+            "older page must be strictly older than the first page"
+        );
+    }
+
+    #[test]
+    fn mock_log_timestamps_are_stable_across_requests() {
+        // Regression (round 8, F3): mock entry timestamps used to derive
+        // from a FRESH `now` per request, so a compound cursor from page N
+        // never matched an entry on page N+1 — the boundary entry was
+        // misclassified as already-emitted and skipped, and the same-ms
+        // offset logic never engaged in mock mode. The base must be captured
+        // once per process.
+        let snapshot = mock_snapshot();
+        let first = mock_logs(&snapshot, None, None, None, 2);
+        let cursor = first
+            .next_cursor
+            .clone()
+            .expect("a full first page has a cursor");
+
+        // The same cursor must select the identical entries on every
+        // subsequent request (the timeline must not drift between requests).
+        let again = mock_logs(&snapshot, None, None, LogCursor::parse(&cursor), 2);
+        let again_2 = mock_logs(&snapshot, None, None, LogCursor::parse(&cursor), 2);
+        assert_eq!(
+            again.entries, again_2.entries,
+            "the same cursor must yield identical entries across requests"
+        );
+
+        // Paginating through the compound cursor must return strictly older
+        // pages and cover every mock entry exactly once (no loss, no
+        // overlap).
+        let mut seen = first
+            .entries
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut next = Some(cursor);
+        let mut pages = 1usize;
+        while let Some(current) = next {
+            let page = mock_logs(&snapshot, None, None, LogCursor::parse(&current), 2);
+            assert!(!page.entries.is_empty(), "cursor pagination must not stall");
+            assert!(
+                page.entries
+                    .iter()
+                    .all(|entry| entry.timestamp < first.entries[0].timestamp),
+                "every cursor page must be strictly older than the first page"
+            );
+            for entry in &page.entries {
+                assert!(seen.insert(entry.id.clone()), "pages must not overlap");
+            }
+            next = page.next_cursor;
+            pages += 1;
+            assert!(pages < 100, "cursor pagination must terminate");
+        }
+
+        let all = mock_logs(&snapshot, None, None, None, MAX_LOG_PAGE_SIZE);
+        assert_eq!(
+            seen.len(),
+            all.entries.len(),
+            "no mock entry may be lost across pages"
+        );
+    }
+
+    #[test]
+    fn paginates_same_timestamp_entries_with_compound_cursor() {
+        // Regression (round 7, F3): entries sharing one millisecond used to
+        // be silently dropped at page boundaries — a plain `ts` cursor could
+        // never resume mid-run, so 5 entries at ts=1000 with limit=2 lost
+        // three entries. The compound "ts:offset" cursor must page them all.
+        let entries = (0..5)
+            .map(|index| LogEntry {
+                id: format!("svc-{index}"),
+                timestamp: 1_000,
+                container: "svc".into(),
+                level: LogLevel::Info,
+                message: format!("line {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        let (page1, cursor1) = page_log_entries(entries.clone(), None, None, 2);
+        assert_eq!(page1.len(), 2);
+        assert_eq!(
+            cursor1.as_deref(),
+            Some("1000:2"),
+            "cursor encodes the boundary ms and the 2 entries already emitted at it"
+        );
+
+        let (page2, cursor2) = page_log_entries(
+            entries.clone(),
+            None,
+            LogCursor::parse("1000:2").as_ref().copied(),
+            2,
+        );
+        assert_eq!(page2.len(), 2);
+        assert_eq!(
+            cursor2.as_deref(),
+            Some("1000:4"),
+            "the second page resumes past the first 2 same-ms entries"
+        );
+        assert!(
+            page2
+                .iter()
+                .all(|entry| page1.iter().all(|first| first.id != entry.id)),
+            "pages must not overlap"
+        );
+
+        let (page3, cursor3) = page_log_entries(
+            entries.clone(),
+            None,
+            LogCursor::parse("1000:4").as_ref().copied(),
+            2,
+        );
+        assert_eq!(page3.len(), 1, "the last same-ms entry is still delivered");
+        assert_eq!(page3[0].id, "svc-4");
+        assert_eq!(cursor3, None, "the last page has no cursor");
+
+        // A plain "ts" cursor (backward compatible) still pages older entries.
+        let (page_plain, _) = page_log_entries(
+            entries.clone(),
+            None,
+            LogCursor::parse("999").as_ref().copied(),
+            2,
+        );
+        assert!(page_plain.is_empty(), "nothing is older than 999 here");
+        assert_eq!(
+            LogCursor::parse("1000"),
+            Some(LogCursor {
+                millis: 1_000,
+                offset: 0
+            })
+        );
+        assert_eq!(
+            LogCursor::parse("1000:7"),
+            Some(LogCursor {
+                millis: 1_000,
+                offset: 7
+            })
+        );
+        assert_eq!(LogCursor::parse("not-a-cursor"), None);
     }
 
     #[test]
@@ -2308,6 +2934,41 @@ mod tests {
             .edges
             .iter()
             .any(|edge| edge.relationship == RuntimeRelationshipKind::ConnectedTo));
+    }
+
+    #[test]
+    fn daemon_emitted_runtime_map_round_trips_through_json() {
+        // Round-trip the REAL daemon derivation path (mock snapshot → map →
+        // JSON → Rust) instead of a hand-written fixture, so the contract test
+        // validates output collectors actually produce.
+        let snapshot = mock_snapshot();
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+
+        let serialized = serde_json::to_string(&runtime_map).expect("map should serialize");
+        let deserialized: RuntimeMap =
+            serde_json::from_str(&serialized).expect("map JSON should deserialize");
+        assert_eq!(
+            deserialized, runtime_map,
+            "JSON round-trip must be lossless"
+        );
+
+        assert!(
+            !serialized.contains("\"status\":\"unknown\""),
+            "mock containers serialize their real status"
+        );
+
+        let container = deserialized
+            .nodes
+            .iter()
+            .find(|node| node.kind == RuntimeNodeKind::Container)
+            .expect("mock snapshot yields container nodes");
+        assert_eq!(container.layer, Some(RuntimeNodeLayer::Container));
+        let service = container
+            .service
+            .as_ref()
+            .expect("container nodes carry a service entity");
+        assert_eq!(service.status, RuntimeServiceStatus::Running);
+        assert_eq!(service.name, container.label);
     }
 
     #[test]
@@ -2444,6 +3105,31 @@ services:
             !safe_paths_flagged,
             "project-local and user-project bind sources must not be flagged"
         );
+    }
+
+    #[test]
+    fn tilde_bind_sources_resolve_under_home_and_flag_credentials() {
+        let base_dir = Path::new("/project");
+        let home = std::env::var("HOME").expect("HOME must be set for this test");
+
+        let data = resolve_source(base_dir, &ComposeMountKind::Bind, Some("~/data"))
+            .expect("~/data should resolve");
+        assert_eq!(data, format!("{home}/data"));
+        assert!(
+            !data.contains("/project/"),
+            "~/data must resolve under $HOME, not the project dir: {data}"
+        );
+
+        let ssh = resolve_source(base_dir, &ComposeMountKind::Bind, Some("~/.ssh"))
+            .expect("~/.ssh should resolve");
+        assert_eq!(ssh, format!("{home}/.ssh"));
+
+        // The unsafe-bind check operates on the EXPANDED path, so `~/.ssh` is
+        // flagged as credential material instead of being reported "missing".
+        let (severity, message) = unsafe_bind_source_diagnostic(&ssh)
+            .expect("~/.ssh must be flagged as credential material");
+        assert_eq!(severity, DiagnosticSeverity::Blocked);
+        assert!(message.contains("credential material"), "{message}");
     }
 
     #[test]

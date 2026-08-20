@@ -6,9 +6,18 @@
       "type": "container",
       "label": "api",
       "status": "running",
+      "layer": "container",
       "metadata": {
         "image": "python:3.12-slim",
         "role": "api"
+      },
+      "service": {
+        "name": "api",
+        "status": "running",
+        "dependencies": [],
+        "dependents": [],
+        "logs": [],
+        "events": []
       }
     }
   ],

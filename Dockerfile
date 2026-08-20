@@ -20,6 +20,12 @@ RUN npm ci
 COPY tsconfig.base.json ./
 COPY apps ./apps
 COPY packages ./packages
+# The single-container image serves the SPA and the API from the SAME origin
+# (nginx proxies /api/* to the Node API on 4000), so the bundle must call
+# relative /api/... URLs. The default in api.ts points at the user's
+# localhost:4000, which never exists inside this container — an empty string
+# is not nullish, so apiUrl() yields same-origin paths the proxy can serve.
+ENV VITE_API_BASE_URL=""
 RUN npm run build
 
 # ---- Runtime image ----------------------------------------------------------

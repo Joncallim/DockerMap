@@ -64,7 +64,7 @@ The map is read-only and currently contains:
 - Docker containers, networks, volumes, images, Compose stacks, and exposed/listening
   ports.
 - systemd services from fixed read-only `systemctl` calls when systemd is available,
-  including dependency edges from `After=`, `Requires=`, `Wants=`, and `PartOf=` where
+  including dependency edges from `Requires=`, `Wants=`, and `PartOf=` where
   safe to collect.
 - tmux sessions and tmux-managed agents where the session metadata exposes a bounded
   relationship.

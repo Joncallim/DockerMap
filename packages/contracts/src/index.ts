@@ -107,6 +107,36 @@ export interface ComposeDiagnostic {
   origin: ComposeFileOrigin;
 }
 
+export interface DiagnosticsEntry {
+  id: string | null;
+  source: "compose" | "runtime" | "api";
+  severity: DiagnosticSeverity;
+  message: string;
+  file: string | null;
+  service: string | null;
+}
+
+export interface DiagnosticsReport {
+  generatedAt: number;
+  entries: DiagnosticsEntry[];
+}
+
+export interface StatusResponse {
+  service: "dockermap";
+  status: "ok" | "degraded" | "offline";
+  mode: RuntimeMode;
+  dockerReachable: boolean;
+  containers: number;
+  containersRunning: number;
+  networks: number;
+  volumes: number;
+  images: number;
+  healthy: number;
+  attention: number;
+  offline: number;
+  version: string;
+}
+
 export interface ComposeMount {
   id: string;
   service: string;
@@ -250,10 +280,15 @@ export interface RuntimeServiceEntity {
   status: RuntimeServiceStatus;
   dependencies: string[];
   dependents: string[];
+  /** Reserved — not emitted by current collectors. */
   health: RuntimeHealth | null;
+  /** Reserved — not emitted by current collectors. */
   logs: RuntimeLogRef[];
+  /** Reserved — not emitted by current collectors. */
   events: RuntimeEventRef[];
+  /** Reserved — not emitted by current collectors. */
   owner: RuntimeOwnership | null;
+  /** Reserved — not emitted by current collectors. */
   location: RuntimeLocation | null;
 }
 
@@ -280,8 +315,11 @@ export interface RuntimePackageEntity {
   version: string;
   dependencies: string[];
   dependents: string[];
+  /** Reserved — not emitted by current collectors. */
   update: RuntimePackageUpdate | null;
+  /** Reserved — not emitted by current collectors. */
   owner: RuntimeOwnership | null;
+  /** Reserved — not emitted by current collectors. */
   location: RuntimeLocation | null;
 }
 
