@@ -1,0 +1,4 @@
+# Cleanup job definitions for the app host
+0 2 * * * root /usr/sbin/logrotate /etc/logrotate.conf
+*/10 * * * * www-data /usr/bin/php /srv/app/artisan schedule:run
+15 3 * * * postgres /usr/lib/postgresql/15/bin/pg_ctlcluster 15 main start

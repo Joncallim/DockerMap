@@ -1,0 +1,30 @@
+Id=app-worker.service
+ActiveState=active
+SubState=running
+Description=Application worker
+FragmentPath=/etc/systemd/system/app-worker.service
+LoadState=loaded
+ExecStart={ path=/usr/bin/node ; argv[]=node /srv/app/worker.js ; }
+Restart=on-failure
+ActiveEnterTimestamp=Tue 2026-08-18 04:05:06 UTC
+ActiveEnterTimestampMonotonic=1723942196123456
+Requires=network-online.target redis.service
+Wants=postgres.service
+PartOf=worker.target
+
+Id=db.service
+ActiveState=inactive
+SubState=dead
+Description=Database service
+FragmentPath=/etc/systemd/system/db.service
+LoadState=loaded
+ExecStart={ path=/usr/bin/postgres ; argv[]=postgres -D /var/lib/postgres/data ; }
+Restart=no
+ActiveEnterTimestamp=
+ActiveEnterTimestampMonotonic=0
+
+Id=masked-unit.service
+ActiveState=masked
+SubState=masked
+Description=Masked placeholder service
+Restart=no

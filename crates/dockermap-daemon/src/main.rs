@@ -1886,10 +1886,14 @@ fn cron_command(line: &str, user_crontab: bool) -> Option<String> {
         return None;
     }
     if trimmed.starts_with('@') {
-        return trimmed
-            .split_once(char::is_whitespace)
-            .map(|(_, command)| command.trim().to_string())
-            .filter(|command| !command.is_empty());
+        // System crontabs (@reboot in /etc/crontab and cron.d) carry a user
+        // column after the schedule; user crontabs do not.
+        let fields = trimmed.split_whitespace().collect::<Vec<_>>();
+        let command_start = if user_crontab { 1 } else { 2 };
+        if fields.len() <= command_start {
+            return None;
+        }
+        return Some(fields[command_start..].join(" "));
     }
 
     let fields = trimmed.split_whitespace().collect::<Vec<_>>();
@@ -1931,16 +1935,23 @@ fn collect_pm2_apps(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<Runti
         return;
     }
 
-    let Ok(apps) = serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout) else {
-        push_provider_diagnostic(
+    match pm2_app_nodes_from_jlist(&String::from_utf8_lossy(&output.stdout)) {
+        Some(app_nodes) => nodes.extend(app_nodes),
+        None => push_provider_diagnostic(
             diagnostics,
             RuntimeProviderKind::Pm2,
             DiagnosticSeverity::Warning,
             "PM2 discovery returned invalid JSON".into(),
-        );
-        return;
+        ),
+    }
+}
+
+fn pm2_app_nodes_from_jlist(value: &str) -> Option<Vec<RuntimeMapNode>> {
+    let Ok(apps) = serde_json::from_str::<Vec<serde_json::Value>>(value) else {
+        return None;
     };
 
+    let mut nodes = Vec::with_capacity(apps.len());
     for app in apps {
         let id = value_to_string(app.get("pm_id")).unwrap_or_else(|| "unknown".into());
         let env = app.get("pm2_env").unwrap_or(&serde_json::Value::Null);
@@ -1979,6 +1990,7 @@ fn collect_pm2_apps(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<Runti
             package: None,
         });
     }
+    Some(nodes)
 }
 
 fn collect_tmux_sessions(
@@ -2055,6 +2067,108 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
         });
     }
     nodes
+}
+
+#[cfg(test)]
+struct ListenerRecord {
+    protocol: String,
+    address: String,
+    port: u16,
+    state: String,
+    process: Option<String>,
+    pid: Option<u32>,
+}
+
+/// Parser layer for host listener discovery (wired into the native-process
+/// provider in #33). Exercised now via fixture tests so the formats are locked
+/// down before the collector lands.
+#[cfg(test)]
+fn parse_ss_listener_records(value: &str) -> Vec<ListenerRecord> {
+    let mut records = Vec::new();
+    for line in value.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("LISTEN") {
+            continue;
+        }
+        let parts = trimmed.split_whitespace().collect::<Vec<_>>();
+        if parts.len() < 5 {
+            continue;
+        }
+        let Some((address, port_value)) = parts[3].rsplit_once(':') else {
+            continue;
+        };
+        let Ok(port) = port_value.parse::<u16>() else {
+            continue;
+        };
+        let (process, pid) = parse_ss_process(parts.get(5..));
+        records.push(ListenerRecord {
+            protocol: "tcp".into(),
+            address: address.to_string(),
+            port,
+            state: "listen".into(),
+            process,
+            pid,
+        });
+    }
+    records
+}
+
+#[cfg(test)]
+fn parse_ss_process(fields: Option<&[&str]>) -> (Option<String>, Option<u32>) {
+    let Some(fields) = fields else {
+        return (None, None);
+    };
+    let joined = fields.join(" ");
+    let Some(inner) = joined.strip_prefix("users:((") else {
+        return (None, None);
+    };
+    let name = inner.split('"').nth(1).unwrap_or("").to_string();
+    let pid = inner
+        .split("pid=")
+        .nth(1)
+        .and_then(|value| value.split(',').next())
+        .and_then(|value| value.parse::<u32>().ok());
+    (if name.is_empty() { None } else { Some(name) }, pid)
+}
+
+#[cfg(test)]
+fn parse_proc_net_tcp_listeners(value: &str) -> Vec<ListenerRecord> {
+    let mut records = Vec::new();
+    for line in value.lines().skip(1) {
+        let parts = line.split_whitespace().collect::<Vec<_>>();
+        if parts.len() < 4 || parts[3] != "0A" {
+            continue;
+        }
+        let Some((ip_hex, port_hex)) = parts[1].split_once(':') else {
+            continue;
+        };
+        let Ok(port) = u16::from_str_radix(port_hex, 16) else {
+            continue;
+        };
+        records.push(ListenerRecord {
+            protocol: "tcp".into(),
+            address: hex_ipv4_to_dotted(ip_hex),
+            port,
+            state: "listen".into(),
+            process: None,
+            pid: None,
+        });
+    }
+    records
+}
+
+#[cfg(test)]
+fn hex_ipv4_to_dotted(hex: &str) -> String {
+    if hex.len() != 8 {
+        return hex.to_string();
+    }
+    let mut octets = [0u8; 4];
+    for (index, octet) in octets.iter_mut().enumerate() {
+        *octet = u8::from_str_radix(&hex[2 * index..2 * index + 2], 16).unwrap_or(0);
+    }
+    // Kernel stores the address little-endian: reverse the byte order.
+    octets.reverse();
+    format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
 }
 
 fn collect_npm_projects(
@@ -3777,6 +3891,316 @@ mod tests {
         assert_eq!(nodes[0].label, REDACTED_VALUE);
         assert_eq!(nodes[1].label, "safe-worker");
         assert_no_raw_secrets(&nodes, &["DOCKERMAP_TEST_FAKE_TMUX_SESSION_SECRET"]);
+    }
+
+    #[test]
+    fn parses_systemd_list_units_from_fixture() {
+        let summaries = parse_systemd_list_units(include_str!(
+            "../../../tests/fixtures/providers/parser/systemd-list-units.txt"
+        ));
+
+        // Timer and any non-.service units are filtered out; failed/masked
+        // services still surface with their real active states.
+        let names = summaries
+            .iter()
+            .map(|summary| summary.unit.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "app-worker.service",
+                "db.service",
+                "masked-unit.service",
+                "postgres.service"
+            ]
+        );
+        assert_eq!(summaries[0].active_state, "active");
+        assert_eq!(summaries[0].sub_state, "running");
+        assert_eq!(summaries[0].description, "Application worker");
+        assert_eq!(summaries[3].active_state, "failed");
+        assert!(!names.iter().any(|name| name.contains("timer")));
+    }
+
+    #[test]
+    fn parses_systemd_show_records_from_fixture() {
+        let records = parse_systemd_show_records(include_str!(
+            "../../../tests/fixtures/providers/parser/systemd-show.txt"
+        ));
+
+        assert_eq!(records.len(), 3);
+
+        let worker = &records[0];
+        assert_eq!(worker.id, "app-worker.service");
+        assert_eq!(worker.restart.as_deref(), Some("on-failure"));
+        assert_eq!(
+            worker.active_enter_timestamp.as_deref(),
+            Some("Tue 2026-08-18 04:05:06 UTC")
+        );
+        assert_eq!(
+            worker.active_enter_monotonic_us,
+            Some(1_723_942_196_123_456)
+        );
+        // Dependency lists track service units only (targets are filtered).
+        assert_eq!(worker.requires, vec!["redis.service"]);
+        assert_eq!(worker.wants, vec!["postgres.service"]);
+        assert!(worker.part_of.is_empty());
+
+        let db = &records[1];
+        assert_eq!(db.id, "db.service");
+        assert_eq!(db.active_state.as_deref(), Some("inactive"));
+        assert_eq!(db.restart.as_deref(), Some("no"));
+        assert_eq!(db.active_enter_monotonic_us, Some(0));
+
+        assert_eq!(records[2].id, "masked-unit.service");
+    }
+
+    #[test]
+    fn parses_cron_fixtures_for_system_user_and_cron_d() {
+        let system = include_str!("../../../tests/fixtures/providers/parser/crontab-system.txt");
+        let system_commands = system
+            .lines()
+            .filter_map(|line| cron_command(line, false))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            system_commands,
+            vec![
+                "cd / && run-parts --report /etc/cron.hourly",
+                "test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.daily )",
+                "test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.weekly )",
+                "test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.monthly )",
+                "/srv/scripts/bootstrap.sh --env production",
+            ]
+        );
+
+        let user = include_str!("../../../tests/fixtures/providers/parser/crontab-user.txt");
+        let user_commands = user
+            .lines()
+            .filter_map(|line| cron_command(line, true))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            user_commands,
+            vec![
+                "/usr/local/bin/healthcheck --endpoint https://example.test/health",
+                "/srv/backup/run.sh --bucket backups",
+                "/usr/bin/curl -fsS https://example.test/ping >/dev/null 2>&1",
+                "/srv/reports/generate.sh",
+                "/srv/scripts/user-bootstrap.sh",
+            ]
+        );
+
+        let cron_d = include_str!("../../../tests/fixtures/providers/parser/cron-d-file.txt");
+        let cron_d_commands = cron_d
+            .lines()
+            .filter_map(|line| cron_command(line, false))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cron_d_commands,
+            vec![
+                "/usr/sbin/logrotate /etc/logrotate.conf",
+                "/usr/bin/php /srv/app/artisan schedule:run",
+                "/usr/lib/postgresql/15/bin/pg_ctlcluster 15 main start",
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_pm2_nodes_from_fixture_jlist() {
+        let nodes = pm2_app_nodes_from_jlist(include_str!(
+            "../../../tests/fixtures/providers/parser/pm2-jlist.json"
+        ))
+        .expect("fixture jlist must parse");
+
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].id, "pm2_app_0");
+        assert_eq!(nodes[0].label, "web");
+        assert_eq!(nodes[0].status.as_deref(), Some("online"));
+        assert_eq!(nodes[0].layer, Some(RuntimeNodeLayer::Process));
+        assert_eq!(
+            nodes[0].metadata.get("cwd").map(String::as_str),
+            Some("/srv/app")
+        );
+        assert_eq!(
+            nodes[0].metadata.get("script").map(String::as_str),
+            Some("/srv/app/dist/index.js")
+        );
+        assert_eq!(
+            nodes[0].metadata.get("restartCount").map(String::as_str),
+            Some("3")
+        );
+
+        assert_eq!(nodes[1].status.as_deref(), Some("stopped"));
+        assert_eq!(nodes[2].id, "pm2_app_2");
+        assert_eq!(nodes[2].status.as_deref(), Some("errored"));
+        assert_eq!(
+            nodes[2].metadata.get("restartCount").map(String::as_str),
+            Some("12")
+        );
+    }
+
+    #[test]
+    fn parses_tmux_sessions_from_fixture() {
+        let nodes = tmux_session_nodes_from_output(include_str!(
+            "../../../tests/fixtures/providers/parser/tmux-sessions.txt"
+        ));
+
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].id, "tmux_session_0");
+        assert_eq!(nodes[0].label, "work");
+        assert_eq!(nodes[0].status.as_deref(), Some("attached"));
+        assert_eq!(
+            nodes[0].metadata.get("windows").map(String::as_str),
+            Some("3")
+        );
+        assert_eq!(nodes[1].status.as_deref(), Some("detached"));
+        assert_eq!(nodes[2].label, "monitoring");
+        assert_eq!(nodes[2].status.as_deref(), Some("attached"));
+        assert_eq!(nodes[0].layer, Some(RuntimeNodeLayer::Session));
+    }
+
+    #[test]
+    fn builds_tailscale_nodes_from_fixture() {
+        let status: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/providers/parser/tailscale-status.json"
+        ))
+        .expect("fixture must parse");
+        let mut nodes = Vec::new();
+        if let Some(self_node) = status.get("Self") {
+            push_tailnet_node(
+                &mut nodes,
+                RuntimeProviderKind::Tailscale,
+                "self",
+                self_node,
+            );
+        }
+        if let Some(peers) = status.get("Peer").and_then(serde_json::Value::as_object) {
+            for (index, peer) in peers.values().enumerate() {
+                push_tailnet_node(
+                    &mut nodes,
+                    RuntimeProviderKind::Tailscale,
+                    &format!("peer_{index}"),
+                    peer,
+                );
+            }
+        }
+
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].label, "hearth.example");
+        assert_eq!(nodes[0].status.as_deref(), Some("online"));
+        assert_eq!(
+            nodes[0].metadata.get("ips").map(String::as_str),
+            Some("100.64.0.1")
+        );
+        assert_eq!(
+            nodes[0].metadata.get("user").map(String::as_str),
+            Some("operator")
+        );
+        assert_eq!(nodes[1].label, "nas.example");
+        assert_eq!(nodes[2].label, "laptop.example");
+        assert_eq!(nodes[2].status.as_deref(), Some("offline"));
+        assert_eq!(
+            nodes[2].metadata.get("ips").map(String::as_str),
+            Some("100.64.0.3,fd7a:115c:a1e0::3")
+        );
+        for node in &nodes {
+            assert_eq!(node.layer, Some(RuntimeNodeLayer::Edge));
+            assert!(node.id.starts_with("tailscale_node_"));
+        }
+    }
+
+    #[test]
+    fn builds_headscale_nodes_from_fixture() {
+        let value: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/providers/parser/headscale-nodes.json"
+        ))
+        .expect("fixture must parse");
+        let nodes_json = value
+            .as_array()
+            .cloned()
+            .or_else(|| {
+                value
+                    .get("nodes")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+            })
+            .unwrap_or_default();
+        let mut nodes = Vec::new();
+        for (index, node) in nodes_json.into_iter().enumerate() {
+            push_tailnet_node(
+                &mut nodes,
+                RuntimeProviderKind::Headscale,
+                &format!("node_{index}"),
+                &node,
+            );
+        }
+
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].label, "nas");
+        assert_eq!(nodes[0].status.as_deref(), Some("online"));
+        assert_eq!(nodes[0].provider, RuntimeProviderKind::Headscale);
+        assert_eq!(
+            nodes[0].metadata.get("user").map(String::as_str),
+            Some("ops")
+        );
+        assert!(nodes[0].id.starts_with("headscale_node_"));
+        assert_eq!(nodes[1].label, "laptop");
+        assert_eq!(nodes[1].status.as_deref(), Some("offline"));
+    }
+
+    #[test]
+    fn redacts_nginx_server_blocks_fixture() {
+        let fixture =
+            include_str!("../../../tests/fixtures/providers/parser/nginx-server-blocks.conf");
+        assert!(fixture.contains("DOCKERMAP_TEST_FAKE_NGINX_TOKEN"));
+
+        // Whole-value redaction: a config carrying a token-like value is
+        // collapsed entirely rather than partially exposed.
+        assert_eq!(redact_sensitive_text(fixture), REDACTED_VALUE);
+
+        // A clean config without secret markers passes through unchanged.
+        let clean = fixture.replace(
+            "proxy_set_header Authorization \"Bearer DOCKERMAP_TEST_FAKE_NGINX_TOKEN\";",
+            "proxy_set_header X-Forwarded-Proto $scheme;",
+        );
+        assert!(!clean.contains("DOCKERMAP_TEST_FAKE"));
+        assert_eq!(redact_sensitive_text(&clean), clean);
+    }
+
+    #[test]
+    fn parses_proc_net_tcp_listener_fixture() {
+        let listeners = parse_proc_net_tcp_listeners(include_str!(
+            "../../../tests/fixtures/providers/parser/listeners-proc-net-tcp.txt"
+        ));
+
+        assert_eq!(listeners.len(), 3);
+        assert_eq!(listeners[0].protocol, "tcp");
+        assert_eq!(listeners[0].address, "127.0.0.1");
+        assert_eq!(listeners[0].port, 8080);
+        assert_eq!(listeners[0].state, "listen");
+        assert_eq!(listeners[0].process, None);
+        assert_eq!(listeners[1].address, "0.0.0.0");
+        assert_eq!(listeners[1].port, 3000);
+        assert_eq!(listeners[2].address, "127.0.0.1");
+        assert_eq!(listeners[2].port, 4096);
+    }
+
+    #[test]
+    fn parses_ss_listener_fixture() {
+        let listeners = parse_ss_listener_records(include_str!(
+            "../../../tests/fixtures/providers/parser/listeners-ss.txt"
+        ));
+
+        assert_eq!(listeners.len(), 3);
+        assert_eq!(listeners[0].protocol, "tcp");
+        assert_eq!(listeners[0].address, "127.0.0.1");
+        assert_eq!(listeners[0].port, 4000);
+        assert_eq!(listeners[0].process.as_deref(), Some("node"));
+        assert_eq!(listeners[0].pid, Some(1234));
+        assert_eq!(listeners[1].process.as_deref(), Some("dockerd"));
+        assert_eq!(listeners[1].pid, Some(5678));
+        assert_eq!(listeners[2].address, "[::]");
+        assert_eq!(listeners[2].port, 443);
+        assert_eq!(listeners[2].process.as_deref(), Some("nginx"));
+        assert_eq!(listeners[2].pid, Some(9012));
     }
 
     #[test]
