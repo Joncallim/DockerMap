@@ -53,6 +53,7 @@ const MAX_PACKAGE_JSON_BYTES: u64 = 262_144;
 const MAX_NPM_SCRIPTS: usize = 16;
 const MAX_SCRIPT_CHARS: usize = 200;
 const MAX_PYTHON_PROCESSES: usize = 64;
+const MAX_PROVIDER_OUTPUT_BYTES: usize = 1 << 20;
 const REDACTED_VALUE: &str = "[redacted]";
 const MAX_DOCKER_LABEL_FILTER_CHARS: usize = 256;
 
@@ -905,7 +906,11 @@ const RUNTIME_MAP_COLLECTION_TIMEOUT: Duration = Duration::from_secs(15);
 /// Run a provider command with a hard wall-clock timeout. Returns the child's
 /// output on success; `Err` on spawn failure or when the command outlives the
 /// budget (the child is killed and reaped). Callers push a provider
-/// diagnostic instead of failing the whole runtime map.
+/// Diagnostic instead of failing the whole runtime map.
+///
+/// NOTE: the pipes are drained by reader threads WHILE the child runs — a
+/// provider whose output exceeds the pipe buffer (e.g. `ps -eo ...` on a busy
+/// host) would otherwise deadlock the child until the timeout kills it.
 fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, String> {
     // `Command::spawn` does NOT pipe stdio like `Command::output` does, so
     // the pipes must be requested explicitly to collect provider output.
@@ -915,27 +920,68 @@ fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<O
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|error| format!("failed to spawn provider command: {error}"))?;
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    let stdout_reader = std::thread::spawn(move || read_bounded(stdout, MAX_PROVIDER_OUTPUT_BYTES));
+    let stderr_reader = std::thread::spawn(move || read_bounded(stderr, MAX_PROVIDER_OUTPUT_BYTES));
+
     let started = std::time::Instant::now();
-    loop {
+    let status = loop {
         match child
             .try_wait()
             .map_err(|error| format!("provider command wait failed: {error}"))?
         {
-            Some(_status) => break,
+            Some(status) => break Some(status),
             None if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
-                    "provider command timed out after {}s",
-                    timeout.as_secs()
-                ));
+                break None;
             }
             None => std::thread::sleep(Duration::from_millis(25)),
         }
+    };
+
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "provider stdout reader panicked".to_string())?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "provider stderr reader panicked".to_string())?;
+
+    match status {
+        Some(status) => Ok(Output {
+            status,
+            stdout,
+            stderr,
+        }),
+        None => Err(format!(
+            "provider command timed out after {}s",
+            timeout.as_secs()
+        )),
     }
-    child
-        .wait_with_output()
-        .map_err(|error| format!("failed to read provider command output: {error}"))
+}
+
+/// Read up to `cap` bytes from a pipe; used to drain provider output
+/// concurrently with the child process so it can never block on a full pipe.
+fn read_bounded(mut reader: impl std::io::Read, cap: usize) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                let remaining = cap.saturating_sub(buffer.len());
+                if read >= remaining {
+                    buffer.extend_from_slice(&chunk[..remaining]);
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+            Err(_) => break,
+        }
+    }
+    buffer
 }
 
 /// Collect the runtime map off the async runtime: the provider commands are
@@ -2060,19 +2106,24 @@ fn parse_ps_table(value: &str) -> Vec<PythonProcessRecord> {
 }
 
 fn is_python_process(args: &str) -> bool {
-    let lower = args.to_ascii_lowercase();
-    [
-        "python",
-        "uvicorn",
-        "gunicorn",
-        "celery",
-        "flower",
-        "daphne",
-        "manage.py",
-        "flask",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
+    let fields = args.split_whitespace().collect::<Vec<_>>();
+    if fields.is_empty() {
+        return false;
+    }
+    // Detection is token-based so unrelated commands whose argv merely
+    // contains a substring ("grep python", "vim python_notes",
+    // "/opt/flowerpot") are never classified as Python applications.
+    let executable = fields[0].rsplit('/').next().unwrap_or(fields[0]);
+    if executable.contains("python") {
+        return true;
+    }
+    if matches!(
+        executable,
+        "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
+    ) {
+        return true;
+    }
+    fields.iter().any(|field| field.ends_with(".py"))
 }
 
 fn python_entry(args: &str) -> Option<String> {
@@ -2122,12 +2173,13 @@ fn python_nodes_from_ps_output(value: &str) -> Vec<RuntimeMapNode> {
         let entry = python_entry(&record.args)
             .map(|entry| redact_sensitive_text(&entry))
             .unwrap_or_else(|| "python".into());
-        let safe_args = redact_sensitive_text(&record.args);
         let mut metadata = BTreeMap::new();
         metadata.insert("pid".into(), record.pid.to_string());
         metadata.insert("user".into(), record.user);
         metadata.insert("entry".into(), entry.clone());
-        metadata.insert("args".into(), safe_args);
+        // Deliberately no raw `args` metadata: a credential the redaction
+        // heuristic does not recognize (e.g. `--db-password hunter2`) would
+        // otherwise be published verbatim through /daemon/runtime/map.
         metadata.insert(
             "serviceEntityKind".into(),
             service_entity_kind_name(&ServiceEntityKind::PythonApplication).into(),
@@ -4286,6 +4338,25 @@ mod tests {
     }
 
     #[test]
+    fn python_detection_ignores_substring_false_positives() {
+        for args in [
+            "grep python",
+            "vim python_notes",
+            "/opt/flowerpot --serve",
+            "bash -c 'python'",
+            "gunicornate --help",
+        ] {
+            assert!(
+                !is_python_process(args),
+                "{args} must not classify as a python process"
+            );
+        }
+        assert!(is_python_process("/usr/bin/python3 /srv/app/worker.py"));
+        assert!(is_python_process("/srv/app/.venv/bin/uvicorn app.main:app"));
+        assert!(is_python_process("python3.12 -m celery -A tasks worker"));
+    }
+
+    #[test]
     fn builds_python_nodes_from_fixture() {
         let nodes = python_nodes_from_ps_output(include_str!(
             "../../../tests/fixtures/providers/parser/python-ps-table.txt"
@@ -4328,11 +4399,13 @@ mod tests {
         ));
         redact_runtime_nodes(&mut nodes);
 
-        // The agent process carries --token=... in its args; the whole value
-        // is collapsed and the sentinel never surfaces in labels/metadata/ids.
+        // The agent process carries --token=... in its args; raw argv is never
+        // published at all (no `args` metadata key), so the sentinel cannot
+        // surface in labels, metadata, or ids.
+        assert!(!nodes[4].metadata.contains_key("args"));
         assert_eq!(
-            nodes[4].metadata.get("args").map(String::as_str),
-            Some(REDACTED_VALUE)
+            nodes[4].metadata.get("entry").map(String::as_str),
+            Some("/srv/agent/agent.py")
         );
         assert_no_raw_secrets(&nodes, &["DOCKERMAP_TEST_FAKE_PYTHON_TOKEN"]);
     }
