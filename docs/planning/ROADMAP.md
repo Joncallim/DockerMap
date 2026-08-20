@@ -33,7 +33,7 @@ Working:
 Not finished:
 
 - Richer metadata for systemd and npm/package providers.
-- Python and native-process provider implementation.
+- ~~Python and native-process provider implementation~~ (done: #32/#38/#39 + #33).
 - Safe write mode.
 
 ## Guiding Rules

@@ -365,7 +365,20 @@ function getMockResponse<T>(path: string): T {
           pid: "4242",
           user: "jon",
           entry: "worker.py"
-        }
+        } as Record<string, string>,
+      },
+      {
+        id: "native_process_8080",
+        provider: "process" as const,
+        type: "process" as const,
+        label: "nginx",
+        status: "running",
+        layer: "process" as const,
+        metadata: {
+          pid: "8080",
+          user: "root",
+          comm: "nginx"
+        } as Record<string, string>,
       }
     ];
 

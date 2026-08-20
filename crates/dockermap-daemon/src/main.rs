@@ -53,6 +53,7 @@ const MAX_PACKAGE_JSON_BYTES: u64 = 262_144;
 const MAX_NPM_SCRIPTS: usize = 16;
 const MAX_SCRIPT_CHARS: usize = 200;
 const MAX_PYTHON_PROCESSES: usize = 64;
+const MAX_NATIVE_PROCESSES: usize = 256;
 const MAX_PROVIDER_OUTPUT_BYTES: usize = 1 << 20;
 const REDACTED_VALUE: &str = "[redacted]";
 const MAX_DOCKER_LABEL_FILTER_CHARS: usize = 256;
@@ -875,6 +876,7 @@ fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
     collect_scheduled_jobs(&mut nodes, &mut diagnostics);
     collect_pm2_apps(&mut nodes, &mut diagnostics);
     collect_python_processes(&mut nodes, &mut diagnostics);
+    collect_native_processes(&mut nodes, &mut diagnostics);
     collect_tmux_sessions(&mut nodes, &mut diagnostics);
     if let Some(root) = project_root.as_deref() {
         collect_npm_projects(root, &mut nodes, &mut edges, &mut diagnostics);
@@ -2105,25 +2107,68 @@ fn parse_ps_table(value: &str) -> Vec<PythonProcessRecord> {
     records
 }
 
-fn is_python_process(args: &str) -> bool {
-    let fields = args.split_whitespace().collect::<Vec<_>>();
-    if fields.is_empty() {
-        return false;
-    }
-    // Detection is token-based so unrelated commands whose argv merely
-    // contains a substring ("grep python", "vim python_notes",
-    // "/opt/flowerpot") are never classified as Python applications.
-    let executable = fields[0].rsplit('/').next().unwrap_or(fields[0]);
-    if executable.contains("python") {
-        return true;
-    }
+/// Python-ownership predicate shared by the python and native providers so
+/// their coverage sets can never diverge (a `pypy3 /srv/x.py` process was
+/// once emitted by BOTH providers as a duplicate node for the same pid).
+/// Ownership is decided from the RESOLVED executable only — the
+/// wrapper-walked first command token, so `sudo -s /usr/bin/python3 ...`
+/// and `env -C /srv python3 ...` resolve to the interpreter — and never
+/// from an arbitrary `.py` token elsewhere in argv (a wrapper's own script
+/// argument, e.g. `dumb-init -- /usr/bin/node /app/tool.py`, stays
+/// non-python). All python-ownership rules live here:
+/// - python* interpreter names: any resolved executable containing "python";
+/// - pypy-style interpreters: exactly `pypy` / `pypy2` / `pypy3` or a
+///   `pypy3.`-prefixed version binary (`pypy3`, `pypy3.10`, ...). Deliberately
+///   NOT a loose `starts_with("pypy")` prefix match: a binary named
+///   `pypy3-tool` is a tool, not an interpreter. Because the tightened name
+///   match is itself the ownership evidence, no `.py` script-token
+///   requirement is needed — the old clause paired a loose prefix match with
+///   a `.py` first-token check precisely to keep lookalike tools out — so
+///   `-m module` invocations (`pypy3 -m celery -A tasks worker`) are
+///   python-owned too;
+/// - the five framework basenames: uvicorn, gunicorn, celery, flower, daphne.
+///   The resolved executable is trimmed of a trailing `:` before matching —
+///   gunicorn rewrites its process title to `gunicorn: master [app]` /
+///   `gunicorn: worker [app]`, so the raw resolved basename is `gunicorn:`
+///   and would otherwise match no framework (zero coverage).
+///
+/// `_args` is the full ps args column, passed alongside the resolved
+/// executable by both callers; ownership currently rests on the executable
+/// alone, but keeping args in the signature keeps every future
+/// python-ownership refinement single-sourced here.
+fn is_python_owned(executable: &str, _args: &str) -> bool {
+    // Frameworks rewrite their process title (gunicorn: master [app] ...),
+    // so the resolved executable may carry a trailing colon. Normalize it
+    // before matching — the same trim `process_comm` applies.
+    let executable = executable.trim_end_matches(':');
     if matches!(
         executable,
         "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
     ) {
-        return true;
+        return true; // framework processes are python-owned
     }
-    fields.iter().any(|field| field.ends_with(".py"))
+    if executable.contains("python") {
+        return true; // python* interpreter
+    }
+    // pypy interpreter binaries are `pypy`, `pypy2`, `pypy3`, and
+    // `pypy3.x` — never pypy-prefixed tools like `pypy3-tool`.
+    executable == "pypy"
+        || executable == "pypy2"
+        || executable == "pypy3"
+        || executable.starts_with("pypy3.")
+}
+
+fn is_python_process(args: &str) -> bool {
+    // Detection resolves wrapper executables first (env, sudo, nice, nohup,
+    // timeout, dumb-init, tini) and is token-based, so unrelated commands
+    // whose argv merely contains a substring ("grep python", "vim
+    // python_notes", "/opt/flowerpot") are never classified as Python
+    // applications — while `env python3 ...` and
+    // `dumb-init -- /usr/local/bin/python ...` are.
+    let Some(executable) = effective_executable(args) else {
+        return false;
+    };
+    is_python_owned(executable, args)
 }
 
 fn python_entry(args: &str) -> Option<String> {
@@ -2148,15 +2193,19 @@ fn python_entry(args: &str) -> Option<String> {
             return Some(field.to_string());
         }
         let basename = field.rsplit('/').next().unwrap_or(field);
+        // Proctitle-rewritten frameworks (e.g. "gunicorn: master [app]")
+        // carry a trailing colon; trim before matching so the entry point
+        // and label are clean, mirroring is_python_owned/process_comm.
+        let trimmed = basename.trim_end_matches(':');
         if matches!(
-            basename,
+            trimmed,
             "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
         ) {
-            return Some(basename.to_string());
+            return Some(trimmed.to_string());
         }
         if field.contains(':') && !field.starts_with("--") {
             // module:app spec passed to a framework binary.
-            return Some(field.to_string());
+            return Some(trimmed.to_string());
         }
         index += 1;
     }
@@ -2206,7 +2255,7 @@ fn collect_python_processes(
     let output = match run_command_with_timeout(
         {
             let mut command = Command::new("ps");
-            command.args(["-eo", "pid=,user=,args="]);
+            command.args(["-eo", "pid=,user:32=,args="]);
             command
         },
         PROVIDER_COMMAND_TIMEOUT,
@@ -2308,106 +2357,235 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
     nodes
 }
 
-#[cfg(test)]
-struct ListenerRecord {
-    protocol: String,
-    address: String,
-    port: u16,
-    state: String,
-    process: Option<String>,
-    pid: Option<u32>,
+fn collect_native_processes(
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    let output = match run_command_with_timeout(
+        {
+            let mut command = Command::new("ps");
+            command.args(["-eo", "pid=,user:32=,args="]);
+            command
+        },
+        PROVIDER_COMMAND_TIMEOUT,
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            push_provider_diagnostic(
+                diagnostics,
+                RuntimeProviderKind::Process,
+                DiagnosticSeverity::Info,
+                format!("Native process discovery skipped: {error}"),
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        return;
+    }
+
+    let (native_nodes, capped) = native_process_nodes_from_ps_output(
+        &String::from_utf8_lossy(&output.stdout),
+        std::process::id(),
+    );
+    if capped {
+        // ps emits pids in ascending order, so when the cap is hit the first
+        // MAX_NATIVE_PROCESSES pids are surfaced and later-started services
+        // (nginx, postgres, node, ...) are omitted — say so instead of
+        // silently dropping them.
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Process,
+            DiagnosticSeverity::Info,
+            format!("Native process discovery capped at {MAX_NATIVE_PROCESSES} processes"),
+        );
+    }
+    nodes.extend(native_nodes);
 }
 
-/// Parser layer for host listener discovery (wired into the native-process
-/// provider in #33). Exercised now via fixture tests so the formats are locked
-/// down before the collector lands.
-#[cfg(test)]
-fn parse_ss_listener_records(value: &str) -> Vec<ListenerRecord> {
-    let mut records = Vec::new();
-    for line in value.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("LISTEN") {
-            continue;
-        }
-        let parts = trimmed.split_whitespace().collect::<Vec<_>>();
-        if parts.len() < 5 {
-            continue;
-        }
-        let Some((address, port_value)) = parts[3].rsplit_once(':') else {
-            continue;
-        };
-        let Ok(port) = port_value.parse::<u16>() else {
-            continue;
-        };
-        let (process, pid) = parse_ss_process(parts.get(5..));
-        records.push(ListenerRecord {
-            protocol: "tcp".into(),
-            address: address.to_string(),
-            port,
-            state: "listen".into(),
-            process,
-            pid,
+/// Native-process node builder. `self_pid` is the daemon's own pid, which is
+/// never published. Raw argv is deliberately NOT emitted (same posture as the
+/// python provider — a credential the redaction heuristic does not recognize
+/// must not leak through /daemon/runtime/map). Returns the nodes and whether
+/// the filtered process count exceeded `MAX_NATIVE_PROCESSES` (the caller
+/// turns that into the "Process count capped" diagnostic).
+fn native_process_nodes_from_ps_output(value: &str, self_pid: u32) -> (Vec<RuntimeMapNode>, bool) {
+    let filtered = parse_ps_table(value)
+        .into_iter()
+        .filter(|record| is_native_process(&record.args) && record.pid != self_pid)
+        .collect::<Vec<_>>();
+    let capped = filtered.len() > MAX_NATIVE_PROCESSES;
+    let mut nodes = Vec::new();
+    for record in filtered.into_iter().take(MAX_NATIVE_PROCESSES) {
+        let fallback_comm = process_comm(&record.args).unwrap_or_else(|| "unknown".into());
+        let comm = real_comm(record.pid, &fallback_comm);
+        let mut metadata = BTreeMap::new();
+        metadata.insert("pid".into(), record.pid.to_string());
+        metadata.insert("user".into(), record.user);
+        metadata.insert("comm".into(), comm.clone());
+        nodes.push(RuntimeMapNode {
+            id: format!("native_process_{}", record.pid),
+            provider: RuntimeProviderKind::Process,
+            kind: RuntimeNodeKind::Process,
+            label: comm,
+            status: Some("running".into()),
+            layer: Some(RuntimeNodeLayer::Process),
+            metadata,
+            service: None,
+            package: None,
         });
     }
-    records
+    (nodes, capped)
 }
 
-#[cfg(test)]
-fn parse_ss_process(fields: Option<&[&str]>) -> (Option<String>, Option<u32>) {
-    let Some(fields) = fields else {
-        return (None, None);
-    };
-    let joined = fields.join(" ");
-    let Some(inner) = joined.strip_prefix("users:((") else {
-        return (None, None);
-    };
-    let name = inner.split('"').nth(1).unwrap_or("").to_string();
-    let pid = inner
-        .split("pid=")
-        .nth(1)
-        .and_then(|value| value.split(',').next())
-        .and_then(|value| value.parse::<u32>().ok());
-    (if name.is_empty() { None } else { Some(name) }, pid)
+/// Kernel command name for a pid, read from `/proc/<pid>/comm`. The proc
+/// entry holds the real kernel comm even when the process rewrote argv[0]
+/// (avahi-daemon renders as `avahi-daemon: running [host]` in ps args, nginx
+/// as `nginx: master process`). Truncated to 16 characters like the kernel's
+/// TASK_COMM_LEN. Falls back to `fallback` (derived from the ps args column)
+/// when the proc entry is unreadable — which is also the path exercised by
+/// fixture-based tests using fake pids.
+fn real_comm(pid: u32, fallback: &str) -> String {
+    if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+        let comm = comm.trim();
+        if !comm.is_empty() {
+            return comm.chars().take(16).collect();
+        }
+    }
+    fallback.to_string()
 }
 
-#[cfg(test)]
-fn parse_proc_net_tcp_listeners(value: &str) -> Vec<ListenerRecord> {
-    let mut records = Vec::new();
-    for line in value.lines().skip(1) {
-        let parts = line.split_whitespace().collect::<Vec<_>>();
-        if parts.len() < 4 || parts[3] != "0A" {
+/// First executable token of a ps args column, walking past common wrapper
+/// executables (env, sudo, nice, nohup, timeout, dumb-init, tini), option
+/// tokens (including wrapper options that consume the FOLLOWING token as
+/// their argument per the ACTIVE wrapper's table, e.g. `sudo -u USER cmd`),
+/// env `NAME=VALUE` assignments, and numeric wrapper arguments (nice
+/// adjustment, timeout duration) — so
+/// `env python3 script.py`, `nice -n 5 nginx ...`, `timeout 300 node ...`,
+/// `sudo -u www-data /usr/bin/python3 ...`, and
+/// `dumb-init -- /usr/local/bin/python ...` all resolve to the real command.
+fn effective_executable(args: &str) -> Option<&str> {
+    // Tokens to skip as the argument of a preceding wrapper option.
+    let mut skip = 0usize;
+    // The wrapper whose option tokens are currently in play: only ITS
+    // option-argument table applies, so `timeout -s/-k` consume the next
+    // token while `sudo -s`/`sudo -k` (run shell / invalidate timestamp)
+    // consume nothing and `env -C` consumes its argument (`env -S` does
+    // NOT: the split-string is the remainder of the command line, not a
+    // single following token).
+    let mut wrapper: Option<&str> = None;
+    for token in args.split_whitespace() {
+        if skip > 0 {
+            skip -= 1;
             continue;
         }
-        let Some((ip_hex, port_hex)) = parts[1].split_once(':') else {
+        if token.starts_with('[') {
+            return Some(token); // kernel thread — brackets and slashes preserved
+        }
+        let basename = token.rsplit('/').next().unwrap_or(token);
+        if matches!(
+            basename,
+            "env" | "sudo" | "nice" | "nohup" | "timeout" | "dumb-init" | "tini"
+        ) {
+            wrapper = Some(basename); // wrapper executable — keep walking
             continue;
-        };
-        let Ok(port) = u16::from_str_radix(port_hex, 16) else {
+        }
+        if token.starts_with('-') {
+            // Option token. If the ACTIVE wrapper's option takes the NEXT
+            // token as its argument, skip it — otherwise the argument would
+            // be mistaken for the executable (`sudo -u www-data python3 ...`
+            // → "www-data").
+            if let Some(active) = wrapper {
+                if wrapper_option_arguments(active).contains(&token) {
+                    skip = 1;
+                }
+            }
             continue;
-        };
-        records.push(ListenerRecord {
-            protocol: "tcp".into(),
-            address: hex_ipv4_to_dotted(ip_hex),
-            port,
-            state: "listen".into(),
-            process: None,
-            pid: None,
-        });
+        }
+        if token.contains('=') {
+            continue; // env NAME=VALUE assignment
+        }
+        if is_duration_like(token) {
+            continue; // nice adjustment / timeout duration
+        }
+        return Some(basename);
     }
-    records
+    None
 }
 
-#[cfg(test)]
-fn hex_ipv4_to_dotted(hex: &str) -> String {
-    if hex.len() != 8 {
-        return hex.to_string();
+/// Option tokens of a wrapper that consume the FOLLOWING token as their
+/// argument, keyed per wrapper so a short option only skips its argument
+/// when its own wrapper is active: `timeout -s SIGNAL` / `timeout -k
+/// DURATION` take an argument, but `sudo -s` (run shell) and `sudo -k`
+/// (invalidate timestamp) take none, while `env -C DIR` / `env --chdir DIR`
+/// do. `env -S`/`--split-string` are deliberately ABSENT: the split-string
+/// is the REMAINDER of the command line, not a single next token, so a
+/// one-token skip would swallow the wrapped command — `env -S python3 ...`
+/// resolved to None (dropped from BOTH providers) and `env -S python3 -m
+/// http.server` resolved to `http.server` (misclassified native).
+fn wrapper_option_arguments(wrapper: &str) -> &'static [&'static str] {
+    match wrapper {
+        "sudo" => &["-u", "--user"],
+        "timeout" => &["-s", "--signal", "-k", "--kill-after"],
+        "env" => &["-u", "--unset", "-C", "--chdir"],
+        _ => &[],
     }
-    let mut octets = [0u8; 4];
-    for (index, octet) in octets.iter_mut().enumerate() {
-        *octet = u8::from_str_radix(&hex[2 * index..2 * index + 2], 16).unwrap_or(0);
+}
+
+/// Numeric token with an optional single unit suffix (`300`, `10s`, `5m`) —
+/// i.e. a `nice` adjustment or `timeout` duration, never an executable.
+/// Requires at least one leading digit so ordinary names like `sshd` (whose
+/// letters all look like duration units) are never skipped.
+fn is_duration_like(token: &str) -> bool {
+    let digits = token
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    digits > 0
+        && (digits == token.len()
+            || (digits + 1 == token.len()
+                && matches!(token.as_bytes()[digits], b's' | b'm' | b'h' | b'd')))
+}
+
+/// Extract the process command name (executable basename) from a ps args
+/// column, resolving wrapper executables to the wrapped command. Kernel
+/// threads render as `[kworker/0:0]` — brackets preserved so they are never
+/// mistaken for an executable. A trailing `:` (daemons that rewrite argv[0],
+/// e.g. `avahi-daemon: running [host]`) is stripped.
+fn process_comm(args: &str) -> Option<String> {
+    let executable = effective_executable(args)?;
+    if executable.starts_with('[') {
+        return Some(executable.to_string());
     }
-    // Kernel stores the address little-endian: reverse the byte order.
-    octets.reverse();
-    format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
+    Some(executable.trim_end_matches(':').to_string())
+}
+
+/// Native-process detection: everything except kernel threads, python-owned
+/// processes (interpreters and frameworks — decided by the SAME
+/// `is_python_owned` predicate as the python provider, so a pypy3 process
+/// can never be claimed by both providers), the daemon itself, container
+/// runtime plumbing, and the transient `ps` process itself. Wrapper
+/// executables (env, sudo, nice, nohup, timeout, dumb-init, tini) resolve to
+/// the wrapped command, so `env python3 ...` is excluded via the python
+/// check and `nice ... nginx ...` is included as `nginx`.
+fn is_native_process(args: &str) -> bool {
+    let Some(comm) = effective_executable(args) else {
+        return false;
+    };
+    if comm.starts_with('[') {
+        return false; // kernel thread
+    }
+    if is_python_owned(comm, args) {
+        return false; // python provider owns interpreters and frameworks
+    }
+    if comm == "dockermap-daemon" || comm == "ps" {
+        return false;
+    }
+    if comm.starts_with("containerd-shim") {
+        return false; // container runtime plumbing
+    }
+    true
 }
 
 fn collect_npm_projects(
@@ -3224,17 +3402,13 @@ fn collect_network_listeners(
             continue;
         };
         for line in content.lines().skip(1) {
-            let fields = line.split_whitespace().collect::<Vec<_>>();
-            if fields.len() < 10 || fields[3] != "0A" {
-                continue;
-            }
-            let Some((address, port)) = parse_proc_net_local_address(fields[1]) else {
+            let Some((address, port, socket_inode)) = parse_proc_net_listener_line(line) else {
                 continue;
             };
             let mut metadata = BTreeMap::new();
             metadata.insert("address".into(), address.clone());
             metadata.insert("port".into(), port.to_string());
-            metadata.insert("socketInode".into(), fields[9].into());
+            metadata.insert("socketInode".into(), socket_inode);
             nodes.push(RuntimeMapNode {
                 id: format!(
                     "network_listener_{}_{}",
@@ -3252,6 +3426,17 @@ fn collect_network_listeners(
             });
         }
     }
+}
+
+/// Parse one `/proc/net/tcp` (or tcp6) line into `(address, port, inode)` for
+/// a LISTEN-state socket; returns `None` for anything else.
+fn parse_proc_net_listener_line(line: &str) -> Option<(String, u16, String)> {
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 10 || fields[3] != "0A" {
+        return None;
+    }
+    let (address, port) = parse_proc_net_local_address(fields[1])?;
+    Some((address, port, fields[9].to_string()))
 }
 
 fn parse_proc_net_local_address(value: &str) -> Option<(String, u16)> {
@@ -4357,6 +4542,94 @@ mod tests {
     }
 
     #[test]
+    fn python_detection_resolves_wrappers_and_tightens_py_match() {
+        // Wrapper-walked interpreters belong to the python provider: the
+        // resolved executable is the interpreter, never the wrapper or an
+        // option argument (`sudo -u www-data ...` must not resolve to
+        // "www-data").
+        assert!(is_python_process(
+            "dumb-init -- /usr/local/bin/python -u /app/flaresolverr.py"
+        ));
+        assert!(is_python_process("env python3 -m uvicorn app.main:app"));
+        assert!(is_python_process(
+            "sudo -u www-data /usr/bin/python3 /srv/x.py"
+        ));
+        assert!(is_python_process(
+            "env -u SECRET /usr/bin/python3 /srv/x.py"
+        ));
+        // The .py match is no longer any-field: a wrapper's own script
+        // argument must not mis-attribute a non-python process.
+        assert!(!is_python_process(
+            "dumb-init -- /usr/bin/node /app/tool.py"
+        ));
+        assert!(!is_python_process("tini -- /usr/sbin/nginx -g daemon off;"));
+    }
+
+    #[test]
+    fn pypy_interpreters_are_python_owned_and_excluded_from_native() {
+        // pypy-style interpreters belong to the python provider — including
+        // `-m module` invocations and versioned binaries — and the native
+        // provider must exclude them: a `pypy3 /srv/x.py` process used to be
+        // emitted by BOTH providers as a duplicate node for the same pid
+        // because the native filter only excluded `python*` names. Both
+        // sides now share `is_python_owned`, so they cannot diverge.
+        for args in [
+            "pypy3 /srv/x.py",
+            "pypy3 -m celery -A tasks worker",
+            "/usr/bin/pypy3.10 /srv/x.py",
+            "pypy /srv/x.py",
+            "pypy2 /srv/x.py",
+        ] {
+            assert!(is_python_process(args), "{args} must be python-owned");
+            assert!(
+                !is_native_process(args),
+                "{args} must be excluded from the native provider"
+            );
+        }
+        // A pypy-prefixed TOOL is not an interpreter: the interpreter match
+        // is exactly `pypy` / `pypy2` / `pypy3` / a `pypy3.`-versioned
+        // binary — never a loose `starts_with("pypy")` prefix.
+        assert!(!is_python_process("/opt/pypy3-tool --serve"));
+        assert!(is_native_process("/opt/pypy3-tool --serve"));
+    }
+
+    #[test]
+    fn gunicorn_proctitle_rewrites_are_python_owned() {
+        // gunicorn rewrites its process title to `gunicorn: master [app]` /
+        // `gunicorn: worker [app]`, so the resolved executable is `gunicorn:`
+        // (trailing colon). `is_python_owned` trims the colon before the
+        // framework match — without it these processes matched no framework,
+        // fell to the native provider, and got zero coverage (live: the
+        // authentik gunicorn master/worker were absent from
+        // /daemon/runtime/map).
+        for args in [
+            "gunicorn: master [authentik.root.asgi:application]",
+            "gunicorn: worker [authentik.root.asgi:application]",
+        ] {
+            assert!(is_python_process(args), "{args} must be python-owned");
+            assert!(
+                !is_native_process(args),
+                "{args} must be excluded from the native provider"
+            );
+        }
+        // The normalization is generic, so any trailing-colon proctitle
+        // still matches its framework basename.
+        assert!(is_python_process("uvicorn: app.main:app"));
+        assert!(!is_native_process("uvicorn: app.main:app"));
+
+        // The entry point (and thus the label) is clean too — no trailing
+        // colon, mirroring the native provider's process_comm.
+        assert_eq!(
+            python_entry("gunicorn: master [authentik.root.asgi:application]").as_deref(),
+            Some("gunicorn")
+        );
+        assert_eq!(
+            python_entry("uvicorn: app.main:app").as_deref(),
+            Some("uvicorn")
+        );
+    }
+
+    #[test]
     fn builds_python_nodes_from_fixture() {
         let nodes = python_nodes_from_ps_output(include_str!(
             "../../../tests/fixtures/providers/parser/python-ps-table.txt"
@@ -4540,40 +4813,326 @@ mod tests {
 
     #[test]
     fn parses_proc_net_tcp_listener_fixture() {
-        let listeners = parse_proc_net_tcp_listeners(include_str!(
-            "../../../tests/fixtures/providers/parser/listeners-proc-net-tcp.txt"
-        ));
+        // The production listener collector's line parser, fed the fixture.
+        let fixture =
+            include_str!("../../../tests/fixtures/providers/parser/listeners-proc-net-tcp.txt");
+        let listeners = fixture
+            .lines()
+            .skip(1)
+            .filter_map(parse_proc_net_listener_line)
+            .collect::<Vec<_>>();
 
         assert_eq!(listeners.len(), 3);
-        assert_eq!(listeners[0].protocol, "tcp");
-        assert_eq!(listeners[0].address, "127.0.0.1");
-        assert_eq!(listeners[0].port, 8080);
-        assert_eq!(listeners[0].state, "listen");
-        assert_eq!(listeners[0].process, None);
-        assert_eq!(listeners[1].address, "0.0.0.0");
-        assert_eq!(listeners[1].port, 3000);
-        assert_eq!(listeners[2].address, "127.0.0.1");
-        assert_eq!(listeners[2].port, 4096);
+        assert_eq!(listeners[0].0, "127.0.0.1");
+        assert_eq!(listeners[0].1, 8080);
+        assert_eq!(listeners[0].2, "12345");
+        assert_eq!(listeners[1].0, "0.0.0.0");
+        assert_eq!(listeners[1].1, 3000);
+        assert_eq!(listeners[2].0, "127.0.0.1");
+        assert_eq!(listeners[2].1, 4096);
+        assert_eq!(listeners[2].2, "34567");
     }
 
     #[test]
-    fn parses_ss_listener_fixture() {
-        let listeners = parse_ss_listener_records(include_str!(
-            "../../../tests/fixtures/providers/parser/listeners-ss.txt"
+    fn parses_native_process_table_from_fixture() {
+        let records = parse_ps_table(include_str!(
+            "../../../tests/fixtures/providers/parser/native-ps-table.txt"
         ));
 
-        assert_eq!(listeners.len(), 3);
-        assert_eq!(listeners[0].protocol, "tcp");
-        assert_eq!(listeners[0].address, "127.0.0.1");
-        assert_eq!(listeners[0].port, 4000);
-        assert_eq!(listeners[0].process.as_deref(), Some("node"));
-        assert_eq!(listeners[0].pid, Some(1234));
-        assert_eq!(listeners[1].process.as_deref(), Some("dockerd"));
-        assert_eq!(listeners[1].pid, Some(5678));
-        assert_eq!(listeners[2].address, "[::]");
-        assert_eq!(listeners[2].port, 443);
-        assert_eq!(listeners[2].process.as_deref(), Some("nginx"));
-        assert_eq!(listeners[2].pid, Some(9012));
+        assert_eq!(records.len(), 14);
+        assert_eq!(records[0].pid, 9_000_001);
+        assert_eq!(records[0].user, "root");
+        assert_eq!(records[0].args, "/usr/sbin/nginx -g daemon off;");
+        assert_eq!(
+            process_comm(&records[6].args).as_deref(),
+            Some("[kworker/0:1-events]")
+        );
+    }
+
+    #[test]
+    fn filters_native_processes_and_excludes_noise() {
+        let fixture = include_str!("../../../tests/fixtures/providers/parser/native-ps-table.txt");
+        let natives = parse_ps_table(fixture)
+            .into_iter()
+            .filter(|record| is_native_process(&record.args))
+            .map(|record| record.pid)
+            .collect::<Vec<_>>();
+
+        // nginx, postgres, redis, sshd, dockerd, node, cron are native;
+        // containerd-shim, kernel threads, python, the daemon itself, and the
+        // transient ps process are excluded. Pids are beyond pid_max so the
+        // fixture never collides with a live host process.
+        assert_eq!(
+            natives,
+            vec![9_000_001, 9_000_002, 9_000_003, 9_000_004, 9_000_005, 9_000_013, 9_000_014]
+        );
+    }
+
+    #[test]
+    fn builds_native_process_nodes_from_fixture() {
+        let (mut nodes, capped) = native_process_nodes_from_ps_output(
+            include_str!("../../../tests/fixtures/providers/parser/native-ps-table.txt"),
+            9_000_011, // the daemon's own pid (dockermap-daemon in the fixture)
+        );
+        assert!(!capped);
+        redact_runtime_nodes(&mut nodes);
+
+        assert_eq!(nodes.len(), 7);
+
+        let nginx = &nodes[0];
+        assert_eq!(nginx.id, "native_process_9000001");
+        assert_eq!(nginx.provider, RuntimeProviderKind::Process);
+        assert_eq!(nginx.kind, RuntimeNodeKind::Process);
+        assert_eq!(nginx.label, "nginx");
+        assert_eq!(nginx.status.as_deref(), Some("running"));
+        assert_eq!(nginx.layer, Some(RuntimeNodeLayer::Process));
+        assert_eq!(
+            nginx.metadata.get("pid").map(String::as_str),
+            Some("9000001")
+        );
+        assert_eq!(nginx.metadata.get("user").map(String::as_str), Some("root"));
+        assert_eq!(
+            nginx.metadata.get("comm").map(String::as_str),
+            Some("nginx")
+        );
+
+        let node = &nodes[5];
+        assert_eq!(node.id, "native_process_9000013");
+        assert_eq!(node.label, "node");
+
+        // No daemon self-node, and raw argv is never published.
+        assert!(nodes.iter().all(|node| node.id != "native_process_9000011"));
+        assert!(nodes.iter().all(|node| !node.metadata.contains_key("args")));
+        assert_no_raw_secrets(&nodes, &["dockermap-daemon"]);
+    }
+
+    #[test]
+    fn parses_long_usernames_from_ps_user_column() {
+        // `ps -eo user=,` truncates usernames at 8 chars and appends '+'; the
+        // providers use `user:32=` so full usernames must survive the parser.
+        let records = parse_ps_table("  4242  systemd-resolve  /usr/lib/systemd/systemd-resolved");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].pid, 4242);
+        assert_eq!(records[0].user, "systemd-resolve");
+        assert_eq!(records[0].args, "/usr/lib/systemd/systemd-resolved");
+
+        // A padded 32-char column (as `ps` actually emits) parses identically.
+        let padded = format!(
+            "  4242  {:<32}  /usr/lib/systemd/systemd-resolved",
+            "systemd-resolve"
+        );
+        let records = parse_ps_table(&padded);
+        assert_eq!(records[0].user, "systemd-resolve");
+        assert_eq!(records[0].args, "/usr/lib/systemd/systemd-resolved");
+    }
+
+    #[test]
+    fn process_comm_strips_argv_zero_rewrites_and_resolves_wrappers() {
+        // Daemons that rewrite argv[0] (`avahi-daemon: running [host]`, nginx
+        // master) must not leak a trailing colon into the comm.
+        assert_eq!(
+            process_comm("/usr/sbin/avahi-daemon: running [HEARTH.local]").as_deref(),
+            Some("avahi-daemon")
+        );
+        assert_eq!(
+            process_comm("/usr/sbin/nginx: master process").as_deref(),
+            Some("nginx")
+        );
+        // Wrapper executables resolve to the wrapped command.
+        assert_eq!(
+            process_comm("/usr/bin/nice -n 5 /usr/sbin/nginx -g daemon off;").as_deref(),
+            Some("nginx")
+        );
+        assert_eq!(
+            process_comm("timeout 300 node /srv/server.js").as_deref(),
+            Some("node")
+        );
+        assert_eq!(
+            process_comm("env FOO=bar /usr/bin/python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        // Wrapper options that consume the next token must not surface their
+        // argument as the executable (`sudo -u www-data ...` → "www-data").
+        assert_eq!(
+            process_comm("sudo -u www-data /usr/bin/python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        assert_eq!(
+            process_comm("env -u SECRET /usr/bin/python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        assert_eq!(
+            process_comm("timeout -s TERM 300 /usr/sbin/nginx").as_deref(),
+            Some("nginx")
+        );
+        // Container init wrappers resolve to the wrapped command too.
+        assert_eq!(
+            process_comm("dumb-init -- /usr/local/bin/python -u /app/flaresolverr.py").as_deref(),
+            Some("python")
+        );
+        assert_eq!(
+            process_comm("tini -- /usr/sbin/nginx -g daemon off;").as_deref(),
+            Some("nginx")
+        );
+    }
+
+    #[test]
+    fn wrapper_executables_classify_as_the_wrapped_command() {
+        // env-wrapped interpreters and frameworks belong to the python
+        // provider, never to the native provider.
+        assert!(!is_native_process("env python3 /srv/x.py"));
+        assert!(!is_native_process(
+            "env /srv/app/.venv/bin/uvicorn app.main:app"
+        ));
+        assert!(!is_native_process("env uvicorn app.main:app --port 8000"));
+        // nice/timeout-wrapped daemons are native.
+        assert!(is_native_process(
+            "/usr/bin/nice -n 5 /usr/sbin/nginx -g daemon off;"
+        ));
+        assert!(is_native_process("timeout 300 node /srv/server.js"));
+        // Wrapper options that consume the next token never surface their
+        // argument as the executable, so python stays python-owned.
+        assert!(!is_native_process(
+            "sudo -u www-data /usr/bin/python3 /srv/x.py"
+        ));
+        assert!(!is_native_process(
+            "env -u SECRET /usr/bin/python3 /srv/x.py"
+        ));
+        assert!(is_native_process("timeout -s TERM 300 /usr/sbin/nginx"));
+        // Container init wrappers resolve like any other wrapper: python is
+        // python-owned, nginx is native.
+        assert!(!is_native_process(
+            "dumb-init -- /usr/local/bin/python -u /app/flaresolverr.py"
+        ));
+        assert!(is_native_process("tini -- /usr/sbin/nginx -g daemon off;"));
+        assert!(!is_python_process("tini -- /usr/sbin/nginx -g daemon off;"));
+    }
+
+    #[test]
+    fn wrapper_option_arguments_are_wrapper_aware() {
+        // `sudo -s` (run shell) and `sudo -k` (invalidate timestamp) consume
+        // NO argument, so the next token is the wrapped command — previously
+        // the wrapper-blind -s/-k skip list consumed it, the process
+        // resolved to None, and it was silently dropped from BOTH providers.
+        assert_eq!(process_comm("sudo -s nginx").as_deref(), Some("nginx"));
+        assert_eq!(process_comm("sudo -k nginx").as_deref(), Some("nginx"));
+        assert!(is_native_process("sudo -s nginx"));
+        assert!(is_native_process("sudo -k nginx"));
+        // `sudo -s` wrapping an interpreter still resolves to the
+        // interpreter: python-owned, never native.
+        assert!(is_python_process("sudo -s /usr/bin/python3 /srv/x.py"));
+        assert!(!is_native_process("sudo -s /usr/bin/python3 /srv/x.py"));
+        // `env -C`/`--chdir` consume their argument — without that the
+        // directory was resolved as the executable and the wrapped python
+        // process was misclassified native.
+        assert_eq!(
+            process_comm("env -C /srv python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        assert_eq!(
+            process_comm("env --chdir /srv python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        // `env -S`/`--split-string` are NOT option-argument tokens: the
+        // split-string is the REMAINDER of the command line, not a single
+        // next token, so a one-token skip would swallow the wrapped command
+        // (`env -S python3 ...` resolved to None and vanished from BOTH
+        // providers; `env -S python3 -m http.server` resolved to
+        // `http.server` and was misclassified native). The wrapped command
+        // is reached directly — the common `-S FOO=bar` form still resolves
+        // via the NAME=VALUE skip.
+        assert_eq!(
+            process_comm("env -S python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        assert!(is_python_process("env -S python3"));
+        assert!(!is_native_process("env -S python3"));
+        assert!(is_python_process("env --split-string python3 -O /srv/x.py"));
+        assert!(!is_native_process(
+            "env --split-string python3 -O /srv/x.py"
+        ));
+        assert_eq!(
+            process_comm("env -S FOO=bar python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        assert!(is_python_process("env -C /srv python3 /srv/x.py"));
+        assert!(!is_native_process("env -C /srv python3 /srv/x.py"));
+        // timeout -s/-k still consume their argument (unchanged behavior).
+        assert_eq!(
+            process_comm("timeout -k 5s -s TERM 300 /usr/sbin/nginx").as_deref(),
+            Some("nginx")
+        );
+        assert!(is_native_process("timeout -s TERM 300 /usr/sbin/nginx"));
+    }
+
+    #[test]
+    fn real_comm_falls_back_for_unreadable_proc_entry() {
+        // 9_000_000-style pids are beyond pid_max (4_194_304) on any Linux
+        // host, so /proc/<pid>/comm cannot exist — the argv-derived fallback
+        // must win.
+        assert_eq!(real_comm(9_000_000, "nginx"), "nginx");
+        assert_eq!(real_comm(9_000_000, ""), "");
+    }
+
+    #[test]
+    fn real_comm_prefers_proc_comm_over_rewritten_argv() {
+        // The child rewrites argv[0] via `exec -a`, so the argv-derived
+        // fallback ("fake-name") differs from the kernel comm ("sleep"); the
+        // /proc/<pid>/comm entry must win.
+        let Ok(mut child) = Command::new("bash")
+            .arg("-c")
+            .arg("exec -a /tmp/fake-name sleep 30")
+            .spawn()
+        else {
+            return; // no bash/sleep in this environment — nothing to assert
+        };
+        // The child forks from this test thread, inheriting its comm
+        // ("tests::real_com" — 15 chars) until bash execs; poll until the
+        // exec'd comm is visible.
+        let mut comm = String::new();
+        for _ in 0..100 {
+            comm = real_comm(child.id(), "fake-name");
+            if comm == "sleep" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(comm, "sleep");
+    }
+
+    #[test]
+    fn native_process_cap_is_reported_and_bounded() {
+        let mut table = String::new();
+        for pid in 1..=300 {
+            table.push_str(&format!("{pid:>7}  root  /usr/bin/benchmark-{pid}\n"));
+        }
+        let (nodes, capped) = native_process_nodes_from_ps_output(&table, 9_000_000);
+        assert!(
+            capped,
+            "300 filtered processes must exceed MAX_NATIVE_PROCESSES"
+        );
+        assert_eq!(nodes.len(), MAX_NATIVE_PROCESSES);
+        // ps emits pids ascending, so the first MAX_NATIVE_PROCESSES surface.
+        assert_eq!(
+            nodes
+                .first()
+                .unwrap()
+                .metadata
+                .get("pid")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            nodes
+                .last()
+                .unwrap()
+                .metadata
+                .get("pid")
+                .map(String::as_str),
+            Some(MAX_NATIVE_PROCESSES.to_string().as_str())
+        );
     }
 
     #[test]
