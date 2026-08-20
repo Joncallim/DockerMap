@@ -290,7 +290,14 @@ impl DaemonCache {
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    // systemd sends SIGTERM (KillSignal) and Docker's stop signal defaults to
+    // SIGTERM; ctrl_c alone left `systemctl stop` hanging until SIGKILL.
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("SIGTERM handler should install");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = term.recv() => {}
+    }
 }
 
 async fn refresh_loop(state: AppState) {

@@ -1,6 +1,7 @@
 import type {
   ComposeScan,
   ContainerRecord,
+  DiagnosticsReport,
   DockerSnapshot,
   GraphResponse,
   HealthResponse,
@@ -444,8 +445,33 @@ export function getDemoResponse<T>(path: string): T {
   if (pathname === "/api/volumes") return { volumes: demoVolumes } as T;
   if (pathname === "/api/logs") return demoLogs(params.get("service")) as T;
   if (pathname === "/api/compose/scan") return demoComposeScan as T;
+  if (pathname === "/api/diagnostics") return demoDiagnostics() as T;
 
   throw new Error(`No demo data available for ${path}`);
+}
+
+function demoDiagnostics(): DiagnosticsReport {
+  return {
+    generatedAt: Date.now(),
+    entries: [
+      {
+        id: "demo_compose_sample",
+        source: "compose",
+        severity: "info",
+        message: "Demo mode — Compose scan is bundled sample data, not a live project",
+        file: "docker-compose.yml",
+        service: null
+      },
+      {
+        id: "demo_runtime_sample",
+        source: "runtime",
+        severity: "warning",
+        message: "Demo mode — runtime providers reflect a sample host, not this machine",
+        file: null,
+        service: null
+      }
+    ]
+  };
 }
 
 export function getDemoHealth(): HealthResponse {

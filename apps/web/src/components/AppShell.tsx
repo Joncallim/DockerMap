@@ -203,7 +203,7 @@ export default function AppShell() {
                   {summary.attention > 0 && <span className="sys-attn">{summary.attention} need attention</span>}
                 </div>
               )}
-              {settings.auth.showStatus && <AuthStatus />}
+              {settings.auth.showStatus && !settings.demoMode && <AuthStatus />}
               <span className="topbar-clock">{formatClock(clock)}</span>
             </div>
           </header>

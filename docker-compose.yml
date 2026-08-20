@@ -3,7 +3,11 @@ services:
     build: .
     image: dockermap:local
     ports:
-      - "3233:3233"
+      # Loopback-only by default: with no DOCKERMAP_API_TOKEN set the API is
+      # unauthenticated read-only, so do not expose it on the LAN. For remote
+      # access, set DOCKERMAP_API_TOKEN (see .env.example) and publish on the
+      # interface of your choice, e.g. "3233:3233".
+      - "127.0.0.1:3233:3233"
     environment:
       DOCKERMAP_ALLOW_MOCK: "true"
     volumes:
