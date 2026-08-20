@@ -28,23 +28,17 @@ controls that can change running services.
 
 ## Contract Fit
 
-The current contracts already contain most of the vocabulary needed for a first pass:
+The shipped contracts include a separate python provider:
 
-- Python application nodes can use `provider: "process"` and `type:
-  "python_application"` for the first collector, because the current contracts do not
-  include a separate `python` provider.
-- Native process nodes can use `provider: "process"` and `type: "process"` or `type:
-  "worker"` when evidence is strong enough.
+- Python application nodes use `provider: "python"` and `type: "python_application"`;
+  a dedicated `python` provider enum was added to the contracts rather than
+  overloading the native process provider.
+- Native process nodes use `provider: "process"` and `type: "process"`.
 - Package metadata can use existing `package` and `package_dependency` node types with
   `manager: "pip"` once Rust and TypeScript contract shapes are intentionally aligned.
 - Provider-neutral service fields should stay the long-term target, but the first Rust
   implementation can keep metadata string-only until richer runtime-node fields are added
   to Rust and fixture drift checks cover both languages.
-
-Do not add a new `python` provider enum in the first collector unless fixtures prove that
-Python project discovery cannot be represented clearly with `provider: "process"`,
-`type: "python_application"`, `package`, and `package_dependency` vocabulary. If a later
-provider enum is needed, make it a separate contract issue before collector work lands.
 
 ## Data To Expose
 

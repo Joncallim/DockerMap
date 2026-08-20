@@ -2108,24 +2108,58 @@ fn parse_ps_table(value: &str) -> Vec<PythonProcessRecord> {
 }
 
 fn is_python_process(args: &str) -> bool {
-    let fields = args.split_whitespace().collect::<Vec<_>>();
-    if fields.is_empty() {
+    // Detection resolves wrapper executables first (env, sudo, nice, nohup,
+    // timeout, dumb-init, tini) and is token-based, so unrelated commands
+    // whose argv merely contains a substring ("grep python", "vim
+    // python_notes", "/opt/flowerpot") are never classified as Python
+    // applications — while `env python3 ...` and
+    // `dumb-init -- /usr/local/bin/python ...` are.
+    let Some(executable) = effective_executable(args) else {
         return false;
-    }
-    // Detection is token-based so unrelated commands whose argv merely
-    // contains a substring ("grep python", "vim python_notes",
-    // "/opt/flowerpot") are never classified as Python applications.
-    let executable = fields[0].rsplit('/').next().unwrap_or(fields[0]);
-    if executable.contains("python") {
-        return true;
-    }
+    };
     if matches!(
         executable,
         "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
     ) {
         return true;
     }
-    fields.iter().any(|field| field.ends_with(".py"))
+    if executable.contains("python") {
+        return true;
+    }
+    // Tightened .py match: only a resolved python interpreter may claim a
+    // script argument, and only the first non-option token after it — never
+    // any field of the whole argv, so a wrapper's own script argument (e.g.
+    // `dumb-init -- /usr/bin/node /app/tool.py`) cannot mis-attribute the
+    // process to the python provider. python*-named interpreters returned
+    // above; this clause keeps pypy-style interpreters (whose names lack the
+    // "python" substring) covered.
+    if executable.starts_with("pypy")
+        && first_non_option_token_after(args, executable)
+            .is_some_and(|token| token.ends_with(".py"))
+    {
+        return true;
+    }
+    false
+}
+
+/// First token after the resolved interpreter that is not an option token —
+/// interpreter flags like `-u`, `-m`, `-c`, and `--version` never name the
+/// script being run.
+fn first_non_option_token_after<'a>(args: &'a str, interpreter: &str) -> Option<&'a str> {
+    let mut seen = false;
+    for token in args.split_whitespace() {
+        let basename = token.rsplit('/').next().unwrap_or(token);
+        if !seen {
+            if basename == interpreter {
+                seen = true;
+            }
+            continue;
+        }
+        if !token.starts_with('-') {
+            return Some(token);
+        }
+    }
+    None
 }
 
 fn python_entry(args: &str) -> Option<String> {
@@ -2410,21 +2444,44 @@ fn real_comm(pid: u32, fallback: &str) -> String {
 }
 
 /// First executable token of a ps args column, walking past common wrapper
-/// executables (env, sudo, nice, nohup, timeout), option tokens, env
-/// `NAME=VALUE` assignments, and numeric wrapper arguments (nice adjustment,
-/// timeout duration) — so `env python3 script.py`, `nice -n 5 nginx ...`,
-/// and `timeout 300 node ...` all resolve to the real command.
+/// executables (env, sudo, nice, nohup, timeout, dumb-init, tini), option
+/// tokens (including wrapper options that consume the FOLLOWING token as
+/// their argument, e.g. `sudo -u USER cmd`), env `NAME=VALUE` assignments,
+/// and numeric wrapper arguments (nice adjustment, timeout duration) — so
+/// `env python3 script.py`, `nice -n 5 nginx ...`, `timeout 300 node ...`,
+/// `sudo -u www-data /usr/bin/python3 ...`, and
+/// `dumb-init -- /usr/local/bin/python ...` all resolve to the real command.
 fn effective_executable(args: &str) -> Option<&str> {
+    // Tokens to skip as the argument of a preceding wrapper option.
+    let mut skip = 0usize;
     for token in args.split_whitespace() {
+        if skip > 0 {
+            skip -= 1;
+            continue;
+        }
         if token.starts_with('[') {
             return Some(token); // kernel thread — brackets and slashes preserved
         }
         let basename = token.rsplit('/').next().unwrap_or(token);
-        if matches!(basename, "env" | "sudo" | "nice" | "nohup" | "timeout") {
+        if matches!(
+            basename,
+            "env" | "sudo" | "nice" | "nohup" | "timeout" | "dumb-init" | "tini"
+        ) {
             continue; // wrapper executable — keep walking
         }
         if token.starts_with('-') {
-            continue; // option token
+            // Option token. Some wrapper options take the NEXT token as
+            // their argument (`sudo -u USER cmd`, `env -u NAME cmd`,
+            // `timeout -s SIGNAL ...`, `timeout -k DURATION ...`); without
+            // skipping it too, the argument would be mistaken for the
+            // executable (`sudo -u www-data python3 ...` → "www-data").
+            if matches!(
+                token,
+                "-u" | "--user" | "-s" | "--signal" | "-k" | "--kill-after"
+            ) {
+                skip = 1;
+            }
+            continue;
         }
         if token.contains('=') {
             continue; // env NAME=VALUE assignment
@@ -2468,9 +2525,9 @@ fn process_comm(args: &str) -> Option<String> {
 /// Native-process detection: everything except kernel threads, python
 /// interpreters (owned by the python provider), the daemon itself, container
 /// runtime plumbing, and the transient `ps` process itself. Wrapper
-/// executables (env, sudo, nice, nohup, timeout) resolve to the wrapped
-/// command, so `env python3 ...` is excluded via the python check and
-/// `nice ... nginx ...` is included as `nginx`.
+/// executables (env, sudo, nice, nohup, timeout, dumb-init, tini) resolve to
+/// the wrapped command, so `env python3 ...` is excluded via the python check
+/// and `nice ... nginx ...` is included as `nginx`.
 fn is_native_process(args: &str) -> bool {
     let Some(comm) = effective_executable(args) else {
         return false;
@@ -4450,6 +4507,30 @@ mod tests {
     }
 
     #[test]
+    fn python_detection_resolves_wrappers_and_tightens_py_match() {
+        // Wrapper-walked interpreters belong to the python provider: the
+        // resolved executable is the interpreter, never the wrapper or an
+        // option argument (`sudo -u www-data ...` must not resolve to
+        // "www-data").
+        assert!(is_python_process(
+            "dumb-init -- /usr/local/bin/python -u /app/flaresolverr.py"
+        ));
+        assert!(is_python_process("env python3 -m uvicorn app.main:app"));
+        assert!(is_python_process(
+            "sudo -u www-data /usr/bin/python3 /srv/x.py"
+        ));
+        assert!(is_python_process(
+            "env -u SECRET /usr/bin/python3 /srv/x.py"
+        ));
+        // The .py match is no longer any-field: a wrapper's own script
+        // argument must not mis-attribute a non-python process.
+        assert!(!is_python_process(
+            "dumb-init -- /usr/bin/node /app/tool.py"
+        ));
+        assert!(!is_python_process("tini -- /usr/sbin/nginx -g daemon off;"));
+    }
+
+    #[test]
     fn builds_python_nodes_from_fixture() {
         let nodes = python_nodes_from_ps_output(include_str!(
             "../../../tests/fixtures/providers/parser/python-ps-table.txt"
@@ -4771,6 +4852,29 @@ mod tests {
             process_comm("env FOO=bar /usr/bin/python3 /srv/x.py").as_deref(),
             Some("python3")
         );
+        // Wrapper options that consume the next token must not surface their
+        // argument as the executable (`sudo -u www-data ...` → "www-data").
+        assert_eq!(
+            process_comm("sudo -u www-data /usr/bin/python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        assert_eq!(
+            process_comm("env -u SECRET /usr/bin/python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        assert_eq!(
+            process_comm("timeout -s TERM 300 /usr/sbin/nginx").as_deref(),
+            Some("nginx")
+        );
+        // Container init wrappers resolve to the wrapped command too.
+        assert_eq!(
+            process_comm("dumb-init -- /usr/local/bin/python -u /app/flaresolverr.py").as_deref(),
+            Some("python")
+        );
+        assert_eq!(
+            process_comm("tini -- /usr/sbin/nginx -g daemon off;").as_deref(),
+            Some("nginx")
+        );
     }
 
     #[test]
@@ -4787,6 +4891,22 @@ mod tests {
             "/usr/bin/nice -n 5 /usr/sbin/nginx -g daemon off;"
         ));
         assert!(is_native_process("timeout 300 node /srv/server.js"));
+        // Wrapper options that consume the next token never surface their
+        // argument as the executable, so python stays python-owned.
+        assert!(!is_native_process(
+            "sudo -u www-data /usr/bin/python3 /srv/x.py"
+        ));
+        assert!(!is_native_process(
+            "env -u SECRET /usr/bin/python3 /srv/x.py"
+        ));
+        assert!(is_native_process("timeout -s TERM 300 /usr/sbin/nginx"));
+        // Container init wrappers resolve like any other wrapper: python is
+        // python-owned, nginx is native.
+        assert!(!is_native_process(
+            "dumb-init -- /usr/local/bin/python -u /app/flaresolverr.py"
+        ));
+        assert!(is_native_process("tini -- /usr/sbin/nginx -g daemon off;"));
+        assert!(!is_python_process("tini -- /usr/sbin/nginx -g daemon off;"));
     }
 
     #[test]
