@@ -36,6 +36,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends nginx procps \
 WORKDIR /opt/dockermap
 
 COPY --from=js-builder /src/node_modules ./node_modules
+# npm nests workspace deps in the lockfile layout (apps/api/node_modules/express
+# etc.); the runtime image must mirror that layout or the API cannot resolve
+# its deps.
+COPY --from=js-builder /src/apps/api/node_modules ./apps/api/node_modules
 COPY --from=js-builder /src/package.json ./package.json
 COPY --from=js-builder /src/apps/api/dist ./apps/api/dist
 COPY --from=js-builder /src/apps/api/package.json ./apps/api/package.json
