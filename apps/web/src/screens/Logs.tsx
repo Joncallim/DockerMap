@@ -28,6 +28,12 @@ export default function Logs() {
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // Tracks whether "Load older" has reached the end of the daemon's history
+  // window (nextCursor === null). Once exhausted, a live poll's shallow
+  // first-page cursor must not resurrect the "Load older" button (see
+  // refreshLive); the flag resets when a fresh selection loads.
+  const exhaustedRef = useRef(false);
+
   const fetchLogs = useCallback((requestPath: string) => {
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -41,6 +47,11 @@ export default function Logs() {
       const data = await fetchLogs(path);
       setEntries(data.entries);
       setNextCursor(data.nextCursor);
+      // A fresh selection (first load or service/path change) starts from an
+      // un-exhausted cursor state: any prior "reached the end of history"
+      // flag belonged to the old path/service and must not suppress cursor
+      // adoption for the new one.
+      exhaustedRef.current = false;
       setError(null);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") {
@@ -90,12 +101,18 @@ export default function Logs() {
         return [...fresh, ...current];
       });
       // Adopt the poll's cursor ONLY when none exists yet (e.g. the first
-      // page loaded before the stream had enough history for one). A
-      // non-null cursor — in particular one "Load older" has advanced
-      // deeper — is never overwritten by a live poll's shallow first-page
-      // cursor, which would make the next click re-fetch an
-      // already-displayed page.
-      setNextCursor((current) => current ?? data.nextCursor);
+      // page loaded before the stream had enough history for one) AND the
+      // history window has not been paged to its end. A non-null cursor —
+      // in particular one "Load older" has advanced deeper — is never
+      // overwritten by a live poll's shallow first-page cursor, which would
+      // make the next click re-fetch an already-displayed page. Once the
+      // window IS exhausted (nextCursor null from "Load older"), a poll's
+      // first-page cursor must likewise not resurrect the button: clicking
+      // it would re-fetch already-displayed entries (deduped away) and
+      // drain cursor round-trips before paging back to null.
+      setNextCursor((current) =>
+        current === null && !exhaustedRef.current ? data.nextCursor : current
+      );
       setError(null);
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") {
@@ -133,6 +150,10 @@ export default function Logs() {
         return [...current, ...older];
       });
       setNextCursor(data.nextCursor);
+      // A null cursor means the daemon's history window is fully consumed:
+      // remember that so a live poll's shallow first-page cursor cannot
+      // resurrect the "Load older" button (see refreshLive).
+      exhaustedRef.current = data.nextCursor === null;
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") {
         return;
