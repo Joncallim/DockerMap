@@ -102,11 +102,14 @@ Providers must not expose:
 Native-process discovery uses one fixed `ps` invocation with no user input:
 
 ```bash
-ps -eo pid=,user:32=,args=
+ps -eo pid=,user:32=,comm=,args=
 ```
 
 The `user:32=` column width avoids truncating usernames longer than eight characters
-(`ps`'s default `user` column renders `systemd-resolve` as `systemd+`). Per matched pid,
+(`ps`'s default `user` column renders `systemd-resolve` as `systemd+`). The `comm=`
+column is the kernel command name, never argv-derived — a process that rewrote
+argv[0] (`exec -a hunter2 sleep`) still reports its real comm there, so it is the
+fallback for the published label/comm (never the args column). Per matched pid,
 `/proc/<pid>/comm` is read for the kernel command name when available (it survives argv[0]
 rewrites such as `avahi-daemon: running [host]`). The daemon's own pid and the transient
 `ps` process are excluded from results.

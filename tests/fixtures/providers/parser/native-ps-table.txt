@@ -1,14 +1,15 @@
- 9000001  root       /usr/sbin/nginx -g daemon off;
- 9000002  postgres   /usr/lib/postgresql/15/bin/postgres -D /var/lib/postgresql/15/main
- 9000003  redis      /usr/bin/redis-server 127.0.0.1:6379
- 9000004  root       /usr/sbin/sshd -D
- 9000005  root       /usr/bin/dockerd -H unix:///var/run/docker.sock
- 9000006  root       /usr/bin/containerd-shim-runc-v2 -namespace moby -id abc123
- 9000007  root       [kworker/0:1-events]
- 9000008  root       [kthreadd]
- 9000009  root       /usr/bin/python3 /srv/app/worker.py --queue default
- 9000010  jon        /srv/app/.venv/bin/uvicorn app.main:app
- 9000011  root       /usr/bin/dockermap-daemon --listen 127.0.0.1:4100
- 9000012  root       ps -eo pid=,user:32=,args=
- 9000013  jon        /usr/bin/node /srv/www/server.js --port 8080
- 9000014  root       /usr/sbin/cron -f
+ 9000001  root       nginx       /usr/sbin/nginx -g daemon off;
+ 9000002  postgres   postgres    /usr/lib/postgresql/15/bin/postgres -D /var/lib/postgresql/15/main
+ 9000003  redis      redis-server /usr/bin/redis-server 127.0.0.1:6379
+ 9000004  root       sshd        /usr/sbin/sshd -D
+ 9000005  root       dockerd     /usr/bin/dockerd -H unix:///var/run/docker.sock
+ 9000006  root       containerd-shim /usr/bin/containerd-shim-runc-v2 -namespace moby -id abc123
+ 9000007  root       kworker/0:1-events [kworker/0:1-events]
+ 9000008  root       kthreadd    [kthreadd]
+ 9000009  root       python3     /usr/bin/python3 /srv/app/worker.py --queue default
+ 9000010  jon        uvicorn     /srv/app/.venv/bin/uvicorn app.main:app
+ 9000011  root       dockermap-daemon /usr/bin/dockermap-daemon --listen 127.0.0.1:4100
+ 9000012  root       ps          ps -eo pid=,user:32=,comm=,args=
+ 9000013  jon        node        /usr/bin/node /srv/www/server.js --port 8080
+ 9000014  root       cron        /usr/sbin/cron -f
+ 9000015  root       sleep       hunter2 --sleep-forever
