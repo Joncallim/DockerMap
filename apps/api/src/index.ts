@@ -364,8 +364,7 @@ function getMockResponse<T>(path: string): T {
         metadata: {
           pid: "4242",
           user: "jon",
-          entry: "worker.py",
-          args: "/usr/bin/python3 /srv/app/worker.py --queue default"
+          entry: "worker.py"
         }
       }
     ];
