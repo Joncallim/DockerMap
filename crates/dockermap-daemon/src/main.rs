@@ -2117,21 +2117,30 @@ fn parse_ps_table(value: &str) -> Vec<PythonProcessRecord> {
 /// argument, e.g. `dumb-init -- /usr/bin/node /app/tool.py`, stays
 /// non-python). All python-ownership rules live here:
 /// - python* interpreter names: any resolved executable containing "python";
-/// - pypy-style interpreters: exactly `pypy` / `pypy3` or a `pypy3.`-prefixed
-///   version binary (`pypy3`, `pypy3.10`, ...). Deliberately NOT a loose
-///   `starts_with("pypy")` prefix match: a binary named `pypy3-tool` is a
-///   tool, not an interpreter. Because the tightened name match is itself
-///   the ownership evidence, no `.py` script-token requirement is needed —
-///   the old clause paired a loose prefix match with a `.py` first-token
-///   check precisely to keep lookalike tools out — so `-m module`
-///   invocations (`pypy3 -m celery -A tasks worker`) are python-owned too;
+/// - pypy-style interpreters: exactly `pypy` / `pypy2` / `pypy3` or a
+///   `pypy3.`-prefixed version binary (`pypy3`, `pypy3.10`, ...). Deliberately
+///   NOT a loose `starts_with("pypy")` prefix match: a binary named
+///   `pypy3-tool` is a tool, not an interpreter. Because the tightened name
+///   match is itself the ownership evidence, no `.py` script-token
+///   requirement is needed — the old clause paired a loose prefix match with
+///   a `.py` first-token check precisely to keep lookalike tools out — so
+///   `-m module` invocations (`pypy3 -m celery -A tasks worker`) are
+///   python-owned too;
 /// - the five framework basenames: uvicorn, gunicorn, celery, flower, daphne.
+///   The resolved executable is trimmed of a trailing `:` before matching —
+///   gunicorn rewrites its process title to `gunicorn: master [app]` /
+///   `gunicorn: worker [app]`, so the raw resolved basename is `gunicorn:`
+///   and would otherwise match no framework (zero coverage).
 ///
 /// `_args` is the full ps args column, passed alongside the resolved
 /// executable by both callers; ownership currently rests on the executable
 /// alone, but keeping args in the signature keeps every future
 /// python-ownership refinement single-sourced here.
 fn is_python_owned(executable: &str, _args: &str) -> bool {
+    // Frameworks rewrite their process title (gunicorn: master [app] ...),
+    // so the resolved executable may carry a trailing colon. Normalize it
+    // before matching — the same trim `process_comm` applies.
+    let executable = executable.trim_end_matches(':');
     if matches!(
         executable,
         "uvicorn" | "gunicorn" | "celery" | "flower" | "daphne"
@@ -2141,9 +2150,12 @@ fn is_python_owned(executable: &str, _args: &str) -> bool {
     if executable.contains("python") {
         return true; // python* interpreter
     }
-    // pypy interpreter binaries are `pypy`, `pypy3`, and `pypy3.x` — never
-    // pypy-prefixed tools like `pypy3-tool`.
-    executable == "pypy" || executable == "pypy3" || executable.starts_with("pypy3.")
+    // pypy interpreter binaries are `pypy`, `pypy2`, `pypy3`, and
+    // `pypy3.x` — never pypy-prefixed tools like `pypy3-tool`.
+    executable == "pypy"
+        || executable == "pypy2"
+        || executable == "pypy3"
+        || executable.starts_with("pypy3.")
 }
 
 fn is_python_process(args: &str) -> bool {
@@ -2455,7 +2467,9 @@ fn effective_executable(args: &str) -> Option<&str> {
     // The wrapper whose option tokens are currently in play: only ITS
     // option-argument table applies, so `timeout -s/-k` consume the next
     // token while `sudo -s`/`sudo -k` (run shell / invalidate timestamp)
-    // consume nothing and `env -C/-S` consume their argument.
+    // consume nothing and `env -C` consumes its argument (`env -S` does
+    // NOT: the split-string is the remainder of the command line, not a
+    // single following token).
     let mut wrapper: Option<&str> = None;
     for token in args.split_whitespace() {
         if skip > 0 {
@@ -2500,13 +2514,17 @@ fn effective_executable(args: &str) -> Option<&str> {
 /// argument, keyed per wrapper so a short option only skips its argument
 /// when its own wrapper is active: `timeout -s SIGNAL` / `timeout -k
 /// DURATION` take an argument, but `sudo -s` (run shell) and `sudo -k`
-/// (invalidate timestamp) take none, while `env -C DIR` / `env -S
-/// SPLIT-STRING` (and their long forms) do.
+/// (invalidate timestamp) take none, while `env -C DIR` / `env --chdir DIR`
+/// do. `env -S`/`--split-string` are deliberately ABSENT: the split-string
+/// is the REMAINDER of the command line, not a single next token, so a
+/// one-token skip would swallow the wrapped command — `env -S python3 ...`
+/// resolved to None (dropped from BOTH providers) and `env -S python3 -m
+/// http.server` resolved to `http.server` (misclassified native).
 fn wrapper_option_arguments(wrapper: &str) -> &'static [&'static str] {
     match wrapper {
         "sudo" => &["-u", "--user"],
         "timeout" => &["-s", "--signal", "-k", "--kill-after"],
-        "env" => &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
+        "env" => &["-u", "--unset", "-C", "--chdir"],
         _ => &[],
     }
 }
@@ -4556,6 +4574,7 @@ mod tests {
             "pypy3 -m celery -A tasks worker",
             "/usr/bin/pypy3.10 /srv/x.py",
             "pypy /srv/x.py",
+            "pypy2 /srv/x.py",
         ] {
             assert!(is_python_process(args), "{args} must be python-owned");
             assert!(
@@ -4564,10 +4583,35 @@ mod tests {
             );
         }
         // A pypy-prefixed TOOL is not an interpreter: the interpreter match
-        // is exactly `pypy` / `pypy3` / a `pypy3.`-versioned binary — never
-        // a loose `starts_with("pypy")` prefix.
+        // is exactly `pypy` / `pypy2` / `pypy3` / a `pypy3.`-versioned
+        // binary — never a loose `starts_with("pypy")` prefix.
         assert!(!is_python_process("/opt/pypy3-tool --serve"));
         assert!(is_native_process("/opt/pypy3-tool --serve"));
+    }
+
+    #[test]
+    fn gunicorn_proctitle_rewrites_are_python_owned() {
+        // gunicorn rewrites its process title to `gunicorn: master [app]` /
+        // `gunicorn: worker [app]`, so the resolved executable is `gunicorn:`
+        // (trailing colon). `is_python_owned` trims the colon before the
+        // framework match — without it these processes matched no framework,
+        // fell to the native provider, and got zero coverage (live: the
+        // authentik gunicorn master/worker were absent from
+        // /daemon/runtime/map).
+        for args in [
+            "gunicorn: master [authentik.root.asgi:application]",
+            "gunicorn: worker [authentik.root.asgi:application]",
+        ] {
+            assert!(is_python_process(args), "{args} must be python-owned");
+            assert!(
+                !is_native_process(args),
+                "{args} must be excluded from the native provider"
+            );
+        }
+        // The normalization is generic, so any trailing-colon proctitle
+        // still matches its framework basename.
+        assert!(is_python_process("uvicorn: app.main:app"));
+        assert!(!is_native_process("uvicorn: app.main:app"));
     }
 
     #[test]
@@ -4963,9 +5007,9 @@ mod tests {
         // interpreter: python-owned, never native.
         assert!(is_python_process("sudo -s /usr/bin/python3 /srv/x.py"));
         assert!(!is_native_process("sudo -s /usr/bin/python3 /srv/x.py"));
-        // `env -C`/`-S` (and long forms) DO consume their argument — without
-        // that the directory/split-string was resolved as the executable and
-        // the wrapped python process was misclassified native.
+        // `env -C`/`--chdir` consume their argument — without that the
+        // directory was resolved as the executable and the wrapped python
+        // process was misclassified native.
         assert_eq!(
             process_comm("env -C /srv python3 /srv/x.py").as_deref(),
             Some("python3")
@@ -4974,6 +5018,24 @@ mod tests {
             process_comm("env --chdir /srv python3 /srv/x.py").as_deref(),
             Some("python3")
         );
+        // `env -S`/`--split-string` are NOT option-argument tokens: the
+        // split-string is the REMAINDER of the command line, not a single
+        // next token, so a one-token skip would swallow the wrapped command
+        // (`env -S python3 ...` resolved to None and vanished from BOTH
+        // providers; `env -S python3 -m http.server` resolved to
+        // `http.server` and was misclassified native). The wrapped command
+        // is reached directly — the common `-S FOO=bar` form still resolves
+        // via the NAME=VALUE skip.
+        assert_eq!(
+            process_comm("env -S python3 /srv/x.py").as_deref(),
+            Some("python3")
+        );
+        assert!(is_python_process("env -S python3"));
+        assert!(!is_native_process("env -S python3"));
+        assert!(is_python_process("env --split-string python3 -O /srv/x.py"));
+        assert!(!is_native_process(
+            "env --split-string python3 -O /srv/x.py"
+        ));
         assert_eq!(
             process_comm("env -S FOO=bar python3 /srv/x.py").as_deref(),
             Some("python3")
