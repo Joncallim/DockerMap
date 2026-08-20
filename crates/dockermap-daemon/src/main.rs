@@ -458,7 +458,7 @@ impl DockerCollector {
             .stdout(true)
             .stderr(true)
             .timestamps(true)
-            .tail(&log_tail_count(limit, cursor.is_some()).to_string());
+            .tail(&log_tail_count().to_string());
 
         if let Some(cursor) = cursor {
             options = options.until(log_until_seconds(cursor.millis));
@@ -471,10 +471,12 @@ impl DockerCollector {
         // (bounded server-side by `tail`, plus a defensive cap in case Docker
         // returns more than requested), then page it in a pure function.
         let mut entries = Vec::new();
-        // Same-millisecond ordinal, assigned in stream order. Docker returns
-        // the tail window in stable chronological order, so a physical line's
-        // ordinal (how many same-ms lines PRECEDE it in the stream) is the
-        // same on every request — unlike a per-request sequence counter,
+        // Same-millisecond ordinal, assigned in stream order. Every request
+        // opens the SAME fixed tail window (MAX_LOG_CURSOR_TAIL), so a
+        // physical line's ordinal (how many same-ms lines PRECEDE it in the
+        // stream) is stable across requests: new lines append chronologically
+        // and never re-order existing same-ms lines, so the id is a property
+        // of the physical line — unlike a per-request sequence counter,
         // which would change the id and defeat the client's dedupe-by-id.
         // The ordinal is what keeps two distinct physical lines that share a
         // service, an ms-truncated timestamp, and identical message text
@@ -550,27 +552,27 @@ fn parse_timestamped_log_line(line: &[u8]) -> Option<(u64, String)> {
 
 /// Number of lines requested from Docker's `tail` for one log page.
 ///
-/// First page (`cursor == false`): over-fetch by one so `page_log_entries`
-/// can decide "a next page exists" (`entries.len() > limit`) from the live
-/// stream: with a plain `tail(limit)` the collected window is exactly `limit`
-/// lines, so `next_cursor` could never be emitted for real Docker logs and
-/// "Load older" stayed permanently hidden in live mode. The extra line is
-/// truncated by `page_log_entries`, which is the single source of truth for
-/// page boundaries across every log source.
-///
-/// Cursor page (`cursor == true`): open a much larger fixed window
+/// EVERY page — first and cursor — opens the same fixed window
 /// (`MAX_LOG_CURSOR_TAIL`). Docker's `--tail N` selects the last N lines of
 /// the FULL log and `--until` only FILTERS that fixed window — it never moves
-/// the window older — so a cursor page bounded by `tail(limit + 1)` could
-/// surface at most one older line. The larger window lets `until(cursor)` and
-/// `page_log_entries`' precise `< cursor` filter select the correct older
-/// page. Trade-off: history older than `MAX_LOG_CURSOR_TAIL` is unreachable.
-fn log_tail_count(limit: usize, cursor: bool) -> usize {
-    if cursor {
-        MAX_LOG_CURSOR_TAIL
-    } else {
-        limit.clamp(1, MAX_LOG_PAGE_SIZE) + 1
-    }
+/// the window older — so a cursor page needs a large window for
+/// `until(cursor)` and `page_log_entries`' precise `< cursor` filter to reach
+/// older lines. The FIRST page must open the very same window: the
+/// same-millisecond ordinal counts the same-ms lines PRECEDING a line in the
+/// collected window, so a narrower first-page window (the old `limit + 1`)
+/// assigned different ordinals to the same physical lines than a cursor
+/// page's window did — the two id sets collided, and the client's
+/// dedupe-by-id silently discarded whole cursor pages. With one fixed window,
+/// a same-ms run of up to `MAX_LOG_CURSOR_TAIL` lines gets identical ids on
+/// every fetch.
+///
+/// `page_log_entries` truncates the collected window to `limit` and emits a
+/// cursor whenever the window holds more than `limit` entries; the fixed
+/// window is wider than any page, so a next page is still detected for live
+/// Docker logs and "Load older" stays visible. Trade-off: history older than
+/// `MAX_LOG_CURSOR_TAIL` is unreachable.
+fn log_tail_count() -> usize {
+    MAX_LOG_CURSOR_TAIL
 }
 
 /// Docker's `until` filter is second-resolution and EXCLUSIVE: a line at
@@ -585,15 +587,18 @@ fn log_until_seconds(cursor_millis: u64) -> i32 {
     (cursor_millis / 1_000 + 1).min(i32::MAX as u64) as i32
 }
 
-/// Fixed `tail` window opened for cursor ("Load older") pages. See
-/// `log_tail_count` for why a cursor page needs a large window.
+/// Fixed `tail` window opened for EVERY log page (first page and cursor
+/// pages alike). See `log_tail_count` for why the window must be identical
+/// across requests: a window-relative same-ms ordinal would make log entry
+/// ids unstable, colliding id sets between pages and defeating the client's
+/// dedupe-by-id.
 const MAX_LOG_CURSOR_TAIL: usize = 4_096;
 
 /// Defensive cap on the raw log stream collected from Docker. The stream is
 /// already bounded by `tail(...)`, so this only guards against a daemon
 /// returning more than requested — but it must be at least as large as the
-/// widest tail window (`MAX_LOG_CURSOR_TAIL`), or a cursor page's window would
-/// be truncated before `page_log_entries` sees it.
+/// tail window (`MAX_LOG_CURSOR_TAIL`), or a page's window would be truncated
+/// before `page_log_entries` sees it.
 const MAX_LOG_STREAM_CAP: usize = MAX_LOG_CURSOR_TAIL + 1;
 
 /// Stable id for a live-Docker log entry, unique per PHYSICAL line.
@@ -601,9 +606,11 @@ const MAX_LOG_STREAM_CAP: usize = MAX_LOG_CURSOR_TAIL + 1;
 /// The id is `service-timestamp-ordinal`, where `ordinal` is the line's
 /// index among same-millisecond entries in stream order (how many same-ms
 /// lines precede it). Docker streams a log's tail window in stable
-/// chronological order, so the ordinal — unlike a per-request sequence
-/// counter — is deterministic across requests: the same physical line
-/// always gets the same id, while two DISTINCT lines sharing a service, an
+/// chronological order and every request opens the same fixed window
+/// (`MAX_LOG_CURSOR_TAIL`, see `log_tail_count`), so the ordinal — unlike a
+/// per-request sequence counter — is deterministic across requests: the same
+/// physical line always gets the same id, while two DISTINCT lines sharing a
+/// service, an
 /// ms-truncated timestamp, and identical message text still get distinct
 /// ids. Content hashing alone (service + timestamp + message) collapsed
 /// such lines onto one id, and the client's dedupe-by-id silently dropped
@@ -3472,6 +3479,7 @@ fn reject_symlink_path(project_root: &StdPath, canonical: &StdPath) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn rejects_too_many_compose_files() {
@@ -4146,23 +4154,19 @@ mod tests {
     }
 
     #[test]
-    fn log_over_fetch_contract_emits_cursor_for_live_docker() {
-        // The live-Docker path over-fetches `limit + 1` lines so a next page
-        // can be detected (`entries.len() > limit`) — a plain `tail(limit)`
-        // window could never produce a cursor.
-        assert_eq!(log_tail_count(100, false), 101);
-        assert_eq!(
-            log_tail_count(0, false),
-            2,
-            "limit is clamped to the valid range"
-        );
-        assert_eq!(
-            log_tail_count(MAX_LOG_PAGE_SIZE, false),
-            MAX_LOG_PAGE_SIZE + 1
+    fn log_window_contract_emits_cursor_for_live_docker() {
+        // Every page — first and cursor — opens the same fixed window, which
+        // is far wider than any page size, so page_log_entries can always
+        // detect "a next page exists" (`entries.len() > limit`) for the live
+        // stream — a plain `tail(limit)` window could never produce a cursor.
+        assert_eq!(log_tail_count(), MAX_LOG_CURSOR_TAIL);
+        assert!(
+            log_tail_count() > MAX_LOG_PAGE_SIZE,
+            "the fixed window must exceed any page size so a next page is detectable"
         );
 
-        // Feeding the over-fetched window into page_log_entries must yield a
-        // page of exactly `limit` entries plus a cursor.
+        // Feeding a window wider than `limit` into page_log_entries must
+        // yield a page of exactly `limit` entries plus a cursor.
         let entries = (0..=100)
             .map(|index| LogEntry {
                 id: format!("svc-{index}"),
@@ -4174,25 +4178,98 @@ mod tests {
             .collect::<Vec<_>>();
 
         let (page, cursor) = page_log_entries(entries, None, None, 100);
-        assert_eq!(page.len(), 100, "over-fetch is truncated to the page size");
+        assert_eq!(page.len(), 100, "the window is truncated to the page size");
         let cursor = cursor.expect("a full page with more behind it carries a cursor");
         assert_eq!(cursor, "9901:1", "cursor is the oldest kept entry");
     }
 
     #[test]
-    fn log_tail_window_differs_for_first_and_cursor_pages() {
-        // First page over-fetches by one; cursor pages open a large fixed
-        // window because Docker's `--tail` never moves older under `--until`.
-        assert_eq!(log_tail_count(100, false), 101);
-        assert_eq!(log_tail_count(0, false), 2);
-        assert_eq!(
-            log_tail_count(MAX_LOG_PAGE_SIZE, false),
-            MAX_LOG_PAGE_SIZE + 1
+    fn same_ms_ordinals_are_stable_across_page_windows() {
+        // Round-9 F1 regression: the same-millisecond ordinal used to be
+        // window-relative — the first page tailed `limit + 1` lines while a
+        // cursor page tailed MAX_LOG_CURSOR_TAIL. With a same-ms run longer
+        // than the first page's window, the SAME physical lines got DIFFERENT
+        // ordinals depending on which window collected them, so a cursor page
+        // produced the SAME id set as the first page; the client's
+        // dedupe-by-id then discarded the whole cursor page (silent data
+        // loss) and live refreshes double-showed lines whose ordinal shifted.
+        // With one fixed window the ordinal is a property of the physical
+        // line: line i of a same-ms run is always `service-timestamp-i` on
+        // every fetch.
+        let service = "svc";
+        let timestamp = 1_000_000u64;
+        // 250 same-ms lines — longer than the OLD first-page window of
+        // limit + 1 = 101, which is what made the id sets collide.
+        let lines = (0..250)
+            .map(|index| LogEntry {
+                id: String::new(),
+                timestamp,
+                container: service.into(),
+                level: dockermap_core::LogLevel::Info,
+                message: format!("burst line {index}"),
+            })
+            .collect::<Vec<_>>();
+
+        // Fetch through the same fixed window exactly like collect_logs:
+        // assign stream-order ordinals and ids, then page the window.
+        let fetch = |window: &[LogEntry], cursor: Option<LogCursor>, limit: usize| {
+            let mut seen = HashMap::<u64, usize>::new();
+            let entries = window
+                .iter()
+                .map(|entry| {
+                    let ordinal = seen.entry(entry.timestamp).or_insert(0);
+                    let id = log_entry_id(&entry.container, entry.timestamp, *ordinal);
+                    *ordinal += 1;
+                    LogEntry {
+                        id,
+                        ..entry.clone()
+                    }
+                })
+                .collect::<Vec<_>>();
+            page_log_entries(entries, None, cursor, limit)
+        };
+
+        let window = lines.clone();
+        let (first_page, first_cursor) = fetch(&window, None, 100);
+        let first_cursor = first_cursor.expect("a full first page carries a cursor");
+        let (second_page, second_cursor) = fetch(&window, LogCursor::parse(&first_cursor), 100);
+        let second_cursor = second_cursor.expect("a full second page carries a cursor");
+        let (third_page, third_cursor) = fetch(&window, LogCursor::parse(&second_cursor), 100);
+        assert!(
+            third_cursor.is_none(),
+            "the run ends with a cursor-less page"
         );
 
-        assert_eq!(log_tail_count(100, true), MAX_LOG_CURSOR_TAIL);
-        assert_eq!(log_tail_count(MAX_LOG_PAGE_SIZE, true), MAX_LOG_CURSOR_TAIL);
-        assert_eq!(log_tail_count(0, true), MAX_LOG_CURSOR_TAIL);
+        // Walk the pages: no id overlap between pages, no duplicates, and
+        // every physical line keeps its TRUE ordinal — line i is
+        // `service-timestamp-i` no matter which fetch saw it.
+        let mut ids = HashSet::new();
+        let mut id_by_line = HashMap::<usize, String>::new();
+        for page in [&first_page, &second_page, &third_page] {
+            for entry in page {
+                let id = &entry.id;
+                assert!(
+                    ids.insert(id.clone()),
+                    "id {id} delivered twice across pages"
+                );
+                let index = entry
+                    .message
+                    .strip_prefix("burst line ")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .expect("every entry carries its physical line index");
+                assert!(
+                    id_by_line.insert(index, id.clone()).is_none(),
+                    "physical line {index} delivered twice"
+                );
+            }
+        }
+        for (index, id) in id_by_line {
+            assert_eq!(
+                id,
+                log_entry_id(service, timestamp, index),
+                "line {index} must keep its true ordinal on every fetch"
+            );
+        }
     }
 
     #[test]
