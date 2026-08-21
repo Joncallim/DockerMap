@@ -9,7 +9,7 @@ import { formatKbps, formatMb, formatPercent, formatRelative } from "../lib/form
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { IdentityRef } from "../components/identity";
-import { UNAVAILABLE_IMAGE } from "../lib/identity";
+import { UNAVAILABLE_IMAGE, UNAVAILABLE_NETWORK, UNAVAILABLE_VOLUME } from "../lib/identity";
 import { Bar, EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, Sparkline, StatePill, StateDot, Tag } from "../components/primitives";
 
 type Tab = "overview" | "dependencies" | "resources" | "logs" | "config";
@@ -21,11 +21,11 @@ const TABS: { id: Tab; label: string; icon: Parameters<typeof Icon>[0]["name"] }
   { id: "config", label: "Configuration", icon: "layers" }
 ];
 
-export default function ServiceDetail() {
+export default function ServiceDetail({ defaultTab = "overview", defaultOpen = false }: { defaultTab?: Tab; defaultOpen?: boolean }) {
   const { name = "" } = useParams();
   const { model, loading, error, tick } = useApp();
-  const [tab, setTab] = useState<Tab>("overview");
-  const [showInternals, setShowInternals] = useState(false);
+  const [tab, setTab] = useState<Tab>(defaultTab);
+  const [showInternals, setShowInternals] = useState(defaultOpen);
 
   const service = useMemo(() => model?.byName.get(name) ?? null, [model, name]);
 
@@ -219,7 +219,7 @@ function Config({
             {service.mounts.map((m) => (
               <li key={m.id} className="mount-row">
                 <Tag tone="muted">{m.kind.replace("_", " ")}</Tag>
-                {m.kind === "named_volume" && m.source && model.volumeByName.has(m.source) ? <Link className="entity-detail-link" to={`/volumes/${encodeURIComponent(m.source)}`}>{m.source}</Link> : <code>{m.source ?? "anonymous"}</code>}
+                {m.kind === "named_volume" && m.source && model.volumeByName.has(m.source) ? <Link className="entity-detail-link" to={`/volumes/${encodeURIComponent(m.source)}`}>{m.source}</Link> : <code>{m.source === "" ? UNAVAILABLE_VOLUME : m.source ?? "anonymous"}</code>}
                 <Icon name="arrow" size={13} />
                 <code>{m.target}</code>
                 {m.readOnly && <Tag tone="warn">read-only</Tag>}
@@ -231,9 +231,9 @@ function Config({
 
       <Panel title="Networking" icon="network">
         <div className="tag-wrap">
-          {service.networks.map((n) => (
-            model.networkByName.has(n) ? <Link key={n} className="ref-chip" to={`/networks/${encodeURIComponent(n)}`}>{n}</Link> : <Tag key={n} icon="network">{n}</Tag>
-          ))}
+          {service.networks.map((n, index) =>
+            model.networkByName.has(n) ? <Link key={`${n}-${index}`} className="ref-chip" to={`/networks/${encodeURIComponent(n)}`}>{n}</Link> : <Tag key={`${n}-${index}`} icon="network"><IdentityRef name={n} fallback={UNAVAILABLE_NETWORK} /></Tag>
+          )}
           {service.ports.map((p) => (
             <Tag key={p} icon="link" tone="accent">
               {p}
@@ -252,16 +252,18 @@ function Config({
           </button>
         }
       >
-        {showInternals ? (
-          <div id="service-internals">
-            <KeyValue label="Container ID" value={service.id} mono />
-            <KeyValue label="Image reference" value={service.image} mono />
-            <KeyValue label="Raw status" value={service.status} mono />
-            <KeyValue label="Port bindings" value={service.ports.join(", ") || "none"} mono />
-          </div>
-        ) : (
-          <p className="muted-line">Container IDs, raw image refs and port bindings are hidden until you ask for them.</p>
-        )}
+        <div id="service-internals">
+          {showInternals ? (
+            <>
+              <KeyValue label="Container ID" value={service.id} mono />
+              <KeyValue label="Image reference" value={<IdentityRef name={service.image} fallback={UNAVAILABLE_IMAGE} to={model.imageByRef.has(service.image) ? `/images/${encodeURIComponent(service.image)}` : undefined} className="entity-detail-link" />} mono />
+              <KeyValue label="Raw status" value={service.status} mono />
+              <KeyValue label="Port bindings" value={service.ports.join(", ") || "none"} mono />
+            </>
+          ) : (
+            <p className="muted-line">Container IDs, raw image refs and port bindings are hidden until you ask for them.</p>
+          )}
+        </div>
       </Panel>
     </div>
   );

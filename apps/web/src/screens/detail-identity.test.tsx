@@ -56,6 +56,20 @@ const fixture: DockerSnapshot = {
       ports: [],
       mounts: [],
       dependsOn: []
+    },
+    {
+      id: "c_config",
+      name: "config-svc",
+      image: "",
+      status: "running",
+      role: "worker",
+      networks: ["", "", "bridge1", "bridge1"],
+      ports: [],
+      mounts: [
+        { id: "m_empty", kind: "named_volume", source: "", target: "/data", readOnly: false },
+        { id: "m_anon", kind: "named_volume", source: null, target: "/anon", readOnly: false }
+      ],
+      dependsOn: []
     }
   ],
   images: [
@@ -148,6 +162,20 @@ describe("detail surfaces keep empty identities visible and non-routable", () =>
     expect(empty).not.toContain('href="/images/');
   });
 
+  it("ServiceDetail Configuration tab renders empty identities as visible placeholders without links", () => {
+    const html = renderScreen("/services/config-svc", "/services/:name", <ServiceDetail defaultTab="config" />);
+    // Empty named-volume source renders the volume placeholder; null stays "anonymous".
+    expect(html).toContain("Unavailable volume name");
+    expect(html).toContain("<code>anonymous</code>");
+    // Duplicate empty networks each render their own placeholder…
+    expect(html.split("Unavailable network name").length - 1).toBe(2);
+    // …and duplicate resolved networks each emit their own link (occurrence-qualified keys).
+    expect(html.split('href="/networks/bridge1"').length - 1).toBe(2);
+    // Empty identities never emit detail links.
+    expect(html).not.toContain('href="/volumes/');
+    expect(html).not.toContain('href="/images/');
+  });
+
   it("Map renders the empty-image/empty-network service as non-routable placeholder chips", () => {
     const html = renderScreen("/map", "/map", <MapScreen initialSelectedId="c_empty" />);
     expect(html).toContain("Service Map");
@@ -188,5 +216,18 @@ describe("disclosure aria-controls targets stay mounted in both states", () => {
     const expanded = renderScreen("/images/nginx:1", "/images/:image", <ImageDetail defaultOpen />);
     expect(expanded).toContain('id="image-internals"');
     expect(expanded).toContain('<span class="kv-label">Exact image reference</span>');
+  });
+
+  it("ServiceDetail keeps the internals id mounted collapsed and expanded", () => {
+    const collapsed = renderScreen("/services/config-svc", "/services/:name", <ServiceDetail defaultTab="config" />);
+    expect(collapsed).toContain('id="service-internals"');
+    expect(collapsed).toContain("Container IDs, raw image refs and port bindings are hidden until you ask for them.");
+
+    const expanded = renderScreen("/services/config-svc", "/services/:name", <ServiceDetail defaultTab="config" defaultOpen />);
+    expect(expanded).toContain('id="service-internals"');
+    expect(expanded).toContain('<span class="kv-label">Container ID</span>');
+    // The expanded exact-image field renders the empty image as a placeholder, never a link.
+    expect(expanded).toContain("Unavailable image reference");
+    expect(expanded).not.toContain('href="/images/');
   });
 });
