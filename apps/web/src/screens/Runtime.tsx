@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { RuntimeProviderKind } from "@dockermap/contracts";
+import type { RuntimeLocation, RuntimeProviderKind } from "@dockermap/contracts";
 import { useApp } from "../context";
 import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord } from "../lib/model";
 import { formatRelative } from "../lib/format";
 import Icon, { type IconName } from "../components/Icon";
 import { EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, StateDot, StatePill, Tag } from "../components/primitives";
-import { COLLISION_HINT, COLLISION_TAG, identityText, UNAVAILABLE_DIAGNOSTIC_MESSAGE, UNAVAILABLE_LOG_SOURCE, UNAVAILABLE_PACKAGE, UNAVAILABLE_RUNTIME_ID, UNAVAILABLE_RUNTIME_NODE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "../lib/identity";
+import { COLLISION_HINT, COLLISION_TAG, identityText, UNAVAILABLE_DIAGNOSTIC_MESSAGE, UNAVAILABLE_EVENT_KIND, UNAVAILABLE_LOCATION_KIND, UNAVAILABLE_LOCATION_VALUE, UNAVAILABLE_LOG_SOURCE, UNAVAILABLE_METADATA_VALUE, UNAVAILABLE_OWNER, UNAVAILABLE_PACKAGE, UNAVAILABLE_PACKAGE_VERSION, UNAVAILABLE_RUNTIME_ID, UNAVAILABLE_RUNTIME_NODE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "../lib/identity";
 
 const PROVIDER_ICON: Record<RuntimeProviderKind, IconName> = {
   docker: "service",
@@ -246,9 +246,9 @@ export default function RuntimeScreen() {
                   <h4>Service evidence</h4>
                   <KeyValue label="Service name" value={identityText(selected.service.name, UNAVAILABLE_SERVICE)} />
                   <KeyValue label="Reported status" value={identityText(selected.service.status, UNAVAILABLE_SERVICE_STATUS)} />
-                  <KeyValue label="Health" value={selected.service.health?.message ?? selected.service.health?.state ?? "—"} />
-                  <KeyValue label="Owner" value={selected.service.owner?.name ?? "—"} />
-                  <KeyValue label="Location" value={selected.service.location ? `${selected.service.location.kind}: ${selected.service.location.value}` : "—"} />
+                  <KeyValue label="Health" value={selected.service.health?.message || selected.service.health?.state || "—"} />
+                  <KeyValue label="Owner" value={identityText(selected.service.owner?.name, UNAVAILABLE_OWNER, "—")} />
+                  <KeyValue label="Location" value={locationLabel(selected.service.location)} />
                 </div>
               )}
 
@@ -268,7 +268,7 @@ export default function RuntimeScreen() {
                   <h4>Package metadata</h4>
                   <KeyValue label="Package" value={identityText(selected.package.name, UNAVAILABLE_PACKAGE)} />
                   <KeyValue label="Manager" value={selected.package.manager} />
-                  <KeyValue label="Version" value={selected.package.version} mono />
+                  <KeyValue label="Version" value={identityText(selected.package.version, UNAVAILABLE_PACKAGE_VERSION, "—")} mono />
                   <KeyValue
                     label="Advisories"
                     value={selected.package.update?.advisories.length ? selected.package.update.advisories.length : "none"}
@@ -286,7 +286,7 @@ export default function RuntimeScreen() {
                     {selected.service.logs.map((entry, index) => (
                       <li key={`${entry.id}-${index}`}>
                         <Tag tone="muted">{identityText(entry.source, UNAVAILABLE_LOG_SOURCE)}</Tag>
-                        <span>{entry.level ?? "log reference"}</span>
+                        <span>{entry.level || "log reference"}</span>
                       </li>
                     ))}
                   </ul>
@@ -299,8 +299,8 @@ export default function RuntimeScreen() {
                   <ul className="runtime-evidence-list">
                     {selected.service.events.map((event, index) => (
                       <li key={`${event.id}-${index}`}>
-                        <Tag tone="muted">{event.kind}</Tag>
-                        <span>{event.message ?? "event recorded"}</span>
+                        <Tag tone="muted">{identityText(event.kind, UNAVAILABLE_EVENT_KIND)}</Tag>
+                        <span>{event.message || "event recorded"}</span>
                         {event.timestamp ? <span className="runtime-evidence-time">{formatRelative(event.timestamp)}</span> : null}
                       </li>
                     ))}
@@ -395,7 +395,13 @@ function RelationList({
   );
 }
 
+function locationLabel(location: RuntimeLocation | null): string {
+  if (!location) return "—";
+  return `${identityText(location.kind, UNAVAILABLE_LOCATION_KIND)}: ${identityText(location.value, UNAVAILABLE_LOCATION_VALUE)}`;
+}
+
 function formatMetadataValue(value: string | number | boolean | null) {
   if (value === null) return "null";
+  if (value === "") return UNAVAILABLE_METADATA_VALUE;
   return String(value);
 }

@@ -31,17 +31,17 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
 
   const service = useMemo(() => model?.byName.get(name) ?? null, [model, name]);
 
-  if (loading && !model) return <Loading label={`Loading ${name}…`} />;
+  if (loading && !model) return <Loading label={`Loading ${identityText(name, UNAVAILABLE_SERVICE)}…`} />;
   if (error && !model) return <ErrorState title="Service unavailable" body={error} />;
   if (model?.serviceNameCollisions.has(name)) {
-    return <div className="screen"><section className="empty"><h1>Service unavailable</h1><p>Multiple services share the identity “{name}” after redaction, so detail routing is unavailable.</p><Link className="primary-link" to="/map">Back to Service Map</Link></section></div>;
+    return <div className="screen"><section className="empty"><h1>Service unavailable</h1><p>Multiple services share the identity “{identityText(name, UNAVAILABLE_SERVICE)}” after redaction, so detail routing is unavailable.</p><Link className="primary-link" to="/map">Back to Service Map</Link></section></div>;
   }
   if (!model || !service) {
     return (
       <EmptyState
         icon="search"
         title="Service not found"
-        body={`No service named "${name}" is on the current map.`}
+        body={`No service named "${identityText(name, UNAVAILABLE_SERVICE)}" is on the current map.`}
         action={
           <Link className="primary-link" to="/map">
             Back to Service Map
