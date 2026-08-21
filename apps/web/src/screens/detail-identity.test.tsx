@@ -9,7 +9,9 @@ import ImageDetail from "./ImageDetail";
 import Images from "./Images";
 import MapScreen from "./Map";
 import NetworkDetail from "./NetworkDetail";
+import Networking from "./Networking";
 import ServiceDetail from "./ServiceDetail";
+import Storage from "./Storage";
 import VolumeDetail from "./VolumeDetail";
 
 const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
@@ -396,5 +398,102 @@ describe("image status and network driver display use one qualified fallback val
     expect(html).toContain('<span class="kv-label">Driver</span><span class="kv-value">Unavailable network driver</span>');
     expect(html.split("Unavailable network driver").length - 1).toBe(2);
     expect(html).not.toContain('<span class="kv-value"></span>');
+  });
+
+  // R6 F1: the inventory card passes net.driver straight into Panel.hint, and
+  // Panel suppresses a falsy hint — an empty-driver record rendered NO driver
+  // fallback on the list while the detail page showed one. The inventory must
+  // reuse the SAME fallback value as the detail surfaces.
+  it("Networking inventory and NetworkDetail share one driver fallback for an empty driver", () => {
+    const inventory = renderScreen("/networking", "/networking", <Networking />, buildModel(nodriver, emptyRuntime));
+    // The card hint must not vanish: the explicit fallback renders in its place.
+    expect(inventory).toContain('<span class="panel-hint">Unavailable network driver</span>');
+    expect(inventory.split("Unavailable network driver").length - 1).toBe(1);
+    // No blank hint may remain anywhere in the inventory.
+    expect(inventory).not.toContain('<span class="panel-hint"></span>');
+    // The detail page still renders its own two fallback surfaces.
+    const detail = renderScreen("/networks/nodriver", "/networks/:name", <NetworkDetail />, buildModel(nodriver, emptyRuntime));
+    expect(detail.split("Unavailable network driver").length - 1).toBe(2);
+    expect(detail).not.toContain('<span class="kv-value"></span>');
+  });
+});
+
+describe("volume mount correlation is occurrence-indexed per consumer", () => {
+  // R6 F2: duplicate schema-valid attachedTo occurrences must each correlate
+  // to THEIR OWN matching mounts. Before the fix, ["app","app"] + one matching
+  // mount reported TWO rw mounts in the impact band while Mount configuration
+  // rendered FOUR /data rows — counts and evidence disagreed.
+  const dupConsumers: DockerSnapshot = {
+    containers: [
+      { id: "c_dup", name: "app", image: "nginx:1", status: "running", role: "web", networks: [], ports: [], mounts: [{ id: "m1", kind: "named_volume", source: "dupvol", target: "/data", readOnly: false }], dependsOn: [] }
+    ],
+    images: [],
+    networks: [],
+    volumes: [{ id: "dupvol", name: "dupvol", attachedTo: ["app", "app"] }],
+    lastUpdated: 0
+  };
+
+  it("VolumeDetail counts and renders each duplicate occurrence's own mount rows", () => {
+    const html = renderScreen("/volumes/dupvol", "/volumes/:name", <VolumeDetail />, buildModel(dupConsumers, emptyRuntime));
+    // Two occurrences each mount /data once: the rw count (2) must equal the
+    // rendered mount rows (2) — never 4.
+    expect(html).toContain("<strong>2</strong><span>consumers</span>");
+    expect(html).toContain("<strong>2</strong><span>read-write mounts</span>");
+    expect(html).toContain("<strong>0</strong><span>read-only mounts</span>");
+    expect(html.split("<code>/data</code>").length - 1).toBe(2);
+    // ConsumerList rows (2) + mount rows (2) each link to the resolved service.
+    expect(countLinks(html)).toBe(4);
+  });
+});
+
+describe("inventory actions and disclosures carry entity-qualified accessible names", () => {
+  // R6 F4: every inventory action was named only "Open detail" and every
+  // disclosure only "Show"/"Hide" (icon aria-hidden) — ambiguous to
+  // assistive-tech users. Names must name the entity, and disclosure names
+  // must stay in sync with the toggle state.
+  it("Networking inventory action names the network entity", () => {
+    const html = renderScreen("/networking", "/networking", <Networking />);
+    expect(html).toContain('aria-label="Open bridge1 network detail"');
+  });
+
+  it("Storage inventory action names the volume entity", () => {
+    const html = renderScreen("/storage", "/storage", <Storage />);
+    expect(html).toContain('aria-label="Open vol1 volume detail"');
+  });
+
+  it("disclosure buttons carry stateful, subject-qualified names on every detail screen", () => {
+    const netCollapsed = renderScreen("/networks/bridge1", "/networks/:name", <NetworkDetail />);
+    expect(netCollapsed).toContain('aria-label="Show network internals"');
+    const netExpanded = renderScreen("/networks/bridge1", "/networks/:name", <NetworkDetail defaultOpen />);
+    expect(netExpanded).toContain('aria-label="Hide network internals"');
+
+    const volCollapsed = renderScreen("/volumes/vol1", "/volumes/:name", <VolumeDetail />);
+    expect(volCollapsed).toContain('aria-label="Show volume internals"');
+    const volExpanded = renderScreen("/volumes/vol1", "/volumes/:name", <VolumeDetail defaultOpen />);
+    expect(volExpanded).toContain('aria-label="Hide volume internals"');
+
+    const imgCollapsed = renderScreen("/images/nginx:1", "/images/:image", <ImageDetail />);
+    expect(imgCollapsed).toContain('aria-label="Show image configuration"');
+    const imgExpanded = renderScreen("/images/nginx:1", "/images/:image", <ImageDetail defaultOpen />);
+    expect(imgExpanded).toContain('aria-label="Hide image configuration"');
+
+    const svcCollapsed = renderScreen("/services/config-svc", "/services/:name", <ServiceDetail defaultTab="config" />);
+    expect(svcCollapsed).toContain('aria-label="Show service internals"');
+    const svcExpanded = renderScreen("/services/config-svc", "/services/:name", <ServiceDetail defaultTab="config" defaultOpen />);
+    expect(svcExpanded).toContain('aria-label="Hide service internals"');
+  });
+});
+
+describe("ServiceDetail Configuration tab renders duplicate empty mount ids as distinct rows", () => {
+  // R6 F3: mount rows were keyed by the raw ContainerMount.id, which is an
+  // unrestricted string — the PR's own fixture carries duplicate EMPTY ids.
+  // Duplicate keys break reconciliation; the rows must be occurrence-qualified
+  // (client-side key warning covered in mount-keys.test.tsx).
+  it("both duplicate-id rows render their distinct targets and keep their own volume links", () => {
+    const html = renderScreen("/services/empty-svc", "/services/:name", <ServiceDetail defaultTab="config" />);
+    expect(html).toContain("/dup-a");
+    expect(html).toContain("/dup-b");
+    // Each duplicate-id row keeps its own resolved-volume link.
+    expect(html.split('href="/volumes/vol1"').length - 1).toBe(2);
   });
 });

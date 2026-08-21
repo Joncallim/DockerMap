@@ -220,8 +220,8 @@ function Config({
           <p className="muted-line">No volumes or bind mounts.</p>
         ) : (
           <ul className="mount-list">
-            {service.mounts.map((m) => (
-              <li key={m.id} className="mount-row">
+            {service.mounts.map((m, index) => (
+              <li key={`${m.id}-${index}`} className="mount-row">
                 <Tag tone="muted">{m.kind.replace("_", " ")}</Tag>
                 {m.kind === "named_volume" && m.source && model.volumeByName.has(m.source) ? <Link className="entity-detail-link" to={`/volumes/${encodeURIComponent(m.source)}`}>{m.source}</Link> : <code>{m.source === "" ? UNAVAILABLE_VOLUME : m.source ?? "anonymous"}</code>}
                 <Icon name="arrow" size={13} />
@@ -251,7 +251,7 @@ function Config({
         icon="layers"
         hint="Layer 4 — shown on request"
         actions={
-          <button type="button" className="ghost-link" aria-expanded={showInternals} aria-controls="service-internals" onClick={onToggleInternals}>
+          <button type="button" className="ghost-link" aria-label={showInternals ? "Hide service internals" : "Show service internals"} aria-expanded={showInternals} aria-controls="service-internals" onClick={onToggleInternals}>
             {showInternals ? "Hide" : "Show"} <Icon name={showInternals ? "up" : "down"} size={13} />
           </button>
         }

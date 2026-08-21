@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import Icon from "../components/Icon";
 import { EmptyState, ErrorState, Loading, Panel, StateDot, Tag } from "../components/primitives";
+import { UNAVAILABLE_NETWORK_DRIVER } from "../lib/identity";
 
 export default function Networking() {
   const { model, loading, error } = useApp();
@@ -24,7 +25,7 @@ export default function Networking() {
       ) : (
         <div className="card-grid">
           {model.networks.map((net, index) => (
-            <Panel key={`${net.id}-${index}`} title={net.name ? <Link className="entity-detail-link" to={`/networks/${encodeURIComponent(net.name)}`}>{net.name}</Link> : "Unavailable network name"} icon="network" hint={net.driver} actions={net.name ? <Link className="ghost-link entity-detail-action" to={`/networks/${encodeURIComponent(net.name)}`}>Open detail</Link> : undefined}>
+            <Panel key={`${net.id}-${index}`} title={net.name ? <Link className="entity-detail-link" to={`/networks/${encodeURIComponent(net.name)}`}>{net.name}</Link> : "Unavailable network name"} icon="network" hint={net.driver === "" ? UNAVAILABLE_NETWORK_DRIVER : net.driver} actions={net.name ? <Link className="ghost-link entity-detail-action" aria-label={`Open ${net.name} network detail`} to={`/networks/${encodeURIComponent(net.name)}`}>Open detail</Link> : undefined}>
               <div className="tag-wrap">
                 <Tag tone={net.internal ? "warn" : "accent"}>{net.internal ? "internal" : "bridge"}</Tag>
                 <Tag tone="muted">{net.members.length} members</Tag>
