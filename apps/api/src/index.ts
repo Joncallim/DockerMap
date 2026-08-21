@@ -61,6 +61,30 @@ const maxLogPageSize = 500;
 // between two timestamps and is skipped by the cursor filter.
 const MOCK_LOG_BASE_MILLIS = Date.now();
 
+// Mirror the daemon's post-redaction display boundary for values that this
+// aggregation endpoint republishes from either daemon response.
+function normalizePublishedDisplayText(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+  return Array.from(value)
+    .map((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      const unsafe =
+        code <= 0x1f ||
+        (code >= 0x7f && code <= 0x9f) ||
+        (code >= 0x200b && code <= 0x200f) ||
+        (code >= 0x2028 && code <= 0x202e) ||
+        (code >= 0x2060 && code <= 0x2069) ||
+        code === 0xfeff ||
+        (code >= 0xfdd0 && code <= 0xfdef) ||
+        (code & 0xffff) === 0xfffe ||
+        (code & 0xffff) === 0xffff;
+      return unsafe ? "\uFFFD" : character;
+    })
+    .join("");
+}
+
 function readPort(value: string | undefined, fallback: number) {
   const port = Number(value ?? fallback);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -925,12 +949,12 @@ app.get("/api/diagnostics", async (_req, res) => {
     if (scanResult.status === "fulfilled") {
       for (const diagnostic of scanResult.value.diagnostics) {
         entries.push({
-          id: diagnostic.id,
+          id: normalizePublishedDisplayText(diagnostic.id),
           source: "compose",
           severity: diagnostic.severity,
-          message: diagnostic.message,
-          file: diagnostic.origin.file,
-          service: diagnostic.origin.service
+          message: normalizePublishedDisplayText(diagnostic.message) ?? "",
+          file: normalizePublishedDisplayText(diagnostic.origin.file),
+          service: normalizePublishedDisplayText(diagnostic.origin.service)
         });
       }
     } else {

@@ -248,6 +248,55 @@ test("diagnostics aggregates compose and runtime findings", async () => {
   );
 });
 
+test("diagnostics aggregation normalizes compose diagnostic origins", async () => {
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/compose/scan") {
+      sendJson(res, 200, {
+        files: ["/project\u202e/compose.yaml"],
+        projectRoot: "/project\u202e",
+        services: [],
+        mounts: [],
+        correlations: [],
+        diagnostics: [
+          {
+            id: "compose\u202eid",
+            severity: "warning",
+            message: "message\u202etext",
+            origin: {
+              file: "/project\u202e/compose.yaml",
+              service: "service\u202ename",
+              field: "services\u202e.web"
+            }
+          }
+        ]
+      });
+      return;
+    }
+    if (req.url === "/daemon/runtime/map") {
+      sendJson(res, 200, { nodes: [], edges: [], diagnostics: [], lastUpdated: 1 });
+      return;
+    }
+    sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  const response = await request(api, "/api/diagnostics", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  const compose = body.entries.find((entry: { source: string }) => entry.source === "compose");
+  assert.ok(compose, "compose diagnostic should be aggregated");
+  assert.doesNotMatch(JSON.stringify(compose), /\u202e/);
+  assert.equal(compose.id, "compose�id");
+  assert.equal(compose.message, "message�text");
+  assert.equal(compose.file, "/project�/compose.yaml");
+  assert.equal(compose.service, "service�name");
+});
+
 test("status endpoint reports widget-friendly health and versioned alias works", async () => {
   const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
 
