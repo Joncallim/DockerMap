@@ -214,7 +214,14 @@ export function hashString(value: string): number {
 }
 
 export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): SystemModel {
-  const networkNameById = new Map(snapshot.networks.map((n) => [n.id, n.name]));
+  // First-wins like networkByName/volumeByName/imageByRef below: a duplicate
+  // network id resolves to the FIRST record's name so Service.networks stays
+  // consistent with the name indexes (a last-wins `new Map(...)` would leave
+  // containers pointing at a name that misses networkByName).
+  const networkNameById = new Map<string, string>();
+  for (const n of snapshot.networks) {
+    if (n.id !== "" && !networkNameById.has(n.id)) networkNameById.set(n.id, n.name);
+  }
 
   // dependsOn references can be container ids, container names, or compose
   // service names (the container's role — com.docker.compose.service label);

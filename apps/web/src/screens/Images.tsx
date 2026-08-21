@@ -59,19 +59,19 @@ export default function Images() {
       ) : (
         <Panel title="In use" icon="image">
           <ul className="svc-list">
-            {visible.map((img) => (
-              <li key={img.image} className="svc-row image-row">
+            {visible.map((img, index) => (
+              <li key={`${img.image}-${index}`} className="svc-row image-row">
                 {img.image ? <Link className="image-detail-link" to={`/images/${encodeURIComponent(img.image)}`}>{img.image}</Link> : <code className="image-name">Unavailable image reference</code>}
                 <Tag tone="muted">{img.containers.length} service{img.containers.length === 1 ? "" : "s"}</Tag>
                 <div className="tag-wrap">
-                  {img.containers.map((c) => {
+                  {img.containers.map((c, index) => {
                     const svc = model?.byName.get(c);
                     return svc ? (
-                      <Link key={c} className="ref-chip" to={`/services/${encodeURIComponent(svc.name)}`}>
+                      <Link key={`${c}-${index}`} className="ref-chip" to={`/services/${encodeURIComponent(svc.name)}`}>
                         <StateDot state={svc.state} /> {c}
                       </Link>
                     ) : (
-                      <span key={c} className="ref-chip"><StateDot state="unknown" /> {c}</span>
+                      <span key={`${c}-${index}`} className="ref-chip"><StateDot state="unknown" /> {c}</span>
                     );
                   })}
                 </div>
