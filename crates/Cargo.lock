@@ -231,6 +231,7 @@ dependencies = [
  "bollard",
  "dockermap-core",
  "futures-util",
+ "libc",
  "serde",
  "serde_json",
  "tokio",

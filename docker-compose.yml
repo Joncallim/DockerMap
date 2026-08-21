@@ -10,6 +10,9 @@ services:
       - "127.0.0.1:3233:3233"
     environment:
       DOCKERMAP_ALLOW_MOCK: "true"
+      # This container has its own PID namespace; never infer host collectors
+      # from incidental markers such as /.dockerenv.
+      DOCKERMAP_PID_NAMESPACE: "restricted"
     volumes:
       # Read-only access to Docker so DockerMap can see real containers.
       - /var/run/docker.sock:/var/run/docker.sock:ro

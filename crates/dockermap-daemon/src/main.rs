@@ -33,10 +33,14 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     net::{IpAddr, SocketAddr},
+    os::unix::process::CommandExt,
     path::{Component, Path as StdPath, PathBuf},
     process::Command,
-    sync::Arc,
-    time::Duration,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
+    time::{Duration, Instant},
 };
 use tokio::{net::TcpListener, sync::RwLock, time::sleep};
 
@@ -66,6 +70,9 @@ struct AppState {
     /// daemon is picked up. `None` means "not connected yet / previous
     /// attempt failed".
     docker: Arc<RwLock<Option<DockerCollector>>>,
+    /// A timed-out blocking collection keeps running until its subprocesses
+    /// unwind. Do not start a second expensive collection while that happens.
+    runtime_collection_in_flight: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -226,6 +233,7 @@ async fn main() {
     let state = AppState {
         cache: Arc::new(RwLock::new(DaemonCache::mock())),
         docker: Arc::new(RwLock::new(None)),
+        runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
     };
 
     refresh_cache(&state).await;
@@ -343,7 +351,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     if std::env::var("DOCKERMAP_FORCE_MOCK").ok().as_deref() == Some("true") {
         let mut cache = DaemonCache::mock();
         cache.health.message = Some("Mock mode forced by DOCKERMAP_FORCE_MOCK".into());
-        cache.runtime_map = collect_runtime_map_bounded(&cache.snapshot).await;
+        cache.runtime_map = collect_runtime_map_bounded(state, &cache.snapshot).await;
         return cache;
     }
 
@@ -384,7 +392,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     // and must never run on a Tokio worker thread, so it is computed once per
     // refresh cycle — same cadence as the snapshot — and served from the
     // cache by `get_runtime_map`.
-    cache.runtime_map = collect_runtime_map_bounded(&cache.snapshot).await;
+    cache.runtime_map = collect_runtime_map_bounded(state, &cache.snapshot).await;
     cache
 }
 
@@ -868,17 +876,39 @@ fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
     let mut edges = Vec::new();
     let mut diagnostics = Vec::new();
     let project_root = project_root().ok();
+    let pid_namespace = daemon_pid_namespace_scope();
 
-    collect_host_node(project_root.as_deref(), &mut nodes);
-    collect_network_listeners(&mut nodes, &mut diagnostics);
+    if let Some(message) = pid_namespace.diagnostic() {
+        push_provider_diagnostic(
+            &mut diagnostics,
+            RuntimeProviderKind::Process,
+            DiagnosticSeverity::Info,
+            message.into(),
+        );
+    }
+
+    if pid_namespace.is_restricted() {
+        push_provider_diagnostic(
+            &mut diagnostics,
+            RuntimeProviderKind::Host,
+            DiagnosticSeverity::Info,
+            "Host node omitted because the daemon runs in a restricted PID namespace".into(),
+        );
+    } else {
+        collect_host_node(project_root.as_deref(), &mut nodes);
+    }
     collect_network_infrastructure(snapshot, &mut nodes, &mut edges, &mut diagnostics);
-    collect_systemd_services(&mut nodes, &mut edges, &mut diagnostics);
-    collect_scheduled_jobs(&mut nodes, &mut diagnostics);
-    collect_pm2_apps(&mut nodes, &mut diagnostics);
-    collect_python_processes(&mut nodes, &mut diagnostics);
-    collect_native_processes(&mut nodes, &mut diagnostics);
-    collect_tmux_sessions(&mut nodes, &mut diagnostics);
+    collect_host_scoped_runtime_providers(pid_namespace, &mut nodes, &mut edges, &mut diagnostics);
+    collect_python_processes(pid_namespace.is_restricted(), &mut nodes, &mut diagnostics);
+    collect_native_processes_with_scope(
+        pid_namespace.is_restricted(),
+        &mut nodes,
+        &mut diagnostics,
+    );
     if let Some(root) = project_root.as_deref() {
+        // This root is an explicit project mount/configuration target rather
+        // than namespace-global discovery, so npm remains available even to a
+        // containerized daemon (and is documented as mounted project data).
         collect_npm_projects(root, &mut nodes, &mut edges, &mut diagnostics);
     } else {
         push_provider_diagnostic(
@@ -925,58 +955,166 @@ struct ProviderCommandOutput {
     stdout_truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderCommandError {
+    Spawn,
+    Wait,
+    Reader,
+    TimedOut(Duration),
+}
+
+impl ProviderCommandError {
+    fn is_spawn(self) -> bool {
+        matches!(self, Self::Spawn)
+    }
+}
+
+impl std::fmt::Display for ProviderCommandError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Spawn => formatter.write_str("provider command unavailable"),
+            Self::Wait => formatter.write_str("provider command wait failed"),
+            Self::Reader => formatter.write_str("provider command output reader failed"),
+            Self::TimedOut(timeout) => {
+                write!(
+                    formatter,
+                    "provider command timed out after {}s",
+                    timeout.as_secs()
+                )
+            }
+        }
+    }
+}
+
 fn run_command_with_timeout(
+    command: Command,
+    timeout: Duration,
+) -> Result<ProviderCommandOutput, ProviderCommandError> {
+    run_command_with_timeout_started(command, timeout, Instant::now())
+}
+
+/// The explicit `started` argument keeps the deadline anchored before spawn.
+/// It is also a deterministic seam for testing a slow `posix_spawnp` path.
+fn run_command_with_timeout_started(
     mut command: Command,
     timeout: Duration,
-) -> Result<ProviderCommandOutput, String> {
+    started: Instant,
+) -> Result<ProviderCommandOutput, ProviderCommandError> {
     // `Command::spawn` does NOT pipe stdio like `Command::output` does, so
     // the pipes must be requested explicitly to collect provider output.
+    // A process group makes a timeout cover descendants retaining the pipe
+    // handles, not just the immediate provider shell.
+    command.process_group(0);
     let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|error| format!("failed to spawn provider command: {error}"))?;
+        .map_err(|_| ProviderCommandError::Spawn)?;
+
+    if started.elapsed() >= timeout {
+        terminate_provider_process_group(&mut child);
+        return Err(ProviderCommandError::TimedOut(timeout));
+    }
 
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
-    let stdout_reader = std::thread::spawn(move || read_bounded(stdout, MAX_PROVIDER_OUTPUT_BYTES));
-    let stderr_reader = std::thread::spawn(move || read_bounded(stderr, MAX_PROVIDER_OUTPUT_BYTES));
+    let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
+    let (stderr_sender, stderr_receiver) = mpsc::sync_channel(1);
+    let mut stdout_reader = Some(std::thread::spawn(move || {
+        let _ = stdout_sender.send(read_bounded(stdout, MAX_PROVIDER_OUTPUT_BYTES));
+    }));
+    let mut stderr_reader = Some(std::thread::spawn(move || {
+        let _ = stderr_sender.send(read_bounded(stderr, MAX_PROVIDER_OUTPUT_BYTES));
+    }));
 
-    let started = std::time::Instant::now();
     let status = loop {
-        match child
-            .try_wait()
-            .map_err(|error| format!("provider command wait failed: {error}"))?
-        {
+        let waited = match child.try_wait() {
+            Ok(waited) => waited,
+            Err(_) => {
+                terminate_provider_process_group(&mut child);
+                return Err(ProviderCommandError::Wait);
+            }
+        };
+        match waited {
             Some(status) => break Some(status),
             None if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_provider_process_group(&mut child);
                 break None;
             }
             None => std::thread::sleep(Duration::from_millis(25)),
         }
     };
 
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| "provider stdout reader panicked".to_string())?;
-    let _stderr = stderr_reader
-        .join()
-        .map_err(|_| "provider stderr reader panicked".to_string())?;
-
-    match status {
-        Some(status) => Ok(ProviderCommandOutput {
-            status,
-            stdout: stdout.bytes,
-            stdout_truncated: stdout.truncated,
-        }),
-        None => Err(format!(
-            "provider command timed out after {}s",
-            timeout.as_secs()
-        )),
+    let deadline = started + timeout;
+    let stdout = receive_reader_until(&stdout_receiver, deadline);
+    let stderr = receive_reader_until(&stderr_receiver, deadline);
+    let reader_timed_out = stdout.is_none() || stderr.is_none();
+    if reader_timed_out && status.is_some() {
+        // The command may have exited while a forked child inherited its
+        // pipes. Killing the whole group closes those pipes and lets the
+        // readers finish instead of pinning this collection forever.
+        terminate_provider_process_group(&mut child);
     }
+
+    // Joining only after receiving from the channel is non-blocking. When a
+    // pathological reader missed the deadline we never unconditionally join
+    // it; the group kill closes its pipes without extending the deadline.
+    let stdout_received = stdout.is_some();
+    let stderr_received = stderr.is_some();
+    if stdout_received {
+        let _ = stdout_reader.take().expect("stdout reader present").join();
+    }
+    if stderr_received {
+        let _ = stderr_reader.take().expect("stderr reader present").join();
+    }
+    if let (Some(stdout), Some(_stderr)) = (stdout, stderr) {
+        return match status {
+            Some(status) => Ok(ProviderCommandOutput {
+                status,
+                stdout: stdout.bytes,
+                stdout_truncated: stdout.truncated,
+            }),
+            None => Err(ProviderCommandError::TimedOut(timeout)),
+        };
+    }
+
+    // The provider deadline is the end-to-end bound. After killing the group,
+    // join only readers that have already completed; an undelivered reader is
+    // detached and will see EOF once the killed descendants release the pipe.
+    if !stdout_received && stdout_receiver.try_recv().is_ok() {
+        let _ = stdout_reader.take().expect("stdout reader present").join();
+    }
+    if !stderr_received && stderr_receiver.try_recv().is_ok() {
+        let _ = stderr_reader.take().expect("stderr reader present").join();
+    }
+    Err(if reader_timed_out {
+        ProviderCommandError::TimedOut(timeout)
+    } else {
+        ProviderCommandError::Reader
+    })
+}
+
+fn receive_reader_until(
+    receiver: &mpsc::Receiver<BoundedRead>,
+    deadline: Instant,
+) -> Option<BoundedRead> {
+    receiver
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .ok()
+}
+
+fn terminate_provider_process_group(child: &mut std::process::Child) {
+    let process_group = child.id() as i32;
+    if process_group > 0 {
+        // `process_group(0)` above makes the provider the group leader. A
+        // negative pid targets all descendants that inherited stdout/stderr.
+        unsafe {
+            libc::kill(-process_group, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Keep up to `cap` bytes from a pipe while continuing to drain the remainder,
@@ -1010,11 +1148,40 @@ fn read_bounded(mut reader: impl std::io::Read, cap: usize) -> BoundedRead {
 /// blocking `std::process` calls, so they must never run on a Tokio worker
 /// thread, and the whole collection is bounded so a pathological provider (or
 /// npm walk) degrades the map instead of stalling refresh.
-async fn collect_runtime_map_bounded(snapshot: &DockerSnapshot) -> RuntimeMap {
+struct RuntimeCollectionGuard(Arc<AtomicBool>);
+
+impl RuntimeCollectionGuard {
+    fn acquire(in_flight: Arc<AtomicBool>) -> Option<Self> {
+        in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            .then_some(Self(in_flight))
+    }
+}
+
+impl Drop for RuntimeCollectionGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+async fn collect_runtime_map_bounded(state: &AppState, snapshot: &DockerSnapshot) -> RuntimeMap {
     let snapshot = snapshot.clone();
+    let Some(collection_guard) =
+        RuntimeCollectionGuard::acquire(state.runtime_collection_in_flight.clone())
+    else {
+        eprintln!("runtime map collection skipped: previous collection is still in flight");
+        return fallback_runtime_map_with_message(
+            &snapshot,
+            "Runtime map collection is still in progress; host provider nodes omitted",
+        );
+    };
     let work = {
         let snapshot = snapshot.clone();
-        tokio::task::spawn_blocking(move || collect_runtime_map(&snapshot))
+        tokio::task::spawn_blocking(move || {
+            let _collection_guard = collection_guard;
+            collect_runtime_map(&snapshot)
+        })
     };
     match tokio::time::timeout(RUNTIME_MAP_COLLECTION_TIMEOUT, work).await {
         Ok(Ok(runtime_map)) => runtime_map,
@@ -1033,6 +1200,13 @@ async fn collect_runtime_map_bounded(snapshot: &DockerSnapshot) -> RuntimeMap {
 /// the Docker-derived nodes are still useful, and a warning diagnostic
 /// explains why host providers are missing.
 fn fallback_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
+    fallback_runtime_map_with_message(
+        snapshot,
+        "Runtime map collection failed or timed out; host provider nodes omitted",
+    )
+}
+
+fn fallback_runtime_map_with_message(snapshot: &DockerSnapshot, message: &str) -> RuntimeMap {
     let mut runtime_map = derive_runtime_map(
         snapshot,
         Vec::new(),
@@ -1040,8 +1214,7 @@ fn fallback_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
         vec![RuntimeMapDiagnostic {
             provider: RuntimeProviderKind::Other,
             severity: DiagnosticSeverity::Warning,
-            message: "Runtime map collection failed or timed out; host provider nodes omitted"
-                .into(),
+            message: message.into(),
         }],
     );
     redact_runtime_map(&mut runtime_map);
@@ -1070,6 +1243,50 @@ fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapN
         service: None,
         package: None,
     });
+}
+
+/// `/proc/net`, init-service managers, schedulers, PM2, and tmux all expose
+/// only the daemon container's view in a restricted PID namespace. Keep them
+/// out of a host topology rather than relabeling container-local evidence.
+fn collect_host_scoped_runtime_providers(
+    pid_namespace: PidNamespaceScope,
+    nodes: &mut Vec<RuntimeMapNode>,
+    edges: &mut Vec<RuntimeMapEdge>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    if pid_namespace.is_restricted() {
+        for (provider, message) in [
+            (
+                RuntimeProviderKind::Network,
+                "Network listener discovery omitted because the daemon runs in a restricted PID namespace",
+            ),
+            (
+                RuntimeProviderKind::Systemd,
+                "systemd discovery omitted because the daemon runs in a restricted PID namespace",
+            ),
+            (
+                RuntimeProviderKind::ScheduledJob,
+                "Scheduled job discovery omitted because the daemon runs in a restricted PID namespace",
+            ),
+            (
+                RuntimeProviderKind::Pm2,
+                "PM2 discovery omitted because the daemon runs in a restricted PID namespace",
+            ),
+            (
+                RuntimeProviderKind::Tmux,
+                "tmux discovery omitted because the daemon runs in a restricted PID namespace",
+            ),
+        ] {
+            push_provider_diagnostic(diagnostics, provider, DiagnosticSeverity::Info, message.into());
+        }
+        return;
+    }
+
+    collect_network_listeners(nodes, diagnostics);
+    collect_systemd_services(nodes, edges, diagnostics);
+    collect_scheduled_jobs(nodes, diagnostics);
+    collect_pm2_apps(nodes, diagnostics);
+    collect_tmux_sessions(nodes, diagnostics);
 }
 
 fn collect_network_infrastructure(
@@ -2270,9 +2487,18 @@ fn python_entry(args: &str) -> Option<String> {
 }
 
 fn python_nodes_from_ps_output(value: &str) -> (Vec<RuntimeMapNode>, bool) {
+    python_nodes_from_ps_output_with_container_filter(value, is_container_owned)
+}
+
+fn python_nodes_from_ps_output_with_container_filter(
+    value: &str,
+    is_container_owned: impl Fn(u32) -> bool,
+) -> (Vec<RuntimeMapNode>, bool) {
+    // Filter container-owned pids before the cap. Otherwise a noisy container
+    // can consume all 64 slots and hide real host Python applications.
     let filtered = parse_ps_table(value)
         .into_iter()
-        .filter(|record| is_python_process(&record.args))
+        .filter(|record| is_python_process(&record.args) && !is_container_owned(record.pid))
         .collect::<Vec<_>>();
     let capped = filtered.len() > MAX_PYTHON_PROCESSES;
     let mut nodes = Vec::new();
@@ -2329,26 +2555,57 @@ fn collect_python_processes_from_output(
 }
 
 fn collect_python_processes(
+    restricted_pid_namespace: bool,
     nodes: &mut Vec<RuntimeMapNode>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
-    collect_python_processes_with_command(process_discovery_command(), nodes, diagnostics);
+    collect_python_processes_with_command_in_scope(
+        process_discovery_command(),
+        restricted_pid_namespace,
+        nodes,
+        diagnostics,
+    );
 }
 
+#[cfg(test)]
 fn collect_python_processes_with_command(
     command: Command,
     nodes: &mut Vec<RuntimeMapNode>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
+    collect_python_processes_with_command_in_scope(command, false, nodes, diagnostics);
+}
+
+fn collect_python_processes_with_command_in_scope(
+    command: Command,
+    restricted_pid_namespace: bool,
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    if restricted_pid_namespace {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Python,
+            DiagnosticSeverity::Info,
+            "Python process discovery omitted because the daemon runs in a restricted PID namespace; only the container's own processes would be visible".into(),
+        );
+        return;
+    }
     let output = match run_command_with_timeout(command, PROVIDER_COMMAND_TIMEOUT) {
         Ok(output) => output,
         Err(error) => {
-            push_provider_diagnostic(
-                diagnostics,
-                RuntimeProviderKind::Python,
-                DiagnosticSeverity::Info,
-                format!("Python process discovery skipped: {error}"),
-            );
+            let (severity, message) = if error.is_spawn() {
+                (
+                    DiagnosticSeverity::Warning,
+                    "Python process discovery command unavailable".into(),
+                )
+            } else {
+                (
+                    DiagnosticSeverity::Warning,
+                    format!("Python process discovery skipped: {error}"),
+                )
+            };
+            push_provider_diagnostic(diagnostics, RuntimeProviderKind::Python, severity, message);
             return;
         }
     };
@@ -2447,13 +2704,14 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
     nodes
 }
 
-fn collect_native_processes(
+fn collect_native_processes_with_scope(
+    restricted_pid_namespace: bool,
     nodes: &mut Vec<RuntimeMapNode>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
     collect_native_processes_with_command(
         process_discovery_command(),
-        daemon_runs_in_restricted_pid_namespace(),
+        restricted_pid_namespace,
         nodes,
         diagnostics,
     );
@@ -2484,12 +2742,18 @@ fn collect_native_processes_with_command(
     let output = match run_command_with_timeout(command, PROVIDER_COMMAND_TIMEOUT) {
         Ok(output) => output,
         Err(error) => {
-            push_provider_diagnostic(
-                diagnostics,
-                RuntimeProviderKind::Process,
-                DiagnosticSeverity::Info,
-                format!("Native process discovery skipped: {error}"),
-            );
+            let (severity, message) = if error.is_spawn() {
+                (
+                    DiagnosticSeverity::Warning,
+                    "Native process discovery command unavailable".into(),
+                )
+            } else {
+                (
+                    DiagnosticSeverity::Warning,
+                    format!("Native process discovery skipped: {error}"),
+                )
+            };
+            push_provider_diagnostic(diagnostics, RuntimeProviderKind::Process, severity, message);
             return;
         }
     };
@@ -2616,6 +2880,44 @@ fn real_comm(pid: u32, fallback: &str) -> String {
     safe_kernel_comm(fallback).unwrap_or_else(|| "unknown".into())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PidNamespaceMode {
+    Auto,
+    Host,
+    Restricted,
+}
+
+impl PidNamespaceMode {
+    fn from_env_value(value: Option<&str>) -> Self {
+        match value {
+            Some("host") => Self::Host,
+            Some("restricted") => Self::Restricted,
+            Some("auto") | None => Self::Auto,
+            // An invalid override must never make us omit host inventory.
+            Some(_) => Self::Auto,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PidNamespaceScope {
+    Host { diagnostic: Option<&'static str> },
+    Restricted,
+}
+
+impl PidNamespaceScope {
+    fn is_restricted(self) -> bool {
+        matches!(self, Self::Restricted)
+    }
+
+    fn diagnostic(self) -> Option<&'static str> {
+        match self {
+            Self::Host { diagnostic } => diagnostic,
+            Self::Restricted => None,
+        }
+    }
+}
+
 /// Kernel command name of pid 1, read from `/proc/1/comm`. `None` when the
 /// entry is unreadable or empty.
 fn host_init_comm() -> Option<String> {
@@ -2625,35 +2927,79 @@ fn host_init_comm() -> Option<String> {
         .filter(|comm| !comm.is_empty())
 }
 
-/// True when pid 1's comm is NOT a host init: on a normal host it is systemd
-/// or init, while inside a container PID namespace it is commonly the
-/// entrypoint script, a shell, or nginx.
-fn is_container_pid_namespace(comm: &str) -> bool {
-    !matches!(comm.trim(), "systemd" | "init")
+fn recognized_host_init(init_comm: Option<&str>) -> bool {
+    matches!(init_comm.map(str::trim), Some("systemd" | "init"))
 }
 
-/// Container PID namespaces must be identified by affirmative evidence. A
-/// normal systemd service runs in `/system.slice/...` and a user manager in
-/// `/user.slice/...`; neither is a container signal.
+/// Container PID namespaces must be identified only by affirmative evidence.
+/// A non-systemd pid 1 is common on real hosts (runit, OpenRC, s6, dinit), so
+/// it is explicitly NOT evidence by itself.
+#[cfg(test)]
 fn restricted_pid_namespace_evidence(
-    init_comm: Option<&str>,
+    _init_comm: Option<&str>,
     cgroup: &str,
     has_dockerenv: bool,
     has_systemd_container_marker: bool,
 ) -> bool {
+    restricted_pid_namespace_evidence_with_markers(
+        cgroup,
+        has_dockerenv,
+        has_systemd_container_marker,
+        false,
+    )
+}
+
+fn restricted_pid_namespace_evidence_with_markers(
+    cgroup: &str,
+    has_dockerenv: bool,
+    has_systemd_container_marker: bool,
+    has_podman_container_marker: bool,
+) -> bool {
     has_dockerenv
         || has_systemd_container_marker
-        || init_comm.is_some_and(is_container_pid_namespace)
+        || has_podman_container_marker
         || cgroup.lines().any(cgroup_implies_container)
 }
 
-fn daemon_runs_in_restricted_pid_namespace() -> bool {
+fn pid_namespace_scope_from_evidence(
+    mode: PidNamespaceMode,
+    init_comm: Option<&str>,
+    cgroup: &str,
+    has_dockerenv: bool,
+    has_systemd_container_marker: bool,
+    has_podman_container_marker: bool,
+) -> PidNamespaceScope {
+    match mode {
+        PidNamespaceMode::Host => PidNamespaceScope::Host { diagnostic: None },
+        PidNamespaceMode::Restricted => PidNamespaceScope::Restricted,
+        PidNamespaceMode::Auto => {
+            if restricted_pid_namespace_evidence_with_markers(
+                cgroup,
+                has_dockerenv,
+                has_systemd_container_marker,
+                has_podman_container_marker,
+            ) {
+                PidNamespaceScope::Restricted
+            } else {
+                PidNamespaceScope::Host {
+                    diagnostic: (!recognized_host_init(init_comm)).then_some(
+                        "PID namespace auto-detection: init system not recognized; assuming host namespace",
+                    ),
+                }
+            }
+        }
+    }
+}
+
+fn daemon_pid_namespace_scope() -> PidNamespaceScope {
     let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
-    restricted_pid_namespace_evidence(
+    pid_namespace_scope_from_evidence(
+        PidNamespaceMode::from_env_value(std::env::var("DOCKERMAP_PID_NAMESPACE").ok().as_deref()),
         host_init_comm().as_deref(),
         &cgroup,
         StdPath::new("/.dockerenv").exists(),
         StdPath::new("/run/systemd/container").exists(),
+        StdPath::new("/run/.containerenv").exists(),
     )
 }
 
@@ -3329,12 +3675,12 @@ fn redact_runtime_nodes(nodes: &mut [RuntimeMapNode]) {
 }
 
 fn redact_runtime_node(node: &mut RuntimeMapNode) {
-    node.label = redact_sensitive_text(&node.label);
+    node.label = redact_runtime_display_text(&node.label);
     if let Some(status) = &mut node.status {
-        *status = redact_sensitive_text(status);
+        *status = redact_runtime_display_text(status);
     }
     for value in node.metadata.values_mut() {
-        *value = redact_sensitive_text(value);
+        *value = redact_runtime_display_text(value);
     }
     redact_service_entity(node.service.as_mut());
     redact_package_entity(node.package.as_mut());
@@ -3344,33 +3690,31 @@ fn redact_service_entity(service: Option<&mut RuntimeServiceEntity>) {
     let Some(service) = service else {
         return;
     };
-    service.name = redact_sensitive_text(&service.name);
-    // service.status is the closed RuntimeServiceStatus enum: raw provider
-    // text is normalized through from_status_text before it ever reaches the
-    // struct, so it cannot carry secrets and needs no redaction.
+    service.name = redact_runtime_display_text(&service.name);
+    // service.status is a closed enum and cannot carry provider free text.
     for value in &mut service.dependencies {
-        *value = redact_sensitive_text(value);
+        *value = redact_runtime_display_text(value);
     }
     for value in &mut service.dependents {
-        *value = redact_sensitive_text(value);
+        *value = redact_runtime_display_text(value);
     }
     if let Some(health) = &mut service.health {
-        // health.state is the closed RuntimeHealthState enum (safe by construction).
+        // health.state is a closed enum and cannot carry provider free text.
         if let Some(source) = &mut health.source {
-            *source = redact_sensitive_text(source);
+            *source = redact_runtime_display_text(source);
         }
         if let Some(message) = &mut health.message {
-            *message = redact_sensitive_text(message);
+            *message = redact_runtime_display_text(message);
         }
     }
     for log in &mut service.logs {
-        log.source = redact_sensitive_text(&log.source);
-        // log.level is the closed RuntimeLogLevel enum (safe by construction).
+        log.source = redact_runtime_display_text(&log.source);
+        // log.level is a closed enum and cannot carry provider free text.
     }
     for event in &mut service.events {
-        event.kind = redact_sensitive_text(&event.kind);
+        event.kind = redact_runtime_display_text(&event.kind);
         if let Some(message) = &mut event.message {
-            *message = redact_sensitive_text(message);
+            *message = redact_runtime_display_text(message);
         }
     }
     redact_ownership(service.owner.as_mut());
@@ -3381,27 +3725,27 @@ fn redact_package_entity(package: Option<&mut RuntimePackageEntity>) {
     let Some(package) = package else {
         return;
     };
-    package.name = redact_sensitive_text(&package.name);
-    package.version = redact_sensitive_text(&package.version);
+    package.name = redact_runtime_display_text(&package.name);
+    package.version = redact_runtime_display_text(&package.version);
     for value in &mut package.dependencies {
-        *value = redact_sensitive_text(value);
+        *value = redact_runtime_display_text(value);
     }
     for value in &mut package.dependents {
-        *value = redact_sensitive_text(value);
+        *value = redact_runtime_display_text(value);
     }
     if let Some(update) = &mut package.update {
-        update.current_version = redact_sensitive_text(&update.current_version);
+        update.current_version = redact_runtime_display_text(&update.current_version);
         if let Some(latest) = &mut update.latest_version {
-            *latest = redact_sensitive_text(latest);
+            *latest = redact_runtime_display_text(latest);
         }
         for advisory in &mut update.advisories {
-            advisory.title = redact_sensitive_text(&advisory.title);
-            advisory.source = redact_sensitive_text(&advisory.source);
+            advisory.title = redact_runtime_display_text(&advisory.title);
+            advisory.source = redact_runtime_display_text(&advisory.source);
             if let Some(fixed) = &mut advisory.fixed_version {
-                *fixed = redact_sensitive_text(fixed);
+                *fixed = redact_runtime_display_text(fixed);
             }
             if let Some(url) = &mut advisory.url {
-                *url = redact_sensitive_text(url);
+                *url = redact_runtime_display_text(url);
             }
         }
     }
@@ -3413,9 +3757,9 @@ fn redact_ownership(owner: Option<&mut RuntimeOwnership>) {
     let Some(owner) = owner else {
         return;
     };
-    owner.name = redact_sensitive_text(&owner.name);
+    owner.name = redact_runtime_display_text(&owner.name);
     if let Some(id) = &mut owner.id {
-        *id = redact_sensitive_text(id);
+        *id = redact_runtime_display_text(id);
     }
 }
 
@@ -3423,23 +3767,23 @@ fn redact_location(location: Option<&mut RuntimeLocation>) {
     let Some(location) = location else {
         return;
     };
-    location.value = redact_sensitive_text(&location.value);
+    location.value = redact_runtime_display_text(&location.value);
     if let Some(detail) = &mut location.detail {
-        *detail = redact_sensitive_text(detail);
+        *detail = redact_runtime_display_text(detail);
     }
 }
 
 fn redact_runtime_edges(edges: &mut [RuntimeMapEdge]) {
     for edge in edges {
         for value in edge.metadata.values_mut() {
-            *value = redact_sensitive_text(value);
+            *value = redact_runtime_display_text(value);
         }
     }
 }
 
 fn redact_runtime_diagnostics(diagnostics: &mut [RuntimeMapDiagnostic]) {
     for diagnostic in diagnostics {
-        diagnostic.message = redact_sensitive_text(&diagnostic.message);
+        diagnostic.message = redact_runtime_display_text(&diagnostic.message);
     }
 }
 
@@ -3502,6 +3846,39 @@ fn redact_sensitive_text(value: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+/// Single post-redaction gate for every runtime-map display string. Provider
+/// data is hostile: controls, bidi isolates, invisible formatting characters,
+/// Unicode line separators, and noncharacters can spoof names in the UI or
+/// daemon logs. Replace each unsafe scalar rather than relying on individual
+/// parsers to notice field-specific cases.
+fn redact_runtime_display_text(value: &str) -> String {
+    normalize_runtime_display_string(&redact_sensitive_text(value))
+}
+
+fn normalize_runtime_display_string(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if unsafe_runtime_display_character(character) {
+                '\u{FFFD}'
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+fn unsafe_runtime_display_character(character: char) -> bool {
+    let code = character as u32;
+    character.is_control()
+        || (0x200B..=0x200F).contains(&code)
+        || (0x2028..=0x202E).contains(&code)
+        || (0x2060..=0x2069).contains(&code)
+        || code == 0xFEFF
+        || (0xFDD0..=0xFDEF).contains(&code)
+        || matches!(code & 0xFFFF, 0xFFFE | 0xFFFF)
 }
 
 fn is_sensitive_text(value: &str) -> bool {
@@ -3698,16 +4075,29 @@ fn push_provider_diagnostic(
     severity: DiagnosticSeverity,
     message: String,
 ) {
-    // Provider failures (tailscale/systemd/pm2/tmux/crontab/... subprocesses)
-    // must be visible in the daemon's stderr, not just in-band in the runtime
-    // map. Messages here are static or spawn/timeout error strings — no
-    // provider output is included, so nothing secret can leak.
-    eprintln!("provider diagnostic ({provider:?}, {severity:?}): {message}");
+    // One sanitized value drives both stderr and the API diagnostic. This is
+    // deliberately before logging: provider paths/errors can contain secrets.
+    let safe = redact_sensitive_text(&message);
+    let safe = normalize_runtime_display_string(&safe);
+    let mut stderr = std::io::stderr();
+    let _ = write_provider_diagnostic(&mut stderr, &provider, &severity, &safe);
     diagnostics.push(RuntimeMapDiagnostic {
         provider,
         severity,
-        message,
+        message: safe,
     });
+}
+
+fn write_provider_diagnostic(
+    writer: &mut impl std::io::Write,
+    provider: &RuntimeProviderKind,
+    severity: &DiagnosticSeverity,
+    message: &str,
+) -> std::io::Result<()> {
+    writeln!(
+        writer,
+        "provider diagnostic ({provider:?}, {severity:?}): {message}"
+    )
 }
 
 fn sanitize_runtime_id(value: &str) -> String {
@@ -5451,7 +5841,7 @@ mod tests {
             false,
             false,
         ));
-        assert!(restricted_pid_namespace_evidence(
+        assert!(!restricted_pid_namespace_evidence(
             Some("entrypoint.sh"),
             "0::/\n",
             false,
@@ -6297,7 +6687,7 @@ mod tests {
             Duration::from_millis(200),
         )
         .expect_err("a hung provider command must time out");
-        assert!(error.contains("timed out"), "{error}");
+        assert!(error.to_string().contains("timed out"), "{error}");
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "the timeout must bound the wait, took {:?}",
@@ -6464,6 +6854,279 @@ mod tests {
         assert!(
             redacted.contains("  image: alpine"),
             "safe context lines stay intact: {redacted}"
+        );
+    }
+
+    #[test]
+    fn runtime_display_redaction_neutralizes_unicode_spoofing_in_process_comm_and_user_metadata() {
+        // C0/DEL/C1, bidi controls, default-ignorables, separators, and
+        // noncharacters are all operator-facing spoofing vectors. They must
+        // be neutralized at the shared runtime publication boundary, not by
+        // individual provider parsers.
+        let unsafe_display = |value: &str| {
+            value.chars().any(|character| {
+                let code = character as u32;
+                character.is_control()
+                    || (0x200B..=0x200F).contains(&code)
+                    || (0x2028..=0x202E).contains(&code)
+                    || (0x2060..=0x2069).contains(&code)
+                    || code == 0xFEFF
+                    || (0xFDD0..=0xFDEF).contains(&code)
+                    || matches!(code & 0xFFFF, 0xFFFE | 0xFFFF)
+            })
+        };
+        let table = concat!(
+            " 9000000  user\u{001b}\u{007f}\u{0080}  evil\u{202e}\u{200b}  /usr/bin/evil\n",
+            " 9000001  user\u{001b}\u{007f}\u{0080}  python3  /srv/app\u{202e}\u{200b}.py\n"
+        );
+        let (mut native_nodes, _) = native_process_nodes_from_ps_output(table, 9_000_500);
+        let (mut python_nodes, _) = python_nodes_from_ps_output(table);
+        native_nodes.append(&mut python_nodes);
+
+        redact_runtime_nodes(&mut native_nodes);
+
+        assert_eq!(native_nodes.len(), 2);
+        for node in native_nodes {
+            assert!(!unsafe_display(&node.label), "unsafe label: {}", node.label);
+            assert!(node.metadata.values().all(|value| !unsafe_display(value)));
+        }
+    }
+
+    #[test]
+    fn unavailable_ps_reports_static_warning_for_both_process_providers() {
+        let unavailable_ps = || Command::new("/definitely-not-a-dockermap-ps-command");
+        let mut python_nodes = Vec::new();
+        let mut python_diagnostics = Vec::new();
+        collect_python_processes_with_command(
+            unavailable_ps(),
+            &mut python_nodes,
+            &mut python_diagnostics,
+        );
+        let mut native_nodes = Vec::new();
+        let mut native_diagnostics = Vec::new();
+        collect_native_processes_with_command(
+            unavailable_ps(),
+            false,
+            &mut native_nodes,
+            &mut native_diagnostics,
+        );
+
+        assert!(python_nodes.is_empty());
+        assert!(native_nodes.is_empty());
+        assert!(python_diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::Python
+                && diagnostic.severity == DiagnosticSeverity::Warning
+                && diagnostic.message == "Python process discovery command unavailable"
+        }));
+        assert!(native_diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::Process
+                && diagnostic.severity == DiagnosticSeverity::Warning
+                && diagnostic.message == "Native process discovery command unavailable"
+        }));
+    }
+
+    #[test]
+    fn pid_namespace_modes_require_affirmative_evidence_and_surface_ambiguity() {
+        let runit = pid_namespace_scope_from_evidence(
+            PidNamespaceMode::Auto,
+            Some("runit"),
+            "0::/\n",
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            runit,
+            PidNamespaceScope::Host {
+                diagnostic: Some(
+                    "PID namespace auto-detection: init system not recognized; assuming host namespace"
+                )
+            }
+        );
+        assert_eq!(
+            pid_namespace_scope_from_evidence(
+                PidNamespaceMode::Auto,
+                Some("systemd"),
+                "0::/\n",
+                true,
+                false,
+                false,
+            ),
+            PidNamespaceScope::Restricted,
+            "/.dockerenv is affirmative restricted evidence"
+        );
+        assert_eq!(
+            pid_namespace_scope_from_evidence(
+                PidNamespaceMode::Auto,
+                Some("systemd"),
+                "0::/\n",
+                false,
+                false,
+                true,
+            ),
+            PidNamespaceScope::Restricted,
+            "/run/.containerenv is affirmative Podman evidence"
+        );
+        assert_eq!(
+            pid_namespace_scope_from_evidence(
+                PidNamespaceMode::Restricted,
+                Some("systemd"),
+                "0::/\n",
+                false,
+                false,
+                false,
+            ),
+            PidNamespaceScope::Restricted,
+            "the explicit compose override wins over ambiguous auto evidence"
+        );
+        assert_eq!(
+            pid_namespace_scope_from_evidence(
+                PidNamespaceMode::Host,
+                Some("entrypoint"),
+                "0::/system.slice/docker-abc.scope\n",
+                true,
+                true,
+                true,
+            ),
+            PidNamespaceScope::Host { diagnostic: None },
+            "explicit host mode always collects host providers"
+        );
+        assert_eq!(
+            PidNamespaceMode::from_env_value(None),
+            PidNamespaceMode::Auto
+        );
+        assert_eq!(
+            PidNamespaceMode::from_env_value(Some("restricted")),
+            PidNamespaceMode::Restricted
+        );
+    }
+
+    #[test]
+    fn python_container_cgroup_rows_are_filtered_before_the_process_cap() {
+        let cgroup = "0::/system.slice/docker-abc123def456.scope\n";
+        assert!(cgroup_implies_container(cgroup));
+        let table = concat!(
+            " 9000000  root  python3  /usr/bin/python3 /container/app.py\n",
+            " 9000001  root  python3  /usr/bin/python3 /host/app.py\n"
+        );
+        let (nodes, capped) = python_nodes_from_ps_output_with_container_filter(table, |pid| {
+            pid == 9_000_000 && cgroup.lines().any(cgroup_implies_container)
+        });
+        assert!(!capped);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].id, "python_process_9000001");
+    }
+
+    #[test]
+    fn restricted_namespace_omits_host_scoped_collectors_and_python() {
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut diagnostics = Vec::new();
+        collect_host_scoped_runtime_providers(
+            PidNamespaceScope::Restricted,
+            &mut nodes,
+            &mut edges,
+            &mut diagnostics,
+        );
+        let mut python_command = Command::new("sh");
+        python_command
+            .arg("-c")
+            .arg("printf ' 9000000 root python3 python3 /app.py'");
+        collect_python_processes_with_command_in_scope(
+            python_command,
+            true,
+            &mut nodes,
+            &mut diagnostics,
+        );
+
+        assert!(nodes.is_empty());
+        assert!(edges.is_empty());
+        for provider in [
+            RuntimeProviderKind::Network,
+            RuntimeProviderKind::Systemd,
+            RuntimeProviderKind::ScheduledJob,
+            RuntimeProviderKind::Pm2,
+            RuntimeProviderKind::Tmux,
+            RuntimeProviderKind::Python,
+        ] {
+            assert!(diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.provider == provider));
+        }
+    }
+
+    #[test]
+    fn provider_diagnostics_are_redacted_before_stderr_and_api_storage() {
+        let sentinel = "DOCKERMAP_TEST_FAKE_STDERR_SECRET";
+        let mut diagnostics = Vec::new();
+        push_provider_diagnostic(
+            &mut diagnostics,
+            RuntimeProviderKind::Npm,
+            DiagnosticSeverity::Warning,
+            format!("npm discovery failed at /tmp/{sentinel}/package.json"),
+        );
+        let api_message = &diagnostics[0].message;
+        let mut captured_stderr = Vec::new();
+        write_provider_diagnostic(
+            &mut captured_stderr,
+            &RuntimeProviderKind::Npm,
+            &DiagnosticSeverity::Warning,
+            api_message,
+        )
+        .expect("test stderr capture should accept a diagnostic");
+        let captured_stderr = String::from_utf8(captured_stderr).expect("stderr is utf-8");
+
+        assert_eq!(api_message, REDACTED_VALUE);
+        assert!(!api_message.contains(sentinel));
+        assert!(!captured_stderr.contains(sentinel));
+        assert!(captured_stderr.contains(REDACTED_VALUE));
+    }
+
+    #[test]
+    fn provider_timeout_starts_before_spawn_and_kills_pipe_holding_descendants() {
+        let started_before_spawn = Instant::now() - Duration::from_millis(200);
+        let mut fast_command = Command::new("sh");
+        fast_command.arg("-c").arg("echo should-not-complete");
+        let delayed_spawn_error = run_command_with_timeout_started(
+            fast_command,
+            Duration::from_millis(50),
+            started_before_spawn,
+        )
+        .expect_err("a delayed spawn exhausts the existing provider budget");
+        assert_eq!(
+            delayed_spawn_error,
+            ProviderCommandError::TimedOut(Duration::from_millis(50))
+        );
+
+        let started = Instant::now();
+        let mut pipe_holder = Command::new("sh");
+        pipe_holder.arg("-c").arg("sleep 30 & exit 0");
+        let error = run_command_with_timeout(pipe_holder, Duration::from_millis(200))
+            .expect_err("a child retaining the pipes must time out");
+        assert_eq!(
+            error,
+            ProviderCommandError::TimedOut(Duration::from_millis(200))
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a pipe holder must not block reader joins: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn runtime_collection_guard_prevents_two_rapid_refreshes() {
+        let in_flight = Arc::new(AtomicBool::new(false));
+        let first = RuntimeCollectionGuard::acquire(in_flight.clone())
+            .expect("first refresh starts one collection");
+        assert!(
+            RuntimeCollectionGuard::acquire(in_flight.clone()).is_none(),
+            "a second refresh must skip while the first blocking collection remains in flight"
+        );
+        drop(first);
+        assert!(
+            RuntimeCollectionGuard::acquire(in_flight).is_some(),
+            "the next refresh may run after the original collection finishes"
         );
     }
 
