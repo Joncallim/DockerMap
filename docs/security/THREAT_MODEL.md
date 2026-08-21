@@ -139,6 +139,11 @@ Automated tests currently cover:
 - Provider redaction fixtures for systemd, tmux, npm/package metadata, native-process-shaped
   output, reverse-proxy markers, DNS markers, provider diagnostics, and provider edge metadata.
 - GUI smoke coverage against daemon fallback mode.
+- Route and middleware completeness: every Express layer must be wrapped in
+  `trackedMiddleware()` and every route registered through `registerRoute()` with
+  `ROUTE_MANIFEST`. The completeness walker fails CI for any untracked
+  response-capable layer; maintain the tracked middleware list in
+  `apps/api/src/index.ts` (lines 38-43).
 
 Security checks that still require release evidence:
 
