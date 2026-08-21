@@ -224,10 +224,12 @@ export function hashString(value: string): number {
 }
 
 export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): SystemModel {
-  // First-wins like networkByName/volumeByName/imageByRef below: a duplicate
-  // network id resolves to the FIRST record's name so Service.networks stays
-  // consistent with the name indexes (a last-wins `new Map(...)` would leave
-  // containers pointing at a name that misses networkByName).
+  // Network ids are engine-unique, so this plain id→name map is unambiguous:
+  // a duplicate id resolves to the FIRST record's name so Service.networks
+  // stays consistent with the name indexes (a last-wins `new Map(...)` would
+  // leave containers pointing at a name that misses networkByName). Unlike
+  // this id map, the NAME routing indexes below (networkByName,
+  // volumeByName, imageByRef) are collision-safe — see buildIdentityIndex.
   const networkNameById = new Map<string, string>();
   for (const n of snapshot.networks) {
     if (n.id !== "" && !networkNameById.has(n.id)) networkNameById.set(n.id, n.name);

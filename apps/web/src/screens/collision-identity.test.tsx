@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
 import { AppContext, type AppContextValue } from "../context";
 import { buildModel } from "../lib/model";
+import { COLLISION_HINT } from "../lib/identity";
 import ImageDetail from "./ImageDetail";
 import Images from "./Images";
 import MapScreen from "./Map";
@@ -34,7 +35,13 @@ const fixture: DockerSnapshot = {
       role: "edge proxy",
       networks: ["[redacted]"],
       ports: [],
-      mounts: [],
+      mounts: [
+        // Collided named-volume mount: its source sanitizes to the same
+        // "[redacted]" as BOTH volume records, so volumeByName excludes it.
+        // The Map inspector must keep the mount visible as non-routable
+        // evidence (collision hint/tag) and never emit a /volumes/ link.
+        { id: "m_gw_vol", kind: "named_volume", source: "[redacted]", target: "/data", readOnly: false }
+      ],
       dependsOn: []
     },
     {
@@ -166,13 +173,21 @@ describe("collided redacted identities stay visible and never route", () => {
     const mapHtml = renderScreen("/map", "/map", <MapScreen initialSelectedId="c_gw" />);
     // The collided network chip and image value stay visible as plain text…
     expect(mapHtml).toContain("[redacted]");
-    // …but neither emits a detail link (map lookups fail closed).
+    // …the collided named-volume MOUNT stays visible too: the section renders
+    // with the collision hint and tag (pre-fix the mount was filtered out and
+    // the whole section disappeared)…
+    expect(mapHtml).toContain("Named volumes");
+    expect(mapHtml).toContain("identity collision");
+    expect(mapHtml).toContain(COLLISION_HINT);
+    // …and none of them emit a detail link (map lookups fail closed).
     expect(mapHtml).not.toContain('href="/networks/');
     expect(mapHtml).not.toContain('href="/images/');
+    expect(mapHtml).not.toContain('href="/volumes/');
 
     const detailHtml = renderScreen("/services/gateway", "/services/:name", <ServiceDetail />);
     expect(detailHtml).toContain("[redacted]");
     expect(detailHtml).not.toContain('href="/networks/');
     expect(detailHtml).not.toContain('href="/images/');
+    expect(detailHtml).not.toContain('href="/volumes/');
   });
 });

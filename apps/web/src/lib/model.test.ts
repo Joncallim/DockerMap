@@ -240,7 +240,7 @@ describe("empty schema-valid identities stay visible and non-routable", () => {
     expect(model.networks[0].members).toEqual([""]);
     expect(model.volumes[0].attachedTo).toEqual([""]);
     expect(model.images[0].containers).toEqual([""]);
-    // …but empty keys never enter the first-wins routing indexes, so empty
+    // …but empty keys never enter the collision-safe routing indexes, so empty
     // identities can never emit a detail link.
     expect(model.imageByRef.has("")).toBe(false);
     expect(model.networkByName.has("")).toBe(false);
