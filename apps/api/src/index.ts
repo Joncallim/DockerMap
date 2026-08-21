@@ -35,6 +35,13 @@ import {
 import { canonicalRoutePath, routeById, routeForRequest, type RegisteredRoute, type RouteId } from "./routes.js";
 
 export const app = express();
+const expectedMiddleware = new WeakSet<Function>();
+
+function trackedMiddleware<T extends express.RequestHandler | express.ErrorRequestHandler>(middleware: T): T {
+  expectedMiddleware.add(middleware);
+  return middleware;
+}
+
 const port = readPort(process.env.PORT, 4000);
 const daemonBaseUrl = readDaemonBaseUrl(process.env.DOCKERMAP_DAEMON_URL ?? "http://127.0.0.1:4100");
 const apiToken = readApiToken(process.env.DOCKERMAP_API_TOKEN);
@@ -327,9 +334,9 @@ app.disable("x-powered-by");
 // Only the loopback nginx hop that ships in the image may supply forwarding
 // metadata. The image nginx overwrites X-Forwarded-For from its peer address.
 app.set("trust proxy", "loopback");
-app.use(helmet({ strictTransportSecurity: false }));
+app.use(trackedMiddleware(helmet({ strictTransportSecurity: false })));
 app.use(
-  cors({
+  trackedMiddleware(cors({
     origin(origin, callback) {
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
@@ -340,23 +347,23 @@ app.use(
     methods: ["GET", "HEAD", "POST"],
     credentials: true,
     optionsSuccessStatus: 204
-  }),
+  })),
 );
 // Record only method, path, and response metadata before authentication or
 // parsing. Deliberately never log headers, cookies, query strings, or bodies.
-app.use((req, res, next) => {
+app.use(trackedMiddleware((req, res, next) => {
   const started = process.hrtime.bigint();
   res.on("finish", () => {
     const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
     console.log(`${req.method} ${canonicalRoutePath(req.path) ?? "/unknown"} ${res.statusCode} ${durationMs.toFixed(1)}ms`);
   });
   next();
-});
-app.use(limitSessionAttempts);
+}));
+app.use(trackedMiddleware(limitSessionAttempts));
 // Auth precedes body parsing so unauthenticated callers cannot observe or
 // consume parser work; OPTIONS remains exempt inside requireAuthentication.
-app.use(requireAuthentication);
-app.use(express.json({ limit: "16kb" }));
+app.use(trackedMiddleware(requireAuthentication));
+app.use(trackedMiddleware(express.json({ limit: "16kb" })));
 
 function registerRoute(id: RouteId, handler: express.RequestHandler) {
   const route = routeById(id);
@@ -1281,36 +1288,55 @@ registerRoute("events-stream", async (req, res) => {
   });
 });
 
+type ExpressLayer = {
+  name?: string;
+  route?: { path: string; methods: Record<string, boolean> };
+  handle?: Function & { stack?: ExpressLayer[] };
+};
+
 export function registeredRoutes(appInstance: express.Express): RegisteredRoute[] {
-  const router = appInstance as express.Express & {
-    _router?: { stack?: Array<{ route?: { path: string; methods: Record<string, boolean> } }> };
+  const router = appInstance as express.Express & { _router?: { stack?: ExpressLayer[] } };
+  const routes: RegisteredRoute[] = [];
+  const unknownLayers: string[] = [];
+  const walk = (stack: readonly ExpressLayer[]) => {
+    for (const layer of stack) {
+      if (layer.route) {
+        routes.push(...Object.entries(layer.route.methods)
+          .filter(([, registered]) => registered)
+          .map(([method]) => ({ method: method.toUpperCase() as RegisteredRoute["method"], path: layer.route!.path })));
+        continue;
+      }
+      if (layer.handle?.stack) walk(layer.handle.stack);
+      // Express itself installs these two initialization layers. Every
+      // application middleware, responder, and error handler is explicitly
+      // registered through trackedMiddleware above.
+      const expressBuiltin = layer.name === "query" || layer.name === "expressInit";
+      if (!expressBuiltin && !expectedMiddleware.has(layer.handle ?? (() => undefined))) {
+        unknownLayers.push(layer.name || "anonymous middleware");
+      }
+    }
   };
-  const stack: Array<{ route?: { path: string; methods: Record<string, boolean> } }> = router._router?.stack ?? [];
-  return stack.flatMap((layer) => {
-    const route = layer.route;
-    if (!route) return [];
-    return Object.entries(route.methods)
-      .filter(([, registered]) => registered)
-      .map(([method]) => ({ method: method.toUpperCase() as RegisteredRoute["method"], path: route.path }));
-  });
+  walk(router._router?.stack ?? []);
+  if (unknownLayers.length) throw new Error(`Unknown Express layer(s): ${unknownLayers.join(", ")}`);
+  return routes;
 }
 
-app.use((_req, res) => {
+app.use(trackedMiddleware((_req, res) => {
   res.status(404).json({
     code: "not_found",
     message: "Route not found"
   } satisfies ApiError);
-});
+}));
 
 app.use(
-  (
+  trackedMiddleware((
     error: unknown,
     _req: express.Request,
     res: express.Response,
     _next: express.NextFunction,
   ) => {
     sendError(res, error);
-  },
+  }),
 );
 
 const server = app.listen(port, "127.0.0.1", () => {
