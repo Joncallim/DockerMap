@@ -94,6 +94,31 @@ jobs:
       - name: Run GUI smoke tests
         run: npm run test:e2e
 
+  production-image-e2e:
+    name: Production image E2E
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+
+      # This is intentionally separate from the image curl smoke below: it
+      # exercises nginx, browser auth, live labeled Docker inventory, and the
+      # two-client rate-limit regression inside the built production image.
+      - name: Run production-image browser tests
+        run: DOCKERMAP_E2E_PRODUCTION_IMAGE=1 npx playwright test --config tests/e2e/playwright.config.ts --grep @production-image
+
   docker-image:
     name: Docker image
     runs-on: ubuntu-latest

@@ -32,6 +32,7 @@ import {
   snapshot as mockSnapshot,
   volumes as mockVolumes
 } from "./mockData.js";
+import { canonicalRoutePath, isRoutePath, routeById, type RouteId } from "./routes.js";
 
 const app = express();
 const port = readPort(process.env.PORT, 4000);
@@ -248,21 +249,8 @@ function unregisterSessionStream(session: string, response: express.Response) {
   if (streams.size === 0) activeSessionStreams.delete(session);
 }
 
-const CANONICAL_STATIC_LOG_PATHS = new Set([
-  "/health", "/api/health", "/api/status", "/api/openapi.json", "/api/snapshot", "/api/graph", "/api/runtime/map",
-  "/api/diagnostics", "/api/containers", "/api/images", "/api/networks", "/api/volumes", "/api/logs",
-  "/api/compose/scan", "/api/compose/graph", "/api/compose/edit-plan", "/api/events/stream",
-  "/api/auth/session", "/api/auth/session/logout", "/api/auth/whoami", "/api/v1", "/api/v1/"
-]);
-
-function canonicalLogPath(path: string) {
-  if (/^\/api(?:\/v1)?\/containers\/[^/]+$/.test(path)) return "/api/containers/:name";
-  const unversionedPath = path === "/api/v1/" ? path : path.startsWith("/api/v1/") ? path.replace(/^\/api\/v1/, "/api") : path;
-  return CANONICAL_STATIC_LOG_PATHS.has(unversionedPath) ? unversionedPath : "/unknown";
-}
-
 function limitSessionAttempts(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (authMode !== "bearer" || req.method !== "POST" || req.path !== "/api/auth/session") {
+  if (authMode !== "bearer" || !isRoutePath("auth-session", req.method, req.path)) {
     next();
     return;
   }
@@ -294,7 +282,7 @@ function sessionCookieAttributes(req: express.Request, maxAge: number) {
 }
 
 function isPublicRoute(req: express.Request) {
-  return req.method === "OPTIONS" || (authMode === "bearer" && req.method === "POST" && req.path === "/api/auth/session");
+  return req.method === "OPTIONS" || (authMode === "bearer" && isRoutePath("auth-session", req.method, req.path));
 }
 
 function requireAuthentication(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -358,7 +346,7 @@ app.use((req, res, next) => {
   const started = process.hrtime.bigint();
   res.on("finish", () => {
     const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
-    console.log(`${req.method} ${canonicalLogPath(req.path)} ${res.statusCode} ${durationMs.toFixed(1)}ms`);
+    console.log(`${req.method} ${canonicalRoutePath(req.path) ?? "/unknown"} ${res.statusCode} ${durationMs.toFixed(1)}ms`);
   });
   next();
 });
@@ -368,7 +356,18 @@ app.use(limitSessionAttempts);
 app.use(requireAuthentication);
 app.use(express.json({ limit: "16kb" }));
 
-app.post("/api/auth/session", (req, res) => {
+function registerRoute(id: RouteId, handler: express.RequestHandler) {
+  const route = routeById(id);
+  for (const routePath of route.paths) {
+    if (route.method === "GET") {
+      app.get(routePath.path, handler);
+    } else {
+      app.post(routePath.path, handler);
+    }
+  }
+}
+
+registerRoute("auth-session", (req, res) => {
   if (authMode !== "bearer" || !apiToken || typeof req.body?.token !== "string" || !tokenMatches(req.body.token, apiToken)) {
     res.status(401).json({ code: "unauthorized", message: "A valid API token is required" } satisfies ApiError);
     return;
@@ -381,32 +380,24 @@ app.post("/api/auth/session", (req, res) => {
   res.status(204).end();
 });
 
-app.post("/api/auth/session/logout", (req, res) => {
+registerRoute("auth-session-logout", (req, res) => {
   const session = readCookie(req, authCookieName);
   revokeSession(session);
   res.setHeader("Set-Cookie", `${authCookieName}=; ${sessionCookieAttributes(req, 0)}`);
   res.status(204).end();
 });
 
-// Versioned alias: /api/v1/* maps to the same read-only /api/* surface so
-// consumers can pin a version. Authentication and CORS behave identically.
 // The bare /api/v1 (with or without trailing slash) answers with a small
-// version descriptor instead of 404ing, matching the OpenAPI alias claim.
+// version descriptor instead of 404ing. Versioned aliases for every other
+// route are listed and registered by the route manifest.
 const VERSION_DESCRIPTOR = {
   service: "dockermap",
   apiVersion: "v1",
   version: "0.1.0"
 } as const;
 
-app.use((req, res, next) => {
-  if (req.path === "/api/v1" || req.path === "/api/v1/") {
-    res.json(VERSION_DESCRIPTOR);
-    return;
-  }
-  if (req.path.startsWith("/api/v1/")) {
-    req.url = req.url.replace(/^\/api\/v1/, "/api");
-  }
-  next();
+registerRoute("api-version", (_req, res) => {
+  res.json(VERSION_DESCRIPTOR);
 });
 
 class HttpError extends Error {
@@ -861,7 +852,7 @@ function readOptionalQueryInt(value: unknown, name: string, min: number, max: nu
   return parsed;
 }
 
-app.get("/health", async (_req, res) => {
+registerRoute("health", async (_req, res) => {
   try {
     const health = await fetchDaemon<HealthResponse>("/daemon/health");
     res.json({ status: "ok", daemon: health });
@@ -870,7 +861,7 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-app.get("/api/health", async (_req, res) => {
+registerRoute("api-health", async (_req, res) => {
   try {
     const health = await fetchDaemon<HealthResponse>("/daemon/health");
     res.json({
@@ -896,7 +887,7 @@ function containerStatusKind(status: string): "running" | "offline" | "attention
   return "attention";
 }
 
-app.get("/api/status", async (_req, res) => {
+registerRoute("status", async (_req, res) => {
   try {
     const [health, snapshot] = await Promise.all([
       fetchDaemon<HealthResponse>("/daemon/health"),
@@ -941,7 +932,7 @@ app.get("/api/status", async (_req, res) => {
   }
 });
 
-app.get("/api/openapi.json", (_req, res) => {
+registerRoute("openapi", (_req, res) => {
   res.json({
     openapi: "3.0.3",
     info: {
@@ -1031,7 +1022,7 @@ app.get("/api/openapi.json", (_req, res) => {
   });
 });
 
-app.get("/api/auth/whoami", (req, res) => {
+registerRoute("auth-whoami", (req, res) => {
   const user = req.get(authUserHeader) ?? null;
   const name = req.get(authNameHeader) ?? null;
   const email = req.get(authEmailHeader) ?? null;
@@ -1052,7 +1043,7 @@ app.get("/api/auth/whoami", (req, res) => {
   );
 });
 
-app.get("/api/snapshot", async (_req, res) => {
+registerRoute("snapshot", async (_req, res) => {
   try {
     res.json(await fetchDaemon<DockerSnapshot>("/daemon/snapshot"));
   } catch (error) {
@@ -1060,7 +1051,7 @@ app.get("/api/snapshot", async (_req, res) => {
   }
 });
 
-app.get("/api/graph", async (_req, res) => {
+registerRoute("graph", async (_req, res) => {
   try {
     res.json(await fetchDaemon<GraphResponse>("/daemon/graph"));
   } catch (error) {
@@ -1068,7 +1059,7 @@ app.get("/api/graph", async (_req, res) => {
   }
 });
 
-app.get("/api/runtime/map", async (_req, res) => {
+registerRoute("runtime-map", async (_req, res) => {
   try {
     res.json(await fetchDaemon<RuntimeMap>("/daemon/runtime/map"));
   } catch (error) {
@@ -1076,7 +1067,7 @@ app.get("/api/runtime/map", async (_req, res) => {
   }
 });
 
-app.get("/api/diagnostics", async (_req, res) => {
+registerRoute("diagnostics", async (_req, res) => {
   try {
     const entries: DiagnosticsEntry[] = [];
     const [scanResult, runtimeResult] = await Promise.allSettled([
@@ -1134,7 +1125,7 @@ app.get("/api/diagnostics", async (_req, res) => {
   }
 });
 
-app.get("/api/containers", async (_req, res) => {
+registerRoute("containers", async (_req, res) => {
   try {
     res.json(await fetchDaemon<{ containers: ContainerRecord[] }>("/daemon/containers"));
   } catch (error) {
@@ -1142,7 +1133,7 @@ app.get("/api/containers", async (_req, res) => {
   }
 });
 
-app.get("/api/containers/:name", async (req, res) => {
+registerRoute("container", async (req, res) => {
   try {
     const name = readRequiredQueryString(req.params.name, "name", maxContainerNameLength);
     res.json(
@@ -1153,7 +1144,7 @@ app.get("/api/containers/:name", async (req, res) => {
   }
 });
 
-app.get("/api/images", async (_req, res) => {
+registerRoute("images", async (_req, res) => {
   try {
     res.json(await fetchDaemon<{ images: ImageRecord[] }>("/daemon/images"));
   } catch (error) {
@@ -1161,7 +1152,7 @@ app.get("/api/images", async (_req, res) => {
   }
 });
 
-app.get("/api/networks", async (_req, res) => {
+registerRoute("networks", async (_req, res) => {
   try {
     res.json(await fetchDaemon<{ networks: NetworkRecord[] }>("/daemon/networks"));
   } catch (error) {
@@ -1169,7 +1160,7 @@ app.get("/api/networks", async (_req, res) => {
   }
 });
 
-app.get("/api/volumes", async (_req, res) => {
+registerRoute("volumes", async (_req, res) => {
   try {
     res.json(await fetchDaemon<{ volumes: VolumeRecord[] }>("/daemon/volumes"));
   } catch (error) {
@@ -1177,7 +1168,7 @@ app.get("/api/volumes", async (_req, res) => {
   }
 });
 
-app.get("/api/logs", async (req, res) => {
+registerRoute("logs", async (req, res) => {
   try {
     res.json(await fetchDaemon<LogsResponse>(buildLogsPath(req.query)));
   } catch (error) {
@@ -1185,7 +1176,7 @@ app.get("/api/logs", async (req, res) => {
   }
 });
 
-app.get("/api/compose/scan", async (req, res) => {
+registerRoute("compose-scan", async (req, res) => {
   try {
     res.json(await fetchDaemon<ComposeScan>(buildComposeScanPath(req.query)));
   } catch (error) {
@@ -1193,7 +1184,7 @@ app.get("/api/compose/scan", async (req, res) => {
   }
 });
 
-app.get("/api/compose/graph", async (req, res) => {
+registerRoute("compose-graph", async (req, res) => {
   try {
     res.json(await fetchDaemon<ComposeGraph>(buildComposeScanPath(req.query).replace("/scan", "/graph")));
   } catch (error) {
@@ -1201,7 +1192,7 @@ app.get("/api/compose/graph", async (req, res) => {
   }
 });
 
-app.get("/api/compose/edit-plan", async (req, res) => {
+registerRoute("compose-edit-plan", async (req, res) => {
   try {
     res.json(await fetchDaemon<ComposeEditPlan>(buildComposeEditPlanPath(req.query)));
   } catch (error) {
@@ -1209,7 +1200,7 @@ app.get("/api/compose/edit-plan", async (req, res) => {
   }
 });
 
-app.get("/api/events/stream", async (req, res) => {
+registerRoute("events-stream", async (req, res) => {
   const requestedSession = readCookie(req, authCookieName);
   const cookieSession = authMode === "bearer" && validSession(requestedSession) ? requestedSession : "";
   const registration = registerSessionStream(cookieSession, res);

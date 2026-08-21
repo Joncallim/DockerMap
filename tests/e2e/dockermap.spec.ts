@@ -255,18 +255,51 @@ test.describe("DockerMap GUI", () => {
       throw error;
     }
 
-    expect(stack.postProductionSessionAttempt).toBeTruthy();
+    expect(stack.postProductionSessionBurst).toBeTruthy();
     for (const client of ["a", "b"] as const) {
-      for (let attempt = 1; attempt <= 20; attempt += 1) {
-        const result = stack.postProductionSessionAttempt!(client, `198.51.100.${attempt}`);
-        expect(result.status, `${client} attempt ${attempt}`).toBe(401);
+      const burst = stack.postProductionSessionBurst!(client, "198.51.100");
+      expect(burst.elapsedMs, `${client} burst must complete inside the 60-second limiter window`).toBeLessThan(60_000);
+      expect(burst.responses, `${client} burst response count`).toHaveLength(21);
+      for (const [index, result] of burst.responses.entries()) {
+        if (index < 20) {
+          expect(result.status, `${client} attempt ${index + 1}`).toBe(401);
+        } else {
+          expect(result.status, `${client} attempt ${index + 1}`).toBe(429);
+          expect(JSON.parse(result.body)).toMatchObject({ code: "rate_limited" });
+        }
       }
-      const limited = stack.postProductionSessionAttempt!(client, "203.0.113.250");
-      expect(limited.status, `${client} attempt 21`).toBe(429);
-      expect(JSON.parse(limited.body)).toMatchObject({ code: "rate_limited" });
     }
   });
 
+  test("maps a labeled real Docker fixture through the production image nginx path @production-image", async ({ page, request }) => {
+    test.skip(!process.env.DOCKERMAP_E2E_PRODUCTION_IMAGE, "Set DOCKERMAP_E2E_PRODUCTION_IMAGE=1 to build the production image.");
+
+    try {
+      stack = await startProductionImageStack({ liveDocker: true });
+    } catch (error) {
+      if (error instanceof SkipLiveDockerError) test.skip(true, error.message);
+      throw error;
+    }
+
+    expect(stack.productionSocketReadOnly).toBe(true);
+    const projectName = stack.projectName!;
+    const expectedNames = ["api", "worker", "caddy-proxy", "dnsmasq-dns", "tailscale-node", "headscale-control"]
+      .map((service) => `${projectName}-${service}-1`)
+      .sort();
+    const snapshot = await (await request.get(`${stack.apiUrl}/api/snapshot`, {
+      headers: { Authorization: "Bearer dockermap-production-e2e-token" }
+    })).json();
+    expect(snapshot.containers.map((container: { name: string }) => container.name).sort()).toEqual(expectedNames);
+
+    await page.goto(stack.webUrl);
+    await page.getByRole("textbox", { name: "API token" }).fill("dockermap-production-e2e-token");
+    await page.getByRole("button", { name: "Connect" }).click();
+    await expect(page.getByText(/Docker Engine/)).toBeVisible();
+    await openSpace(page, "Service Map", "/map");
+    for (const name of expectedNames) {
+      await expect(page.getByRole("main")).toContainText(name);
+    }
+  });
   test("reports a healthy Docker healthcheck in none, bearer, and forward-auth modes @production-image", async () => {
     test.skip(!process.env.DOCKERMAP_E2E_PRODUCTION_IMAGE, "Set DOCKERMAP_E2E_PRODUCTION_IMAGE=1 to build the production image.");
     for (const env of [
