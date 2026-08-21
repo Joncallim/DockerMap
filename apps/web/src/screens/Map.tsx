@@ -118,7 +118,9 @@ export default function MapScreen() {
                 </div>
               )}
 
-              <KeyValue label="Image" value={`${selected.imageRepo}:${selected.imageTag}`} mono />
+              <KeyValue label="Image" value={model.imageByRef.has(selected.image) ? <Link className="entity-detail-link" to={`/images/${encodeURIComponent(selected.image)}`}>{selected.image}</Link> : selected.image} mono />
+              {selected.networks.length > 0 && <div className="inspector-section"><h4>Networks</h4><div className="tag-wrap">{selected.networks.map((network) => model.networkByName.has(network) ? <Link key={network} className="ref-chip" to={`/networks/${encodeURIComponent(network)}`}>{network}</Link> : <Tag key={network} icon="network">{network}</Tag>)}</div></div>}
+              {selected.mounts.filter((mount) => mount.kind === "named_volume" && mount.source && model.volumeByName.has(mount.source)).length > 0 && <div className="inspector-section"><h4>Named volumes</h4><div className="tag-wrap">{selected.mounts.filter((mount) => mount.kind === "named_volume" && mount.source && model.volumeByName.has(mount.source)).map((mount) => <Link key={mount.id} className="ref-chip" to={`/volumes/${encodeURIComponent(mount.source!)}`}>{mount.source}</Link>)}</div></div>}
               <Link className="primary-link" to={`/services/${encodeURIComponent(selected.name)}`}>
                 Open service detail <Icon name="arrow" size={14} />
               </Link>

@@ -1450,6 +1450,27 @@ kbd {
   align-items: center;
 }
 
+.entity-detail-link,
+.image-detail-link {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.entity-detail-link:hover,
+.image-detail-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.entity-detail-link:focus-visible,
+.image-detail-link:focus-visible,
+.entity-detail-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
 .detail-id {
   display: flex;
   align-items: center;

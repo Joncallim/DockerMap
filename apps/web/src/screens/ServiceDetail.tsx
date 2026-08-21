@@ -96,7 +96,7 @@ export default function ServiceDetail() {
       {tab === "resources" && <Resources service={service} />}
       {tab === "logs" && <Logs name={service.name} tick={tick} />}
       {tab === "config" && (
-        <Config service={service} showInternals={showInternals} onToggleInternals={() => setShowInternals((v) => !v)} />
+        <Config service={service} model={model} showInternals={showInternals} onToggleInternals={() => setShowInternals((v) => !v)} />
       )}
     </div>
   );
@@ -108,7 +108,7 @@ function Overview({ service, model }: { service: Service; model: NonNullable<Ret
       <Panel title="At a glance" icon="service">
         <KeyValue label="State" value={<StatePill state={service.state} />} />
         <KeyValue label="Raw status" value={service.status} mono />
-        <KeyValue label="Image" value={`${service.imageRepo}:${service.imageTag}`} mono />
+        <KeyValue label="Image" value={model.imageByRef.has(service.image) ? <Link className="entity-detail-link" to={`/images/${encodeURIComponent(service.image)}`}>{service.image}</Link> : service.image} mono />
         <KeyValue label="Role" value={service.role} />
         <KeyValue label="Networks" value={service.networks.join(", ") || "—"} />
       </Panel>
@@ -198,10 +198,12 @@ function Logs({ name, tick }: { name: string; tick: number }) {
 
 function Config({
   service,
+  model,
   showInternals,
   onToggleInternals
 }: {
   service: Service;
+  model: NonNullable<ReturnType<typeof useApp>["model"]>;
   showInternals: boolean;
   onToggleInternals: () => void;
 }) {
@@ -215,7 +217,7 @@ function Config({
             {service.mounts.map((m) => (
               <li key={m.id} className="mount-row">
                 <Tag tone="muted">{m.kind.replace("_", " ")}</Tag>
-                <code>{m.source ?? "anonymous"}</code>
+                {m.kind === "named_volume" && m.source && model.volumeByName.has(m.source) ? <Link className="entity-detail-link" to={`/volumes/${encodeURIComponent(m.source)}`}>{m.source}</Link> : <code>{m.source ?? "anonymous"}</code>}
                 <Icon name="arrow" size={13} />
                 <code>{m.target}</code>
                 {m.readOnly && <Tag tone="warn">read-only</Tag>}
@@ -228,9 +230,7 @@ function Config({
       <Panel title="Networking" icon="network">
         <div className="tag-wrap">
           {service.networks.map((n) => (
-            <Tag key={n} icon="network">
-              {n}
-            </Tag>
+            model.networkByName.has(n) ? <Link key={n} className="ref-chip" to={`/networks/${encodeURIComponent(n)}`}>{n}</Link> : <Tag key={n} icon="network">{n}</Tag>
           ))}
           {service.ports.map((p) => (
             <Tag key={p} icon="link" tone="accent">
@@ -245,18 +245,18 @@ function Config({
         icon="layers"
         hint="Layer 4 — shown on request"
         actions={
-          <button type="button" className="ghost-link" onClick={onToggleInternals}>
+          <button type="button" className="ghost-link" aria-expanded={showInternals} aria-controls="service-internals" onClick={onToggleInternals}>
             {showInternals ? "Hide" : "Show"} <Icon name={showInternals ? "up" : "down"} size={13} />
           </button>
         }
       >
         {showInternals ? (
-          <>
+          <div id="service-internals">
             <KeyValue label="Container ID" value={service.id} mono />
             <KeyValue label="Image reference" value={service.image} mono />
             <KeyValue label="Raw status" value={service.status} mono />
             <KeyValue label="Port bindings" value={service.ports.join(", ") || "none"} mono />
-          </>
+          </div>
         ) : (
           <p className="muted-line">Container IDs, raw image refs and port bindings are hidden until you ask for them.</p>
         )}

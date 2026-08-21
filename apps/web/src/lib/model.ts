@@ -1,6 +1,7 @@
 import type {
   ContainerRecord,
   DockerSnapshot,
+  ImageRecord,
   NetworkRecord,
   RuntimeMap,
   RuntimeMapDiagnostic,
@@ -78,9 +79,13 @@ export interface SystemModel {
   relationships: Relationship[];
   networks: NetworkRecord[];
   volumes: VolumeRecord[];
+  images: ImageRecord[];
   runtime: RuntimeModel;
   byId: Map<string, Service>;
   byName: Map<string, Service>;
+  networkByName: Map<string, NetworkRecord>;
+  volumeByName: Map<string, VolumeRecord>;
+  imageByRef: Map<string, ImageRecord>;
   lastUpdated: number;
 }
 
@@ -257,6 +262,9 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
 
   const byId = new Map(services.map((s) => [s.id, s]));
   const byName = new Map(services.map((s) => [s.name, s]));
+  const networkByName = firstByNonEmptyKey(snapshot.networks, (network) => network.name);
+  const volumeByName = firstByNonEmptyKey(snapshot.volumes, (volume) => volume.name);
+  const imageByRef = firstByNonEmptyKey(snapshot.images, (image) => image.image);
 
   const relationships = buildRelationships(services, snapshot, byId);
   const runtime = buildRuntimeModel(runtimeMap);
@@ -266,11 +274,25 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
     relationships,
     networks: snapshot.networks,
     volumes: snapshot.volumes,
+    images: snapshot.images,
     runtime,
     byId,
     byName,
+    networkByName,
+    volumeByName,
+    imageByRef,
     lastUpdated: Math.max(snapshot.lastUpdated, runtime.lastUpdated)
   };
+}
+
+/** Preserve snapshot order for duplicate identities; empty keys cannot route. */
+function firstByNonEmptyKey<T>(records: T[], keyFor: (record: T) => string): Map<string, T> {
+  const index = new Map<string, T>();
+  for (const record of records) {
+    const key = keyFor(record);
+    if (key !== "" && !index.has(key)) index.set(key, record);
+  }
+  return index;
 }
 
 function buildRelationships(

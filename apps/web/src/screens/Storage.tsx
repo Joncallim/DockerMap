@@ -43,8 +43,8 @@ export default function Storage() {
         <EmptyState icon="search" title="No matching volumes" body="No volumes match the current filter." />
       ) : (
         <div className="card-grid">
-          {volumes.map((vol) => (
-            <Panel key={vol.id} title={vol.name} icon="storage">
+          {volumes.map((vol, index) => (
+            <Panel key={`${vol.id}-${index}`} title={vol.name ? <Link className="entity-detail-link" to={`/volumes/${encodeURIComponent(vol.name)}`}>{vol.name}</Link> : "Unavailable volume name"} icon="storage" actions={vol.name ? <Link className="ghost-link entity-detail-action" to={`/volumes/${encodeURIComponent(vol.name)}`}>Open detail</Link> : undefined}>
               <div className="tag-wrap">
                 <Tag tone={vol.attachedTo.length ? "accent" : "muted"}>
                   {vol.attachedTo.length ? `${vol.attachedTo.length} consumer${vol.attachedTo.length === 1 ? "" : "s"}` : "idle"}

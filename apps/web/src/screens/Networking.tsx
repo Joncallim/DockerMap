@@ -23,8 +23,8 @@ export default function Networking() {
         <EmptyState icon="network" title="No networks" body="No Docker networks are defined." />
       ) : (
         <div className="card-grid">
-          {model.networks.map((net) => (
-            <Panel key={net.id} title={net.name} icon="network" hint={net.driver}>
+          {model.networks.map((net, index) => (
+            <Panel key={`${net.id}-${index}`} title={net.name ? <Link className="entity-detail-link" to={`/networks/${encodeURIComponent(net.name)}`}>{net.name}</Link> : "Unavailable network name"} icon="network" hint={net.driver} actions={net.name ? <Link className="ghost-link entity-detail-action" to={`/networks/${encodeURIComponent(net.name)}`}>Open detail</Link> : undefined}>
               <div className="tag-wrap">
                 <Tag tone={net.internal ? "warn" : "accent"}>{net.internal ? "internal" : "bridge"}</Tag>
                 <Tag tone="muted">{net.members.length} members</Tag>
