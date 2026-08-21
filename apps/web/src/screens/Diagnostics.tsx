@@ -78,7 +78,7 @@ export default function Diagnostics() {
           <div className="metric-label">Sources</div>
           <div className="metric-value">
             {Object.keys(bySource)
-              .map((source) => `${SOURCE_LABEL[source as keyof typeof SOURCE_LABEL] ?? source}:${bySource[source]}`)
+              .map((source) => `${SOURCE_LABEL[source as keyof typeof SOURCE_LABEL] ?? identityText(source, UNAVAILABLE_DIAGNOSTIC_SOURCE)}:${bySource[source]}`)
               .join(" · ")}
           </div>
         </div>

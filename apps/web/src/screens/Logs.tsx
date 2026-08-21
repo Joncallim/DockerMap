@@ -3,6 +3,7 @@ import type { LogEntry, LogsResponse } from "@dockermap/contracts";
 import { useApp } from "../context";
 import { fetchJson } from "../utils/api";
 import { formatRelative } from "../lib/format";
+import { identityText, UNAVAILABLE_CONTAINER } from "../lib/identity";
 import { EmptyState, ErrorState, Loading, Panel } from "../components/primitives";
 
 type LevelFilter = "all" | "info" | "warn" | "error";
@@ -233,7 +234,7 @@ export default function Logs() {
               {visible.map((entry, index) => (
                 <li key={`${entry.id}-${index}`} className={`log-line lvl-${entry.level}`}>
                   <span className="log-time">{formatRelative(entry.timestamp)}</span>
-                  <span className="log-svc">{entry.container}</span>
+                  <span className="log-svc">{identityText(entry.container, UNAVAILABLE_CONTAINER)}</span>
                   <span className="log-lvl">{entry.level}</span>
                   <span className="log-msg">{entry.message}</span>
                 </li>
