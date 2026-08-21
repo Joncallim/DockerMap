@@ -15,6 +15,7 @@ import type {
   GraphResponse,
   HealthResponse,
   ImageRecord,
+  LogEntry,
   LogsResponse,
   NetworkRecord,
   RuntimeMap,
@@ -22,6 +23,7 @@ import type {
   StatusResponse,
   VolumeRecord
 } from "@dockermap/contracts";
+import { publishApiPayload, publishLogsResponse } from "./publication.js";
 import {
   containers as mockContainers,
   graph as mockGraph,
@@ -60,30 +62,6 @@ const maxLogPageSize = 500;
 // timeline by the request-to-request delta, so the boundary entry lands
 // between two timestamps and is skipped by the cursor filter.
 const MOCK_LOG_BASE_MILLIS = Date.now();
-
-// Mirror the daemon's post-redaction display boundary for values that this
-// aggregation endpoint republishes from either daemon response.
-function normalizePublishedDisplayText(value: string | null): string | null {
-  if (value === null) {
-    return null;
-  }
-  return Array.from(value)
-    .map((character) => {
-      const code = character.codePointAt(0) ?? 0;
-      const unsafe =
-        code <= 0x1f ||
-        (code >= 0x7f && code <= 0x9f) ||
-        (code >= 0x200b && code <= 0x200f) ||
-        (code >= 0x2028 && code <= 0x202e) ||
-        (code >= 0x2060 && code <= 0x2069) ||
-        code === 0xfeff ||
-        (code >= 0xfdd0 && code <= 0xfdef) ||
-        (code & 0xffff) === 0xfffe ||
-        (code & 0xffff) === 0xffff;
-      return unsafe ? "\uFFFD" : character;
-    })
-    .join("");
-}
 
 function readPort(value: string | undefined, fallback: number) {
   const port = Number(value ?? fallback);
@@ -289,10 +267,10 @@ async function fetchDaemon<T>(path: string, init?: RequestInit): Promise<T> {
       });
     }
 
-    return (await response.json()) as T;
+    return publishApiPayload((await response.json()) as T);
   } catch (error) {
     if (allowMockFallback) {
-      return getMockResponse<T>(path);
+      return publishApiPayload(getMockResponse<T>(path));
     }
 
     if (error instanceof HttpError) {
@@ -455,56 +433,14 @@ function getMockResponse<T>(path: string): T {
     const q = logQuery.get("q");
     const cursor = logQuery.get("cursor");
     const limit = Number(logQuery.get("limit") ?? "100");
-    const cursorMillis = cursor ? Number(cursor.split(":")[0]) : null;
-    const cursorOffset = cursor ? Number(cursor.split(":")[1] ?? "0") : 0;
-    const filter = q?.toLowerCase() ?? null;
-    const entries = mockContainers.flatMap((container, index) => [
-      {
-        id: `${container.id}-log-${index}`,
-        timestamp: MOCK_LOG_BASE_MILLIS - index * 30_000,
-        container: container.name,
-        level: "info",
-        message: `${container.name} running on ${container.image}`
-      }
-    ]);
-    // Sort newest-first so the compound "millis:offset" cursor logic below
-    // agrees with the daemon's page_log_entries (same-ms runs are contiguous).
-    const sorted = [...entries].sort((left, right) => right.timestamp - left.timestamp);
-    const filtered = sorted.filter((entry) => {
-      if (service !== null && entry.container !== service) {
-        return false;
-      }
-      if (filter !== null && !entry.message.toLowerCase().includes(filter)) {
-        return false;
-      }
-      if (cursorMillis === null) {
-        return true;
-      }
-      if (entry.timestamp < cursorMillis) {
-        return true;
-      }
-      if (entry.timestamp > cursorMillis) {
-        return false;
-      }
-      const sameTimestampIndex = sorted.filter((other) => other.timestamp === cursorMillis).indexOf(entry);
-      return sameTimestampIndex >= cursorOffset;
-    });
-    const nextCursor =
-      filtered.length > limit
-        ? (() => {
-            const boundary = filtered[limit - 1];
-            const firstAtBoundary = filtered
-              .slice(0, limit)
-              .findIndex((entry) => entry.timestamp === boundary.timestamp);
-            const previouslyEmitted = cursorMillis === boundary.timestamp ? cursorOffset : 0;
-            return `${boundary.timestamp}:${previouslyEmitted + limit - firstAtBoundary}`;
-          })()
-        : null;
-    return {
-      service,
-      entries: filtered.slice(0, limit),
-      nextCursor
-    } as T;
+    const entries: LogEntry[] = mockContainers.map((container, index) => ({
+      id: `${container.id}-log-${index}`,
+      timestamp: MOCK_LOG_BASE_MILLIS - index * 30_000,
+      container: container.name,
+      level: "info",
+      message: `${container.name} running on ${container.image}`
+    }));
+    return publishLogsResponse(service, entries, q, cursor, limit) as T;
   }
 
   if (path.startsWith("/daemon/compose/scan")) {
@@ -551,15 +487,17 @@ function getMockResponse<T>(path: string): T {
 
 function sendError(res: express.Response, error: unknown) {
   if (error instanceof HttpError) {
-    res.status(error.status).json(error.body);
+    res.status(error.status).json(publishApiPayload(error.body));
     return;
   }
 
   console.error(error);
-  res.status(500).json({
-    code: "internal_error",
-    message: "Unexpected API failure"
-  } satisfies ApiError);
+  res.status(500).json(
+    publishApiPayload({
+      code: "internal_error",
+      message: "Unexpected API failure"
+    } satisfies ApiError)
+  );
 }
 
 function buildLogsPath(query: express.Request["query"]) {
@@ -568,6 +506,12 @@ function buildLogsPath(query: express.Request["query"]) {
   // MAX_LOG_SERVICE_CHARS = 128; mirror that so the API rejects the value
   // with a 400 instead of forwarding it and surfacing the daemon's 400.
   const service = readOptionalQueryString(query.service, "service", maxContainerNameLength);
+  if (service && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(service)) {
+    throw new HttpError(400, {
+      code: "invalid_query",
+      message: "Query parameter service must be a Docker container name"
+    });
+  }
   const q = readOptionalQueryString(query.q, "q", maxQueryLength);
   const cursor = readOptionalQueryString(query.cursor, "cursor", 32);
   const limit = readOptionalQueryInt(query.limit, "limit", 1, maxLogPageSize);
@@ -949,12 +893,12 @@ app.get("/api/diagnostics", async (_req, res) => {
     if (scanResult.status === "fulfilled") {
       for (const diagnostic of scanResult.value.diagnostics) {
         entries.push({
-          id: normalizePublishedDisplayText(diagnostic.id),
+          id: diagnostic.id,
           source: "compose",
           severity: diagnostic.severity,
-          message: normalizePublishedDisplayText(diagnostic.message) ?? "",
-          file: normalizePublishedDisplayText(diagnostic.origin.file),
-          service: normalizePublishedDisplayText(diagnostic.origin.service)
+          message: diagnostic.message,
+          file: diagnostic.origin.file,
+          service: diagnostic.origin.service
         });
       }
     } else {
@@ -990,7 +934,7 @@ app.get("/api/diagnostics", async (_req, res) => {
       });
     }
 
-    res.json({ generatedAt: Date.now(), entries } satisfies DiagnosticsReport);
+    res.json(publishApiPayload({ generatedAt: Date.now(), entries } satisfies DiagnosticsReport));
   } catch (error) {
     sendError(res, error);
   }
@@ -1095,18 +1039,19 @@ app.get("/api/events/stream", async (req, res) => {
         return;
       }
       res.write(`event: snapshot\n`);
-      res.write(`data: ${JSON.stringify(health)}\n\n`);
+      res.write(`data: ${JSON.stringify(publishApiPayload(health))}\n\n`);
     } catch (error) {
       if (res.writableEnded || res.destroyed) {
         return;
       }
-      const payload =
+      const payload = publishApiPayload(
         error instanceof HttpError
           ? error.body
           : {
               code: "stream_error",
               message: "Live stream failed"
-            };
+            }
+      );
       res.write(`event: error\n`);
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
     } finally {

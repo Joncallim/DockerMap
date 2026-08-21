@@ -15,14 +15,14 @@ use bollard::{
     Docker,
 };
 use dockermap_core::{
-    correlate_compose_runtime, derive_compose_graph, derive_graph, derive_images,
-    derive_runtime_map, discover_compose_files, mock_log_entries, mock_snapshot, page_log_entries,
-    parse_rfc3339_nano_millis, plan_compose_mount_edit, scan_compose_files,
-    service_entity_kind_name, unix_timestamp_millis, ComposeDiagnostic, ComposeEditPlan,
-    ComposeFileOrigin, ComposeGraph, ComposeMountKind, ComposeScan, ContainerMount,
-    ContainerRecord, DiagnosticSeverity, DockerSnapshot, GraphResponse, HealthResponse,
-    HealthState, LogCursor, LogEntry, LogsResponse, NetworkRecord, RuntimeLocation, RuntimeMap,
-    RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode, RuntimeMode, RuntimeNodeKind,
+    collision_resistant_id_component, correlate_compose_runtime, derive_compose_graph,
+    derive_graph, derive_images, derive_runtime_map, discover_compose_files, mock_log_entries,
+    mock_snapshot, page_log_entries, parse_rfc3339_nano_millis, plan_compose_mount_edit,
+    scan_compose_files, service_entity_kind_name, unix_timestamp_millis, ComposeDiagnostic,
+    ComposeEditPlan, ComposeFileOrigin, ComposeGraph, ComposeMountKind, ComposeScan,
+    ContainerMount, ContainerRecord, DiagnosticSeverity, DockerSnapshot, GraphResponse,
+    HealthResponse, HealthState, LogCursor, LogEntry, LogsResponse, NetworkRecord, RuntimeLocation,
+    RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode, RuntimeMode, RuntimeNodeKind,
     RuntimeNodeLayer, RuntimeOwnership, RuntimePackageEntity, RuntimeProviderKind,
     RuntimeRelationshipKind, RuntimeServiceEntity, RuntimeServiceStatus, ServiceEntityKind,
     VolumeRecord, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
@@ -276,7 +276,7 @@ impl DaemonCache {
         let mut snapshot = mock_snapshot();
         snapshot.images = derive_images(&snapshot);
 
-        let health = HealthResponse {
+        let mut health = HealthResponse {
             status: HealthState::Degraded,
             mode: RuntimeMode::Mock,
             docker_reachable: false,
@@ -284,6 +284,7 @@ impl DaemonCache {
             snapshot_version: snapshot.last_updated.to_string(),
             message: Some("Docker unavailable, serving mock data".into()),
         };
+        redact_health_response(&mut health);
 
         let last_updated = snapshot.last_updated;
 
@@ -351,6 +352,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     if std::env::var("DOCKERMAP_FORCE_MOCK").ok().as_deref() == Some("true") {
         let mut cache = DaemonCache::mock();
         cache.health.message = Some("Mock mode forced by DOCKERMAP_FORCE_MOCK".into());
+        redact_health_response(&mut cache.health);
         cache.runtime_map = collect_runtime_map_bounded(state, &cache.snapshot).await;
         return cache;
     }
@@ -393,6 +395,9 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     // refresh cycle — same cadence as the snapshot — and served from the
     // cache by `get_runtime_map`.
     cache.runtime_map = collect_runtime_map_bounded(state, &cache.snapshot).await;
+    // Docker failure details are provider-controlled text. Sanitize before the
+    // cache becomes observable through health, API proxy, or SSE routes.
+    redact_health_response(&mut cache.health);
     cache
 }
 
@@ -1677,8 +1682,8 @@ fn push_network_container_node(
 ) {
     let id = format!(
         "{}_container_{}",
-        sanitize_runtime_id(product),
-        sanitize_runtime_id(&container.id)
+        collision_resistant_id_component(product),
+        collision_resistant_id_component(&container.id)
     );
     let mut metadata = BTreeMap::new();
     metadata.insert("product".into(), product.into());
@@ -1711,7 +1716,10 @@ fn push_network_container_node(
     });
     edges.push(RuntimeMapEdge {
         source: id,
-        target: format!("docker_container_{}", sanitize_runtime_id(&container.id)),
+        target: format!(
+            "docker_container_{}",
+            collision_resistant_id_component(&container.id)
+        ),
         relationship: RuntimeRelationshipKind::RelatedTo,
         metadata: BTreeMap::new(),
     });
@@ -2350,7 +2358,7 @@ fn pm2_app_nodes_from_jlist(value: &str) -> Option<Vec<RuntimeMapNode>> {
             service_entity_kind_name(&ServiceEntityKind::NodeApplication).into(),
         );
         nodes.push(RuntimeMapNode {
-            id: format!("pm2_app_{}", sanitize_runtime_id(&id)),
+            id: format!("pm2_app_{}", collision_resistant_id_component(&id)),
             provider: RuntimeProviderKind::Pm2,
             kind: RuntimeNodeKind::Pm2App,
             label: name.into(),
@@ -3744,12 +3752,26 @@ fn redact_runtime_map(runtime_map: &mut RuntimeMap) {
 /// replacement form. Reapply graph invariants after that boundary so clients
 /// never receive dangling endpoints or duplicate IDs/edges.
 fn normalize_runtime_map_topology(runtime_map: &mut RuntimeMap) {
+    let mut duplicate_node_ids = BTreeSet::new();
     runtime_map
         .nodes
         .sort_by(|left, right| left.id.cmp(&right.id));
-    runtime_map
-        .nodes
-        .dedup_by(|left, right| left.id == right.id);
+    runtime_map.nodes.dedup_by(|left, right| {
+        let duplicate = left.id == right.id;
+        if duplicate {
+            duplicate_node_ids.insert(left.id.clone());
+        }
+        duplicate
+    });
+    for _ in duplicate_node_ids {
+        runtime_map.diagnostics.push(RuntimeMapDiagnostic {
+            provider: RuntimeProviderKind::Other,
+            severity: DiagnosticSeverity::Warning,
+            message:
+                "Duplicate runtime topology ID after publication normalization; retaining one node"
+                    .into(),
+        });
+    }
 
     let node_ids = runtime_map
         .nodes
@@ -3961,6 +3983,94 @@ fn redact_compose_origin(origin: &mut ComposeFileOrigin) {
     origin.field = redact_runtime_display_text(&origin.field);
 }
 
+/// Apply the complete compose edit-plan publication boundary. Planning needs
+/// raw fields to locate and diff the requested mount, but no provider-derived
+/// value may cross the HTTP boundary unredacted.
+fn redact_compose_edit_plan(plan: &mut ComposeEditPlan) {
+    plan.file = redact_runtime_display_text(&plan.file);
+    plan.service = redact_runtime_display_text(&plan.service);
+    plan.mount_id = redact_runtime_display_text(&plan.mount_id);
+    if let Some(source) = &mut plan.original_source {
+        *source = redact_runtime_display_text(source);
+    }
+    plan.original_target = redact_runtime_display_text(&plan.original_target);
+    if let Some(source) = &mut plan.new_source {
+        *source = redact_runtime_display_text(source);
+    }
+    if let Some(target) = &mut plan.new_target {
+        *target = redact_runtime_display_text(target);
+    }
+    // Redact individual diff lines first so markers and safe context remain
+    // readable, then normalize unsafe scalars without re-redacting the whole
+    // diff as one sensitive string.
+    plan.unified_diff = normalize_runtime_display_string(&redact_unified_diff(&plan.unified_diff));
+    for diagnostic in &mut plan.diagnostics {
+        diagnostic.id = redact_runtime_display_text(&diagnostic.id);
+        diagnostic.message = redact_runtime_display_text(&diagnostic.message);
+        redact_compose_origin(&mut diagnostic.origin);
+    }
+}
+
+fn redact_health_response(health: &mut HealthResponse) {
+    if let Some(message) = &mut health.message {
+        *message = redact_runtime_display_text(message);
+    }
+}
+
+/// Clone cached Docker inventory at the HTTP publication boundary. Raw cache
+/// entries remain available for internal correlation and exact-name lookup.
+fn publish_docker_snapshot(snapshot: &DockerSnapshot) -> DockerSnapshot {
+    let mut published = snapshot.clone();
+    redact_docker_snapshot(&mut published);
+    published
+}
+
+fn redact_docker_snapshot(snapshot: &mut DockerSnapshot) {
+    for container in &mut snapshot.containers {
+        redact_container_record(container);
+    }
+    for image in &mut snapshot.images {
+        image.image = redact_runtime_display_text(&image.image);
+        redact_display_strings(&mut image.containers);
+        image.status = redact_runtime_display_text(&image.status);
+    }
+    for network in &mut snapshot.networks {
+        network.id = redact_runtime_display_text(&network.id);
+        network.name = redact_runtime_display_text(&network.name);
+        network.driver = redact_runtime_display_text(&network.driver);
+        redact_display_strings(&mut network.members);
+    }
+    for volume in &mut snapshot.volumes {
+        volume.id = redact_runtime_display_text(&volume.id);
+        volume.name = redact_runtime_display_text(&volume.name);
+        redact_display_strings(&mut volume.attached_to);
+    }
+}
+
+fn redact_container_record(container: &mut ContainerRecord) {
+    container.id = redact_runtime_display_text(&container.id);
+    container.name = redact_runtime_display_text(&container.name);
+    container.image = redact_runtime_display_text(&container.image);
+    container.status = redact_runtime_display_text(&container.status);
+    container.role = redact_runtime_display_text(&container.role);
+    redact_display_strings(&mut container.networks);
+    redact_display_strings(&mut container.ports);
+    redact_display_strings(&mut container.depends_on);
+    for mount in &mut container.mounts {
+        mount.id = redact_runtime_display_text(&mount.id);
+        if let Some(source) = &mut mount.source {
+            *source = redact_runtime_display_text(source);
+        }
+        mount.target = redact_runtime_display_text(&mount.target);
+    }
+}
+
+fn redact_display_strings(values: &mut [String]) {
+    for value in values {
+        *value = redact_runtime_display_text(value);
+    }
+}
+
 /// Redact secret-bearing lines from a unified diff body while keeping the
 /// diff readable: each `+`/`-`/context line keeps its marker, but its content
 /// is replaced with `[redacted]` when it looks sensitive.
@@ -4122,16 +4232,14 @@ fn contains_auth_scheme(value: &str) -> bool {
 }
 
 fn safe_runtime_id_component(value: &str, fallback: &str) -> String {
-    let redacted = redact_sensitive_text(value);
-    if redacted == REDACTED_VALUE {
-        fallback.into()
+    if redact_sensitive_text(value) == REDACTED_VALUE {
+        let generated = collision_resistant_id_component(value);
+        let hash = generated
+            .rsplit_once("--")
+            .map_or("identity", |(_, hash)| hash);
+        format!("{fallback}--{hash}")
     } else {
-        let sanitized = sanitize_runtime_id(&redacted);
-        if sanitized.is_empty() {
-            fallback.into()
-        } else {
-            sanitized
-        }
+        collision_resistant_id_component(value)
     }
 }
 
@@ -4160,7 +4268,7 @@ fn collect_network_listeners(
             nodes.push(RuntimeMapNode {
                 id: format!(
                     "network_listener_{}_{}",
-                    sanitize_runtime_id(&address),
+                    collision_resistant_id_component(&address),
                     port
                 ),
                 provider: RuntimeProviderKind::Network,
@@ -4243,31 +4351,22 @@ fn write_provider_diagnostic(
     )
 }
 
-fn sanitize_runtime_id(value: &str) -> String {
-    let mut output = String::new();
-    for character in value.chars() {
-        if character.is_ascii_alphanumeric() {
-            output.push(character.to_ascii_lowercase());
-        } else {
-            output.push('_');
-        }
-    }
-    output.trim_matches('_').to_string()
-}
-
 async fn get_health(State(state): State<AppState>) -> Json<HealthResponse> {
     let cache = state.cache.read().await;
-    Json(cache.health.clone())
+    let mut health = cache.health.clone();
+    redact_health_response(&mut health);
+    Json(health)
 }
 
 async fn get_snapshot(State(state): State<AppState>) -> Json<DockerSnapshot> {
     let cache = state.cache.read().await;
-    Json(cache.snapshot.clone())
+    Json(publish_docker_snapshot(&cache.snapshot))
 }
 
 async fn get_graph(State(state): State<AppState>) -> Json<GraphResponse> {
     let cache = state.cache.read().await;
-    Json(derive_graph(&cache.snapshot))
+    let snapshot = publish_docker_snapshot(&cache.snapshot);
+    Json(derive_graph(&snapshot))
 }
 
 async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
@@ -4281,7 +4380,8 @@ async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
 
 async fn get_containers(State(state): State<AppState>) -> Json<serde_json::Value> {
     let cache = state.cache.read().await;
-    Json(serde_json::json!({ "containers": cache.snapshot.containers }))
+    let snapshot = publish_docker_snapshot(&cache.snapshot);
+    Json(serde_json::json!({ "containers": snapshot.containers }))
 }
 
 async fn get_container(
@@ -4289,7 +4389,7 @@ async fn get_container(
     Path(name): Path<String>,
 ) -> Result<Json<ContainerRecord>, ApiError> {
     let cache = state.cache.read().await;
-    let container = cache
+    let mut container = cache
         .snapshot
         .containers
         .iter()
@@ -4299,23 +4399,27 @@ async fn get_container(
             status: StatusCode::NOT_FOUND,
             message: format!("container `{name}` not found"),
         })?;
+    redact_container_record(&mut container);
 
     Ok(Json(container))
 }
 
 async fn get_images(State(state): State<AppState>) -> Json<serde_json::Value> {
     let cache = state.cache.read().await;
-    Json(serde_json::json!({ "images": cache.snapshot.images }))
+    let snapshot = publish_docker_snapshot(&cache.snapshot);
+    Json(serde_json::json!({ "images": snapshot.images }))
 }
 
 async fn get_networks(State(state): State<AppState>) -> Json<serde_json::Value> {
     let cache = state.cache.read().await;
-    Json(serde_json::json!({ "networks": cache.snapshot.networks }))
+    let snapshot = publish_docker_snapshot(&cache.snapshot);
+    Json(serde_json::json!({ "networks": snapshot.networks }))
 }
 
 async fn get_volumes(State(state): State<AppState>) -> Json<serde_json::Value> {
     let cache = state.cache.read().await;
-    Json(serde_json::json!({ "volumes": cache.snapshot.volumes }))
+    let snapshot = publish_docker_snapshot(&cache.snapshot);
+    Json(serde_json::json!({ "volumes": snapshot.volumes }))
 }
 
 async fn get_logs(
@@ -4445,7 +4549,7 @@ async fn get_compose_edit_plan(
     })?;
 
     let mut plan = plan_compose_mount_edit(&file, &content, mount, source, target);
-    plan.unified_diff = redact_unified_diff(&plan.unified_diff);
+    redact_compose_edit_plan(&mut plan);
     Ok(Json(plan))
 }
 
@@ -5060,7 +5164,7 @@ mod tests {
         push_tailnet_node(&mut nodes, RuntimeProviderKind::Tailscale, "peer_0", &value);
         redact_runtime_nodes(&mut nodes);
 
-        assert_eq!(nodes[0].id, "tailscale_node_peer_0");
+        assert!(nodes[0].id.starts_with("tailscale_node_peer_0--"));
         assert_eq!(nodes[0].label, REDACTED_VALUE);
         assert_eq!(
             nodes[0].metadata.get("user").map(String::as_str),
@@ -5214,7 +5318,7 @@ mod tests {
         .expect("fixture jlist must parse");
 
         assert_eq!(nodes.len(), 3);
-        assert_eq!(nodes[0].id, "pm2_app_0");
+        assert!(nodes[0].id.starts_with("pm2_app_0--"));
         assert_eq!(nodes[0].label, "web");
         assert_eq!(nodes[0].status.as_deref(), Some("online"));
         assert_eq!(nodes[0].layer, Some(RuntimeNodeLayer::Process));
@@ -5232,7 +5336,7 @@ mod tests {
         );
 
         assert_eq!(nodes[1].status.as_deref(), Some("stopped"));
-        assert_eq!(nodes[2].id, "pm2_app_2");
+        assert!(nodes[2].id.starts_with("pm2_app_2--"));
         assert_eq!(nodes[2].status.as_deref(), Some("errored"));
         assert_eq!(
             nodes[2].metadata.get("restartCount").map(String::as_str),
@@ -5487,7 +5591,7 @@ mod tests {
         ));
 
         assert_eq!(nodes.len(), 3);
-        assert_eq!(nodes[0].id, "tmux_session_0");
+        assert!(nodes[0].id.starts_with("tmux_session_0--"));
         assert_eq!(nodes[0].label, "work");
         assert_eq!(nodes[0].status.as_deref(), Some("attached"));
         assert_eq!(
@@ -7440,6 +7544,31 @@ mod tests {
     }
 
     #[test]
+    fn runtime_id_components_keep_raw_identity_variants_distinct() {
+        let identities = [
+            "sol-r4-a-b",
+            "sol-r4-a_b",
+            "SOL-R4-A",
+            "sol-r4-a",
+            "bidi\u{202e}value",
+            "bidi\u{202d}value",
+            "/srv/sol-r4-a-b",
+            "/srv/sol-r4-a_b",
+            "@scope/sol-r4-a-b",
+            "@scope_sol-r4-a-b",
+        ];
+        let generated = identities
+            .iter()
+            .map(|identity| safe_runtime_id_component(identity, "fallback"))
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            generated.len(),
+            identities.len(),
+            "runtime and package IDs must include a raw-identity hash suffix"
+        );
+    }
+
+    #[test]
     fn runtime_map_publication_normalizes_all_ids_and_keeps_edges_consistent() {
         let unsafe_id = "node\u{202e}id";
         let unsafe_package_id = "package\u{202e}id";
@@ -7523,6 +7652,12 @@ mod tests {
             .map(|node| node.id.as_str())
             .collect::<HashSet<_>>();
         assert_eq!(map.nodes.len(), 2, "normalized node IDs are deduplicated");
+        assert!(
+            map.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("Duplicate runtime topology ID after publication normalization")),
+            "a publication-time collision must be surfaced instead of silently merging nodes"
+        );
         assert_eq!(
             map.edges.len(),
             1,
@@ -7598,6 +7733,90 @@ mod tests {
             Some("service�name")
         );
         assert_eq!(scan.diagnostics[0].origin.field, "services�.volumes");
+    }
+
+    #[test]
+    fn publication_helpers_redact_and_normalize_compose_inventory_and_health() {
+        let sentinel = "DOCKERMAP_TEST_FAKE_PUBLICATION_SECRET";
+        let hostile = format!("token={sentinel}\u{202e}\u{200b}\u{001b}\u{2028}\u{fdd0}");
+        let mut plan = ComposeEditPlan {
+            file: hostile.clone(),
+            service: hostile.clone(),
+            mount_id: hostile.clone(),
+            original_source: Some(hostile.clone()),
+            original_target: hostile.clone(),
+            new_source: Some(hostile.clone()),
+            new_target: Some(hostile.clone()),
+            unified_diff: format!(
+                "--- {hostile}\n+++ {hostile}\n- token={sentinel}\n+ token={sentinel}"
+            ),
+            diagnostics: vec![ComposeDiagnostic {
+                id: hostile.clone(),
+                severity: DiagnosticSeverity::Warning,
+                message: hostile.clone(),
+                origin: ComposeFileOrigin {
+                    file: hostile.clone(),
+                    service: Some(hostile.clone()),
+                    field: hostile.clone(),
+                },
+            }],
+            will_write: false,
+        };
+        redact_compose_edit_plan(&mut plan);
+
+        let mut snapshot = mock_snapshot();
+        snapshot.containers[0].id = hostile.clone();
+        snapshot.containers[0].name = hostile.clone();
+        snapshot.containers[0].image = hostile.clone();
+        snapshot.containers[0].status = hostile.clone();
+        snapshot.containers[0].role = hostile.clone();
+        snapshot.containers[0].networks = vec![hostile.clone()];
+        snapshot.containers[0].ports = vec![hostile.clone()];
+        snapshot.containers[0].mounts = vec![ContainerMount {
+            id: hostile.clone(),
+            kind: ComposeMountKind::Bind,
+            source: Some(hostile.clone()),
+            target: hostile.clone(),
+            read_only: false,
+        }];
+        snapshot.containers[0].depends_on = vec![hostile.clone()];
+        snapshot.images = vec![dockermap_core::ImageRecord {
+            image: hostile.clone(),
+            containers: vec![hostile.clone()],
+            status: hostile.clone(),
+        }];
+        snapshot.networks = vec![NetworkRecord {
+            id: hostile.clone(),
+            name: hostile.clone(),
+            driver: hostile.clone(),
+            internal: false,
+            members: vec![hostile.clone()],
+        }];
+        snapshot.volumes = vec![VolumeRecord {
+            id: hostile.clone(),
+            name: hostile.clone(),
+            attached_to: vec![hostile.clone()],
+        }];
+        let published_snapshot = publish_docker_snapshot(&snapshot);
+        assert!(
+            snapshot.containers[0].name.contains(sentinel),
+            "the internal cache must retain raw inventory identities for lookup"
+        );
+
+        let mut health = HealthResponse {
+            status: HealthState::Degraded,
+            mode: RuntimeMode::Mock,
+            docker_reachable: false,
+            last_updated: 1,
+            snapshot_version: "1".into(),
+            message: Some(hostile),
+        };
+        redact_health_response(&mut health);
+
+        let serialized = serde_json::to_string(&(plan, published_snapshot, health))
+            .expect("published values should serialize");
+        assert!(!serialized.contains(sentinel));
+        assert!(!serialized.chars().any(unsafe_runtime_display_character));
     }
 
     fn assert_no_raw_secrets<T: serde::Serialize>(value: &T, secrets: &[&str]) {
