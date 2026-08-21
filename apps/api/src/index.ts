@@ -23,7 +23,7 @@ import type {
   StatusResponse,
   VolumeRecord
 } from "@dockermap/contracts";
-import { publishApiPayload, publishLogsResponse } from "./publication.js";
+import { publishApiPayload, publishDisplayText, publishLogsResponse } from "./publication.js";
 import {
   containers as mockContainers,
   graph as mockGraph,
@@ -37,6 +37,7 @@ const app = express();
 const port = readPort(process.env.PORT, 4000);
 const daemonBaseUrl = readDaemonBaseUrl(process.env.DOCKERMAP_DAEMON_URL ?? "http://127.0.0.1:4100");
 const apiToken = readApiToken(process.env.DOCKERMAP_API_TOKEN);
+const daemonToken = readDaemonToken(process.env.DOCKERMAP_DAEMON_TOKEN, apiToken);
 const allowMockFallback = process.env.DOCKERMAP_ALLOW_MOCK === "true";
 const exposeErrorDetails = process.env.DOCKERMAP_EXPOSE_ERROR_DETAILS === "true";
 const pollIntervalMs = readBoundedNumber(process.env.DOCKERMAP_SSE_INTERVAL_MS, 2_000, 1_000, 30_000);
@@ -140,6 +141,18 @@ function readApiToken(value: string | undefined) {
   return token;
 }
 
+function readDaemonToken(value: string | undefined, fallback: string | null) {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const token = value.trim();
+  if (!token) {
+    throw new Error("DOCKERMAP_DAEMON_TOKEN must not be empty when set");
+  }
+  return token;
+}
+
 function tokenMatches(received: string, expected: string) {
   const receivedBuffer = Buffer.from(received);
   const expectedBuffer = Buffer.from(expected);
@@ -147,7 +160,7 @@ function tokenMatches(received: string, expected: string) {
 }
 
 function isPublicRoute(req: express.Request) {
-  return req.method === "OPTIONS" || req.path === "/health" || req.path === "/api/health";
+  return req.method === "OPTIONS";
 }
 
 function requireBearerToken(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -215,6 +228,9 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use(requireBearerToken);
+app.use(requireForwardAuth);
+
 // Versioned alias: /api/v1/* maps to the same read-only /api/* surface so
 // consumers can pin a version. Authentication and CORS behave identically.
 // The bare /api/v1 (with or without trailing slash) answers with a small
@@ -236,9 +252,6 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(requireBearerToken);
-app.use(requireForwardAuth);
-
 class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -253,8 +266,13 @@ async function fetchDaemon<T>(path: string, init?: RequestInit): Promise<T> {
   const timeout = setTimeout(() => controller.abort(), 4_000);
 
   try {
+    const headers = new Headers(init?.headers);
+    if (daemonToken) {
+      headers.set("authorization", `Bearer ${daemonToken}`);
+    }
     const response = await fetch(`${daemonBaseUrl}${path}`, {
       ...init,
+      headers,
       signal: controller.signal
     });
 
@@ -277,10 +295,11 @@ async function fetchDaemon<T>(path: string, init?: RequestInit): Promise<T> {
       throw error;
     }
 
+    console.error(`Unable to reach DockerMap daemon at ${publishDisplayText(daemonBaseUrl)}`);
     throw new HttpError(502, {
       code: "daemon_unavailable",
-      message: `Unable to reach DockerMap daemon at ${daemonBaseUrl}`,
-      ...(exposeErrorDetails ? { details: error instanceof Error ? error.message : String(error) } : {})
+      message: "Unable to reach DockerMap daemon",
+      ...(exposeErrorDetails ? { details: "Daemon connection failed" } : {})
     });
   } finally {
     clearTimeout(timeout);
@@ -760,7 +779,7 @@ app.get("/api/openapi.json", (_req, res) => {
     },
     paths: {
       "/health": {
-        get: { summary: "Liveness probe (unauthenticated)", tags: ["system"] }
+        get: { summary: "API and daemon health", tags: ["system"] }
       },
       "/api/v1": {
         get: { summary: "Version descriptor for the /api/v1 alias", tags: ["system"] }
@@ -848,14 +867,16 @@ app.get("/api/auth/whoami", (req, res) => {
     .map((group) => group.trim())
     .filter(Boolean);
 
-  res.json({
-    authenticated: Boolean(user),
-    required: authRequired,
-    user,
-    name,
-    email,
-    groups
-  } satisfies AuthWhoamiResponse);
+  res.json(
+    publishApiPayload({
+      authenticated: Boolean(user),
+      required: authRequired,
+      user,
+      name,
+      email,
+      groups
+    } satisfies AuthWhoamiResponse)
+  );
 });
 
 app.get("/api/snapshot", async (_req, res) => {

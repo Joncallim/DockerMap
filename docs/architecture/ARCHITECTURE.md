@@ -142,8 +142,11 @@ Docker socket access is still powerful, so write endpoints should not be added u
 project has explicit authorization, dry-run previews, audit logging, and rollback
 guidance.
 
-The Node API can require `DOCKERMAP_API_TOKEN`. When the token is set, every route except
-`/health` and `/api/health` requires an `Authorization: Bearer ...` header.
+The Node API can require `DOCKERMAP_API_TOKEN`. When the token is set, every
+browser-facing route requires an `Authorization: Bearer` header. The API forwards
+`DOCKERMAP_DAEMON_TOKEN` (or the API-token fallback) to every daemon request; when
+configured, the daemon applies the same bearer check to every route, including health
+and fallback responses.
 
 ## Compose Scanning
 

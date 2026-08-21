@@ -119,7 +119,7 @@ After the proxy is up, check these from a browser or from `curl`:
 - Direct access to `127.0.0.1:4100` is not possible from outside the host.
 
 `scripts/smoke-deploy.sh` can cover the route checks above. When you export
-`DOCKERMAP_API_TOKEN`, it also verifies that direct non-health API access
+`DOCKERMAP_API_TOKEN`, it also verifies that direct browser API access
 returns `401` without the bearer token before retrying the protected routes
 with auth.
 
