@@ -2136,10 +2136,10 @@ fn parse_ps_table(value: &str) -> Vec<PythonProcessRecord> {
 }
 
 /// `ps` writes newline-delimited records. A bounded pipe read can end in the
-/// middle of one, so keep only complete lines before treating any data as a
-/// process row.
-fn complete_provider_lines(output: &[u8]) -> &[u8] {
-    if output.last() == Some(&b'\n') {
+/// middle of one, so discard an unterminated final fragment only when the
+/// bounded reader reports that output was truncated.
+fn complete_provider_lines(output: &[u8], output_truncated: bool) -> &[u8] {
+    if !output_truncated || output.last() == Some(&b'\n') {
         return output;
     }
     output
@@ -2161,8 +2161,8 @@ fn push_provider_output_truncation(
     );
 }
 
-fn contains_control_byte(value: &str) -> bool {
-    value.bytes().any(|byte| byte < 0x20)
+fn contains_control_character(value: &str) -> bool {
+    value.chars().any(char::is_control)
 }
 
 /// Python-ownership predicate shared by the python and native providers so
@@ -2241,13 +2241,13 @@ fn python_entry(args: &str) -> Option<String> {
         let field = fields[index];
         if field == "-m" {
             let module = *fields.get(index + 1)?;
-            return (!contains_control_byte(module)).then(|| format!("module:{module}"));
+            return (!contains_control_character(module)).then(|| format!("module:{module}"));
         }
         if field == "-c" {
             return Some("inline:-c".into());
         }
         if field.ends_with(".py") {
-            return (!contains_control_byte(field)).then(|| field.to_string());
+            return (!contains_control_character(field)).then(|| field.to_string());
         }
         let basename = field.rsplit('/').next().unwrap_or(field);
         // Proctitle-rewritten frameworks (e.g. "gunicorn: master [app]")
@@ -2262,7 +2262,7 @@ fn python_entry(args: &str) -> Option<String> {
         }
         if field.contains(':') && !field.starts_with("--") {
             // module:app spec passed to a framework binary.
-            return (!contains_control_byte(field)).then(|| trimmed.to_string());
+            return (!contains_control_character(field)).then(|| trimmed.to_string());
         }
         index += 1;
     }
@@ -2315,7 +2315,7 @@ fn collect_python_processes_from_output(
     if output_truncated {
         push_provider_output_truncation(diagnostics, RuntimeProviderKind::Python);
     }
-    let stdout = String::from_utf8_lossy(complete_provider_lines(stdout));
+    let stdout = String::from_utf8_lossy(complete_provider_lines(stdout, output_truncated));
     let (python_nodes, capped) = python_nodes_from_ps_output(&stdout);
     if capped {
         push_provider_diagnostic(
@@ -2332,14 +2332,15 @@ fn collect_python_processes(
     nodes: &mut Vec<RuntimeMapNode>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
-    let output = match run_command_with_timeout(
-        {
-            let mut command = Command::new("ps");
-            command.args(["-eo", "pid=,user:32=,comm=,args="]);
-            command
-        },
-        PROVIDER_COMMAND_TIMEOUT,
-    ) {
+    collect_python_processes_with_command(process_discovery_command(), nodes, diagnostics);
+}
+
+fn collect_python_processes_with_command(
+    command: Command,
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    let output = match run_command_with_timeout(command, PROVIDER_COMMAND_TIMEOUT) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -2353,6 +2354,12 @@ fn collect_python_processes(
     };
 
     if !output.status.success() {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Python,
+            DiagnosticSeverity::Warning,
+            "Python process discovery command failed".into(),
+        );
         return;
     }
 
@@ -2444,29 +2451,37 @@ fn collect_native_processes(
     nodes: &mut Vec<RuntimeMapNode>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
-    // In the documented Docker deployment (no `pid: host` in compose), ps can
-    // see only the container's PID namespace. pid 1's comm catches the normal
-    // entrypoint case; a non-root own cgroup catches systemd-as-pid-1 images.
-    let has_non_systemd_init = host_init_comm()
-        .as_deref()
-        .is_some_and(is_container_pid_namespace);
-    if has_non_systemd_init || in_container_cgroup() {
+    collect_native_processes_with_command(
+        process_discovery_command(),
+        daemon_runs_in_restricted_pid_namespace(),
+        nodes,
+        diagnostics,
+    );
+}
+
+fn process_discovery_command() -> Command {
+    let mut command = Command::new("ps");
+    command.args(["-eo", "pid=,user:32=,comm=,args="]);
+    command
+}
+
+fn collect_native_processes_with_command(
+    command: Command,
+    restricted_pid_namespace: bool,
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    if restricted_pid_namespace {
         push_provider_diagnostic(
             diagnostics,
             RuntimeProviderKind::Process,
             DiagnosticSeverity::Info,
-            "Container PID namespace or non-systemd init detected; native process discovery may only see the current namespace's processes"
+            "Native process discovery omitted because the daemon runs in a restricted PID namespace; only the container's own processes would be visible"
                 .into(),
         );
+        return;
     }
-    let output = match run_command_with_timeout(
-        {
-            let mut command = Command::new("ps");
-            command.args(["-eo", "pid=,user:32=,comm=,args="]);
-            command
-        },
-        PROVIDER_COMMAND_TIMEOUT,
-    ) {
+    let output = match run_command_with_timeout(command, PROVIDER_COMMAND_TIMEOUT) {
         Ok(output) => output,
         Err(error) => {
             push_provider_diagnostic(
@@ -2480,6 +2495,12 @@ fn collect_native_processes(
     };
 
     if !output.status.success() {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Process,
+            DiagnosticSeverity::Warning,
+            "Native process discovery command failed".into(),
+        );
         return;
     }
 
@@ -2502,7 +2523,7 @@ fn collect_native_processes_from_output(
     if output_truncated {
         push_provider_output_truncation(diagnostics, RuntimeProviderKind::Process);
     }
-    let stdout = String::from_utf8_lossy(complete_provider_lines(stdout));
+    let stdout = String::from_utf8_lossy(complete_provider_lines(stdout, output_truncated));
     let (native_nodes, capped) = native_process_nodes_from_ps_output(&stdout, self_pid);
     if capped {
         // ps emits pids in ascending order, so when the cap is hit the first
@@ -2578,7 +2599,7 @@ fn native_process_nodes_from_ps_output(value: &str, self_pid: u32) -> (Vec<Runti
 /// published as metadata.
 fn safe_kernel_comm(comm: &str) -> Option<String> {
     let comm = comm.trim();
-    (!comm.is_empty() && !contains_control_byte(comm)).then(|| comm.chars().take(16).collect())
+    (!comm.is_empty() && !contains_control_character(comm)).then(|| comm.chars().take(16).collect())
 }
 
 fn real_comm(pid: u32, fallback: &str) -> String {
@@ -2604,41 +2625,51 @@ fn host_init_comm() -> Option<String> {
         .filter(|comm| !comm.is_empty())
 }
 
-/// True when pid 1's comm is NOT a host init: on a normal host it is
-/// systemd or init, while inside a container PID namespace (the documented
-/// compose deployment has no `pid: host`, so pid 1 is the entrypoint script,
-/// a shell, or nginx) native process discovery only sees the container's own
-/// processes. The caller surfaces that as an Info diagnostic.
+/// True when pid 1's comm is NOT a host init: on a normal host it is systemd
+/// or init, while inside a container PID namespace it is commonly the
+/// entrypoint script, a shell, or nginx.
 fn is_container_pid_namespace(comm: &str) -> bool {
     !matches!(comm.trim(), "systemd" | "init")
 }
 
-/// The daemon is in a non-root cgroup when its own cgroup path differs from
-/// `/`: cgroup v2 root is `0::/`; cgroup v1 has one or more `...:/` entries.
-/// This supplements the pid-1 comm heuristic for images that run systemd.
-fn in_container_cgroup() -> bool {
-    std::fs::read_to_string("/proc/self/cgroup")
-        .map(|cgroup| cgroup_has_non_root_path(&cgroup))
-        .unwrap_or(false)
+/// Container PID namespaces must be identified by affirmative evidence. A
+/// normal systemd service runs in `/system.slice/...` and a user manager in
+/// `/user.slice/...`; neither is a container signal.
+fn restricted_pid_namespace_evidence(
+    init_comm: Option<&str>,
+    cgroup: &str,
+    has_dockerenv: bool,
+    has_systemd_container_marker: bool,
+) -> bool {
+    has_dockerenv
+        || has_systemd_container_marker
+        || init_comm.is_some_and(is_container_pid_namespace)
+        || cgroup.lines().any(cgroup_implies_container)
 }
 
-fn cgroup_has_non_root_path(cgroup: &str) -> bool {
-    cgroup
-        .lines()
-        .any(|line| line.splitn(3, ':').nth(2).is_some_and(|path| path != "/"))
+fn daemon_runs_in_restricted_pid_namespace() -> bool {
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+    restricted_pid_namespace_evidence(
+        host_init_comm().as_deref(),
+        &cgroup,
+        StdPath::new("/.dockerenv").exists(),
+        StdPath::new("/run/systemd/container").exists(),
+    )
 }
 
-/// True when a cgroup path places the process inside a container: docker
+/// True when a cgroup path places the process inside a container: Docker
 /// (cgroup v1 `/docker/<id>` and systemd scope
-/// `/system.slice/docker-<id>.scope/...`), containerd, libpod (podman), or
-/// kubepods (Kubernetes). The docker provider owns container internals, so
-/// such pids must never surface as host native-process nodes.
+/// `/system.slice/docker-<id>.scope/...`), libpod (podman), or kubepods
+/// (Kubernetes). The docker provider owns container internals, so such pids
+/// must never surface as host native-process nodes.
 fn cgroup_implies_container(cgroup: &str) -> bool {
-    let cgroup = cgroup.trim();
-    cgroup.contains("docker")
-        || cgroup.contains("containerd")
-        || cgroup.contains("libpod")
-        || cgroup.contains("kubepods")
+    let path = cgroup.trim().splitn(3, ':').nth(2).unwrap_or(cgroup.trim());
+    path.contains("/docker/")
+        || path.split('/').any(|component| {
+            (component.starts_with("docker-") && component.ends_with(".scope"))
+                || (component.starts_with("libpod-") && component.ends_with(".scope"))
+                || component.starts_with("kubepods")
+        })
 }
 
 /// True when the pid's cgroup places it inside a container. An unreadable
@@ -4828,16 +4859,18 @@ mod tests {
     }
 
     #[test]
-    fn python_entry_rejects_control_bytes_before_label_publication() {
-        for args in [
-            "/usr/bin/python3 /tmp/unsafe\u{1b}.py",
-            "/usr/bin/python3 -m unsafe\u{1b}module",
-            "/usr/bin/python3 unsafe\u{1b}:app",
-        ] {
-            assert_eq!(python_entry(args), None, "{args:?} must be rejected");
+    fn python_entry_rejects_unicode_control_characters_before_label_publication() {
+        for control in ['\u{1b}', '\u{7f}', '\u{80}'] {
+            for args in [
+                format!("/usr/bin/python3 /tmp/unsafe{control}.py"),
+                format!("/usr/bin/python3 -m unsafe{control}module"),
+                format!("/usr/bin/python3 unsafe{control}:app"),
+            ] {
+                assert_eq!(python_entry(&args), None, "{args:?} must be rejected");
+            }
         }
 
-        let table = "  9000200  root  python3  /usr/bin/python3 /tmp/unsafe\u{1b}.py\n";
+        let table = "  9000200  root  python3  /usr/bin/python3 /tmp/unsafe\u{7f}.py\n";
         let (nodes, capped) = python_nodes_from_ps_output(table);
         assert!(!capped);
         assert_eq!(nodes.len(), 1);
@@ -4845,7 +4878,7 @@ mod tests {
         assert!(nodes[0]
             .metadata
             .values()
-            .all(|value| !value.contains('\u{1b}')));
+            .all(|value| !value.chars().any(char::is_control)));
     }
 
     #[test]
@@ -5321,13 +5354,15 @@ mod tests {
 
     #[test]
     fn native_comm_control_characters_never_reach_the_label() {
-        // An embedded newline in a kernel comm must never become a second
-        // visual process row through label or comm metadata. The fake pid
-        // forces the ps-comm fallback path used by native node construction.
-        let label = real_comm(9_000_000, "x\n1  root  evil");
-        assert_eq!(label, "unknown");
-        assert!(!label.contains('\n'));
-        assert!(!label.contains("evil"));
+        // Kernel comm strings are process-controlled. C0, DEL, and C1 controls
+        // must never become label or comm metadata. The fake pid forces the
+        // ps-comm fallback path used by native node construction.
+        for comm in ["x\n1  root  evil", "evil\u{7f}del", "evil\u{80}ctrl"] {
+            let label = real_comm(9_000_000, comm);
+            assert_eq!(label, "unknown");
+            assert!(!label.chars().any(char::is_control));
+            assert!(!label.contains("evil"));
+        }
     }
 
     #[test]
@@ -5382,25 +5417,46 @@ mod tests {
     }
 
     #[test]
-    fn container_pid_namespace_and_cgroup_predicates() {
-        // Host inits mean full-host discovery; anything else (entrypoint
-        // script, shell, nginx) is a container PID namespace.
-        assert!(!is_container_pid_namespace("systemd"));
-        assert!(!is_container_pid_namespace("init"));
-        assert!(is_container_pid_namespace("entrypoint"));
-        assert!(is_container_pid_namespace("sh"));
-        assert!(is_container_pid_namespace("bash"));
-        assert!(is_container_pid_namespace("nginx"));
-
-        // A root cgroup is the host/root-slice signal on both hierarchy forms;
-        // a changed own path supplements the pid-1 heuristic for systemd PID 1.
-        assert!(!cgroup_has_non_root_path("0::/\n"));
-        assert!(!cgroup_has_non_root_path("11:memory:/\n9:cpu,cpuacct:/\n"));
-        assert!(cgroup_has_non_root_path(
-            "0::/system.slice/dockermap-daemon.service\n"
+    fn restricted_pid_namespace_requires_explicit_container_evidence() {
+        // Ordinary systemd services and user managers have non-root cgroups,
+        // but they are host processes and must not trigger a container warning.
+        assert!(!restricted_pid_namespace_evidence(
+            Some("systemd"),
+            "0::/system.slice/hermes.service\n",
+            false,
+            false,
         ));
-        assert!(cgroup_has_non_root_path("11:memory:/docker/abc123\n"));
-        assert!(!cgroup_has_non_root_path("malformed"));
+        assert!(!restricted_pid_namespace_evidence(
+            Some("init"),
+            "0::/user.slice/user-1000.slice/user@1000.service\n",
+            false,
+            false,
+        ));
+
+        assert!(restricted_pid_namespace_evidence(
+            Some("systemd"),
+            "0::/\n",
+            true,
+            false,
+        ));
+        assert!(restricted_pid_namespace_evidence(
+            Some("systemd"),
+            "0::/\n",
+            false,
+            true,
+        ));
+        assert!(restricted_pid_namespace_evidence(
+            Some("systemd"),
+            "0::/system.slice/docker-abc123def456.scope\n",
+            false,
+            false,
+        ));
+        assert!(restricted_pid_namespace_evidence(
+            Some("entrypoint.sh"),
+            "0::/\n",
+            false,
+            false,
+        ));
     }
 
     #[test]
@@ -5410,24 +5466,114 @@ mod tests {
             "0::/system.slice/docker-abc123.scope/init.scope"
         ));
         assert!(cgroup_implies_container("11:devices:/docker/abc123def456"));
-        assert!(cgroup_implies_container("0::/system.slice/docker.service"));
-        // containerd, libpod (podman), kubepods (Kubernetes).
-        assert!(cgroup_implies_container(
-            "0::/system.slice/containerd.service"
-        ));
+        // libpod (podman) and kubepods (Kubernetes) use recognizable scopes.
         assert!(cgroup_implies_container(
             "0::/machine.slice/libpod-abc123.scope/container"
         ));
         assert!(cgroup_implies_container(
             "0::/kubepods.slice/kubepods-besteffort.slice/..."
         ));
-        // Host cgroups and empty input are not container-owned.
+        // Host cgroups and host container runtimes are not container-owned.
+        assert!(!cgroup_implies_container("0::/system.slice/docker.service"));
+        assert!(!cgroup_implies_container(
+            "0::/system.slice/containerd.service"
+        ));
         assert!(!cgroup_implies_container("0::/system.slice/"));
         assert!(!cgroup_implies_container("0::/init.scope"));
         assert!(!cgroup_implies_container(""));
         assert!(!cgroup_implies_container(
             "0::/user.slice/user-1000.slice/..."
         ));
+    }
+
+    #[test]
+    fn restricted_namespace_omits_native_nodes_but_host_collection_remains_available() {
+        let mut omitted_nodes = Vec::new();
+        let mut omitted_diagnostics = Vec::new();
+        let mut ps_shim = Command::new("sh");
+        ps_shim.args([
+            "-c",
+            "printf ' 9300000  root  worker  /usr/bin/worker --once'",
+        ]);
+
+        collect_native_processes_with_command(
+            ps_shim,
+            true,
+            &mut omitted_nodes,
+            &mut omitted_diagnostics,
+        );
+
+        assert!(omitted_nodes.is_empty());
+        assert!(omitted_diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::Process
+                && diagnostic.severity == DiagnosticSeverity::Info
+                && diagnostic.message
+                    == "Native process discovery omitted because the daemon runs in a restricted PID namespace; only the container's own processes would be visible"
+        }));
+
+        let mut host_nodes = Vec::new();
+        let mut host_diagnostics = Vec::new();
+        let mut ps_shim = Command::new("sh");
+        ps_shim.args([
+            "-c",
+            "printf ' 9300000  root  worker  /usr/bin/worker --once'",
+        ]);
+        collect_native_processes_with_command(
+            ps_shim,
+            false,
+            &mut host_nodes,
+            &mut host_diagnostics,
+        );
+
+        assert_eq!(host_nodes.len(), 1);
+        assert_eq!(host_nodes[0].id, "native_process_9300000");
+        assert!(host_diagnostics.is_empty());
+    }
+
+    #[test]
+    fn nonzero_ps_shim_exit_reports_safe_warning_for_both_process_providers() {
+        let failing_ps_shim = || {
+            let mut command = Command::new("sh");
+            command.args([
+                "-c",
+                "printf 'ps-provider-output-must-not-leak' >&2; exit 7",
+            ]);
+            command
+        };
+        let mut python_nodes = Vec::new();
+        let mut python_diagnostics = Vec::new();
+        collect_python_processes_with_command(
+            failing_ps_shim(),
+            &mut python_nodes,
+            &mut python_diagnostics,
+        );
+        let mut native_nodes = Vec::new();
+        let mut native_diagnostics = Vec::new();
+        collect_native_processes_with_command(
+            failing_ps_shim(),
+            false,
+            &mut native_nodes,
+            &mut native_diagnostics,
+        );
+
+        assert!(python_nodes.is_empty());
+        assert!(native_nodes.is_empty());
+        assert!(python_diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::Python
+                && diagnostic.severity == DiagnosticSeverity::Warning
+                && diagnostic.message == "Python process discovery command failed"
+        }));
+        assert!(native_diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::Process
+                && diagnostic.severity == DiagnosticSeverity::Warning
+                && diagnostic.message == "Native process discovery command failed"
+        }));
+        assert!(python_diagnostics
+            .iter()
+            .chain(&native_diagnostics)
+            .all(|diagnostic| !diagnostic
+                .message
+                .contains("ps-provider-output-must-not-leak")));
     }
 
     #[test]
@@ -5484,7 +5630,7 @@ mod tests {
         let read = read_bounded(std::io::Cursor::new(source), MAX_PROVIDER_OUTPUT_BYTES);
         assert!(read.truncated);
         assert_eq!(read.bytes.len(), MAX_PROVIDER_OUTPUT_BYTES);
-        let complete = complete_provider_lines(&read.bytes);
+        let complete = complete_provider_lines(&read.bytes, read.truncated);
         assert!(complete.len() < read.bytes.len());
         assert!(parse_ps_table(&String::from_utf8_lossy(complete))
             .iter()
@@ -5507,6 +5653,19 @@ mod tests {
                         "Provider output exceeded {MAX_PROVIDER_OUTPUT_BYTES} bytes; truncated"
                     )
         }));
+    }
+
+    #[test]
+    fn complete_unterminated_ps_row_is_retained_when_output_is_not_truncated() {
+        let table = b"  9300000  root  worker  /usr/bin/worker --once";
+        let mut nodes = Vec::new();
+        let mut diagnostics = Vec::new();
+
+        collect_native_processes_from_output(table, false, 9_000_500, &mut nodes, &mut diagnostics);
+
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].id, "native_process_9300000");
+        assert!(diagnostics.is_empty());
     }
 
     #[test]
