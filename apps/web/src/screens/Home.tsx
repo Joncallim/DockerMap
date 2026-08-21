@@ -3,6 +3,7 @@ import { useApp } from "../context";
 import { needsAttention, summarize, type Service } from "../lib/model";
 import { changeFeed, causalChain, STUB_CHANGES_NOTICE } from "../lib/stubs";
 import { formatRelative } from "../lib/format";
+import { identityText, UNAVAILABLE_SERVICE } from "../lib/identity";
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { Bar, EmptyState, ErrorState, Loading, Metric, Panel, StatePill, StateDot, Tag } from "../components/primitives";
@@ -139,8 +140,8 @@ export default function Home() {
                   <li key={`${service.id}-${index}`} className="svc-row">
                     <StateDot state={service.state} />
                     {model.byId.has(service.id) && model.byName.has(service.name) ? <Link className="svc-name" to={`/services/${encodeURIComponent(service.name)}`}>
-                      {service.name || "Unavailable service name"}
-                    </Link> : <span className="svc-name">{service.name || "Unavailable service name"}</span>}
+                      {identityText(service.name, UNAVAILABLE_SERVICE)}
+                    </Link> : <span className="svc-name">{identityText(service.name, UNAVAILABLE_SERVICE)}</span>}
                     <Tag tone="accent" icon="image">
                       {service.imageRepo}:{service.imageTag}
                     </Tag>
@@ -163,8 +164,8 @@ function ServiceRow({ model, service }: { model: ReturnType<typeof useApp>["mode
     <li className="svc-row">
       <Icon name={KIND_ICON[service.kind]} size={16} />
       {model.byId.has(service.id) && model.byName.has(service.name) ? <Link className="svc-name" to={`/services/${encodeURIComponent(service.name)}`}>
-        {service.name || "Unavailable service name"}
-      </Link> : <span className="svc-name">{service.name || "Unavailable service name"}</span>}
+        {identityText(service.name, UNAVAILABLE_SERVICE)}
+      </Link> : <span className="svc-name">{identityText(service.name, UNAVAILABLE_SERVICE)}</span>}
       <StatePill state={service.state} />
       <span className="svc-meta">{dependents > 0 ? `${dependents} dependent${dependents === 1 ? "" : "s"}` : "no dependents"}</span>
       <span className="svc-res">

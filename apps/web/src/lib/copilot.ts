@@ -101,17 +101,17 @@ function dependentsAnswer(model: SystemModel, service: Service, q: string): Copi
   if (names.length === 0) {
     return {
       question: q,
-      headline: `Nothing depends on ${service.name}`,
-      body: [`No other service relies on ${service.name}, so it can fail in isolation.`],
+      headline: `Nothing depends on ${identityText(service.name, UNAVAILABLE_SERVICE)}`,
+      body: [`No other service relies on ${identityText(service.name, UNAVAILABLE_SERVICE)}, so it can fail in isolation.`],
       references: [service.name]
     };
   }
   return {
     question: q,
-    headline: `${names.length} service${names.length === 1 ? "" : "s"} depend on ${service.name}`,
+    headline: `${names.length} service${names.length === 1 ? "" : "s"} depend on ${identityText(service.name, UNAVAILABLE_SERVICE)}`,
     body: [
-      `If ${service.name} fails, these are affected:`,
-      ...names.map((n) => `• ${n}`)
+      `If ${identityText(service.name, UNAVAILABLE_SERVICE)} fails, these are affected:`,
+      ...names.map((n) => `• ${identityText(n, UNAVAILABLE_SERVICE)}`)
     ],
     references: [service.name, ...names]
   };
@@ -121,22 +121,22 @@ function whyOfflineAnswer(model: SystemModel, service: Service, q: string): Copi
   if (service.state === "healthy") {
     return {
       question: q,
-      headline: `${service.name} is healthy`,
-      body: [`${service.name} is running normally (${service.status}).`],
+      headline: `${identityText(service.name, UNAVAILABLE_SERVICE)} is healthy`,
+      body: [`${identityText(service.name, UNAVAILABLE_SERVICE)} is running normally (${service.status}).`],
       references: [service.name]
     };
   }
   const brokenDeps = service.dependsOn
     .map((id) => model.byId.get(id))
     .filter((dep): dep is Service => dep !== undefined && dep.state !== "healthy");
-  const body = [`${service.name} is currently ${service.state} (${service.status}).`];
+  const body = [`${identityText(service.name, UNAVAILABLE_SERVICE)} is currently ${service.state} (${service.status}).`];
   if (brokenDeps.length > 0) {
     body.push("Likely cause — an upstream dependency is also unhealthy:");
-    for (const dep of brokenDeps) body.push(`• ${dep.name} is ${dep.state}`);
+    for (const dep of brokenDeps) body.push(`• ${identityText(dep.name, UNAVAILABLE_SERVICE)} is ${dep.state}`);
   } else {
     body.push("None of its dependencies are unhealthy, so the issue is likely local to this service.");
   }
-  return { question: q, headline: `Why ${service.name} is ${service.state}`, body, references: [service.name, ...brokenDeps.map((d) => d.name)] };
+  return { question: q, headline: `Why ${identityText(service.name, UNAVAILABLE_SERVICE)} is ${service.state}`, body, references: [service.name, ...brokenDeps.map((d) => d.name)] };
 }
 
 function portAnswer(model: SystemModel, q: string, lower: string): CopilotAnswer {
@@ -149,7 +149,7 @@ function portAnswer(model: SystemModel, q: string, lower: string): CopilotAnswer
     return {
       question: q,
       headline: "Published ports",
-      body: hits.flatMap((s) => s.ports.map((p) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${p}`)),
+      body: hits.flatMap((s) => s.ports.filter((p) => p !== "").map((p) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${p}`)),
       references: hits.map((s) => s.name)
     };
   }
@@ -181,7 +181,7 @@ function serviceOverviewAnswer(model: SystemModel, service: Service, q: string):
   const publishedPorts = service.ports.filter((p) => p !== "");
   return {
     question: q,
-    headline: `${service.name} overview`,
+    headline: `${identityText(service.name, UNAVAILABLE_SERVICE)} overview`,
     body: [
       `State: ${service.state} (${identityText(service.status, UNAVAILABLE_SERVICE_STATUS)})`,
       `Image: ${service.imageRepo}:${service.imageTag}`,
