@@ -2,7 +2,7 @@
 
 ## Certification boundary
 
-- **Tested application commit:** `b6980107b26813015e463e7d52bdf0dce5af9991`
+- **Tested application commit:** `85fdd46b59cc0e38e464246c2a6021ff5d038dde`
 - **Evidence recorded:** 2026-08-21T23:47:05+08:00
 - **Operator/environment:** Hermes Agent; Chromium 149.0.7827.55 / Playwright 1.61.0 on Linux 7.0.0-29-generic.
 - **Node/npm:** v22.23.2 / 10.9.8
