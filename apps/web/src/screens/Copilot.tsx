@@ -51,7 +51,10 @@ export default function Copilot() {
         }}
       >
         <Icon name="spark" size={17} />
+        <label htmlFor="copilot-query" className="sr-only">Ask Copilot</label>
         <input
+          id="copilot-query"
+          aria-label="Ask Copilot"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Ask why something is offline, what depends on a service, what changed…"

@@ -53,6 +53,21 @@ export interface Relationship {
   health: RelationshipHealth;
 }
 
+/**
+ * One RAW depends_on occurrence exactly as recorded in the snapshot. The
+ * reference may be a container id, container name, or compose service name
+ * (role), and may be empty, redaction-collided, or unknown. Every occurrence
+ * stays visible in relationship lists as non-routable evidence; only
+ * `resolvedId` values (unique, non-empty resolutions) enter the semantic
+ * graph (dependsOn edges, dependents, impact traversal).
+ */
+export interface DependencyOccurrence {
+  /** The raw reference verbatim from the snapshot (may be "" or ambiguous). */
+  ref: string;
+  /** Collision-safe resolved service id, or null when unresolvable. */
+  resolvedId: string | null;
+}
+
 export interface Service {
   id: string;
   name: string;
@@ -66,7 +81,13 @@ export interface Service {
   ports: string[];
   networks: string[];
   mounts: ContainerRecord["mounts"];
-  /** Services this one depends on (upstream). */
+  /**
+   * Raw dependency occurrences (unfiltered). Ambiguous/empty/unresolved
+   * occurrences are preserved here so renderers can show them as visible
+   * non-routable evidence instead of silently discarding the relationship.
+   */
+  dependencyOccurrences: DependencyOccurrence[];
+  /** Services this one depends on (upstream), resolved collision-safe only. */
   dependsOn: string[];
   /** Services that depend on this one (downstream). */
   dependents: string[];
@@ -83,6 +104,9 @@ export interface SystemModel {
   runtime: RuntimeModel;
   byId: Map<string, Service>;
   byName: Map<string, Service>;
+  serviceIdCollisions: Set<string>;
+  serviceNameCollisions: Set<string>;
+  serviceAliasCollisions: Set<string>;
   networkByName: Map<string, NetworkRecord>;
   volumeByName: Map<string, VolumeRecord>;
   imageByRef: Map<string, ImageRecord>;
@@ -136,6 +160,7 @@ export interface RuntimeModel {
   edges: RuntimeMapEdge[];
   diagnostics: RuntimeMapDiagnostic[];
   byId: Map<string, RuntimeNodeRecord>;
+  idCollisions: Set<string>;
   providerSummary: RuntimeBucketSummary<RuntimeProviderKind>[];
   layerSummary: RuntimeBucketSummary<RuntimeLayerId>[];
   summary: RuntimeSummary;
@@ -238,20 +263,54 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   // dependsOn references can be container ids, container names, or compose
   // service names (the container's role — com.docker.compose.service label);
   // normalise all of them to ids so live depends_on edges resolve even when
-  // names are project-prefixed (`immich_redis` vs role `redis`).
-  const idByAlias = new Map<string, string>();
+  // names are project-prefixed (`immich_redis` vs role `redis`). Ownership is
+  // tracked PER RECORD OCCURRENCE: two records sharing a canonical id are two
+  // owners, so no alias of either may ever resolve. Aliases of a record whose
+  // canonical id collides are invalidated too — resolving to either occurrence
+  // would be ambiguous even when the alias string itself is unique.
+  const { index: idByAlias, collisions: serviceAliasCollisions } = buildAliasIndex(
+    snapshot.containers,
+    (container) => [container.id, container.name, container.id.replace(/^container_/, ""), container.role],
+    (container) => container.id
+  );
+
+  const resolveDependency = (ref: string): string | null => {
+    // Fail closed: only aliases that resolve UNIQUELY through the index become
+    // semantic edges. Unknown refs (including any `container_*` id no record
+    // owns) and collided aliases stay null — they never enter dependsOn,
+    // dependents, or the relationship graph.
+    if (ref === "") return null;
+    return idByAlias.get(ref) ?? null;
+  };
+
+  // A semantic dependency edge requires BOTH endpoints to be unique AND
+  // non-empty. resolveDependency already fails closed on the TARGET (collided
+  // aliases and empty refs stay null); the SOURCE (this record's canonical
+  // id) needs the same guarantee: two records sharing a collided id are two
+  // DISTINCT occurrences, so an edge attributed to that id would attach to an
+  // arbitrary one (the layout springs to the FIRST occurrence) and inflate
+  // dependents/impact with the wrong identity.
+  const sourceIdCounts = new Map<string, number>();
   for (const c of snapshot.containers) {
-    idByAlias.set(c.id, c.id);
-    idByAlias.set(c.name, c.id);
-    idByAlias.set(c.id.replace(/^container_/, ""), c.id);
-    if (c.role) idByAlias.set(c.role, c.id);
+    if (c.id === "") continue;
+    sourceIdCounts.set(c.id, (sourceIdCounts.get(c.id) ?? 0) + 1);
   }
-  const resolveId = (ref: string) => idByAlias.get(ref) ?? idByAlias.get(ref.replace(/^container_/, "")) ?? ref;
+  const collidedSourceIds = new Set<string>();
+  for (const [id, count] of sourceIdCounts) {
+    if (count > 1) collidedSourceIds.add(id);
+  }
+  const isSemanticSource = (id: string) => id !== "" && !collidedSourceIds.has(id);
 
   const dependents = new Map<string, Set<string>>();
   for (const c of snapshot.containers) {
+    // Only resolved ids feed the semantic dependents sets; raw occurrences
+    // (empty, collided, or unknown refs) are preserved per service below.
+    // A collided/empty SOURCE cannot be attributed to one occurrence, so it
+    // never enters the dependents sets either.
+    if (!isSemanticSource(c.id)) continue;
     for (const dep of c.dependsOn) {
-      const target = resolveId(dep);
+      const target = resolveDependency(dep);
+      if (target === null) continue;
       if (!dependents.has(target)) dependents.set(target, new Set());
       dependents.get(target)!.add(c.id);
     }
@@ -260,6 +319,15 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   const services: Service[] = snapshot.containers.map((c) => {
     const { repo, tag } = splitImage(c.image);
     const updateAvailable = hashString(c.id + "update") > 0.74;
+    const semantic = isSemanticSource(c.id);
+    // Raw occurrences stay visible as non-routable evidence; resolvedId is
+    // collision-safe on BOTH ends — a collided/empty source leaves the target
+    // resolution null too (occurrence-qualified), so no semantic join can
+    // silently attach the wrong occurrence.
+    const occurrences: DependencyOccurrence[] = c.dependsOn.map((dep) => ({
+      ref: dep,
+      resolvedId: semantic ? resolveDependency(dep) : null
+    }));
     return {
       id: c.id,
       name: c.name,
@@ -273,19 +341,20 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
       ports: c.ports,
       networks: c.networks.map((n) => networkNameById.get(n) ?? n.replace(/^network_/, "")),
       mounts: c.mounts,
-      dependsOn: c.dependsOn.map(resolveId).filter((id) => idByAlias.has(id) || id.startsWith("container_")),
+      dependencyOccurrences: occurrences,
+      dependsOn: semantic ? occurrences.filter((o): o is DependencyOccurrence & { resolvedId: string } => o.resolvedId !== null).map((o) => o.resolvedId) : [],
       dependents: [...(dependents.get(c.id) ?? [])],
       updateAvailable
     };
   });
 
-  const byId = new Map(services.map((s) => [s.id, s]));
-  const byName = new Map(services.map((s) => [s.name, s]));
+  const { index: byId, collisions: serviceIdCollisions } = buildIdentityIndex(services, (service) => service.id);
+  const { index: byName, collisions: serviceNameCollisions } = buildIdentityIndex(services, (service) => service.name);
   const { index: networkByName, collisions: networkNameCollisions } = buildIdentityIndex(snapshot.networks, (network) => network.name);
   const { index: volumeByName, collisions: volumeNameCollisions } = buildIdentityIndex(snapshot.volumes, (volume) => volume.name);
   const { index: imageByRef, collisions: imageRefCollisions } = buildIdentityIndex(snapshot.images, (image) => image.image);
 
-  const relationships = buildRelationships(services, snapshot, byId);
+  const relationships = buildRelationships(services, snapshot, byId, byName);
   const runtime = buildRuntimeModel(runtimeMap);
 
   return {
@@ -297,6 +366,9 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
     runtime,
     byId,
     byName,
+    serviceIdCollisions,
+    serviceNameCollisions,
+    serviceAliasCollisions,
     networkByName,
     volumeByName,
     imageByRef,
@@ -341,10 +413,66 @@ function buildIdentityIndex<T>(records: T[], keyFor: (record: T) => string): { i
   return { index, collisions };
 }
 
+/**
+ * Aliases resolve dependencies but are not always canonical identities.
+ * Ownership is tracked by RECORD OCCURRENCE (the record's index), never by
+ * the canonical id VALUE: two records sharing a canonical id occupy two
+ * distinct occurrences, so they can never collapse into a single owner and
+ * let an ambiguous alias resolve. An alias resolves only when exactly one
+ * occurrence owns it AND that occurrence's canonical id is itself unique —
+ * an alias of a duplicate-id record is invalidated even when the alias
+ * string is unique, because the resolution target would be ambiguous.
+ */
+function buildAliasIndex<T>(
+  records: T[],
+  aliasesFor: (record: T) => string[],
+  valueFor: (record: T) => string
+): { index: Map<string, string>; collisions: Set<string> } {
+  const owners = new Map<string, Set<number>>();
+  records.forEach((record, occurrence) => {
+    const value = valueFor(record);
+    if (value === "") return;
+    for (const alias of new Set(aliasesFor(record))) {
+      if (alias === "") continue;
+      const found = owners.get(alias) ?? new Set<number>();
+      found.add(occurrence);
+      owners.set(alias, found);
+    }
+  });
+
+  // Canonical ids shared by more than one record: EVERY alias of those
+  // records is ambiguous (either occurrence would be an arbitrary target).
+  const collidedValues = new Set<string>();
+  const valueCounts = new Map<string, number>();
+  for (const record of records) {
+    const value = valueFor(record);
+    if (value === "") continue;
+    valueCounts.set(value, (valueCounts.get(value) ?? 0) + 1);
+  }
+  for (const [value, count] of valueCounts) {
+    if (count > 1) collidedValues.add(value);
+  }
+
+  const index = new Map<string, string>();
+  const collisions = new Set<string>();
+  for (const [alias, occurrences] of owners) {
+    if (occurrences.size === 1) {
+      const record = records[[...occurrences][0]];
+      if (!collidedValues.has(valueFor(record))) {
+        index.set(alias, valueFor(record));
+        continue;
+      }
+    }
+    collisions.add(alias);
+  }
+  return { index, collisions };
+}
+
 function buildRelationships(
   services: Service[],
   snapshot: DockerSnapshot,
-  byId: Map<string, Service>
+  byId: Map<string, Service>,
+  byName: Map<string, Service>
 ): Relationship[] {
   const relationships: Relationship[] = [];
   const seen = new Set<string>();
@@ -358,8 +486,12 @@ function buildRelationships(
     return "healthy";
   };
 
-  // Primary: explicit service-to-service dependencies.
+  // Primary: explicit service-to-service dependencies. BOTH endpoints must
+  // resolve uniquely through the collision-safe byId index (which excludes
+  // empty and collided ids): a collided SOURCE would make the edge's
+  // attribution ambiguous (the layout would spring to the first occurrence).
   for (const service of services) {
+    if (!byId.has(service.id)) continue;
     for (const dep of service.dependsOn) {
       if (!byId.has(dep)) continue;
       const id = `dep:${service.id}->${dep}`;
@@ -376,10 +508,30 @@ function buildRelationships(
   }
 
   // Secondary: shared-volume data relationships (who reads/writes the same state).
+  // Member refs resolve through the SAME collision-safe identity indexes as
+  // detail routing: a ref that is empty, or that collides after redaction
+  // (duplicate names/ids), or that is ambiguous across the name/id maps is
+  // left VISIBLE on the volume record but never becomes a data edge — an
+  // ambiguous ref must not silently attach the first occurrence (a
+  // truthfulness contradiction with the unresolved state VolumeDetail shows).
+  // Repeated refs resolving to the SAME service are deduped so a volume can
+  // never derive a self-edge (data:A~A:V) or inflate computeImpact counts.
+  const resolveServiceRef = (ref: string): Service | undefined => {
+    if (ref === "") return undefined;
+    const byNameHit = byName.get(ref);
+    const byIdHit = byId.get(ref);
+    if (byNameHit && byIdHit && byNameHit !== byIdHit) return undefined;
+    return byNameHit ?? byIdHit;
+  };
   for (const volume of snapshot.volumes) {
-    const attached = volume.attachedTo
-      .map((ref) => services.find((s) => s.name === ref || s.id === ref))
-      .filter((s): s is Service => Boolean(s));
+    const attached = [
+      ...new Map(
+        volume.attachedTo
+          .map(resolveServiceRef)
+          .filter((s): s is Service => Boolean(s))
+          .map((s) => [s.id, s] as const)
+      ).values()
+    ];
     for (let i = 0; i < attached.length; i += 1) {
       for (let j = i + 1; j < attached.length; j += 1) {
         const a = attached[i];
@@ -483,7 +635,7 @@ function buildRuntimeModel(runtimeMap: RuntimeMap): RuntimeModel {
       return left.label.localeCompare(right.label);
     });
 
-  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const { index: byId, collisions: idCollisions } = buildIdentityIndex(nodes, (node) => node.id);
   const providerSummary = summarizeRuntimeBuckets<RuntimeProviderKind>(nodes, (node) => node.provider);
   const layerSummary = summarizeRuntimeBuckets<RuntimeLayerId>(nodes, (node) => node.layer);
   const attention = nodes.filter((node) => needsAttention(node.state)).length;
@@ -493,6 +645,7 @@ function buildRuntimeModel(runtimeMap: RuntimeMap): RuntimeModel {
     edges: runtimeMap.edges,
     diagnostics: runtimeMap.diagnostics,
     byId,
+    idCollisions,
     providerSummary,
     layerSummary,
     summary: {

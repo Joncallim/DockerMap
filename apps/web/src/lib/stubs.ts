@@ -1,4 +1,5 @@
 import { hashString, needsAttention, type Service, type SystemModel } from "./model";
+import { identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_SERVICE } from "./identity";
 
 /**
  * ──────────────────────────────────────────────────────────────────────────
@@ -47,7 +48,19 @@ export function resourceFor(service: Service): ResourceSample {
 export interface ChangeEvent {
   id: string;
   serviceId: string | null;
+  /**
+   * Display identity for the event summary — already normalized through the
+   * shared identity helper, so an empty service name renders the explicit
+   * "Unavailable service name" fallback instead of a malformed summary.
+   */
   serviceName: string;
+  /**
+   * Collision-safe route target: the service name only when it is non-empty
+   * and uniquely resolvable (absent from the collision-safe byName index).
+   * Null for empty/collided identities — renderers must render plain
+   * non-routable text and never emit a /services/ link in that case.
+   */
+  routeName: string | null;
   kind: "deploy" | "image_update" | "restart" | "config" | "failure" | "recovery";
   summary: string;
   detail?: string;
@@ -60,14 +73,14 @@ const CHANGE_TEMPLATES: Record<
   (service: Service) => { summary: string; detail?: string }
 > = {
   image_update: (s) => ({
-    summary: `${s.name} image updated`,
-    detail: `${s.imageRepo}:${s.imageTag} pulled and redeployed`
+    summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} image updated`,
+    detail: `${identityText(s.imageRepo, UNAVAILABLE_IMAGE)}:${identityText(s.imageTag, UNAVAILABLE_IMAGE)} pulled and redeployed`
   }),
-  deploy: (s) => ({ summary: `${s.name} redeployed`, detail: `Recreated from compose definition` }),
-  restart: (s) => ({ summary: `${s.name} restarted`, detail: `Process exited and was restarted` }),
-  config: (s) => ({ summary: `${s.name} configuration changed`, detail: `Environment or mount updated` }),
-  failure: (s) => ({ summary: `${s.name} became unavailable`, detail: `Health checks failed` }),
-  recovery: (s) => ({ summary: `${s.name} recovered`, detail: `Health checks passing again` })
+  deploy: (s) => ({ summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} redeployed`, detail: `Recreated from compose definition` }),
+  restart: (s) => ({ summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} restarted`, detail: `Process exited and was restarted` }),
+  config: (s) => ({ summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} configuration changed`, detail: `Environment or mount updated` }),
+  failure: (s) => ({ summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} became unavailable`, detail: `Health checks failed` }),
+  recovery: (s) => ({ summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} recovered`, detail: `Health checks passing again` })
 };
 
 export function changeFeed(model: SystemModel): ChangeEvent[] {
@@ -75,24 +88,28 @@ export function changeFeed(model: SystemModel): ChangeEvent[] {
   const events: ChangeEvent[] = [];
   for (const service of model.services) {
     const seed = hashString(service.id + "change");
+    // Collision-safe route target: only a non-empty name that resolves
+    // uniquely through byName may become a /services/ link.
+    const routeName = model.byName.has(service.name) ? service.name : null;
     if (service.updateAvailable) {
-      events.push(makeEvent(service, "image_update", now - Math.round(seed * 1000 * 60 * 90)));
+      events.push(makeEvent(service, "image_update", now - Math.round(seed * 1000 * 60 * 90), routeName));
     }
     if (needsAttention(service.state)) {
-      events.push(makeEvent(service, "failure", now - Math.round(seed * 1000 * 60 * 25)));
+      events.push(makeEvent(service, "failure", now - Math.round(seed * 1000 * 60 * 25), routeName));
     } else if (seed > 0.6) {
-      events.push(makeEvent(service, "restart", now - Math.round(seed * 1000 * 60 * 60 * 6)));
+      events.push(makeEvent(service, "restart", now - Math.round(seed * 1000 * 60 * 60 * 6), routeName));
     }
   }
   return events.sort((a, b) => b.at - a.at).slice(0, 24);
 }
 
-function makeEvent(service: Service, kind: ChangeEvent["kind"], at: number): ChangeEvent {
+function makeEvent(service: Service, kind: ChangeEvent["kind"], at: number, routeName: string | null): ChangeEvent {
   const tpl = CHANGE_TEMPLATES[kind](service);
   return {
     id: `${service.id}:${kind}:${at}`,
     serviceId: service.id,
-    serviceName: service.name,
+    serviceName: identityText(service.name, UNAVAILABLE_SERVICE),
+    routeName,
     kind,
     summary: tpl.summary,
     detail: tpl.detail,
@@ -115,13 +132,15 @@ export function causalChain(model: SystemModel): CausalStep[] | null {
   const root = model.services.find((s) => s.state === "offline");
   if (!root) return null;
   const affected = model.services.filter((s) => s.dependsOn.includes(root.id));
+  const rootName = identityText(root.name, UNAVAILABLE_SERVICE);
   const steps: CausalStep[] = [
-    { serviceName: root.name, text: `${root.name} went offline`, tone: "fail" }
+    { serviceName: rootName, text: `${rootName} went offline`, tone: "fail" }
   ];
   for (const svc of affected.slice(0, 3)) {
+    const name = identityText(svc.name, UNAVAILABLE_SERVICE);
     steps.push({
-      serviceName: svc.name,
-      text: `${svc.name} lost its ${root.kind === "database" ? "database" : "upstream"} connection`,
+      serviceName: name,
+      text: `${name} lost its ${root.kind === "database" ? "database" : "upstream"} connection`,
       tone: "neutral"
     });
   }

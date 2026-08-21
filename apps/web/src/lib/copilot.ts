@@ -1,4 +1,5 @@
 import { computeImpact, type Service, type SystemModel } from "./model";
+import { identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "./identity";
 
 /**
  * The Copilot interprets the topology. It does not control anything and it does
@@ -22,9 +23,9 @@ export interface CopilotSuggestion {
 
 export function suggestions(model: SystemModel): CopilotSuggestion[] {
   const out: CopilotSuggestion[] = [{ label: "Show unhealthy services", query: "show unhealthy services" }];
-  const offline = model.services.find((s) => s.state === "offline");
+  const offline = model.services.find((s) => s.state === "offline" && model.byName.has(s.name));
   if (offline) out.push({ label: `Why is ${offline.name} offline?`, query: `why is ${offline.name} offline` });
-  const db = model.services.find((s) => s.kind === "database");
+  const db = model.services.find((s) => s.kind === "database" && model.byName.has(s.name));
   if (db) out.push({ label: `What depends on ${db.name}?`, query: `what depends on ${db.name}` });
   out.push({ label: "What changed recently?", query: "what changed recently" });
   out.push({ label: "Show everything using port 443", query: "show everything using port 443" });
@@ -69,7 +70,7 @@ export function answer(model: SystemModel, raw: string): CopilotAnswer {
 function findService(model: SystemModel, lower: string): Service | null {
   let best: Service | null = null;
   for (const service of model.services) {
-    if (lower.includes(service.name.toLowerCase())) {
+    if (service.name !== "" && model.byName.has(service.name) && lower.includes(service.name.toLowerCase())) {
       if (!best || service.name.length > best.name.length) best = service;
     }
   }
@@ -89,7 +90,7 @@ function unhealthyAnswer(model: SystemModel, q: string): CopilotAnswer {
   return {
     question: q,
     headline: `${trouble.length} service${trouble.length === 1 ? "" : "s"} need attention`,
-    body: trouble.map((s) => `${s.name} — ${s.state} (${s.status})`),
+    body: trouble.map((s) => `${identityText(s.name, UNAVAILABLE_SERVICE)} — ${s.state} (${identityText(s.status, UNAVAILABLE_SERVICE_STATUS)})`),
     references: trouble.map((s) => s.name)
   };
 }
@@ -100,17 +101,17 @@ function dependentsAnswer(model: SystemModel, service: Service, q: string): Copi
   if (names.length === 0) {
     return {
       question: q,
-      headline: `Nothing depends on ${service.name}`,
-      body: [`No other service relies on ${service.name}, so it can fail in isolation.`],
+      headline: `Nothing depends on ${identityText(service.name, UNAVAILABLE_SERVICE)}`,
+      body: [`No other service relies on ${identityText(service.name, UNAVAILABLE_SERVICE)}, so it can fail in isolation.`],
       references: [service.name]
     };
   }
   return {
     question: q,
-    headline: `${names.length} service${names.length === 1 ? "" : "s"} depend on ${service.name}`,
+    headline: `${names.length} service${names.length === 1 ? "" : "s"} depend on ${identityText(service.name, UNAVAILABLE_SERVICE)}`,
     body: [
-      `If ${service.name} fails, these are affected:`,
-      ...names.map((n) => `• ${n}`)
+      `If ${identityText(service.name, UNAVAILABLE_SERVICE)} fails, these are affected:`,
+      ...names.map((n) => `• ${identityText(n, UNAVAILABLE_SERVICE)}`)
     ],
     references: [service.name, ...names]
   };
@@ -120,22 +121,22 @@ function whyOfflineAnswer(model: SystemModel, service: Service, q: string): Copi
   if (service.state === "healthy") {
     return {
       question: q,
-      headline: `${service.name} is healthy`,
-      body: [`${service.name} is running normally (${service.status}).`],
+      headline: `${identityText(service.name, UNAVAILABLE_SERVICE)} is healthy`,
+      body: [`${identityText(service.name, UNAVAILABLE_SERVICE)} is running normally (${identityText(service.status, UNAVAILABLE_SERVICE_STATUS)}).`],
       references: [service.name]
     };
   }
   const brokenDeps = service.dependsOn
     .map((id) => model.byId.get(id))
     .filter((dep): dep is Service => dep !== undefined && dep.state !== "healthy");
-  const body = [`${service.name} is currently ${service.state} (${service.status}).`];
+  const body = [`${identityText(service.name, UNAVAILABLE_SERVICE)} is currently ${service.state} (${identityText(service.status, UNAVAILABLE_SERVICE_STATUS)}).`];
   if (brokenDeps.length > 0) {
     body.push("Likely cause — an upstream dependency is also unhealthy:");
-    for (const dep of brokenDeps) body.push(`• ${dep.name} is ${dep.state}`);
+    for (const dep of brokenDeps) body.push(`• ${identityText(dep.name, UNAVAILABLE_SERVICE)} is ${dep.state}`);
   } else {
     body.push("None of its dependencies are unhealthy, so the issue is likely local to this service.");
   }
-  return { question: q, headline: `Why ${service.name} is ${service.state}`, body, references: [service.name, ...brokenDeps.map((d) => d.name)] };
+  return { question: q, headline: `Why ${identityText(service.name, UNAVAILABLE_SERVICE)} is ${service.state}`, body, references: [service.name, ...brokenDeps.map((d) => d.name)] };
 }
 
 function portAnswer(model: SystemModel, q: string, lower: string): CopilotAnswer {
@@ -148,7 +149,7 @@ function portAnswer(model: SystemModel, q: string, lower: string): CopilotAnswer
     return {
       question: q,
       headline: "Published ports",
-      body: hits.flatMap((s) => s.ports.map((p) => `${s.name} → ${p}`)),
+      body: hits.flatMap((s) => s.ports.filter((p) => p !== "").map((p) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${p}`)),
       references: hits.map((s) => s.name)
     };
   }
@@ -158,7 +159,7 @@ function portAnswer(model: SystemModel, q: string, lower: string): CopilotAnswer
   return {
     question: q,
     headline: `Port ${port}`,
-    body: hits.map((s) => `${s.name} → ${s.ports.filter((p) => p.includes(port)).join(", ")}`),
+    body: hits.map((s) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${s.ports.filter((p) => p !== "" && p.includes(port)).join(", ")}`),
     references: hits.map((s) => s.name)
   };
 }
@@ -168,7 +169,7 @@ function changeAnswer(model: SystemModel, q: string): CopilotAnswer {
   const body: string[] = [];
   if (updates.length > 0) {
     body.push(`${updates.length} service${updates.length === 1 ? " has" : "s have"} an update available:`);
-    for (const s of updates) body.push(`• ${s.name} (${s.imageRepo}:${s.imageTag})`);
+    for (const s of updates) body.push(`• ${identityText(s.name, UNAVAILABLE_SERVICE)} (${identityText(s.imageRepo, UNAVAILABLE_IMAGE)}:${identityText(s.imageTag, UNAVAILABLE_IMAGE)})`);
   } else {
     body.push("No pending updates detected.");
   }
@@ -177,14 +178,15 @@ function changeAnswer(model: SystemModel, q: string): CopilotAnswer {
 
 function serviceOverviewAnswer(model: SystemModel, service: Service, q: string): CopilotAnswer {
   const impact = computeImpact(model, service.id);
+  const publishedPorts = service.ports.filter((p) => p !== "");
   return {
     question: q,
-    headline: `${service.name} overview`,
+    headline: `${identityText(service.name, UNAVAILABLE_SERVICE)} overview`,
     body: [
-      `State: ${service.state} (${service.status})`,
-      `Image: ${service.imageRepo}:${service.imageTag}`,
+      `State: ${service.state} (${identityText(service.status, UNAVAILABLE_SERVICE_STATUS)})`,
+      `Image: ${identityText(service.imageRepo, UNAVAILABLE_IMAGE)}:${identityText(service.imageTag, UNAVAILABLE_IMAGE)}`,
       `Depends on ${service.dependsOn.length}, used by ${impact.downstream.length}.`,
-      service.ports.length ? `Ports: ${service.ports.join(", ")}` : "No published ports."
+      publishedPorts.length ? `Ports: ${publishedPorts.join(", ")}` : "No published ports."
     ],
     references: [service.name]
   };

@@ -1,4 +1,6 @@
 import {
+  useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -10,6 +12,7 @@ import { computeImpact, type Service, type SystemModel } from "../lib/model";
 import { layoutServices } from "../lib/layout";
 import Icon, { KIND_ICON } from "./Icon";
 import { StateDot } from "./primitives";
+import { identityText, COLLISION_HINT, COLLISION_TAG, UNAVAILABLE_NETWORK, UNAVAILABLE_SERVICE } from "../lib/identity";
 
 const VIEW = 240;
 const PAD = 26;
@@ -26,21 +29,60 @@ interface Transform {
 export interface ServiceMapProps {
   model: SystemModel;
   selectedId: string | null;
+  /**
+   * Exact service OCCURRENCE for the selection, when the caller can identify
+   * one (e.g. ServiceDetail resolves a unique NAME). Selection is then
+   * compared by layout key, so a redaction-collided canonical id still
+   * highlights exactly the intended occurrence instead of every record that
+   * shares the id. When omitted, an id-only selection is honoured ONLY for
+   * unique ids — a collided id cannot identify one occurrence, so the
+   * selected state is suppressed entirely.
+   */
+  selectedService?: Service | null;
   onSelect: (id: string | null) => void;
   interactive?: boolean;
   filter?: (service: Service) => boolean;
   height?: number;
+  focusNodeId?: string | null;
+  /**
+   * Monotonic focus-request token: paired with `focusNodeId`, it lets the
+   * parent re-request focus on the SAME node (e.g. clearing the selection a
+   * second time) — the effect dependency changes even when the node id does
+   * not, so the focus call runs again.
+   */
+  focusToken?: number;
 }
 
-export default function ServiceMap({ model, selectedId, onSelect, interactive = true, filter, height }: ServiceMapProps) {
+export default function ServiceMap({ model, selectedId, selectedService, onSelect, interactive = true, filter, height, focusNodeId, focusToken }: ServiceMapProps) {
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [transform, setTransform] = useState<Transform>({ k: 1, x: 0, y: 0 });
   const [hiddenNetworks, setHiddenNetworks] = useState<Set<string>>(() => new Set());
   const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  const nodeRefs = useRef(new Map<string, SVGGElement>());
+  const descriptionId = useId();
 
   const services = useMemo(() => (filter ? model.services.filter(filter) : model.services), [model.services, filter]);
-  const layout = useMemo(() => layoutServices(model.services, model.relationships), [model.services, model.relationships]);
-  const servicesById = useMemo(() => new Map(services.map((service) => [service.id, service])), [services]);
+  // The layout is keyed by SERVICE OCCURRENCE (duplicate canonical ids would
+  // otherwise share ONE coordinate and paint over each other). Nodes look up
+  // their own occurrence key; semantic edges (which only reference uniquely
+  // resolved canonical ids) attach to the FIRST occurrence of that id.
+  const layout = useMemo(
+    () => layoutServices(model.services, model.relationships, (service, index) => `${service.id}\u0000${index}`),
+    [model.services, model.relationships]
+  );
+  const layoutKeyByService = useMemo(() => {
+    const map = new Map<Service, string>();
+    model.services.forEach((service, index) => map.set(service, `${service.id}\u0000${index}`));
+    return map;
+  }, [model.services]);
+  const firstLayoutKeyForId = useMemo(() => {
+    const map = new Map<string, string>();
+    model.services.forEach((service, index) => {
+      if (!map.has(service.id)) map.set(service.id, `${service.id}\u0000${index}`);
+    });
+    return map;
+  }, [model.services]);
+  const servicesById = useMemo(() => new Map(services.filter((service) => model.byId.has(service.id)).map((service) => [service.id, service])), [model.byId, services]);
   const networks = useMemo(() => {
     const networkOrder = new Map(model.networks.map((network, index) => [network.name, index]));
     const names = [...new Set(services.flatMap((service) => service.networks))].sort((a, b) => {
@@ -59,8 +101,8 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
     [hiddenNetworks, networks]
   );
 
-  const place = (id: string) => {
-    const p = layout.get(id);
+  const place = (key: string | undefined) => {
+    const p = key ? layout.get(key) : undefined;
     const half = VIEW / 2;
     const usable = half - PAD;
     return {
@@ -69,20 +111,106 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
     };
   };
 
-  const activeId = hoverId ?? selectedId;
+  // The ACTIVE selection is occurrence-qualified: an exact service object
+  // resolves to its own layout key; an id-only selection resolves through the
+  // first-occurrence map ONLY for unique ids. A collided id cannot identify
+  // one occurrence, so the selected state is suppressed (no node-self, no
+  // impact) rather than highlighting every record that shares the id.
+  const selectedKey = useMemo(() => {
+    if (selectedService) return layoutKeyByService.get(selectedService) ?? null;
+    if (!selectedId) return null;
+    if (model.serviceIdCollisions.has(selectedId)) return null;
+    return firstLayoutKeyForId.get(selectedId) ?? null;
+  }, [selectedService, selectedId, layoutKeyByService, firstLayoutKeyForId, model.serviceIdCollisions]);
+
+  // The ACTIVE highlight is occurrence-qualified. While hovering, the ACTIVE
+  // service is resolved through the SAME predicate that makes a node
+  // selectable (rendered by the active filter, unique id AND name, present
+  // in byId, interactive) — NOT by a raw hoverId. A snapshot/model refresh
+  // that turns the hovered occurrence collided replaces its <g> (or drops
+  // its pointer handlers) without ever firing pointerleave, so a raw hoverId
+  // would stay stale: the FIRST collided occurrence would carry node-self
+  // while the banner read "anonymous". Deriving the hover from the CURRENT
+  // model keeps it alive only while that service remains valid and falls
+  // back IMMEDIATELY (in the same render as the refresh) to the selection's
+  // occurrence key — or to no active state at all. The pre-R3 hover radius
+  // is preserved: hovering with no selection highlights the hovered node,
+  // and hovering a different node while one is selected re-centres the
+  // radius on it (hoverable nodes are exactly the unique-id, non-collided
+  // ones, so the occurrence resolves unambiguously).
+  const hoveredService = useMemo(() => {
+    if (!interactive || !hoverId) return null;
+    const service = servicesById.get(hoverId);
+    if (!service) return null;
+    if (model.serviceIdCollisions.has(service.id) || model.serviceNameCollisions.has(service.name)) return null;
+    return service;
+  }, [interactive, hoverId, servicesById, model.serviceIdCollisions, model.serviceNameCollisions]);
+  // The hover's OWN layout key, derived from the resolved occurrence.
+  const hoverKey = hoveredService ? (layoutKeyByService.get(hoveredService) ?? null) : null;
+  const activeKey = hoverKey ?? selectedKey;
+  const activeId = hoveredService?.id ?? (selectedKey ? (selectedService?.id ?? selectedId) : null);
   const impact = useMemo(() => (activeId ? computeImpact(model, activeId) : null), [model, activeId]);
   const upstream = useMemo(() => new Set(impact?.upstream ?? []), [impact]);
   const downstream = useMemo(() => new Set(impact?.downstream ?? []), [impact]);
 
-  const roleOf = (id: string): "self" | "up" | "down" | "dim" | "none" => {
-    if (!activeId) return "none";
-    if (id === activeId) return "self";
+  // A hover whose service is no longer selectable (collided by a refresh,
+  // filtered out, or the map turned read-only) is STALE STATE: the node's
+  // replaced <g> can never fire pointerleave, so clear the id explicitly.
+  // The derived hover above already ignores it; clearing prevents a later
+  // refresh from resurrecting the hover without any pointer event.
+  useEffect(() => {
+    if (hoverId && !hoveredService) setHoverId(null);
+  }, [hoverId, hoveredService]);
+
+  // The impact banner's IDENTITY is occurrence-qualified too: hovering names
+  // the CURRENT hovered occurrence (resolved by the selectable predicate
+  // above — never a collided "anonymous" lookup), an exact selection
+  // occurrence names itself, and an id-only selection falls back to the
+  // collision-safe byId lookup. byId EXCLUDES collided ids, so the exact
+  // occurrence must come from the caller (selectedService) — never from a
+  // lookup that would label the highlighted node "anonymous". Semantic
+  // impact traversal (computeImpact) stays fail-closed and untouched.
+  const activeService = useMemo(() => {
+    if (hoveredService) return hoveredService;
+    if (selectedService) return selectedService;
+    if (!selectedId) return null;
+    return model.byId.get(selectedId) ?? null;
+  }, [hoveredService, selectedService, selectedId, model.byId]);
+
+  const roleOf = (key: string, id: string): "self" | "up" | "down" | "dim" | "none" => {
+    if (!activeKey) return "none";
+    if (key === activeKey) return "self";
     if (downstream.has(id)) return "down";
     if (upstream.has(id)) return "up";
     return "dim";
   };
 
-  const visible = new Set(services.map((s) => s.id));
+  const visible = new Set(services.filter((service) => model.byId.has(service.id)).map((service) => service.id));
+  const relationshipSummary = useMemo(() => {
+    const parts: string[] = [];
+    if (model.relationships.length === 0) parts.push("No service relationships are recorded.");
+    else parts.push(model.relationships.map((relationship) => {
+      const from = model.byId.get(relationship.from);
+      const to = model.byId.get(relationship.to);
+      return `${identityText(from?.name, UNAVAILABLE_SERVICE)} depends on ${identityText(to?.name, UNAVAILABLE_SERVICE)}.`;
+    }).join(" "));
+    // Collided occurrences (duplicate ids/names after redaction) are visible
+    // on the graph but noninteractive; the text alternative names them so
+    // screen-reader users get the same "collision" context sighted users see.
+    const collidedNames = [...new Set(
+      model.services
+        .filter((service) => model.serviceIdCollisions.has(service.id) || model.serviceNameCollisions.has(service.name))
+        .map((service) => identityText(service.name, UNAVAILABLE_SERVICE))
+    )];
+    if (collidedNames.length > 0) {
+      parts.push(`Identity collision: ${collidedNames.join(", ")} — multiple records share this identity, so selection and detail routing are unavailable.`);
+    }
+    return parts.join(" ");
+  }, [model]);
+
+  useEffect(() => {
+    if (focusNodeId) nodeRefs.current.get(focusNodeId)?.focus();
+  }, [focusNodeId, focusToken]);
 
   const edgePoints = (from: { x: number; y: number }, to: { x: number; y: number }) => {
     const dx = to.x - from.x;
@@ -150,12 +278,14 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
   const reset = () => setTransform({ k: 1, x: 0, y: 0 });
 
   return (
-    <div className="map" style={height ? { height } : undefined}>
+    <>
+      <div className="map" style={height ? { height } : undefined}>
       <svg
         className={`map-svg${interactive ? " is-interactive" : ""}`}
         viewBox={`0 0 ${VIEW} ${VIEW}`}
-        role="img"
+        role={interactive ? "group" : "img"}
         aria-label="Service dependency map"
+        aria-describedby={descriptionId}
         onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -168,13 +298,13 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
           </marker>
         </defs>
         <g transform={`translate(${transform.x} ${transform.y}) translate(${VIEW / 2} ${VIEW / 2}) scale(${transform.k}) translate(${-VIEW / 2} ${-VIEW / 2})`}>
-          {model.relationships.map((rel) => {
+          {model.relationships.map((rel, relationshipIndex) => {
             if (!visible.has(rel.from) || !visible.has(rel.to)) return null;
             const fromService = servicesById.get(rel.from);
             const toService = servicesById.get(rel.to);
             if (!fromService || !toService) return null;
-            const a = place(rel.from);
-            const b = place(rel.to);
+            const a = place(firstLayoutKeyForId.get(rel.from));
+            const b = place(firstLayoutKeyForId.get(rel.to));
             const points = edgePoints(a, b);
             const lit = activeId ? rel.from === activeId || rel.to === activeId : false;
             const inImpact = activeId
@@ -184,17 +314,17 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
             const toNetworks = new Set(toService.networks);
             const edgeNetworks = fromService.networks.filter((network) => toNetworks.has(network) && enabledNetworkNames.has(network));
             return (
-              <g key={rel.id} className="edge-group">
+              <g key={`${rel.id}-${relationshipIndex}`} className="edge-group">
                 <title>
-                  {fromService.name} depends on {toService.name}
-                  {edgeNetworks.length > 0 ? ` via ${edgeNetworks.join(", ")}` : ""}
+                  {identityText(fromService.name, UNAVAILABLE_SERVICE)} depends on {identityText(toService.name, UNAVAILABLE_SERVICE)}
+                  {edgeNetworks.length > 0 ? ` via ${edgeNetworks.map((n) => (n === "" ? UNAVAILABLE_NETWORK : n)).join(", ")}` : ""}
                 </title>
                 {edgeNetworks.map((network, index) => {
                   const networkDef = networkByName.get(network);
                   const track = offsetPoints(points, index, edgeNetworks.length);
                   return (
                     <line
-                      key={`${rel.id}:${network}`}
+                      key={`${rel.id}-${relationshipIndex}:${network}-${index}`}
                       className={`network-edge${activeId && !inImpact ? " is-dim" : ""}`}
                       style={{ "--network-color": networkDef?.color ?? NETWORK_COLORS[0] } as CSSProperties}
                       x1={track.x1}
@@ -215,29 +345,47 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
               </g>
             );
           })}
-          {services.map((service) => {
-            const p = place(service.id);
-            const role = roleOf(service.id);
+          {services.map((service, serviceIndex) => {
+            const p = place(layoutKeyByService.get(service));
+            const role = roleOf(layoutKeyByService.get(service)!, service.id);
+            // Collided occurrences (duplicate service id OR duplicate name
+            // after redaction) stay visible but are never interactive: no
+            // selection can be made without pointing at the wrong record.
+            const collided = model.serviceIdCollisions.has(service.id) || model.serviceNameCollisions.has(service.name);
+            const selectable = interactive && !collided && model.byId.has(service.id);
             return (
               <g
-                key={service.id}
-                className={`node node-${role} s-${service.state}`}
+                key={`${service.id}-${serviceIndex}`}
+                className={`node${selectable ? " node-interactive" : ""} node-${role} s-${service.state}${collided ? " node-collided" : ""}`}
                 transform={`translate(${p.x} ${p.y})`}
-                onClick={() => onSelect(service.id === selectedId ? null : service.id)}
-                onPointerEnter={() => setHoverId(service.id)}
-                onPointerLeave={() => setHoverId(null)}
-                role="button"
-                tabIndex={0}
-                aria-label={`${service.name}, ${service.state}`}
+                ref={(element) => {
+                  if (element && selectable) nodeRefs.current.set(service.id, element);
+                }}
+                onClick={selectable ? () => onSelect(service.id === selectedId ? null : service.id) : undefined}
+                onPointerEnter={selectable ? () => setHoverId(service.id) : undefined}
+                onPointerLeave={selectable ? () => setHoverId(null) : undefined}
+                role={selectable ? "button" : undefined}
+                aria-pressed={selectable ? selectedId === service.id : undefined}
+                tabIndex={selectable ? 0 : undefined}
+                aria-label={selectable ? `${identityText(service.name, UNAVAILABLE_SERVICE)}, ${service.state}` : undefined}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") onSelect(service.id);
+                  if (selectable && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    onSelect(service.id);
+                  }
                 }}
               >
                 <circle className="node-halo" r={11} />
                 <circle className="node-core" r={7} />
                 <text className="node-label" y={20} textAnchor="middle">
-                  {service.name}
+                  {identityText(service.name, UNAVAILABLE_SERVICE)}
                 </text>
+                {collided && (
+                  <>
+                    <title>{COLLISION_HINT}</title>
+                    <text className="node-collision-tag" y={30} textAnchor="middle">{COLLISION_TAG}</text>
+                  </>
+                )}
               </g>
             );
           })}
@@ -262,11 +410,11 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
         <div className="map-network-panel" aria-label="Network overlays">
           <div className="map-network-title">Networks</div>
           <div className="map-network-list">
-            {networks.map((network) => (
-              <label key={network.name} className="map-network-option" style={{ "--network-color": network.color } as CSSProperties}>
+            {networks.map((network, index) => (
+              <label key={`${network.name}-${index}`} className="map-network-option" style={{ "--network-color": network.color } as CSSProperties}>
                 <input type="checkbox" checked={!hiddenNetworks.has(network.name)} onChange={() => toggleNetwork(network.name)} />
                 <span className="network-swatch" aria-hidden="true" />
-                <span>{network.name}</span>
+                <span>{identityText(network.name, UNAVAILABLE_NETWORK)}</span>
               </label>
             ))}
           </div>
@@ -276,7 +424,7 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
       <div className="map-legend">
         {(["healthy", "warning", "degraded", "offline"] as const).map((s) => (
           <span key={s}>
-            <StateDot state={s} /> {s}
+            <StateDot state={s} decorative /> {s}
           </span>
         ))}
       </div>
@@ -284,8 +432,8 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
       {activeId && impact && (
         <div className="map-impact">
           <span className="map-impact-kind">
-            <Icon name={KIND_ICON[model.byId.get(activeId)?.kind ?? "service"]} size={13} />
-            {model.byId.get(activeId)?.name}
+            <Icon name={KIND_ICON[activeService?.kind ?? "service"]} size={13} />
+            {identityText(activeService?.name, UNAVAILABLE_SERVICE)}
           </span>
           <span>
             <strong>{impact.downstream.length}</strong> affected if it fails
@@ -295,6 +443,8 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
           </span>
         </div>
       )}
-    </div>
+      </div>
+      <p id={descriptionId} className="sr-only">{relationshipSummary}</p>
+    </>
   );
 }

@@ -15,9 +15,11 @@
   --ink: #f4f7fb;
   --ink-soft: #d5dde8;
   --muted: #a9b4c4;
-  --muted-deep: #7f8a9b;
+  --muted-deep: #8794a8;
 
   --accent: #73d2f6;
+  --on-accent: #071016;
+  --focus-ring: #73d2f6;
   --accent-soft: rgba(115, 210, 246, 0.16);
   --chrome: rgba(14, 17, 22, 0.78);
 
@@ -88,7 +90,7 @@ body {
 .auth-card h1 { margin: var(--s2) 0 var(--s2); }
 .auth-card form { display: grid; gap: var(--s2); margin-top: var(--s5); }
 .auth-card input { padding: 10px 12px; color: var(--ink); background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: var(--r-sm); }
-.auth-card button { padding: 10px 12px; color: #071016; background: var(--accent); border: 0; border-radius: var(--r-sm); font-weight: 700; }
+.auth-card button { padding: 10px 12px; color: var(--on-accent); background: var(--accent); border: 0; border-radius: var(--r-sm); font-weight: 700; }
 .auth-card button:disabled { opacity: .65; cursor: wait; }
 .auth-error { color: var(--s-offline); }
 
@@ -100,6 +102,44 @@ a {
 button {
   font-family: inherit;
   cursor: pointer;
+}
+
+:where(a, button, input, select, textarea, [role="tab"], [role="button"]):focus-visible,
+.node[role="button"]:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.node[role="button"]:focus-visible .node-core {
+  stroke: var(--focus-ring);
+  stroke-width: 3px;
+}
+
+.skip-link {
+  position: fixed;
+  z-index: 100;
+  top: var(--s2);
+  left: var(--s2);
+  transform: translateY(-160%);
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+
+.skip-link:focus-visible { transform: translateY(0); }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 h1,
@@ -571,6 +611,12 @@ kbd {
   background: color-mix(in srgb, var(--s-warning) 10%, transparent);
 }
 
+.tag-error {
+  color: var(--s-offline);
+  border-color: color-mix(in srgb, var(--s-offline) 34%, transparent);
+  background: color-mix(in srgb, var(--s-offline) 10%, transparent);
+}
+
 .tag-wrap {
   display: flex;
   flex-wrap: wrap;
@@ -1031,6 +1077,14 @@ kbd {
   overflow: hidden;
 }
 
+/* The graph stays readable on its deliberately dark canvas in both themes. */
+.map .s-healthy { --c: #50df95; }
+.map .s-warning { --c: #ffd166; }
+.map .s-degraded { --c: #ffae5d; }
+.map .s-offline { --c: #ff7b7b; }
+.map .s-updating { --c: #8bc0ff; }
+.map .s-unknown { --c: #c0cad8; }
+
 .map-svg {
   width: 100%;
   height: 100%;
@@ -1073,7 +1127,7 @@ kbd {
   stroke: var(--network-color);
   stroke-width: 4.8;
   stroke-linecap: round;
-  opacity: 0.42;
+  opacity: 0.62;
   pointer-events: none;
   transition: opacity var(--t);
 }
@@ -1082,7 +1136,7 @@ kbd {
   opacity: 0.12;
 }
 
-.node {
+.node-interactive {
   cursor: pointer;
 }
 
@@ -1108,6 +1162,25 @@ kbd {
   stroke: rgba(14, 17, 22, 0.9);
   stroke-linejoin: round;
   stroke-width: 3px;
+  pointer-events: none;
+}
+
+/* Collided graph occurrences (duplicate id/name after redaction) stay
+   visible with a dashed ring and a literal "identity collision" tag; they are
+   never interactive. The tag uses the map's local bright palette so it stays
+   >= 3:1 on the fixed dark canvas in both themes. */
+.node-collided .node-core {
+  stroke-dasharray: 2.5 1.5;
+}
+
+.node-collision-tag {
+  fill: #ffd166;
+  font-size: 6px;
+  font-weight: 650;
+  font-family: var(--font);
+  paint-order: stroke;
+  stroke: rgba(14, 17, 22, 0.9);
+  stroke-width: 2px;
   pointer-events: none;
 }
 
@@ -1741,7 +1814,7 @@ kbd {
   border-radius: var(--r-sm);
   border: none;
   background: var(--accent);
-  color: #06101f;
+  color: var(--on-accent);
   font-weight: 700;
   font-size: 13px;
 }
@@ -1890,6 +1963,9 @@ kbd {
   color: var(--accent);
 }
 
+.cmdk-item.is-active .cmdk-item-hint,
+.cmdk-item.is-active .cmdk-item-group { color: var(--ink-soft); }
+
 .cmdk-item-label {
   flex: 1;
 }
@@ -2025,11 +2101,19 @@ kbd {
   --ink: #111827;
   --ink-soft: #334155;
   --muted: #5f6c7f;
-  --muted-deep: #7b8799;
+  --muted-deep: #596579;
 
   --accent: #006d9c;
+  --on-accent: #ffffff;
+  --focus-ring: #005a82;
   --accent-soft: rgba(0, 109, 156, 0.12);
   --chrome: rgba(255, 255, 255, 0.78);
+  --s-healthy: #08783e;
+  --s-warning: #7a4b00;
+  --s-degraded: #984500;
+  --s-offline: #b42318;
+  --s-updating: #1d4ed8;
+  --s-unknown: #526174;
 
   --shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
   color-scheme: light;
@@ -2051,70 +2135,73 @@ kbd {
   padding: var(--s3);
 }
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .shell {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
   }
 
   .rail {
-    gap: var(--s2);
-    max-height: none;
+    position: relative;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--s3);
     padding: var(--s3);
     border-right: none;
     border-bottom: 1px solid var(--border);
     overflow: hidden;
   }
 
-  .brand {
-    min-width: 0;
-  }
-
+  .brand { flex: none; min-width: 0; }
+  .brand-sub { display: none; }
   .nav {
-    flex: none;
+    flex: 1;
+    min-width: 0;
     flex-direction: row;
     gap: var(--s2);
     overflow-x: auto;
+    overflow-y: hidden;
+    scroll-padding-inline: var(--s3);
     padding-bottom: 2px;
   }
-
-  .nav-group {
-    flex-direction: row;
-    gap: 2px;
-    min-width: max-content;
+  .nav::after {
+    content: "→";
+    position: sticky;
+    right: 0;
+    display: grid;
+    place-items: center;
+    min-width: 24px;
+    color: var(--muted);
+    background: linear-gradient(90deg, transparent, var(--bg-2) 42%);
+    pointer-events: none;
   }
+  .nav-group { flex-direction: row; gap: 2px; min-width: max-content; }
+  .nav-heading { display: none; }
+  .nav-item { padding: 7px 9px; }
+  .rail-foot { display: none; }
 
-  .nav-heading {
-    display: none;
-  }
+  .topbar { align-items: flex-start; flex-wrap: wrap; padding: var(--s3); }
+  .topbar-search { width: auto; max-width: none; min-width: 0; flex: 1 1 240px; }
+  .topbar-status { flex-wrap: wrap; margin-left: 0; gap: var(--s3); }
+  .screen-head { align-items: flex-start; flex-direction: column; }
+  .map-screen { min-height: 0; }
+  .map-layout { grid-template-columns: minmax(0, 1fr); }
+  .map-stage { min-height: 320px; }
+  .inspector { min-height: 220px; }
+  .map-legend { right: var(--s3); flex-wrap: wrap; max-width: calc(100% - var(--s6)); }
+  .map-impact { max-width: calc(100% - var(--s6)); overflow-wrap: anywhere; }
+  .runtime-edge-target span { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+  .svc-row, .feed-row, .timeline-top, .log-line { flex-wrap: wrap; }
+  .svc-name, .svc-meta, .feed-text, .timeline-detail, .diag-message, .runtime-node-copy, .kv-value, .detail-id, .screen-title { min-width: 0; overflow-wrap: anywhere; }
+  .log-svc, .log-time, .log-lvl { width: auto; overflow: visible; text-overflow: clip; }
+}
 
-  .nav-item {
-    padding: 7px 9px;
-  }
-
-  .rail-foot {
-    display: none;
-  }
-
-  .topbar {
-    align-items: flex-start;
-    flex-wrap: wrap;
-    padding: var(--s3);
-  }
-
-  .topbar-search {
-    width: auto;
-    max-width: none;
-    min-width: 0;
-    flex: 1 1 180px;
-  }
-
-  .topbar-status {
-    width: 100%;
-    margin-left: 0;
-    justify-content: space-between;
-    gap: var(--s3);
-  }
+@media (max-width: 760px) {
+  /* Phone/200%-zoom refinements ONLY. The shell/rail/nav/topbar/screen-header
+     and Map/Runtime composition lives in the <=900px block; duplicating it
+     here OVERRODE the horizontal-rail contract (e.g. .nav { flex: none }
+     widened the nav to its full content width so the rail clipped it instead
+     of scrolling it, leaving Settings unreachable at 640px). */
 
   .sys-state {
     flex-wrap: wrap;
@@ -2128,34 +2215,8 @@ kbd {
     max-width: none;
   }
 
-  .screen-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .map-screen {
-    min-height: 0;
-  }
-
-  .map-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .map-stage {
     min-height: 520px;
-  }
-
-  .inspector {
-    min-height: 220px;
-  }
-
-  .map-legend {
-    right: var(--s3);
-    flex-wrap: wrap;
-  }
-
-  .map-impact {
-    max-width: calc(100% - var(--s6));
   }
 
   .grid-2,
@@ -2178,4 +2239,19 @@ kbd {
   .service-select {
     width: 100%;
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Long source identities reflow instead of widening the document. */
+.content, .screen, .panel, .detail-id, .kv-value, .diag-file, .ref-chip,
+.runtime-node-main, .runtime-node-copy, .mount-row, .map-network-option {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }

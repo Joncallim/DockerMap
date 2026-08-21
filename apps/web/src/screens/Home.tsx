@@ -3,6 +3,7 @@ import { useApp } from "../context";
 import { needsAttention, summarize, type Service } from "../lib/model";
 import { changeFeed, causalChain, STUB_CHANGES_NOTICE } from "../lib/stubs";
 import { formatRelative } from "../lib/format";
+import { identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_SERVICE } from "../lib/identity";
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { Bar, EmptyState, ErrorState, Loading, Metric, Panel, StatePill, StateDot, Tag } from "../components/primitives";
@@ -51,8 +52,8 @@ export default function Home() {
               <EmptyState icon="check" title="Everything is healthy" body="No services require attention right now." />
             ) : (
               <ul className="svc-list">
-                {attention.map((s) => (
-                  <ServiceRow key={s.id} model={model} service={s} />
+                {attention.map((s, index) => (
+                  <ServiceRow key={`${s.id}-${index}`} model={model} service={s} />
                 ))}
               </ul>
             )}
@@ -119,12 +120,18 @@ export default function Home() {
               <EmptyState icon="history" title="No recent change" body="Deployments and restarts will appear here." />
             ) : (
               <ul className="feed">
-                {changes.map((c) => (
-                  <li key={c.id} className="feed-row">
+                {changes.map((c, index) => (
+                  <li key={`${c.id}-${index}`} className="feed-row">
                     <span className={`feed-kind k-${c.kind}`}>{c.kind.replace("_", " ")}</span>
-                    <Link className="feed-text" to={`/services/${encodeURIComponent(c.serviceName)}`}>
-                      {c.summary}
-                    </Link>
+                    {c.routeName !== null ? (
+                      <Link className="feed-text" to={`/services/${encodeURIComponent(c.routeName)}`}>
+                        {c.summary}
+                      </Link>
+                    ) : (
+                      // Empty/collided identity: the summary stays visible as
+                      // plain non-routable text (never a /services/ link).
+                      <span className="feed-text">{c.summary}</span>
+                    )}
                     <span className="feed-time">{formatRelative(c.at)}</span>
                   </li>
                 ))}
@@ -135,14 +142,14 @@ export default function Home() {
           {updates.length > 0 && (
             <Panel title="Updates available" icon="up" hint={`${updates.length}`}>
               <ul className="svc-list">
-                {updates.map((s) => (
-                  <li key={s.id} className="svc-row">
-                    <StateDot state={s.state} />
-                    <Link className="svc-name" to={`/services/${encodeURIComponent(s.name)}`}>
-                      {s.name}
-                    </Link>
+                {updates.map((service, index) => (
+                  <li key={`${service.id}-${index}`} className="svc-row">
+                    <StateDot state={service.state} />
+                    {model.byId.has(service.id) && model.byName.has(service.name) ? <Link className="svc-name" to={`/services/${encodeURIComponent(service.name)}`}>
+                      {identityText(service.name, UNAVAILABLE_SERVICE)}
+                    </Link> : <span className="svc-name">{identityText(service.name, UNAVAILABLE_SERVICE)}</span>}
                     <Tag tone="accent" icon="image">
-                      {s.imageRepo}:{s.imageTag}
+                      {identityText(service.imageRepo, UNAVAILABLE_IMAGE)}:{identityText(service.imageTag, UNAVAILABLE_IMAGE)}
                     </Tag>
                   </li>
                 ))}
@@ -162,9 +169,9 @@ function ServiceRow({ model, service }: { model: ReturnType<typeof useApp>["mode
   return (
     <li className="svc-row">
       <Icon name={KIND_ICON[service.kind]} size={16} />
-      <Link className="svc-name" to={`/services/${encodeURIComponent(service.name)}`}>
-        {service.name}
-      </Link>
+      {model.byId.has(service.id) && model.byName.has(service.name) ? <Link className="svc-name" to={`/services/${encodeURIComponent(service.name)}`}>
+        {identityText(service.name, UNAVAILABLE_SERVICE)}
+      </Link> : <span className="svc-name">{identityText(service.name, UNAVAILABLE_SERVICE)}</span>}
       <StatePill state={service.state} />
       <span className="svc-meta">{dependents > 0 ? `${dependents} dependent${dependents === 1 ? "" : "s"}` : "no dependents"}</span>
       <span className="svc-res">

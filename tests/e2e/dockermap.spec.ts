@@ -139,6 +139,321 @@ test.describe("DockerMap GUI", () => {
     await expect(page.getByRole("main")).toContainText("Dependencies");
   });
 
+  test("runtime relation navigation widens filters, keeps the destination selected and focused", async ({ page }) => {
+    stack = await startMockStack();
+
+    await page.goto(stack.webUrl, { waitUntil: "domcontentloaded" });
+    await openSpace(page, "Runtime", "/runtime");
+
+    // Select the api container (its label is unique among runtime rows)…
+    const apiNode = page.locator("button.runtime-node-btn", { hasText: "api" });
+    await apiNode.click();
+    await expect(apiNode).toHaveAttribute("aria-pressed", "true");
+
+    // …then narrow the layer filter to Container AND the provider filter to
+    // docker. The provider filter is COMPATIBLE with the destination (the
+    // "application" network is a docker node); the layer filter is not (the
+    // relation lives in the network layer), so its destination row is now
+    // EXCLUDED from the node list — but the inspector still offers the
+    // relation button.
+    await page.getByRole("button", { name: /^Container \(\d+\)$/ }).click();
+    await page.getByRole("button", { name: /^docker \(\d+\)$/ }).click();
+    const applicationNode = page.locator("button.runtime-node-btn", { hasText: "application" }).filter({ hasText: "docker network" });
+    await expect(applicationNode).toHaveCount(0);
+
+    // Follow the relation anyway: the destination must become visible (the
+    // incompatible layer filter is widened), stay SELECTED, and receive FOCUS
+    // on its persistent row button — never BODY. Previously the visibility
+    // effect cleared the selection and the one-frame rAF focus found no row.
+    await page.locator(".runtime-edge-target", { hasText: "application" }).click();
+    // F5: each predicate widens INDEPENDENTLY — ONLY the incompatible layer
+    // filter changes; the compatible provider=docker filter keeps its
+    // user-chosen state (and attention-only was never activated).
+    await expect(page.getByRole("button", { name: "All layers" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: /^docker \(\d+\)$/ })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Attention only" })).toHaveAttribute("aria-pressed", "false");
+    await expect(applicationNode).toBeVisible();
+    await expect(applicationNode).toHaveAttribute("aria-pressed", "true");
+    // F4: the keyed focus request is consumed by a LAYOUT effect (which runs
+    // before paint), so the destination button is already focused at the NEXT
+    // PAINT after the click — no body-focus frame can ever paint. A passive
+    // effect may run after paint, so an eventual-focus assertion could not
+    // catch a body-focus frame; probing inside requestAnimationFrame can.
+    const focusAtNextPaint = await page.evaluate(() => new Promise<string | null>((resolve) => {
+      requestAnimationFrame(() => {
+        const active = document.activeElement;
+        resolve(
+          active instanceof HTMLElement && active.classList.contains("runtime-node-btn")
+            ? active.querySelector(".runtime-node-label")?.textContent?.trim() ?? null
+            : null
+        );
+      });
+    }));
+    expect(focusAtNextPaint).toBe("application");
+    await expect(applicationNode).toBeFocused();
+    // The inspector shows the newly selected network node.
+    await expect(page.getByRole("heading", { name: "application" })).toBeVisible();
+  });
+
+  test("collision tags stay inside the 240×240 map viewBox (browser-measured)", async ({ page, request }) => {
+    stack = await startMockStack();
+
+    // The same duplicate-identity fixture the renderer regression uses: two
+    // records share a canonical id, two share a name, one is unique. jsdom
+    // cannot measure glyph/stroke ink — the earlier renderer test only proved
+    // node CENTERS stay in [30, 210], which silently certified a tag whose
+    // transformed, stroke-inclusive bottom edge reached ~242 (outside the
+    // viewBox). This browser regression asserts every tag's TRANSFORMED
+    // getBBox() + stroke bounds within 0..240.
+    const extraContainers = [
+      { id: "c_dup", name: "first", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: ["c_dup"] },
+      { id: "c_dup", name: "second", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: ["c_ok"] },
+      { id: "c_name1", name: "dup-name", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] },
+      { id: "c_name2", name: "dup-name", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] },
+      { id: "c_ok", name: "unique", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] }
+    ];
+    const baseSnapshot = (await (await request.get(`${stack.apiUrl}/api/snapshot`)).json()) as { containers: Array<{ id: string }> };
+    await page.route("**/api/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = (await response.json()) as { containers: Array<{ id: string }> };
+      // Idempotent against the app's refresh ticks: compute the BASE id set
+      // ONCE per response (before any push) so the two duplicate-id records
+      // are both injected — a per-push `some(id === extra.id)` check would
+      // skip the SECOND c_dup because the first was just added.
+      const baseIds = new Set(snapshot.containers.map((container) => container.id));
+      for (const extra of extraContainers) {
+        if (!baseIds.has(extra.id)) {
+          snapshot.containers.push(extra as (typeof snapshot.containers)[number]);
+        }
+      }
+      await route.fulfill({ response, json: snapshot });
+    });
+
+    await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Service Map" })).toBeVisible();
+    await expect(page.locator(".node-collision-tag").first()).toBeVisible();
+
+    const bounds = await page.evaluate(() => {
+      const svg = document.querySelector<SVGSVGElement>(".map-svg")!;
+      const svgCtm = svg.getScreenCTM()!;
+      // Compose tag-local user space -> viewBox user space: getScreenCTM of
+      // the svg maps viewBox coordinates to screen, so its inverse applied to
+      // the tag's screen CTM yields the tag's full ancestor transform chain
+      // (node translate + view pan/zoom) in viewBox units.
+      return Array.from(document.querySelectorAll<SVGTextElement>(".node-collision-tag")).map((tag) => {
+        const box = tag.getBBox();
+        const stroke = Number.parseFloat(getComputedStyle(tag).strokeWidth) || 0;
+        const m = svgCtm.inverse().multiply(tag.getScreenCTM()!);
+        const corners = [
+          { x: box.x - stroke / 2, y: box.y - stroke / 2 },
+          { x: box.x + box.width + stroke / 2, y: box.y - stroke / 2 },
+          { x: box.x - stroke / 2, y: box.y + box.height + stroke / 2 },
+          { x: box.x + box.width + stroke / 2, y: box.y + box.height + stroke / 2 }
+        ].map((point) => ({ x: m.a * point.x + m.c * point.y + m.e, y: m.b * point.x + m.d * point.y + m.f }));
+        return {
+          minX: Math.min(...corners.map((c) => c.x)),
+          maxX: Math.max(...corners.map((c) => c.x)),
+          minY: Math.min(...corners.map((c) => c.y)),
+          maxY: Math.max(...corners.map((c) => c.y))
+        };
+      });
+    });
+
+    // Four collided occurrences carry the tag; every ink bound (glyph bbox +
+    // stroke) must sit inside the 240×240 viewBox.
+    expect(bounds.length).toBe(4);
+    for (const b of bounds) {
+      expect(b.minX, `tag minX ${b.minX}`).toBeGreaterThanOrEqual(0);
+      expect(b.maxX, `tag maxX ${b.maxX}`).toBeLessThanOrEqual(240);
+      expect(b.minY, `tag minY ${b.minY}`).toBeGreaterThanOrEqual(0);
+      expect(b.maxY, `tag maxY ${b.maxY}`).toBeLessThanOrEqual(240);
+    }
+
+    // Retain the distinct-transform contract in the browser too: every
+    // occurrence (including both `c_dup` records) gets its own coordinate.
+    const transforms = await page.locator("g.node").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("transform")));
+    expect(transforms).toHaveLength(baseSnapshot.containers.length + extraContainers.length);
+    expect(new Set(transforms).size).toBe(transforms.length);
+
+    // F1: the second duplicate-id record depends on the unique `c_ok`, but
+    // its ambiguous SOURCE must never render a semantic edge — no rendered
+    // edge title may reference either duplicate record (the base snapshot's
+    // own relationships still render as edge groups).
+    const edgeTitles = await page.locator(".edge-group title").allTextContents();
+    expect(edgeTitles.length).toBeGreaterThan(0);
+    for (const title of edgeTitles) {
+      expect(title).not.toContain("first");
+      expect(title).not.toContain("second");
+    }
+  });
+
+  test("hover impact highlighting is occurrence-safe and names the exact occurrence", async ({ page, request }) => {
+    stack = await startMockStack();
+
+    // The same duplicate-identity fixture as the renderer/browser regressions
+    // (two records share a canonical id, two share a name, one unique) is
+    // injected into the real mock stack, so the map carries the base stack's
+    // selectable nodes AND the collided occurrences.
+    const extraContainers = [
+      { id: "c_dup", name: "first", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: ["c_dup"] },
+      { id: "c_dup", name: "second", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: ["c_ok"] },
+      { id: "c_name1", name: "dup-name", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] },
+      { id: "c_name2", name: "dup-name", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] },
+      { id: "c_ok", name: "unique", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] }
+    ];
+    const baseSnapshot = (await (await request.get(`${stack.apiUrl}/api/snapshot`)).json()) as { containers: Array<{ id: string }> };
+    await page.route("**/api/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = (await response.json()) as { containers: Array<{ id: string }> };
+      const baseIds = new Set(snapshot.containers.map((container) => container.id));
+      for (const extra of extraContainers) {
+        if (!baseIds.has(extra.id)) {
+          snapshot.containers.push(extra as (typeof snapshot.containers)[number]);
+        }
+      }
+      await route.fulfill({ response, json: snapshot });
+    });
+
+    await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Service Map" })).toBeVisible();
+    const uniqueNode = page.locator("g.node", { hasText: "unique" });
+    await expect(uniqueNode).toHaveCount(1);
+
+    // F1a: hovering with NO selection highlights the hovered node (node-self)
+    // and its impact radius. The R3 occurrence-safe selection change gated
+    // roleOf on the selection key only, so every node stayed node-none until
+    // a node was clicked — the hover impact radius was gone.
+    await uniqueNode.locator("circle.node-core").hover();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(uniqueNode).toHaveClass(/node-self/);
+    await expect(page.locator(".map-impact-kind")).toContainText("unique");
+
+    // F1b: hovering a DIFFERENT node while one is selected re-centres the
+    // highlight on the hovered node. The R3 code kept comparing against the
+    // selection key, so the old selection stayed node-self while the radius
+    // described the hovered node.
+    await page.getByRole("button", { name: "postgres, healthy" }).click();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(page.locator("g.node.node-self")).toContainText("postgres");
+    await uniqueNode.locator("circle.node-core").hover();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(uniqueNode).toHaveClass(/node-self/);
+    await expect(page.locator("g.node.node-self")).not.toContainText("postgres");
+    await expect(page.locator(".map-impact-kind")).toContainText("unique");
+
+    // Hovering back onto the selected node returns the highlight — and the
+    // banner identity — to the selection (the unique-id fallback path).
+    await page.locator("g.node", { hasText: "postgres" }).locator("circle.node-core").hover();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(page.locator("g.node.node-self")).toContainText("postgres");
+    await expect(page.locator(".map-impact-kind")).toContainText("postgres");
+  });
+
+  test("refresh mid-hover into an id collision invalidates the stale hover (no collided node-self, no banner)", async ({ page, request }) => {
+    stack = await startMockStack();
+
+    // The hovered node COLLIDES on a snapshot refresh: every response carries
+    // ONE unique `c_ok` record (a selectable node); after the test hovers it,
+    // it flips `collided` and the NEXT refresh tick UNSHIFTS a second record
+    // with the same id to the front — `c_ok` becomes collided AND its
+    // occurrence index/key changes, so React replaces its <g> and the native
+    // pointerleave is swallowed by the detached subtree, leaving hoverId
+    // stale with no pointer event to clear it (the exact transition the Sol
+    // R5 finding targets; the pre-existing regressions only create
+    // collisions BEFORE any hover). Injection is idempotent per response
+    // because the daemon payload is rebuilt from the base fixture on every
+    // fetch (the app fetches the snapshot several times during load).
+    let collided = false;
+    await page.route("**/api/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = (await response.json()) as { containers: Array<Record<string, unknown>> };
+      if (!snapshot.containers.some((container) => container.name === "unique")) {
+        snapshot.containers.push({ id: "c_ok", name: "unique", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] });
+      }
+      if (collided && !snapshot.containers.some((container) => container.name === "unique-clone")) {
+        snapshot.containers.unshift({ id: "c_ok", name: "unique-clone", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] });
+      }
+      await route.fulfill({ response, json: snapshot });
+    });
+
+    await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Service Map" })).toBeVisible();
+    const uniqueNode = page.locator("g.node", { hasText: "unique" });
+    await expect(uniqueNode).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "unique, healthy" })).toBeVisible();
+
+    // Hover the unique node with NO selection: it carries node-self and the
+    // banner names it.
+    await uniqueNode.locator("circle.node-core").hover();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(uniqueNode).toHaveClass(/node-self/);
+    await expect(page.locator(".map-impact-kind")).toContainText("unique");
+
+    // Flip the collision transition; the next refresh tick (SSE snapshot
+    // event) lands it while the pointer stays PARKED and unmoved — no
+    // pointerenter can replace the stale hover id, so the invalidation
+    // must happen without any pointer activity.
+    collided = true;
+    await expect(page.locator("g.node.node-collided", { hasText: "unique" })).toHaveCount(2);
+
+    // The stale hover must be INVALIDATED: no collided node may carry
+    // node-self, and with no selection the active state (and its banner)
+    // disappears entirely instead of naming the collided id "anonymous".
+    await expect(page.locator("g.node.node-collided.node-self")).toHaveCount(0);
+    await expect(page.locator("g.node.node-self")).toHaveCount(0);
+    await expect(page.locator(".map-impact")).toHaveCount(0);
+  });
+
+  test("refresh mid-hover into an id collision falls back to the selection", async ({ page, request }) => {
+    stack = await startMockStack();
+
+    // Same transition as the sibling regression, but with a SELECTION active:
+    // once the hovered node collides, the active state must fall back to the
+    // selected service immediately (its node-self and banner identity), never
+    // to the first collided occurrence or an "anonymous" banner.
+    let collided = false;
+    await page.route("**/api/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = (await response.json()) as { containers: Array<Record<string, unknown>> };
+      if (!snapshot.containers.some((container) => container.name === "unique")) {
+        snapshot.containers.push({ id: "c_ok", name: "unique", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] });
+      }
+      if (collided && !snapshot.containers.some((container) => container.name === "unique-clone")) {
+        snapshot.containers.unshift({ id: "c_ok", name: "unique-clone", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] });
+      }
+      await route.fulfill({ response, json: snapshot });
+    });
+
+    await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Service Map" })).toBeVisible();
+    const uniqueNode = page.locator("g.node", { hasText: "unique" });
+    await expect(uniqueNode).toHaveCount(1);
+
+    // Select postgres, then hover the unique node: the hover re-centres the
+    // highlight and banner identity on it.
+    await page.getByRole("button", { name: "postgres, healthy" }).click();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(page.locator("g.node.node-self")).toContainText("postgres");
+    await uniqueNode.locator("circle.node-core").hover();
+    await expect(page.locator("g.node.node-self")).toContainText("unique");
+    await expect(page.locator(".map-impact-kind")).toContainText("unique");
+
+    // Flip the collision transition; the refresh tick lands it under the
+    // parked, unmoved pointer — no pointerenter can replace the stale
+    // hover id, so the fallback must happen without any pointer activity.
+    collided = true;
+    await expect(page.locator("g.node.node-collided", { hasText: "unique" })).toHaveCount(2);
+
+    // The stale hover must fall back to the SELECTION: postgres carries
+    // node-self, the banner names postgres, no collided node-self, and never
+    // "anonymous".
+    await expect(page.locator("g.node.node-collided.node-self")).toHaveCount(0);
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(page.locator("g.node.node-self")).toContainText("postgres");
+    await expect(page.locator(".map-impact-kind")).toContainText("postgres");
+    await expect(page.locator(".map-impact-kind")).not.toContainText("anonymous");
+  });
+
   test("maps a live Docker Compose fixture through the GUI @live-docker", async ({ page, request }) => {
     test.skip(!process.env.DOCKERMAP_E2E_LIVE_DOCKER, "Set DOCKERMAP_E2E_LIVE_DOCKER=1 to create live Docker fixtures.");
 

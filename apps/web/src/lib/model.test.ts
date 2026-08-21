@@ -162,6 +162,42 @@ describe("buildRelationships (via buildModel)", () => {
     expect(data[0].from).toBe("c_app");
     expect(data[0].to).toBe("c_worker");
   });
+
+  it("never derives data edges from ambiguous, empty, or repeated member refs", () => {
+    // "dup" is a redaction-collided name shared by TWO services: a ref to it
+    // must stay unresolved (VolumeDetail shows the member as unresolved, so a
+    // data edge to the FIRST occurrence would contradict that state).
+    const volumes: VolumeRecord[] = [
+      { id: "vol_ambig", name: "ambig", attachedTo: ["dup", "web"] },
+      { id: "vol_empty", name: "empty", attachedTo: ["", "web"] },
+      // The same unique service referenced twice (once by name, once by id):
+      // dedupes to ONE member, so no self-edge (data:web~web:vol_self) may
+      // derive and no pair may form.
+      { id: "vol_self", name: "self", attachedTo: ["web", "c_web"] },
+      // Positive control: unique refs still link.
+      { id: "vol_ok", name: "ok", attachedTo: ["web", "api"] }
+    ];
+    const model = buildModel(
+      snapshot(
+        [
+          container({ id: "c_web", name: "web" }),
+          container({ id: "c_api", name: "api" }),
+          container({ id: "c_dup1", name: "dup" }),
+          container({ id: "c_dup2", name: "dup" })
+        ],
+        [],
+        volumes
+      ),
+      emptyRuntime
+    );
+    const data = model.relationships.filter((r) => r.kind === "data");
+    expect(data).toHaveLength(1);
+    expect(data[0]).toMatchObject({ from: "c_web", to: "c_api", kind: "data" });
+    // No edge may ever have the same service on both ends (self-edge).
+    for (const edge of model.relationships) {
+      expect(edge.from).not.toBe(edge.to);
+    }
+  });
 });
 
 describe("computeImpact", () => {
@@ -245,6 +281,178 @@ describe("empty schema-valid identities stay visible and non-routable", () => {
     expect(model.imageByRef.has("")).toBe(false);
     expect(model.networkByName.has("")).toBe(false);
     expect(model.volumeByName.has("")).toBe(false);
+  });
+});
+
+describe("service and runtime identity indexes", () => {
+  it("keeps duplicate and empty service evidence while excluding ambiguous semantic lookups", () => {
+    const model = buildModel(
+      snapshot([
+        container({ id: "container_a", name: "[redacted]", role: "api" }),
+        container({ id: "container_b", name: "[redacted]", role: "api" }),
+        container({ id: "", name: "", dependsOn: ["[redacted]", "api"] })
+      ]),
+      emptyRuntime
+    );
+
+    expect(model.services).toHaveLength(3);
+    expect(model.serviceNameCollisions.has("[redacted]")).toBe(true);
+    expect(model.serviceAliasCollisions.has("api")).toBe(true);
+    expect(model.byName.has("[redacted]")).toBe(false);
+    expect(model.byId.has("")).toBe(false);
+    // Ambiguous/empty refs never enter the SEMANTIC dependsOn list…
+    expect(model.services[2].dependsOn).toEqual([]);
+    // …but every RAW occurrence stays visible for non-routable rendering:
+    // "[redacted]" is a redaction-collided alias and "api" an ambiguous role
+    // alias — neither may silently disappear from the relationship list.
+    expect(model.services[2].dependencyOccurrences).toEqual([
+      { ref: "[redacted]", resolvedId: null },
+      { ref: "api", resolvedId: null }
+    ]);
+  });
+
+  it("keeps unique resolutions in both the raw occurrences and the semantic dependsOn list", () => {
+    const model = buildModel(
+      snapshot([
+        container({ id: "container_web", name: "web", dependsOn: ["api"] }),
+        container({ id: "container_api", name: "api", role: "api" })
+      ]),
+      emptyRuntime
+    );
+    expect(model.byName.get("web")!.dependencyOccurrences).toEqual([{ ref: "api", resolvedId: "container_api" }]);
+    expect(model.byName.get("web")!.dependsOn).toEqual(["container_api"]);
+  });
+
+  it("excludes duplicate runtime ids instead of silently selecting the last node", () => {
+    const runtime: RuntimeMap = {
+      nodes: [
+        { id: "runtime-duplicate", provider: "docker", type: "container", label: "first", status: "running", metadata: {} },
+        { id: "runtime-duplicate", provider: "docker", type: "container", label: "second", status: "running", metadata: {} },
+        { id: "", provider: "docker", type: "container", label: "empty", status: "running", metadata: {} }
+      ],
+      edges: [],
+      diagnostics: [],
+      lastUpdated: 0
+    };
+    const model = buildModel(snapshot([]), runtime);
+
+    expect(model.runtime.nodes).toHaveLength(3);
+    expect(model.runtime.idCollisions.has("runtime-duplicate")).toBe(true);
+    expect(model.runtime.byId.has("runtime-duplicate")).toBe(false);
+    expect(model.runtime.byId.has("")).toBe(false);
+  });
+});
+
+describe("fail-closed dependency resolution for duplicate and unknown container ids", () => {
+  it("keeps duplicate container_* ids unresolvable and collision-tagged for EVERY alias", () => {
+    // Two records share the canonical id `container_dup`: a ref to that id —
+    // or to ANY alias of either record (unique name, role, stripped id) —
+    // must stay null. The old value-based owner set collapsed both records
+    // into ONE owner and resolved the id to itself, entering the semantic
+    // graph and attributing dependents to a duplicate occurrence.
+    const model = buildModel(
+      snapshot([
+        container({ id: "container_dup", name: "web", role: "api", dependsOn: ["container_dup"] }),
+        container({ id: "container_dup", name: "worker", role: "worker" })
+      ]),
+      emptyRuntime
+    );
+    expect(model.serviceAliasCollisions.has("container_dup")).toBe(true);
+    expect(model.serviceAliasCollisions.has("web")).toBe(true);
+    expect(model.serviceAliasCollisions.has("worker")).toBe(true);
+    expect(model.serviceAliasCollisions.has("dup")).toBe(true);
+    expect(model.services[0].dependsOn).toEqual([]);
+    expect(model.services[0].dependencyOccurrences).toEqual([{ ref: "container_dup", resolvedId: null }]);
+    // No semantic edge and no dependent attribution to either occurrence.
+    expect(model.relationships).toHaveLength(0);
+    expect(model.services[0].dependents).toEqual([]);
+    expect(model.services[1].dependents).toEqual([]);
+  });
+
+  it("never resolves an alias pointing at a duplicate canonical id", () => {
+    // `db` is the UNIQUE role of a record whose canonical id collides with
+    // another record: resolving it would pick an arbitrary occurrence.
+    const model = buildModel(
+      snapshot([
+        container({ id: "container_db", name: "primary", role: "db" }),
+        container({ id: "container_db", name: "secondary", role: "replica" }),
+        container({ id: "container_app", name: "app", dependsOn: ["db"] })
+      ]),
+      emptyRuntime
+    );
+    expect(model.serviceAliasCollisions.has("db")).toBe(true);
+    expect(model.byName.get("app")!.dependsOn).toEqual([]);
+    expect(model.byName.get("app")!.dependencyOccurrences).toEqual([{ ref: "db", resolvedId: null }]);
+    expect(model.services[0].dependents).toEqual([]);
+    expect(model.services[1].dependents).toEqual([]);
+    expect(model.relationships).toHaveLength(0);
+  });
+
+  it("leaves unknown container_* references unresolved instead of self-resolving", () => {
+    // The removed `container_` fallback used to resolve ANY unknown
+    // container_-prefixed ref to itself, fabricating a resolvedId and a
+    // semantic edge for a service that does not exist.
+    const model = buildModel(
+      snapshot([
+        container({ id: "container_app", name: "app", dependsOn: ["container_ghost"] }),
+        container({ id: "container_web", name: "web", dependsOn: ["container_app"] })
+      ]),
+      emptyRuntime
+    );
+    expect(model.services[0].dependencyOccurrences).toEqual([{ ref: "container_ghost", resolvedId: null }]);
+    expect(model.services[0].dependsOn).toEqual([]);
+    // The ghost ref must never emit a semantic edge FROM the app service.
+    expect(model.relationships.filter((r) => r.from === "container_app")).toHaveLength(0);
+    // Positive control: a UNIQUE canonical id is its own alias and still
+    // resolves through the index.
+    expect(model.services[1].dependencyOccurrences).toEqual([{ ref: "container_app", resolvedId: "container_app" }]);
+    expect(model.services[1].dependsOn).toEqual(["container_app"]);
+    expect(model.relationships).toHaveLength(1);
+    expect(model.relationships[0]).toMatchObject({ from: "container_web", to: "container_app", kind: "depends_on" });
+  });
+
+  it("requires the SOURCE endpoint to be unique too — a collided source never joins semantics", () => {
+    // Two records share the canonical id `dup`; only the SECOND depends on the
+    // unique `target`. The target resolves fine, but the edge's SOURCE is
+    // ambiguous: attributing the dependency to `dup` would point at the FIRST
+    // occurrence (the layout springs to it) and report `dup` as a downstream
+    // of `target` — evidence about the WRONG record. No semantic join may
+    // enter dependents, relationships, impact, or (via relationships) springs.
+    const model = buildModel(
+      snapshot([
+        container({ id: "dup", name: "first", dependsOn: [] }),
+        container({ id: "dup", name: "second", dependsOn: ["target"] }),
+        container({ id: "target", name: "target" })
+      ]),
+      emptyRuntime
+    );
+    const first = model.services.find((service) => service.name === "first")!;
+    const second = model.services.find((service) => service.name === "second")!;
+    const target = model.byName.get("target")!;
+
+    // No semantic edge may reference the ambiguous id in EITHER direction…
+    expect(model.relationships.filter((relationship) => relationship.from === "dup" || relationship.to === "dup")).toEqual([]);
+    // …the unique target gains NO dependent attribution…
+    expect(target.dependents).toEqual([]);
+    // …impact reports nothing downstream of the target…
+    expect(computeImpact(model, "target").downstream).toEqual([]);
+    // …and the collided SOURCE keeps an empty semantic dependsOn while its
+    // raw occurrence stays VISIBLE as occurrence-qualified unresolved
+    // evidence (the ref itself is preserved, resolution is null).
+    expect(second.dependsOn).toEqual([]);
+    expect(second.dependencyOccurrences).toEqual([{ ref: "target", resolvedId: null }]);
+    expect(first.dependsOn).toEqual([]);
+    // Positive control: a UNIQUE source still joins the semantic graph.
+    const control = buildModel(
+      snapshot([
+        container({ id: "app", name: "app", dependsOn: ["target"] }),
+        container({ id: "target", name: "target" })
+      ]),
+      emptyRuntime
+    );
+    expect(control.relationships).toHaveLength(1);
+    expect(control.byName.get("target")!.dependents).toEqual(["app"]);
+    expect(computeImpact(control, "target").downstream).toEqual(["app"]);
   });
 });
 

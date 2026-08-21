@@ -5,6 +5,7 @@ dist
 coverage
 test-results/
 playwright-report/
+test-artifacts/
 *.log
 .turbo
 target

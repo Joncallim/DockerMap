@@ -12,20 +12,20 @@ export const STATE_LABEL: Record<ServiceState, string> = {
 };
 
 /** Color is never decorative — it always maps to a state. */
-export function StateDot({ state, pulse }: { state: ServiceState; pulse?: boolean }) {
-  return <span className={`state-dot s-${state}${pulse ? " is-pulse" : ""}`} aria-hidden="true" />;
+export function StateDot({ state, pulse, decorative = false }: { state: ServiceState; pulse?: boolean; decorative?: boolean }) {
+  return <span className={`state-dot s-${state}${pulse ? " is-pulse" : ""}`} {...(decorative ? { "aria-hidden": true } : { role: "img", "aria-label": STATE_LABEL[state] })} />;
 }
 
 export function StatePill({ state, label }: { state: ServiceState; label?: string }) {
   return (
     <span className={`state-pill s-${state}`}>
-      <StateDot state={state} pulse={state === "healthy"} />
+      <StateDot state={state} pulse={state === "healthy"} decorative />
       {label ?? STATE_LABEL[state]}
     </span>
   );
 }
 
-export function Tag({ children, icon, tone }: { children: ReactNode; icon?: IconName; tone?: "accent" | "warn" | "muted" }) {
+export function Tag({ children, icon, tone }: { children: ReactNode; icon?: IconName; tone?: "accent" | "warn" | "error" | "muted" }) {
   return (
     <span className={`tag${tone ? ` tag-${tone}` : ""}`}>
       {icon && <Icon name={icon} size={12} />}

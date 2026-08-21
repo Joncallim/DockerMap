@@ -3,6 +3,7 @@ import type { LogEntry, LogsResponse } from "@dockermap/contracts";
 import { useApp } from "../context";
 import { fetchJson } from "../utils/api";
 import { formatRelative } from "../lib/format";
+import { identityText, UNAVAILABLE_CONTAINER } from "../lib/identity";
 import { EmptyState, ErrorState, Loading, Panel } from "../components/primitives";
 
 type LevelFilter = "all" | "info" | "warn" | "error";
@@ -185,9 +186,9 @@ export default function Logs() {
           aria-label="Filter by service"
         >
           <option value="">All services</option>
-          {model?.services.map((s) => (
-            <option key={s.id} value={s.name}>
-              {s.name}
+          {model?.services.filter((service) => model.byId.has(service.id) && model.byName.has(service.name)).map((service, index) => (
+            <option key={`${service.id}-${index}`} value={service.name}>
+              {service.name}
             </option>
           ))}
         </select>
@@ -230,10 +231,10 @@ export default function Logs() {
         ) : (
           <>
             <ul className="log-stream">
-              {visible.map((entry) => (
-                <li key={entry.id} className={`log-line lvl-${entry.level}`}>
+              {visible.map((entry, index) => (
+                <li key={`${entry.id}-${index}`} className={`log-line lvl-${entry.level}`}>
                   <span className="log-time">{formatRelative(entry.timestamp)}</span>
-                  <span className="log-svc">{entry.container}</span>
+                  <span className="log-svc">{identityText(entry.container, UNAVAILABLE_CONTAINER)}</span>
                   <span className="log-lvl">{entry.level}</span>
                   <span className="log-msg">{entry.message}</span>
                 </li>

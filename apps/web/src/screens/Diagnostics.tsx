@@ -4,6 +4,7 @@ import { useApp } from "../context";
 import { useApiResource } from "../hooks/useApiResource";
 import Icon from "../components/Icon";
 import { EmptyState, ErrorState, Loading, Panel, Tag } from "../components/primitives";
+import { identityText, UNAVAILABLE_DIAGNOSTIC_FILE, UNAVAILABLE_DIAGNOSTIC_MESSAGE, UNAVAILABLE_DIAGNOSTIC_SOURCE, UNAVAILABLE_SERVICE } from "../lib/identity";
 
 const SEVERITY_ORDER = ["blocked", "error", "warning", "info"] as const;
 const SOURCE_LABEL = { compose: "Compose", runtime: "Runtime", api: "API" } as const;
@@ -68,7 +69,7 @@ export default function Diagnostics() {
         {SEVERITY_ORDER.map((severity) => (
           <div key={severity} className="metric">
             <div className="metric-label">
-              <Tag tone={severity === "info" ? "muted" : severity === "warning" ? "warn" : "accent"}>{severity}</Tag>
+              <Tag tone={severity === "info" ? "muted" : severity === "warning" ? "warn" : "error"}>{severity}</Tag>
             </div>
             <div className="metric-value">{bySeverity[severity] ?? 0}</div>
           </div>
@@ -77,7 +78,7 @@ export default function Diagnostics() {
           <div className="metric-label">Sources</div>
           <div className="metric-value">
             {Object.keys(bySource)
-              .map((source) => `${SOURCE_LABEL[source as keyof typeof SOURCE_LABEL] ?? source}:${bySource[source]}`)
+              .map((source) => `${SOURCE_LABEL[source as keyof typeof SOURCE_LABEL] ?? identityText(source, UNAVAILABLE_DIAGNOSTIC_SOURCE)}:${bySource[source]}`)
               .join(" · ")}
           </div>
         </div>
@@ -95,11 +96,11 @@ export default function Diagnostics() {
             {sorted.map((entry: DiagnosticsEntry, index) => (
               <li key={`${entry.source}-${entry.id ?? "entry"}-${index}`} className={`diag-row sev-${entry.severity}`}>
                 <Icon name="alert" size={13} />
-                <span className="diag-message">{entry.message}</span>
-                <Tag tone={entry.severity === "info" ? "muted" : entry.severity === "warning" ? "warn" : "accent"}>{entry.severity}</Tag>
-                <Tag tone="muted">{SOURCE_LABEL[entry.source] ?? entry.source}</Tag>
-                {entry.service && <Tag tone="muted">{entry.service}</Tag>}
-                {entry.file && <code className="diag-file">{entry.file}</code>}
+                <span className="diag-message">{identityText(entry.message, UNAVAILABLE_DIAGNOSTIC_MESSAGE)}</span>
+                <Tag tone={entry.severity === "info" ? "muted" : entry.severity === "warning" ? "warn" : "error"}>{entry.severity}</Tag>
+                <Tag tone="muted">{SOURCE_LABEL[entry.source] ?? UNAVAILABLE_DIAGNOSTIC_SOURCE}</Tag>
+                {entry.service !== null && <Tag tone="muted">{identityText(entry.service, UNAVAILABLE_SERVICE)}</Tag>}
+                {entry.file !== null && <code className="diag-file">{identityText(entry.file, UNAVAILABLE_DIAGNOSTIC_FILE)}</code>}
               </li>
             ))}
           </ul>
