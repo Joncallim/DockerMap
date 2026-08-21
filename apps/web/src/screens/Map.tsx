@@ -8,9 +8,9 @@ import { EmptyState, ErrorState, KeyValue, Loading, StatePill, StateDot, Tag } f
 import { IdentityRef } from "../components/identity";
 import { UNAVAILABLE_IMAGE, UNAVAILABLE_NETWORK } from "../lib/identity";
 
-export default function MapScreen() {
+export default function MapScreen({ initialSelectedId = null }: { initialSelectedId?: string | null }) {
   const { model, loading, error } = useApp();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
   const [stateFilter, setStateFilter] = useState<ServiceState | "attention" | null>(null);
 
   const filter = useMemo(() => {

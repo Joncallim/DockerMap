@@ -7,10 +7,10 @@ import { EmptyState, ErrorState, KeyValue, Loading, Panel, StateDot, Tag } from 
 import { IdentityRef } from "../components/identity";
 import { UNAVAILABLE_CONTAINER } from "../lib/identity";
 
-export default function VolumeDetail() {
+export default function VolumeDetail({ defaultOpen = false }: { defaultOpen?: boolean }) {
   const { name = "" } = useParams();
   const { model, loading, error } = useApp();
-  const [showInternals, setShowInternals] = useState(false);
+  const [showInternals, setShowInternals] = useState(defaultOpen);
   const volume = useMemo(() => model?.volumeByName.get(name) ?? null, [model, name]);
   if (loading && !model) return <Loading label={`Loading ${name}…`} />;
   if (error && !model) return <ErrorState title="Volume unavailable" body={error} />;
@@ -24,7 +24,7 @@ export default function VolumeDetail() {
     <div className="impact-band wide"><Count value={volume.attachedTo.length} label="consumers" /><Count value={consumers.filter(({ service }) => service).length} label="resolved consumers" /><Count value={readOnly} label="read-only mounts" /><Count value={mounts.length - readOnly} label="read-write mounts" /></div>
     <div className="grid-2"><Panel title="Overview" icon="storage"><KeyValue label="Name" value={volume.name} mono /><KeyValue label="Consumers" value={volume.attachedTo.length} /><KeyValue label="Use state" value={volume.attachedTo.length ? "In use" : "Idle"} /></Panel><Panel title="Connected containers" icon="service"><ConsumerList consumers={consumers} /></Panel></div>
     <Panel title="Mount configuration" icon="storage">{consumers.length === 0 ? <p className="muted-line">No connected containers in the current snapshot.</p> : <ul className="mount-list">{consumers.map(({ member, service }, index) => { const consumerMounts = mounts.filter((item) => item.member === member); return consumerMounts.length ? consumerMounts.map(({ mount }, mountIndex) => <li key={`${member}-${mount.id}-${mountIndex}`} className="mount-row">{service && <Link className="svc-name" to={`/services/${encodeURIComponent(service.name)}`}>{member}</Link>}<code>{mount.target}</code><Tag tone={mount.readOnly ? "warn" : "accent"}>{mount.readOnly ? "read-only" : "read-write"}</Tag></li>) : <li key={`${member}-${index}`} className="mount-row"><IdentityRef name={member} fallback={UNAVAILABLE_CONTAINER} to={service ? `/services/${encodeURIComponent(service.name)}` : undefined} className="svc-name" /><span className="muted-line">Mount details unavailable in this snapshot</span></li>; })}</ul>}</Panel>
-    <Panel title="Volume internals" icon="layers" hint="Shown on request" actions={<button type="button" className="ghost-link" aria-expanded={showInternals} aria-controls={internalsId} onClick={() => setShowInternals((value) => !value)}>{showInternals ? "Hide" : "Show"} <Icon name={showInternals ? "up" : "down"} size={13} /></button>}>{showInternals ? <div id={internalsId}><KeyValue label="Volume ID" value={volume.id} mono /></div> : <p className="muted-line">Volume IDs are hidden until you ask for them.</p>}</Panel>
+    <Panel title="Volume internals" icon="layers" hint="Shown on request" actions={<button type="button" className="ghost-link" aria-expanded={showInternals} aria-controls={internalsId} onClick={() => setShowInternals((value) => !value)}>{showInternals ? "Hide" : "Show"} <Icon name={showInternals ? "up" : "down"} size={13} /></button>}><div id={internalsId}>{showInternals ? <KeyValue label="Volume ID" value={volume.id} mono /> : <p className="muted-line">Volume IDs are hidden until you ask for them.</p>}</div></Panel>
   </div>;
 }
 function Count({ value, label }: { value: string | number; label: string }) { return <div className="impact-cell"><strong>{value}</strong><span>{label}</span></div>; }

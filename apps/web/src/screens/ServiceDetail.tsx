@@ -8,6 +8,8 @@ import { resourceFor, STUB_NOTICE } from "../lib/stubs";
 import { formatKbps, formatMb, formatPercent, formatRelative } from "../lib/format";
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
+import { IdentityRef } from "../components/identity";
+import { UNAVAILABLE_IMAGE } from "../lib/identity";
 import { Bar, EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, Sparkline, StatePill, StateDot, Tag } from "../components/primitives";
 
 type Tab = "overview" | "dependencies" | "resources" | "logs" | "config";
@@ -108,7 +110,7 @@ function Overview({ service, model }: { service: Service; model: NonNullable<Ret
       <Panel title="At a glance" icon="service">
         <KeyValue label="State" value={<StatePill state={service.state} />} />
         <KeyValue label="Raw status" value={service.status} mono />
-        <KeyValue label="Image" value={model.imageByRef.has(service.image) ? <Link className="entity-detail-link" to={`/images/${encodeURIComponent(service.image)}`}>{service.image}</Link> : service.image} mono />
+        <KeyValue label="Image" value={<IdentityRef name={service.image} fallback={UNAVAILABLE_IMAGE} to={model.imageByRef.has(service.image) ? `/images/${encodeURIComponent(service.image)}` : undefined} className="entity-detail-link" />} mono />
         <KeyValue label="Role" value={service.role} />
         <KeyValue label="Networks" value={service.networks.join(", ") || "—"} />
       </Panel>
