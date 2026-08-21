@@ -349,6 +349,113 @@ test.describe("DockerMap GUI", () => {
     await expect(page.locator(".map-impact-kind")).toContainText("postgres");
   });
 
+  test("refresh mid-hover into an id collision invalidates the stale hover (no collided node-self, no banner)", async ({ page, request }) => {
+    stack = await startMockStack();
+
+    // The hovered node COLLIDES on a snapshot refresh: every response carries
+    // ONE unique `c_ok` record (a selectable node); after the test hovers it,
+    // it flips `collided` and the NEXT refresh tick UNSHIFTS a second record
+    // with the same id to the front — `c_ok` becomes collided AND its
+    // occurrence index/key changes, so React replaces its <g> and the native
+    // pointerleave is swallowed by the detached subtree, leaving hoverId
+    // stale with no pointer event to clear it (the exact transition the Sol
+    // R5 finding targets; the pre-existing regressions only create
+    // collisions BEFORE any hover). Injection is idempotent per response
+    // because the daemon payload is rebuilt from the base fixture on every
+    // fetch (the app fetches the snapshot several times during load).
+    let collided = false;
+    await page.route("**/api/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = (await response.json()) as { containers: Array<Record<string, unknown>> };
+      if (!snapshot.containers.some((container) => container.name === "unique")) {
+        snapshot.containers.push({ id: "c_ok", name: "unique", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] });
+      }
+      if (collided && !snapshot.containers.some((container) => container.name === "unique-clone")) {
+        snapshot.containers.unshift({ id: "c_ok", name: "unique-clone", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] });
+      }
+      await route.fulfill({ response, json: snapshot });
+    });
+
+    await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Service Map" })).toBeVisible();
+    const uniqueNode = page.locator("g.node", { hasText: "unique" });
+    await expect(uniqueNode).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "unique, healthy" })).toBeVisible();
+
+    // Hover the unique node with NO selection: it carries node-self and the
+    // banner names it.
+    await uniqueNode.locator("circle.node-core").hover();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(uniqueNode).toHaveClass(/node-self/);
+    await expect(page.locator(".map-impact-kind")).toContainText("unique");
+
+    // Flip the collision transition; the next refresh tick (SSE snapshot
+    // event) lands it while the pointer stays put.
+    collided = true;
+    await expect(page.locator("g.node.node-collided", { hasText: "unique" })).toHaveCount(2);
+
+    // Park the pointer ON a collided occurrence — deliberately non-interactive,
+    // so no pointerenter can replace the stale hover id.
+    await page.locator("g.node.node-collided").first().locator("circle.node-core").hover();
+
+    // The stale hover must be INVALIDATED: no collided node may carry
+    // node-self, and with no selection the active state (and its banner)
+    // disappears entirely instead of naming the collided id "anonymous".
+    await expect(page.locator("g.node.node-collided.node-self")).toHaveCount(0);
+    await expect(page.locator("g.node.node-self")).toHaveCount(0);
+    await expect(page.locator(".map-impact")).toHaveCount(0);
+  });
+
+  test("refresh mid-hover into an id collision falls back to the selection", async ({ page, request }) => {
+    stack = await startMockStack();
+
+    // Same transition as the sibling regression, but with a SELECTION active:
+    // once the hovered node collides, the active state must fall back to the
+    // selected service immediately (its node-self and banner identity), never
+    // to the first collided occurrence or an "anonymous" banner.
+    let collided = false;
+    await page.route("**/api/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = (await response.json()) as { containers: Array<Record<string, unknown>> };
+      if (!snapshot.containers.some((container) => container.name === "unique")) {
+        snapshot.containers.push({ id: "c_ok", name: "unique", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] });
+      }
+      if (collided && !snapshot.containers.some((container) => container.name === "unique-clone")) {
+        snapshot.containers.unshift({ id: "c_ok", name: "unique-clone", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] });
+      }
+      await route.fulfill({ response, json: snapshot });
+    });
+
+    await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Service Map" })).toBeVisible();
+    const uniqueNode = page.locator("g.node", { hasText: "unique" });
+    await expect(uniqueNode).toHaveCount(1);
+
+    // Select postgres, then hover the unique node: the hover re-centres the
+    // highlight and banner identity on it.
+    await page.getByRole("button", { name: "postgres, healthy" }).click();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(page.locator("g.node.node-self")).toContainText("postgres");
+    await uniqueNode.locator("circle.node-core").hover();
+    await expect(page.locator("g.node.node-self")).toContainText("unique");
+    await expect(page.locator(".map-impact-kind")).toContainText("unique");
+
+    // Flip the collision transition; the refresh tick lands it under the
+    // stationary pointer.
+    collided = true;
+    await expect(page.locator("g.node.node-collided", { hasText: "unique" })).toHaveCount(2);
+    await page.locator("g.node.node-collided").first().locator("circle.node-core").hover();
+
+    // The stale hover must fall back to the SELECTION: postgres carries
+    // node-self, the banner names postgres, no collided node-self, and never
+    // "anonymous".
+    await expect(page.locator("g.node.node-collided.node-self")).toHaveCount(0);
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(page.locator("g.node.node-self")).toContainText("postgres");
+    await expect(page.locator(".map-impact-kind")).toContainText("postgres");
+    await expect(page.locator(".map-impact-kind")).not.toContainText("anonymous");
+  });
+
   test("maps a live Docker Compose fixture through the GUI @live-docker", async ({ page, request }) => {
     test.skip(!process.env.DOCKERMAP_E2E_LIVE_DOCKER, "Set DOCKERMAP_E2E_LIVE_DOCKER=1 to create live Docker fixtures.");
 

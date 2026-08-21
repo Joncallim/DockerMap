@@ -124,32 +124,58 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
   }, [selectedService, selectedId, layoutKeyByService, firstLayoutKeyForId, model.serviceIdCollisions]);
 
   // The ACTIVE highlight is occurrence-qualified. While hovering, the ACTIVE
-  // key is the hovered node's OWN layout key — hoverable nodes are exactly
-  // the unique-id (non-collided) ones, so the first-occurrence map resolves
-  // the hovered node's key unambiguously (this restores the pre-R3 hover
-  // impact radius: hovering with no selection highlights the hovered node,
+  // service is resolved through the SAME predicate that makes a node
+  // selectable (rendered by the active filter, unique id AND name, present
+  // in byId, interactive) — NOT by a raw hoverId. A snapshot/model refresh
+  // that turns the hovered occurrence collided replaces its <g> (or drops
+  // its pointer handlers) without ever firing pointerleave, so a raw hoverId
+  // would stay stale: the FIRST collided occurrence would carry node-self
+  // while the banner read "anonymous". Deriving the hover from the CURRENT
+  // model keeps it alive only while that service remains valid and falls
+  // back IMMEDIATELY (in the same render as the refresh) to the selection's
+  // occurrence key — or to no active state at all. The pre-R3 hover radius
+  // is preserved: hovering with no selection highlights the hovered node,
   // and hovering a different node while one is selected re-centres the
-  // radius on it). Without a hover, the selection's occurrence key applies.
-  const activeKey = hoverId ? (firstLayoutKeyForId.get(hoverId) ?? null) : selectedKey;
-  const activeId = hoverId ?? (selectedKey ? (selectedService?.id ?? selectedId) : null);
+  // radius on it (hoverable nodes are exactly the unique-id, non-collided
+  // ones, so the occurrence resolves unambiguously).
+  const hoveredService = useMemo(() => {
+    if (!interactive || !hoverId) return null;
+    const service = servicesById.get(hoverId);
+    if (!service) return null;
+    if (model.serviceIdCollisions.has(service.id) || model.serviceNameCollisions.has(service.name)) return null;
+    return service;
+  }, [interactive, hoverId, servicesById, model.serviceIdCollisions, model.serviceNameCollisions]);
+  // The hover's OWN layout key, derived from the resolved occurrence.
+  const hoverKey = hoveredService ? (layoutKeyByService.get(hoveredService) ?? null) : null;
+  const activeKey = hoverKey ?? selectedKey;
+  const activeId = hoveredService?.id ?? (selectedKey ? (selectedService?.id ?? selectedId) : null);
   const impact = useMemo(() => (activeId ? computeImpact(model, activeId) : null), [model, activeId]);
   const upstream = useMemo(() => new Set(impact?.upstream ?? []), [impact]);
   const downstream = useMemo(() => new Set(impact?.downstream ?? []), [impact]);
 
+  // A hover whose service is no longer selectable (collided by a refresh,
+  // filtered out, or the map turned read-only) is STALE STATE: the node's
+  // replaced <g> can never fire pointerleave, so clear the id explicitly.
+  // The derived hover above already ignores it; clearing prevents a later
+  // refresh from resurrecting the hover without any pointer event.
+  useEffect(() => {
+    if (hoverId && !hoveredService) setHoverId(null);
+  }, [hoverId, hoveredService]);
+
   // The impact banner's IDENTITY is occurrence-qualified too: hovering names
-  // the HOVERED occurrence (only unique-id, non-collided nodes are hoverable,
-  // so the services list resolves it exactly), an exact selection occurrence
-  // names itself, and an id-only selection falls back to the collision-safe
-  // byId lookup. byId EXCLUDES collided ids, so the exact occurrence must
-  // come from the caller (selectedService) — never from a lookup that would
-  // label the highlighted node "anonymous". Semantic impact traversal
-  // (computeImpact) stays fail-closed and untouched.
+  // the CURRENT hovered occurrence (resolved by the selectable predicate
+  // above — never a collided "anonymous" lookup), an exact selection
+  // occurrence names itself, and an id-only selection falls back to the
+  // collision-safe byId lookup. byId EXCLUDES collided ids, so the exact
+  // occurrence must come from the caller (selectedService) — never from a
+  // lookup that would label the highlighted node "anonymous". Semantic
+  // impact traversal (computeImpact) stays fail-closed and untouched.
   const activeService = useMemo(() => {
-    if (hoverId) return servicesById.get(hoverId) ?? null;
+    if (hoveredService) return hoveredService;
     if (selectedService) return selectedService;
     if (!selectedId) return null;
     return model.byId.get(selectedId) ?? null;
-  }, [hoverId, servicesById, selectedService, selectedId, model.byId]);
+  }, [hoveredService, selectedService, selectedId, model.byId]);
 
   const roleOf = (key: string, id: string): "self" | "up" | "down" | "dim" | "none" => {
     if (!activeKey) return "none";
