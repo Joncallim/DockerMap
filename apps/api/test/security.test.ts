@@ -147,6 +147,58 @@ test("bearer mode exchanges the API token for a strict HttpOnly session cookie a
   assert.equal(lookalike.status, 401);
 });
 
+test("Express case-insensitive routes retain their manifest policy and canonical logs", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${await freePort()}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  const session = await request(api, "/API/AUTH/SESSION", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: "test-token" })
+  });
+  assert.equal(session.status, 204);
+  assert.match(session.headers.get("set-cookie") ?? "", /dockermap_session=/);
+
+  const snapshot = await request(api, "/API/SNAPSHOT", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(snapshot.status, 200);
+
+  const head = await request(api, "/api/snapshot", {
+    method: "HEAD",
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(head.status, 200);
+  assert.deepEqual(routePolicyForRequest("HEAD", "/api/snapshot"), { auth: "authenticated", rateLimit: null });
+
+  await delay(20);
+  const logs = api.logs.join("");
+  assert.match(logs, /POST \/api\/auth\/session 204/);
+  assert.match(logs, /GET \/api\/snapshot 200/);
+  assert.match(logs, /HEAD \/api\/snapshot 200/);
+  assert.doesNotMatch(logs, /\/unknown/);
+});
+
+test("parameterized trailing-slash routes use manifest policy and canonical logs", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${await freePort()}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  const response = await request(api, "/api/containers/foo/", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(response.status, 404);
+  assert.deepEqual(routePolicyForRequest("GET", "/api/containers/foo/"), { auth: "authenticated", rateLimit: null });
+
+  await delay(20);
+  assert.match(api.logs.join(""), /GET \/api\/containers\/:name 404/);
+});
+
 test("forward-auth does not bypass the bearer session login endpoint", async () => {
   const api = await startApi({
     DOCKERMAP_ALLOW_MOCK: "true",

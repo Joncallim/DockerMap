@@ -69,21 +69,31 @@ export function routeById(id: RouteId) {
   return route;
 }
 
-function matchesPathTemplate(path: string, template: string) {
-  const pathParts = path.split("/");
-  const templateParts = template.split("/");
+function matchesPathTemplate(path: string, template: string): boolean {
+  // Express routes are case-insensitive unless explicitly configured otherwise.
+  const normalizedPath = path.toLowerCase();
+  const normalizedTemplate = template.toLowerCase();
+  const pathParts = normalizedPath.split("/");
+  const templateParts = normalizedTemplate.split("/");
   const exactMatch = pathParts.length === templateParts.length && templateParts.every(
     (part, index) => part.startsWith(":") || part === pathParts[index]
   );
   // Express uses non-strict routing by default: a route without a trailing
   // slash also accepts exactly one trailing slash, but it does not collapse
   // double slashes or encoded separators.
-  return exactMatch || (!template.endsWith("/") && path === `${template}/`);
+  return exactMatch || (
+    !normalizedTemplate.endsWith("/") &&
+    normalizedPath.endsWith("/") &&
+    !normalizedPath.endsWith("//") &&
+    matchesPathTemplate(normalizedPath.slice(0, -1), normalizedTemplate)
+  );
 }
 
 export function routeForRequest(method: string, path: string) {
+  // Express resolves HEAD through a GET handler when there is no explicit HEAD route.
+  const resolvedMethod = method === "HEAD" ? "GET" : method;
   return ROUTE_MANIFEST.find(
-    (route) => route.method === method && route.paths.some((routePath) => matchesPathTemplate(path, routePath.path))
+    (route) => route.method === resolvedMethod && route.paths.some((routePath) => matchesPathTemplate(path, routePath.path))
   );
 }
 
