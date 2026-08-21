@@ -174,7 +174,7 @@ Implementation gates, in order: `npm run check`, `npm run test:e2e`, `npm run te
 
 ### 7. Daemon-data gap verdict and diff scope
 
-**Verdict: no daemon-data gap for issue #34's accepted detail views. Do not change Rust, Express routes, OpenAPI, or wire contracts.**
+**Verdict: no daemon-data gap for issue #34's accepted detail views. Do not change production Rust logic, Express routes, OpenAPI, or wire contracts.** (The single authorized Rust delta is a test-only `mock_snapshot()` fixture/count update to support the positive encoded-slash browser assertion — documented in the e2e section; it changes no production daemon behavior.)
 
 Proof:
 
@@ -267,7 +267,7 @@ Arrest: assertions use actual mock records/targets; direct loads use `domcontent
 
 > Rust contributions must assume fmt-then-clippy gate order and idiomatic contains/format usage; do not "fix" E0670.
 
-N/A — daemon/Rust changes are explicitly out of scope. If pass 2 proves a daemon gap and changes scope, the plan must be revised before implementation and must put fmt-before-clippy/test in the implementer gate.
+N/A — production daemon/Rust changes are explicitly out of scope (the only authorized Rust delta is the test-only `mock_snapshot()` fixture/count update for the positive encoded-slash browser assertion). If pass 2 proves a daemon gap and changes scope, the plan must be revised before implementation and must put fmt-before-clippy/test in the implementer gate.
 
 ### G-03: Mock-path e2e assertions must use real mock output text — Caught: 1×
 
