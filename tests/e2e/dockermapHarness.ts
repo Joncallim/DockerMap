@@ -12,6 +12,7 @@ export type Stack = {
   fixtureDir: string;
   projectName: string | null;
   controlContainerName: string | null;
+  postProductionSessionAttempt?: (client: "a" | "b", spoofedXForwardedFor: string) => { status: number; body: string };
   stop: () => Promise<void>;
 };
 
@@ -77,6 +78,11 @@ export async function startProductionImageStack(): Promise<Stack> {
   const fixtureDir = mkdtempSync(join(tmpdir(), "dockermap-production-e2e-"));
   const image = `dockermap-e2e:${Date.now().toString(36)}`;
   const container = `dockermap-production-e2e-${process.pid}`;
+  const network = `${container}-clients`;
+  const clients = {
+    a: `${container}-client-a`,
+    b: `${container}-client-b`
+  } as const;
   const port = await freePort();
   const token = "dockermap-production-e2e-token";
 
@@ -93,11 +99,20 @@ export async function startProductionImageStack(): Promise<Stack> {
       ],
       repoRoot,
     );
+    runDocker(docker, ["network", "create", network], repoRoot);
+    runDocker(docker, ["network", "connect", network, container], repoRoot);
+    for (const client of Object.values(clients)) {
+      runDocker(
+        docker,
+        ["run", "--detach", "--name", client, "--network", network, "--entrypoint", "sleep", "curlimages/curl:8.12.1", "infinity"],
+        repoRoot,
+      );
+    }
     await waitForHttp(`http://127.0.0.1:${port}/health`, {
       headers: { Authorization: `Bearer ${token}` }
     });
   } catch (error) {
-    cleanupProductionImage(docker, image, container, fixtureDir);
+    cleanupProductionImage(docker, image, container, Object.values(clients), network, fixtureDir);
     throw error;
   }
 
@@ -108,7 +123,22 @@ export async function startProductionImageStack(): Promise<Stack> {
     fixtureDir,
     projectName: null,
     controlContainerName: null,
-    stop: async () => cleanupProductionImage(docker, image, container, fixtureDir)
+    postProductionSessionAttempt: (client, spoofedXForwardedFor) => {
+      const output = dockerOutput(
+        docker,
+        [
+          "exec", clients[client], "curl", "--silent", "--show-error", "--request", "POST",
+          "--header", "Content-Type: application/json", "--header", `X-Forwarded-For: ${spoofedXForwardedFor}`,
+          "--data", '{"token":"wrong-token"}', "--write-out", "\n%{http_code}",
+          `http://${container}:3233/api/auth/session`
+        ],
+        repoRoot,
+      );
+      const separator = output.lastIndexOf("\n");
+      if (separator < 0) throw new Error(`Production client response did not include an HTTP status: ${output}`);
+      return { body: output.slice(0, separator), status: Number(output.slice(separator + 1).trim()) };
+    },
+    stop: async () => cleanupProductionImage(docker, image, container, Object.values(clients), network, fixtureDir)
   };
 }
 
@@ -746,9 +776,28 @@ function cleanupLiveDocker(docker: string[], fixture: Fixture) {
   rmSync(fixture.dir, { recursive: true, force: true });
 }
 
-function cleanupProductionImage(docker: string[], image: string, container: string, fixtureDir: string) {
+function cleanupProductionImage(
+  docker: string[],
+  image: string,
+  container: string,
+  clients: string[],
+  network: string,
+  fixtureDir: string
+) {
+  for (const client of clients) {
+    try {
+      runDocker(docker, ["rm", "--force", client], repoRoot);
+    } catch {
+      // Best-effort cleanup should not hide the original test result.
+    }
+  }
   try {
     runDocker(docker, ["rm", "--force", container], repoRoot);
+  } catch {
+    // Best-effort cleanup should not hide the original test result.
+  }
+  try {
+    runDocker(docker, ["network", "rm", network], repoRoot);
   } catch {
     // Best-effort cleanup should not hide the original test result.
   }
