@@ -207,7 +207,7 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
               <g key={`${rel.id}-${relationshipIndex}`} className="edge-group">
                 <title>
                   {identityText(fromService.name, UNAVAILABLE_SERVICE)} depends on {identityText(toService.name, UNAVAILABLE_SERVICE)}
-                  {edgeNetworks.length > 0 ? ` via ${edgeNetworks.join(", ")}` : ""}
+                  {edgeNetworks.length > 0 ? ` via ${edgeNetworks.map((n) => (n === "" ? UNAVAILABLE_NETWORK : n)).join(", ")}` : ""}
                 </title>
                 {edgeNetworks.map((network, index) => {
                   const networkDef = networkByName.get(network);

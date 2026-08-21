@@ -6,7 +6,7 @@ import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord } from "../
 import { formatRelative } from "../lib/format";
 import Icon, { type IconName } from "../components/Icon";
 import { EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, StateDot, StatePill, Tag } from "../components/primitives";
-import { identityText, UNAVAILABLE_LOG_SOURCE, UNAVAILABLE_RUNTIME_NODE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "../lib/identity";
+import { identityText, UNAVAILABLE_DIAGNOSTIC_MESSAGE, UNAVAILABLE_LOG_SOURCE, UNAVAILABLE_RUNTIME_NODE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "../lib/identity";
 
 const PROVIDER_ICON: Record<RuntimeProviderKind, IconName> = {
   docker: "service",
@@ -162,7 +162,7 @@ export default function RuntimeScreen() {
                   <span className="diag-provider">
                     <Icon name={PROVIDER_ICON[diagnostic.provider]} size={13} /> {diagnostic.provider}
                   </span>
-                  <span className="diag-message">{diagnostic.message}</span>
+                  <span className="diag-message">{identityText(diagnostic.message, UNAVAILABLE_DIAGNOSTIC_MESSAGE)}</span>
                   <Tag tone={diagnostic.severity === "info" ? "muted" : diagnostic.severity === "warning" ? "warn" : "error"}>{diagnostic.severity}</Tag>
                 </li>
               ))}
