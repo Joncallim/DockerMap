@@ -2,7 +2,7 @@
 
 ## Certification boundary
 
-- **Tested application commit:** `85fdd46b59cc0e38e464246c2a6021ff5d038dde`
+- **Tested application commit:** `b8294cc86eff405b6599acee3ed838ba4fe0df1f`
 - **Evidence recorded:** 2026-08-21T23:47:05+08:00
 - **Operator/environment:** Hermes Agent; Chromium 149.0.7827.55 / Playwright 1.61.0 on Linux 7.0.0-29-generic.
 - **Node/npm:** v22.23.2 / 10.9.8
@@ -20,7 +20,7 @@ This document is a **docs-only descendant** of the tested application commit. It
 | `npm run check` | PASS | `npm audit --omit=dev`: 0 vulnerabilities; typecheck/build/JS tests and Rust fmt/clippy/tests passed. Rust daemon test suite: 95 passed. |
 | `npm run test:e2e` | PASS | **54 passed, 5 opt-in live/production tests skipped**; the first run had one transient mock-stack readiness failure on Images and the required immediate re-run passed cleanly. |
 
-CI retains the raw Playwright/Axe attachments and reports through the `Playwright and axe evidence` artifact step. The artifact name is `playwright-axe-${{ github.sha }}`, includes `test-results/` and `playwright-report/`, and has 14-day retention. The CI run produced by this evidence-only descendant is the final-HEAD artifact reference.
+CI retains the raw Playwright/Axe attachments and reports through the `Playwright and axe evidence` artifact step. The matrix mirrors all **62 raw Axe JSON attachments** into `test-artifacts/axe/` before upload; the artifact name is `playwright-axe-${{ github.sha }}`, includes `test-artifacts/`, `test-results/`, and `playwright-report/`, and has 14-day retention. The CI run produced by this evidence-only descendant is the final-HEAD artifact reference.
 
 ## Default-rule Axe matrix
 
