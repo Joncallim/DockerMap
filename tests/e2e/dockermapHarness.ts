@@ -12,7 +12,11 @@ export type Stack = {
   fixtureDir: string;
   projectName: string | null;
   controlContainerName: string | null;
-  postProductionSessionAttempt?: (client: "a" | "b", spoofedXForwardedFor: string) => { status: number; body: string };
+  productionSocketReadOnly?: boolean;
+  postProductionSessionBurst?: (client: "a" | "b", spoofedXForwardedForPrefix: string) => {
+    elapsedMs: number;
+    responses: Array<{ status: number; body: string }>;
+  };
   stop: () => Promise<void>;
 };
 
@@ -69,13 +73,14 @@ export async function startMockStack(): Promise<Stack> {
   };
 }
 
-export async function startProductionImageStack(): Promise<Stack> {
+export async function startProductionImageStack(options: { liveDocker?: boolean } = {}): Promise<Stack> {
   const docker = detectDockerCommand();
   if (!docker) {
     throw new SkipLiveDockerError("Docker is not reachable by the current user or sudo -n docker.");
   }
 
-  const fixtureDir = mkdtempSync(join(tmpdir(), "dockermap-production-e2e-"));
+  const fixture = options.liveDocker ? createLiveDockerFixture() : null;
+  const fixtureDir = fixture?.dir ?? mkdtempSync(join(tmpdir(), "dockermap-production-e2e-"));
   const image = `dockermap-e2e:${Date.now().toString(36)}`;
   const container = `dockermap-production-e2e-${process.pid}`;
   const network = `${container}-clients`;
@@ -85,20 +90,35 @@ export async function startProductionImageStack(): Promise<Stack> {
   } as const;
   const port = await freePort();
   const token = "dockermap-production-e2e-token";
+  const cleanup = () => {
+    cleanupProductionImage(docker, image, container, Object.values(clients), network, fixture ? undefined : fixtureDir);
+    if (fixture) cleanupLiveDocker(docker, fixture);
+  };
 
   try {
+    if (fixture) {
+      runDocker(docker, ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "up", "-d"], fixture.dir);
+      runDocker(docker, ["run", "-d", "--name", fixture.controlContainerName, "busybox:1.36.1", "sh", "-c", "while true; do sleep 60; done"], fixture.dir);
+    }
     runDocker(docker, ["build", "--tag", image, "."], repoRoot);
-    runDocker(
-      docker,
-      [
-        "run", "--detach", "--name", container,
-        "--publish", `127.0.0.1:${port}:3233`,
-        "--env", "DOCKERMAP_ALLOW_MOCK=true",
-        "--env", `DOCKERMAP_API_TOKEN=${token}`,
-        image
-      ],
-      repoRoot,
-    );
+    const runArgs = [
+      "run", "--detach", "--name", container,
+      "--publish", `127.0.0.1:${port}:3233`,
+      "--env", `DOCKERMAP_API_TOKEN=${token}`,
+      ...(fixture
+        ? [
+            "--env", "DOCKERMAP_ALLOW_MOCK=false",
+            "--env", `DOCKERMAP_DOCKER_LABEL_FILTER=${fixture.labelFilter}`,
+            "--volume", "/var/run/docker.sock:/var/run/docker.sock:ro",
+            "--volume", `${fixture.dir}:/opt/dockermap/project:ro`
+          ]
+        : ["--env", "DOCKERMAP_ALLOW_MOCK=true"]),
+      image
+    ];
+    runDocker(docker, runArgs, repoRoot);
+    if (fixture && !productionSocketIsReadOnly(docker, container)) {
+      throw new Error("Production image Docker socket mount is not read-only");
+    }
     runDocker(docker, ["network", "create", network], repoRoot);
     runDocker(docker, ["network", "connect", network, container], repoRoot);
     for (const client of Object.values(clients)) {
@@ -111,8 +131,11 @@ export async function startProductionImageStack(): Promise<Stack> {
     await waitForHttp(`http://127.0.0.1:${port}/health`, {
       headers: { Authorization: `Bearer ${token}` }
     });
+    if (fixture) {
+      await waitForFixtureSnapshotThroughNginx(`http://127.0.0.1:${port}/api/snapshot`, token, fixture.projectName);
+    }
   } catch (error) {
-    cleanupProductionImage(docker, image, container, Object.values(clients), network, fixtureDir);
+    cleanup();
     throw error;
   }
 
@@ -121,24 +144,31 @@ export async function startProductionImageStack(): Promise<Stack> {
     webUrl: `http://127.0.0.1:${port}`,
     daemonUrl: "",
     fixtureDir,
-    projectName: null,
-    controlContainerName: null,
-    postProductionSessionAttempt: (client, spoofedXForwardedFor) => {
+    projectName: fixture?.projectName ?? null,
+    controlContainerName: fixture?.controlContainerName ?? null,
+    productionSocketReadOnly: fixture ? productionSocketIsReadOnly(docker, container) : undefined,
+    postProductionSessionBurst: (client, spoofedXForwardedForPrefix) => {
+      const started = Date.now();
       const output = dockerOutput(
         docker,
         [
-          "exec", clients[client], "curl", "--silent", "--show-error", "--request", "POST",
-          "--header", "Content-Type: application/json", "--header", `X-Forwarded-For: ${spoofedXForwardedFor}`,
-          "--data", '{"token":"wrong-token"}', "--write-out", "\n%{http_code}",
-          `http://${container}:3233/api/auth/session`
+          "exec", clients[client], "sh", "-ceu",
+          `attempt=1
+while [ "$attempt" -le 21 ]; do
+  curl --silent --show-error --request POST \\
+    --header 'Content-Type: application/json' \\
+    --header "X-Forwarded-For: ${spoofedXForwardedForPrefix}.$attempt" \\
+    --data '{"token":"wrong-token"}' \\
+    --write-out '\\n__DOCKERMAP_STATUS__:%{http_code}\\n' \\
+    http://${container}:3233/api/auth/session
+  attempt=$((attempt + 1))
+done`
         ],
         repoRoot,
       );
-      const separator = output.lastIndexOf("\n");
-      if (separator < 0) throw new Error(`Production client response did not include an HTTP status: ${output}`);
-      return { body: output.slice(0, separator), status: Number(output.slice(separator + 1).trim()) };
+      return { elapsedMs: Date.now() - started, responses: parseProductionSessionBurst(output) };
     },
-    stop: async () => cleanupProductionImage(docker, image, container, Object.values(clients), network, fixtureDir)
+    stop: async () => cleanup()
   };
 }
 
@@ -435,6 +465,17 @@ async function waitForFixtureSnapshot(url: string, projectName: string) {
     const snapshot = await fetchJson<{ containers: Array<{ name: string }> }>(url);
     return snapshot.containers.some((container) => container.name.includes(projectName));
   }, `fixture containers in ${url}`);
+}
+
+async function waitForFixtureSnapshotThroughNginx(url: string, token: string, projectName: string) {
+  await waitForCondition(async () => {
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) return false;
+    const snapshot = await response.json() as { containers: Array<{ name: string }> };
+    return ["api", "worker"].every((service) => snapshot.containers.some(
+      (container) => container.name === `${projectName}-${service}-1`
+    ));
+  }, `fixture containers through production nginx at ${url}`);
 }
 
 async function waitForJson(url: string) {
@@ -758,6 +799,32 @@ function dockerOutput(docker: string[], args: string[], cwd: string) {
   return result.stdout;
 }
 
+function productionSocketIsReadOnly(docker: string[], container: string) {
+  return dockerOutput(
+    docker,
+    ["inspect", "--format", '{{range .Mounts}}{{if eq .Destination "/var/run/docker.sock"}}{{.RW}}{{end}}{{end}}', container],
+    repoRoot,
+  ).trim() === "false";
+}
+
+function parseProductionSessionBurst(output: string) {
+  const marker = "\n__DOCKERMAP_STATUS__:";
+  const responses: Array<{ status: number; body: string }> = [];
+  let remaining = output;
+  while (remaining) {
+    const markerIndex = remaining.indexOf(marker);
+    if (markerIndex < 0) throw new Error(`Production burst response did not include a status marker: ${remaining}`);
+    const statusStart = markerIndex + marker.length;
+    const statusEnd = remaining.indexOf("\n", statusStart);
+    if (statusEnd < 0) throw new Error(`Production burst response did not terminate its status marker: ${remaining}`);
+    const status = Number(remaining.slice(statusStart, statusEnd));
+    if (!Number.isInteger(status)) throw new Error(`Production burst emitted an invalid HTTP status: ${remaining}`);
+    responses.push({ body: remaining.slice(0, markerIndex), status });
+    remaining = remaining.slice(statusEnd + 1);
+  }
+  return responses;
+}
+
 function cleanupLiveDocker(docker: string[], fixture: Fixture) {
   try {
     runDocker(docker, ["rm", "-f", fixture.controlContainerName], fixture.dir);
@@ -782,7 +849,7 @@ function cleanupProductionImage(
   container: string,
   clients: string[],
   network: string,
-  fixtureDir: string
+  fixtureDir?: string
 ) {
   for (const client of clients) {
     try {
@@ -806,7 +873,7 @@ function cleanupProductionImage(
   } catch {
     // Best-effort cleanup should not hide the original test result.
   }
-  rmSync(fixtureDir, { recursive: true, force: true });
+  if (fixtureDir) rmSync(fixtureDir, { recursive: true, force: true });
 }
 
 function envPairs(env: NodeJS.ProcessEnv) {

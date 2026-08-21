@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import net from "node:net";
 import { afterEach, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { ROUTE_MANIFEST } from "../src/routes.js";
 
 type ApiProcess = {
   port: number;
@@ -281,95 +281,57 @@ test("access logs use canonical route templates and never retain path or query s
   assert.doesNotMatch(logs, new RegExp(escapeRegExp(secret)));
 });
 
-test("canonical log templates cover every registered static route and versioned alias", async () => {
+test("the declarative route manifest registers and logs every route and versioned alias", async () => {
   const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true", DOCKERMAP_API_TOKEN: "test-token" });
-  const staticRoutes = new Map([
-    ["GET /health", "/health"],
-    ["GET /api/health", "/api/health"],
-    ["GET /api/status", "/api/status"],
-    ["GET /api/openapi.json", "/api/openapi.json"],
-    ["GET /api/auth/whoami", "/api/auth/whoami"],
-    ["GET /api/snapshot", "/api/snapshot"],
-    ["GET /api/graph", "/api/graph"],
-    ["GET /api/runtime/map", "/api/runtime/map"],
-    ["GET /api/diagnostics", "/api/diagnostics"],
-    ["GET /api/containers", "/api/containers"],
-    ["GET /api/images", "/api/images"],
-    ["GET /api/networks", "/api/networks"],
-    ["GET /api/volumes", "/api/volumes"],
-    ["GET /api/logs", "/api/logs"],
-    ["GET /api/compose/scan", "/api/compose/scan"],
-    ["GET /api/compose/graph", "/api/compose/graph"],
-    ["GET /api/compose/edit-plan", "/api/compose/edit-plan"],
-    ["GET /api/events/stream", "/api/events/stream"],
-    ["POST /api/auth/session", "/api/auth/session"],
-    ["POST /api/auth/session/logout", "/api/auth/session/logout"]
-  ]);
-  const source = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
-  const registeredStaticRoutes = [...source.matchAll(/app\.(get|post)\("([^":]+)"/g)]
-    .map(([, method, path]) => `${method.toUpperCase()} ${path}`)
-    .sort();
-  assert.deepEqual([...staticRoutes.keys()].sort(), registeredStaticRoutes);
-
   const authorization = { Authorization: "Bearer test-token" };
-  for (const [route, expectedTemplate] of staticRoutes) {
-    const [method, path] = route.split(" ") as [string, string];
-    if (method === "POST") continue;
-    for (const requestPath of [path, ...(path === "/health" ? [] : [path.replace("/api/", "/api/v1/")])]) {
-      const start = api.logs.join("").length;
-      if (path === "/api/events/stream") {
-        const session = await request(api, "/api/auth/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token: "test-token" })
-        });
-        const cookie = (session.headers.get("set-cookie") ?? "").split(";", 1)[0];
-        const response = await request(api, requestPath, { headers: { Cookie: cookie } });
-        const reader = response.body?.getReader();
-        assert.ok(reader, `${route} should open an SSE response`);
-        await reader.read();
-        await request(api, "/api/auth/session/logout", { method: "POST", headers: { Cookie: cookie } });
-        await reader.read();
-      } else {
-        const response = await request(api, requestPath, { headers: authorization });
-        assert.notEqual(response.status, 404, `${route} ${requestPath}`);
-      }
-      await delay(path === "/api/events/stream" ? 50 : 5);
-      const log = api.logs.join("").slice(start);
-      assert.match(log, new RegExp(`${method} ${escapeRegExp(expectedTemplate)} `), `${route} ${requestPath}`);
-      assert.doesNotMatch(log, /\/unknown /, `${route} ${requestPath}`);
-    }
-  }
+  const routeKeys = ROUTE_MANIFEST.flatMap((route) => route.paths.map((path) => `${route.method} ${path.path}`));
+  assert.equal(new Set(routeKeys).size, routeKeys.length, "the manifest must not duplicate registrations");
+  assert.ok(ROUTE_MANIFEST.some((route) => route.paths.some((path) => path.path.includes(":name"))), "parameterized route missing");
+  assert.ok(ROUTE_MANIFEST.some((route) => route.id === "api-version"), "bare /api/v1 responders missing");
+  assert.ok(ROUTE_MANIFEST.every((route) => route.paths.some((path) => path.path.startsWith("/api/v1")) || route.id === "health"), "versioned aliases missing");
 
-  for (const path of ["/api/auth/session"]) {
-    const sessionStart = api.logs.join("").length;
-    const session = await request(api, path, {
+  const startSession = async () => {
+    const response = await request(api, "/api/auth/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: "test-token" })
     });
-    assert.equal(session.status, 204, path);
-    await delay(5);
-    const sessionLog = api.logs.join("").slice(sessionStart);
-    assert.match(sessionLog, /POST \/api\/auth\/session /, path);
-    assert.doesNotMatch(sessionLog, /\/unknown /, path);
-    const cookie = (session.headers.get("set-cookie") ?? "").split(";", 1)[0];
-    const logoutPath = path.replace("/session", "/session/logout");
-    const logoutStart = api.logs.join("").length;
-    assert.equal((await request(api, logoutPath, { method: "POST", headers: { Cookie: cookie } })).status, 204, logoutPath);
-    await delay(5);
-    const logoutLog = api.logs.join("").slice(logoutStart);
-    assert.match(logoutLog, /POST \/api\/auth\/session\/logout /, logoutPath);
-    assert.doesNotMatch(logoutLog, /\/unknown /, logoutPath);
-  }
+    assert.equal(response.status, 204, "session setup");
+    return (response.headers.get("set-cookie") ?? "").split(";", 1)[0];
+  };
 
-  for (const [path, expectedTemplate] of [["/api/v1", "/api/v1"], ["/api/v1/", "/api/v1/"]] as const) {
-    const start = api.logs.join("").length;
-    assert.equal((await request(api, path, { headers: authorization })).status, 200, path);
-    await delay(5);
-    const log = api.logs.join("").slice(start);
-    assert.match(log, new RegExp(`GET ${escapeRegExp(expectedTemplate)} `), path);
-    assert.doesNotMatch(log, /\/unknown /, path);
+  for (const route of ROUTE_MANIFEST) {
+    for (const routePath of route.paths) {
+      const requestPath = routePath.path.replace(":name", "api");
+      let start = api.logs.join("").length;
+      if (route.id === "events-stream") {
+        const cookie = await startSession();
+        start = api.logs.join("").length;
+        const response = await request(api, requestPath, { headers: { Cookie: cookie } });
+        const reader = response.body?.getReader();
+        assert.ok(reader, `${route.method} ${requestPath} should open an SSE response`);
+        await reader.read();
+        await request(api, "/api/auth/session/logout", { method: "POST", headers: { Cookie: cookie } });
+        await reader.read();
+      } else if (route.method === "POST" && route.id === "auth-session") {
+        const response = await request(api, requestPath, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: "test-token" })
+        });
+        assert.equal(response.status, 204, `${route.method} ${requestPath}`);
+      } else if (route.method === "POST") {
+        const response = await request(api, requestPath, { method: "POST", headers: { Cookie: await startSession() } });
+        assert.equal(response.status, 204, `${route.method} ${requestPath}`);
+      } else {
+        const response = await request(api, requestPath, { headers: authorization });
+        assert.notEqual(response.status, 404, `${route.method} ${requestPath}`);
+      }
+      await delay(route.id === "events-stream" ? 50 : 5);
+      const log = api.logs.join("").slice(start);
+      assert.match(log, new RegExp(`${route.method} ${escapeRegExp(routePath.canonicalPath)} `), `${route.method} ${requestPath}`);
+      assert.doesNotMatch(log, /\/unknown /, `${route.method} ${requestPath}`);
+    }
   }
 });
 
