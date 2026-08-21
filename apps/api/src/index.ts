@@ -248,15 +248,17 @@ function unregisterSessionStream(session: string, response: express.Response) {
   if (streams.size === 0) activeSessionStreams.delete(session);
 }
 
+const CANONICAL_STATIC_LOG_PATHS = new Set([
+  "/health", "/api/health", "/api/status", "/api/openapi.json", "/api/snapshot", "/api/graph", "/api/runtime/map",
+  "/api/diagnostics", "/api/containers", "/api/images", "/api/networks", "/api/volumes", "/api/logs",
+  "/api/compose/scan", "/api/compose/graph", "/api/compose/edit-plan", "/api/events/stream",
+  "/api/auth/session", "/api/auth/session/logout", "/api/auth/whoami", "/api/v1", "/api/v1/"
+]);
+
 function canonicalLogPath(path: string) {
   if (/^\/api(?:\/v1)?\/containers\/[^/]+$/.test(path)) return "/api/containers/:name";
-  const known = new Set([
-    "/health", "/api/health", "/api/status", "/api/snapshot", "/api/graph", "/api/runtime/map",
-    "/api/diagnostics", "/api/containers", "/api/images", "/api/networks", "/api/volumes", "/api/logs",
-    "/api/compose/scan", "/api/compose/graph", "/api/compose/edit-plan", "/api/events/stream",
-    "/api/auth/session", "/api/auth/session/logout", "/api/auth/whoami", "/api/v1", "/api/v1/"
-  ]);
-  return known.has(path) ? path : "/unknown";
+  const unversionedPath = path === "/api/v1/" ? path : path.startsWith("/api/v1/") ? path.replace(/^\/api\/v1/, "/api") : path;
+  return CANONICAL_STATIC_LOG_PATHS.has(unversionedPath) ? unversionedPath : "/unknown";
 }
 
 function limitSessionAttempts(req: express.Request, res: express.Response, next: express.NextFunction) {

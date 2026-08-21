@@ -245,6 +245,28 @@ test.describe("DockerMap GUI", () => {
     await expect(page.getByRole("heading", { name: "Enter your API token" })).toBeVisible();
   });
 
+  test("rate-limits independent production-image clients despite spoofed forwarding headers @production-image", async () => {
+    test.skip(!process.env.DOCKERMAP_E2E_PRODUCTION_IMAGE, "Set DOCKERMAP_E2E_PRODUCTION_IMAGE=1 to build the production image.");
+
+    try {
+      stack = await startProductionImageStack();
+    } catch (error) {
+      if (error instanceof SkipLiveDockerError) test.skip(true, error.message);
+      throw error;
+    }
+
+    expect(stack.postProductionSessionAttempt).toBeTruthy();
+    for (const client of ["a", "b"] as const) {
+      for (let attempt = 1; attempt <= 20; attempt += 1) {
+        const result = stack.postProductionSessionAttempt!(client, `198.51.100.${attempt}`);
+        expect(result.status, `${client} attempt ${attempt}`).toBe(401);
+      }
+      const limited = stack.postProductionSessionAttempt!(client, "203.0.113.250");
+      expect(limited.status, `${client} attempt 21`).toBe(429);
+      expect(JSON.parse(limited.body)).toMatchObject({ code: "rate_limited" });
+    }
+  });
+
   test("reports a healthy Docker healthcheck in none, bearer, and forward-auth modes @production-image", async () => {
     test.skip(!process.env.DOCKERMAP_E2E_PRODUCTION_IMAGE, "Set DOCKERMAP_E2E_PRODUCTION_IMAGE=1 to build the production image.");
     for (const env of [
