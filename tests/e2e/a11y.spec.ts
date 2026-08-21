@@ -130,6 +130,13 @@ test.describe("responsive and accessibility matrix", () => {
         await page.keyboard.press("Control+k");
         await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
         await attachAxe(page, testInfo, `${theme}-command-palette`);
+
+        // Empty-results state: a query matching no command renders the
+        // "No matches" status outside the listbox; axe scans it here so the
+        // matrix cannot silently miss an invalid listbox child again.
+        await page.getByRole("combobox").fill("zzzz-no-such-command");
+        await expect(page.getByRole("status", { name: "No matches" })).toBeVisible();
+        await attachAxe(page, testInfo, `${theme}-command-palette-empty`);
       });
     });
   }

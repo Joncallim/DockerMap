@@ -206,7 +206,7 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
             return (
               <g key={`${rel.id}-${relationshipIndex}`} className="edge-group">
                 <title>
-                  {fromService.name} depends on {toService.name}
+                  {identityText(fromService.name, UNAVAILABLE_SERVICE)} depends on {identityText(toService.name, UNAVAILABLE_SERVICE)}
                   {edgeNetworks.length > 0 ? ` via ${edgeNetworks.join(", ")}` : ""}
                 </title>
                 {edgeNetworks.map((network, index) => {
@@ -251,6 +251,7 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
                 onPointerEnter={selectable ? () => setHoverId(service.id) : undefined}
                 onPointerLeave={selectable ? () => setHoverId(null) : undefined}
                 role={selectable ? "button" : undefined}
+                aria-pressed={selectable ? selectedId === service.id : undefined}
                 tabIndex={selectable ? 0 : undefined}
                 aria-label={selectable ? `${identityText(service.name, UNAVAILABLE_SERVICE)}, ${service.state}` : undefined}
                 onKeyDown={(e) => {
@@ -312,7 +313,7 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
         <div className="map-impact">
           <span className="map-impact-kind">
             <Icon name={KIND_ICON[model.byId.get(activeId)?.kind ?? "service"]} size={13} />
-            {model.byId.get(activeId)?.name}
+            {identityText(model.byId.get(activeId)?.name, UNAVAILABLE_SERVICE)}
           </span>
           <span>
             <strong>{impact.downstream.length}</strong> affected if it fails

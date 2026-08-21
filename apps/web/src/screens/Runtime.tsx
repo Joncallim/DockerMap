@@ -223,7 +223,7 @@ export default function RuntimeScreen() {
                   <Icon name="close" size={15} />
                 </button>
               </div>
-              <h2 className="inspector-title">{selected.label}</h2>
+              <h2 className="inspector-title">{identityText(selected.label, UNAVAILABLE_RUNTIME_NODE)}</h2>
               <div className="tag-wrap">
                 <StatePill state={selected.state} />
                 <Tag icon="layers">{LAYER_LABEL[selected.layer]}</Tag>
@@ -381,7 +381,7 @@ function RelationList({
               <li key={`${selected.id}-${direction}-${index}`} className="runtime-edge-row">
                 <button type="button" className="runtime-edge-target" onClick={() => onSelect(node.id)}>
                   <Icon name={PROVIDER_ICON[node.provider]} size={13} />
-                  <span>{node.label}</span>
+                  <span>{identityText(node.label, UNAVAILABLE_RUNTIME_NODE)}</span>
                 </button>
                 <Tag tone="muted">{edge.relationship.replaceAll("_", " ")}</Tag>
               </li>

@@ -9,7 +9,7 @@ import { formatKbps, formatMb, formatPercent, formatRelative } from "../lib/form
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { IdentityRef } from "../components/identity";
-import { UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_SERVICE, UNAVAILABLE_VOLUME } from "../lib/identity";
+import { identityText, UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_ROLE, UNAVAILABLE_SERVICE_STATUS, UNAVAILABLE_VOLUME } from "../lib/identity";
 import { Bar, EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, Sparkline, StatePill, StateDot, Tag } from "../components/primitives";
 
 type Tab = "overview" | "dependencies" | "resources" | "logs" | "config";
@@ -73,7 +73,7 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
             <Icon name={KIND_ICON[service.kind]} size={18} />
           </span>
           <div>
-            <div className="eyebrow">{service.role}</div>
+            <div className="eyebrow">{identityText(service.role, UNAVAILABLE_SERVICE_ROLE)}</div>
             <h1 className="screen-title">{service.name}</h1>
           </div>
           <StatePill state={service.state} />
@@ -145,9 +145,9 @@ function Overview({ service, model }: { service: Service; model: NonNullable<Ret
     <div className="grid-2">
       <Panel title="At a glance" icon="service">
         <KeyValue label="State" value={<StatePill state={service.state} />} />
-        <KeyValue label="Raw status" value={service.status} mono />
+        <KeyValue label="Raw status" value={identityText(service.status, UNAVAILABLE_SERVICE_STATUS)} mono />
         <KeyValue label="Image" value={<IdentityRef name={service.image} fallback={UNAVAILABLE_IMAGE} to={model.imageByRef.has(service.image) ? `/images/${encodeURIComponent(service.image)}` : undefined} className="entity-detail-link" />} mono />
-        <KeyValue label="Role" value={service.role} />
+        <KeyValue label="Role" value={identityText(service.role, UNAVAILABLE_SERVICE_ROLE)} />
         <KeyValue label="Networks" value={networksLabel} />
       </Panel>
       <Panel title="Relationships" icon="link" actions={<Link className="ghost-link" to="/map">Trace</Link>}>
@@ -291,8 +291,8 @@ function Config({
             <>
               <KeyValue label="Container ID" value={service.id === "" ? UNAVAILABLE_CONTAINER_ID : service.id} mono />
               <KeyValue label="Image reference" value={<IdentityRef name={service.image} fallback={UNAVAILABLE_IMAGE} to={model.imageByRef.has(service.image) ? `/images/${encodeURIComponent(service.image)}` : undefined} className="entity-detail-link" />} mono />
-              <KeyValue label="Raw status" value={service.status} mono />
-              <KeyValue label="Port bindings" value={service.ports.join(", ") || "none"} mono />
+              <KeyValue label="Raw status" value={identityText(service.status, UNAVAILABLE_SERVICE_STATUS)} mono />
+              <KeyValue label="Port bindings" value={service.ports.filter((p) => p !== "").join(", ") || "none"} mono />
             </>
           ) : (
             <p className="muted-line">Container IDs, raw image refs and port bindings are hidden until you ask for them.</p>

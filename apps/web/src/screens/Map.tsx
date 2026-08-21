@@ -6,7 +6,7 @@ import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { EmptyState, ErrorState, KeyValue, Loading, StatePill, StateDot, Tag } from "../components/primitives";
 import { IdentityRef } from "../components/identity";
-import { COLLISION_HINT, COLLISION_TAG, identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_NETWORK, UNAVAILABLE_SERVICE, UNAVAILABLE_VOLUME } from "../lib/identity";
+import { COLLISION_HINT, COLLISION_TAG, identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_NETWORK, UNAVAILABLE_PORT, UNAVAILABLE_SERVICE, UNAVAILABLE_VOLUME } from "../lib/identity";
 
 export default function MapScreen({ initialSelectedId = null }: { initialSelectedId?: string | null }) {
   const { model, loading, error } = useApp();
@@ -99,7 +99,7 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
                   <Icon name="close" size={15} />
                 </button>
               </div>
-              <h2 className="inspector-title">{selected.name}</h2>
+              <h2 className="inspector-title">{identityText(selected.name, UNAVAILABLE_SERVICE)}</h2>
               <StatePill state={selected.state} />
 
               <div className="impact-band">
@@ -120,9 +120,9 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
                 <div className="inspector-section">
                   <h4>Ports</h4>
                   <div className="tag-wrap">
-                    {selected.ports.map((p) => (
-                      <Tag key={p} icon="link">
-                        {p}
+                    {selected.ports.map((p, index) => (
+                      <Tag key={`${p}-${index}`} icon="link">
+                        {p === "" ? UNAVAILABLE_PORT : p}
                       </Tag>
                     ))}
                   </div>

@@ -166,7 +166,6 @@ export default function CommandPalette({
           <kbd>esc</kbd>
         </div>
         <ul id="cmdk-listbox" className="cmdk-list" role="listbox" aria-label="Commands">
-          {items.length === 0 && <li className="cmdk-empty" role="status">No matches</li>}
           {items.map((command, index) => (
             <li
               key={command.id}
@@ -185,6 +184,11 @@ export default function CommandPalette({
             </li>
           ))}
         </ul>
+        {trimmed !== "" && filtered.length === 0 && (
+          <div role="status" aria-label="No matches" className="cmdk-empty">
+            No matches
+          </div>
+        )}
       </div>
     </div>
   );

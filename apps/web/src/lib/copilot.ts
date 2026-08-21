@@ -1,5 +1,5 @@
 import { computeImpact, type Service, type SystemModel } from "./model";
-import { identityText, UNAVAILABLE_SERVICE } from "./identity";
+import { identityText, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "./identity";
 
 /**
  * The Copilot interprets the topology. It does not control anything and it does
@@ -159,7 +159,7 @@ function portAnswer(model: SystemModel, q: string, lower: string): CopilotAnswer
   return {
     question: q,
     headline: `Port ${port}`,
-    body: hits.map((s) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${s.ports.filter((p) => p.includes(port)).join(", ")}`),
+    body: hits.map((s) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${s.ports.filter((p) => p !== "" && p.includes(port)).join(", ")}`),
     references: hits.map((s) => s.name)
   };
 }
@@ -178,14 +178,15 @@ function changeAnswer(model: SystemModel, q: string): CopilotAnswer {
 
 function serviceOverviewAnswer(model: SystemModel, service: Service, q: string): CopilotAnswer {
   const impact = computeImpact(model, service.id);
+  const publishedPorts = service.ports.filter((p) => p !== "");
   return {
     question: q,
     headline: `${service.name} overview`,
     body: [
-      `State: ${service.state} (${service.status})`,
+      `State: ${service.state} (${identityText(service.status, UNAVAILABLE_SERVICE_STATUS)})`,
       `Image: ${service.imageRepo}:${service.imageTag}`,
       `Depends on ${service.dependsOn.length}, used by ${impact.downstream.length}.`,
-      service.ports.length ? `Ports: ${service.ports.join(", ")}` : "No published ports."
+      publishedPorts.length ? `Ports: ${publishedPorts.join(", ")}` : "No published ports."
     ],
     references: [service.name]
   };
