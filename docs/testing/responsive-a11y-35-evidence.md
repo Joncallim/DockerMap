@@ -2,8 +2,8 @@
 
 ## Certification boundary
 
-- **Tested application commit:** `aaef812ed75fe5e48443f5d01ab1b50575e96e75`
-- **Evidence recorded:** 2026-08-22T00:52:00+08:00
+- **Tested application commit:** `b18a524c631c0d854a3c705f756e797e7a49816f`
+- **Evidence recorded:** 2026-08-22T01:32:07+08:00
 - **Operator/environment:** Hermes Agent; Chromium 149.0.7827.55 / Playwright 1.61.0 on Linux 7.0.0-29-generic.
 - **Node/npm:** v22.23.2 / 10.9.8
 - **Axe:** `@axe-core/playwright` 4.13.0 / `axe-core` 4.13.0
@@ -16,11 +16,11 @@ This document is a **docs-only descendant** of the tested application commit. It
 | Command | Result | Key evidence |
 | --- | --- | --- |
 | `npm run test:web` (focused during implementation) | PASS | Model identity regression: 75 tests passed across 7 files (incl. ambiguous/empty/repeated volume-ref fixture and client-reconciler duplicate-key regressions for all seven binding-named list sites). |
-| `npm run test:e2e:a11y` | PASS | **53 Playwright tests passed**; 62 default-rule Axe targets had **0 critical / 0 total violations**. Raw JSON is attached per target through `testInfo.attach`. |
+| `npm run test:e2e:a11y` | PASS | **53 Playwright tests passed**; 64 default-rule Axe targets had **0 critical / 0 total violations**. Raw JSON is attached per target through `testInfo.attach`. |
 | `npm run check` | PASS | `npm audit --omit=dev`: 0 vulnerabilities; typecheck/build/JS tests and Rust fmt/clippy/tests passed. Rust daemon test suite: 95 passed. |
 | `npm run test:e2e` | PASS | **56 passed, 5 opt-in live/production tests skipped**; the required immediate re-run passed cleanly. |
 
-CI retains the raw Playwright/Axe attachments and reports through the `Playwright and axe evidence` artifact step. The matrix mirrors all **62 raw Axe JSON attachments** into `test-artifacts/axe/` before upload; the artifact name is `playwright-axe-${{ github.sha }}`, includes `test-artifacts/`, `test-results/`, and `playwright-report/`, and has 14-day retention. The CI run produced by this evidence-only descendant is the final-HEAD artifact reference.
+CI retains the raw Playwright/Axe attachments and reports through the `Playwright and axe evidence` artifact step. The matrix mirrors all **64 raw Axe JSON attachments** into `test-artifacts/axe/` before upload; the artifact name is `playwright-axe-${{ github.sha }}`, includes `test-artifacts/`, `test-results/`, and `playwright-report/`, and has 14-day retention. The CI run produced by this evidence-only descendant is the final-HEAD artifact reference.
 
 ## Default-rule Axe matrix
 
@@ -51,6 +51,7 @@ Every row below is a separate fresh browser context per theme. Values are **crit
 | Network / Volume / Image disclosure collapsed | 0 / 0 each | 0 / 0 each |
 | Network / Volume / Image disclosure expanded | 0 / 0 each | 0 / 0 each |
 | Open CommandPalette | 0 / 0 | 0 / 0 |
+| CommandPalette empty state (no matches) | 0 / 0 | 0 / 0 |
 
 No Axe rules were disabled or excluded.
 
@@ -97,7 +98,7 @@ Operator for every row: **Hermes Agent** — Chromium keyboard-driven walkthroug
 | Diagnostics | Hermes Agent | dark + light | PASS | Literal severity/source/service/file context is present; error/blocked tones are semantic and contrast-safe. |
 | Settings | Hermes Agent | dark + light | PASS | Five selects and two URL fields have associated labels and hint descriptions; switches retain names/checked state; code is scrollable rather than clipped. |
 | NotFound | Hermes Agent | dark + light | PASS | Route exposes an `h1`; return link is usable. |
-| CommandPalette | Hermes Agent | dark + light | PASS | Combobox/listbox has no nested interactive options; background is inert; Tab AND Shift+Tab stay contained; Escape restores same-route trigger; command navigation leaves restoration to route heading focus; open dialog reflows at 800/640px. |
+| CommandPalette | Hermes Agent | dark + light | PASS | Combobox/listbox has no nested interactive options; background is inert; Tab AND Shift+Tab stay contained; Escape restores same-route trigger; command navigation leaves restoration to route heading focus; open dialog reflows at 800/640px. The no-match empty state renders a labelled `role="status"` outside the listbox and is axe-scanned in both themes. |
 
 ## Remaining risk
 
