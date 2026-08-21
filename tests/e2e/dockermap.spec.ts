@@ -287,6 +287,68 @@ test.describe("DockerMap GUI", () => {
     }
   });
 
+  test("hover impact highlighting is occurrence-safe and names the exact occurrence", async ({ page, request }) => {
+    stack = await startMockStack();
+
+    // The same duplicate-identity fixture as the renderer/browser regressions
+    // (two records share a canonical id, two share a name, one unique) is
+    // injected into the real mock stack, so the map carries the base stack's
+    // selectable nodes AND the collided occurrences.
+    const extraContainers = [
+      { id: "c_dup", name: "first", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: ["c_dup"] },
+      { id: "c_dup", name: "second", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: ["c_ok"] },
+      { id: "c_name1", name: "dup-name", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] },
+      { id: "c_name2", name: "dup-name", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] },
+      { id: "c_ok", name: "unique", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] }
+    ];
+    const baseSnapshot = (await (await request.get(`${stack.apiUrl}/api/snapshot`)).json()) as { containers: Array<{ id: string }> };
+    await page.route("**/api/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = (await response.json()) as { containers: Array<{ id: string }> };
+      const baseIds = new Set(snapshot.containers.map((container) => container.id));
+      for (const extra of extraContainers) {
+        if (!baseIds.has(extra.id)) {
+          snapshot.containers.push(extra as (typeof snapshot.containers)[number]);
+        }
+      }
+      await route.fulfill({ response, json: snapshot });
+    });
+
+    await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Service Map" })).toBeVisible();
+    const uniqueNode = page.locator("g.node", { hasText: "unique" });
+    await expect(uniqueNode).toHaveCount(1);
+
+    // F1a: hovering with NO selection highlights the hovered node (node-self)
+    // and its impact radius. The R3 occurrence-safe selection change gated
+    // roleOf on the selection key only, so every node stayed node-none until
+    // a node was clicked — the hover impact radius was gone.
+    await uniqueNode.locator("circle.node-core").hover();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(uniqueNode).toHaveClass(/node-self/);
+    await expect(page.locator(".map-impact-kind")).toContainText("unique");
+
+    // F1b: hovering a DIFFERENT node while one is selected re-centres the
+    // highlight on the hovered node. The R3 code kept comparing against the
+    // selection key, so the old selection stayed node-self while the radius
+    // described the hovered node.
+    await page.getByRole("button", { name: "postgres, healthy" }).click();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(page.locator("g.node.node-self")).toContainText("postgres");
+    await uniqueNode.locator("circle.node-core").hover();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(uniqueNode).toHaveClass(/node-self/);
+    await expect(page.locator("g.node.node-self")).not.toContainText("postgres");
+    await expect(page.locator(".map-impact-kind")).toContainText("unique");
+
+    // Hovering back onto the selected node returns the highlight — and the
+    // banner identity — to the selection (the unique-id fallback path).
+    await page.locator("g.node", { hasText: "postgres" }).locator("circle.node-core").hover();
+    await expect(page.locator("g.node.node-self")).toHaveCount(1);
+    await expect(page.locator("g.node.node-self")).toContainText("postgres");
+    await expect(page.locator(".map-impact-kind")).toContainText("postgres");
+  });
+
   test("maps a live Docker Compose fixture through the GUI @live-docker", async ({ page, request }) => {
     test.skip(!process.env.DOCKERMAP_E2E_LIVE_DOCKER, "Set DOCKERMAP_E2E_LIVE_DOCKER=1 to create live Docker fixtures.");
 

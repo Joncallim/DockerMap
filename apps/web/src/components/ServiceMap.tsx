@@ -123,14 +123,37 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
     return firstLayoutKeyForId.get(selectedId) ?? null;
   }, [selectedService, selectedId, layoutKeyByService, firstLayoutKeyForId, model.serviceIdCollisions]);
 
+  // The ACTIVE highlight is occurrence-qualified. While hovering, the ACTIVE
+  // key is the hovered node's OWN layout key — hoverable nodes are exactly
+  // the unique-id (non-collided) ones, so the first-occurrence map resolves
+  // the hovered node's key unambiguously (this restores the pre-R3 hover
+  // impact radius: hovering with no selection highlights the hovered node,
+  // and hovering a different node while one is selected re-centres the
+  // radius on it). Without a hover, the selection's occurrence key applies.
+  const activeKey = hoverId ? (firstLayoutKeyForId.get(hoverId) ?? null) : selectedKey;
   const activeId = hoverId ?? (selectedKey ? (selectedService?.id ?? selectedId) : null);
   const impact = useMemo(() => (activeId ? computeImpact(model, activeId) : null), [model, activeId]);
   const upstream = useMemo(() => new Set(impact?.upstream ?? []), [impact]);
   const downstream = useMemo(() => new Set(impact?.downstream ?? []), [impact]);
 
+  // The impact banner's IDENTITY is occurrence-qualified too: hovering names
+  // the HOVERED occurrence (only unique-id, non-collided nodes are hoverable,
+  // so the services list resolves it exactly), an exact selection occurrence
+  // names itself, and an id-only selection falls back to the collision-safe
+  // byId lookup. byId EXCLUDES collided ids, so the exact occurrence must
+  // come from the caller (selectedService) — never from a lookup that would
+  // label the highlighted node "anonymous". Semantic impact traversal
+  // (computeImpact) stays fail-closed and untouched.
+  const activeService = useMemo(() => {
+    if (hoverId) return servicesById.get(hoverId) ?? null;
+    if (selectedService) return selectedService;
+    if (!selectedId) return null;
+    return model.byId.get(selectedId) ?? null;
+  }, [hoverId, servicesById, selectedService, selectedId, model.byId]);
+
   const roleOf = (key: string, id: string): "self" | "up" | "down" | "dim" | "none" => {
-    if (!selectedKey) return "none";
-    if (key === selectedKey) return "self";
+    if (!activeKey) return "none";
+    if (key === activeKey) return "self";
     if (downstream.has(id)) return "down";
     if (upstream.has(id)) return "up";
     return "dim";
@@ -383,8 +406,8 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
       {activeId && impact && (
         <div className="map-impact">
           <span className="map-impact-kind">
-            <Icon name={KIND_ICON[model.byId.get(activeId)?.kind ?? "service"]} size={13} />
-            {identityText(model.byId.get(activeId)?.name, UNAVAILABLE_SERVICE)}
+            <Icon name={KIND_ICON[activeService?.kind ?? "service"]} size={13} />
+            {identityText(activeService?.name, UNAVAILABLE_SERVICE)}
           </span>
           <span>
             <strong>{impact.downstream.length}</strong> affected if it fails

@@ -162,6 +162,15 @@ describe("collision tags on graph nodes and runtime rows", () => {
     expect(selfSecond[0]).toContain(">second<");
     // The other duplicate occurrence is never marked selected…
     expect(selfSecond[0]).not.toContain(">first<");
+    // …and the impact banner names the EXACT occurrence too — never the byId
+    // lookup, which EXCLUDES collided ids and would label the highlighted
+    // node "anonymous" while the map highlights it.
+    const bannerOf = (html: string) => html.match(/<span class="map-impact-kind">[\s\S]*?<\/span>/)?.[0] ?? "";
+    expect(bannerOf(htmlFirst)).toContain(">first<");
+    expect(bannerOf(htmlFirst)).not.toContain(">second<");
+    expect(bannerOf(htmlSecond)).toContain(">second<");
+    expect(bannerOf(htmlSecond)).not.toContain(">first<");
+    expect(bannerOf(htmlSecond)).not.toContain("anonymous");
     // The embedded map is read-only (no interactive buttons at all); the
     // duplicate nodes' non-selectability on the INTERACTIVE map is asserted
     // by the MapScreen regression (exactly one role="button" — the unique
