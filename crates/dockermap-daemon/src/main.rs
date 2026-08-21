@@ -5038,6 +5038,11 @@ mod tests {
         RuntimeOwnershipKind, RuntimePackageAdvisory, RuntimePackageUpdate,
     };
     use std::collections::HashSet;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::UnixListener,
+    };
+    use tower::util::ServiceExt;
 
     #[test]
     fn docker_stub_log_errors_have_a_fixed_location_neutral_client_message() {
@@ -5058,6 +5063,82 @@ mod tests {
                 error.message
             );
         }
+    }
+
+    #[tokio::test]
+    async fn daemon_logs_route_redacts_hostile_bollard_error_from_into_response() {
+        let tempdir = tempfile::tempdir().expect("temporary Docker socket directory");
+        let socket_path = tempdir.path().join("docker.sock");
+        let listener = UnixListener::bind(&socket_path).expect("Docker stub should bind");
+        let hostile = "Docker stub 500: /srv/private/docker.log via 10.1.2.3:2375 token=DOCKERMAP_TEST_FAKE_SOL6_DOCKER_ERROR_SECRET\u{202e}\u{001b}\u{200b}";
+        let response_body = serde_json::json!({ "message": hostile }).to_string();
+
+        let stub = tokio::spawn(async move {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("Docker request should arrive");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream
+                    .read(&mut chunk)
+                    .await
+                    .expect("Docker request should be readable");
+                assert!(read > 0, "Docker client should send request headers");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("Docker stub response should be written");
+        });
+
+        let mut cache = DaemonCache::mock();
+        cache.health.docker_reachable = true;
+        let state = AppState {
+            cache: Arc::new(RwLock::new(cache)),
+            docker: Arc::new(RwLock::new(Some(DockerCollector {
+                client: Docker::connect_with_unix(
+                    socket_path.to_str().expect("socket path should be UTF-8"),
+                    2,
+                    bollard::API_DEFAULT_VERSION,
+                )
+                .expect("Bollard should connect to the Unix stub"),
+                label_filter: None,
+            }))),
+            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
+        };
+
+        let response = daemon_router(state, DaemonAuthToken(None))
+            .oneshot(
+                Request::builder()
+                    .uri("/daemon/logs?service=api")
+                    .body(axum::body::Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("daemon router should respond");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("ApiError response body should be readable");
+        let published = String::from_utf8(body.to_vec()).expect("response should be UTF-8 JSON");
+        assert!(published.contains("Docker log collection failed"));
+        assert!(!published.contains("/srv/private/docker.log"));
+        assert!(!published.contains("10.1.2.3:2375"));
+        assert!(!published.contains("DOCKERMAP_TEST_FAKE_SOL6_DOCKER_ERROR_SECRET"));
+        assert!(!published.chars().any(|character| {
+            let code = character as u32;
+            code <= 0x1f || (0x7f..=0x9f).contains(&code) || (0x200b..=0x202e).contains(&code)
+        }));
+
+        stub.await.expect("Docker stub should finish");
     }
 
     #[tokio::test]
