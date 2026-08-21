@@ -4,7 +4,7 @@ import { useApp } from "../context";
 import Icon from "../components/Icon";
 import { EmptyState, ErrorState, KeyValue, Loading, Panel, StateDot, Tag } from "../components/primitives";
 import { IdentityRef } from "../components/identity";
-import { UNAVAILABLE_CONTAINER } from "../lib/identity";
+import { UNAVAILABLE_CONTAINER, UNAVAILABLE_NETWORK_ID } from "../lib/identity";
 
 export default function NetworkDetail({ defaultOpen = false }: { defaultOpen?: boolean }) {
   const { name = "" } = useParams();
@@ -19,10 +19,10 @@ export default function NetworkDetail({ defaultOpen = false }: { defaultOpen?: b
   const resolved = network.members.filter((member) => member !== "" && model.byName.has(member)).length;
   const internalsId = "network-internals";
   return <div className="screen">
-    <header className="screen-head detail-head"><div className="detail-id"><span className="detail-kind"><Icon name="network" size={18} /></span><div><div className="eyebrow">Docker network</div><h1 className="screen-title">{network.name}</h1></div><Tag tone="muted">{network.driver}</Tag><Tag tone={network.internal ? "warn" : "accent"}>{network.internal ? "internal" : "externally reachable"}</Tag></div><Link className="ghost-link" to="/networking">Back to Networking</Link></header>
+    <header className="screen-head detail-head"><div className="detail-id"><span className="detail-kind"><Icon name="network" size={18} /></span><div><div className="eyebrow">Docker network</div><h1 className="screen-title">{network.name}</h1></div><Tag tone="muted">{network.driver}</Tag><Tag tone={network.internal ? "warn" : "accent"}>{network.internal ? "internal" : "not internal"}</Tag></div><Link className="ghost-link" to="/networking">Back to Networking</Link></header>
     <div className="impact-band wide"><Count value={network.members.length} label="members" /><Count value={resolved} label="resolved members" /><Count value={network.members.length - resolved} label="unresolved members" /><Count value={network.internal ? "Yes" : "No"} label="internal" /></div>
     <div className="grid-2"><Panel title="Overview" icon="network"><KeyValue label="Name" value={network.name} mono /><KeyValue label="Driver" value={network.driver} /><KeyValue label="Internal" value={network.internal ? "Yes" : "No"} /><KeyValue label="Connected containers" value={network.members.length} /></Panel><Panel title="Connected containers" icon="service"><Members members={network.members} /></Panel></div>
-    <Panel title="Network internals" icon="layers" hint="Shown on request" actions={<button type="button" className="ghost-link" aria-expanded={showInternals} aria-controls={internalsId} onClick={() => setShowInternals((value) => !value)}>{showInternals ? "Hide" : "Show"} <Icon name={showInternals ? "up" : "down"} size={13} /></button>}><div id={internalsId}>{showInternals ? <KeyValue label="Network ID" value={network.id} mono /> : <p className="muted-line">Network IDs are hidden until you ask for them.</p>}</div></Panel>
+    <Panel title="Network internals" icon="layers" hint="Shown on request" actions={<button type="button" className="ghost-link" aria-expanded={showInternals} aria-controls={internalsId} onClick={() => setShowInternals((value) => !value)}>{showInternals ? "Hide" : "Show"} <Icon name={showInternals ? "up" : "down"} size={13} /></button>}><div id={internalsId}>{showInternals ? <KeyValue label="Network ID" value={network.id === "" ? UNAVAILABLE_NETWORK_ID : network.id} mono /> : <p className="muted-line">Network IDs are hidden until you ask for them.</p>}</div></Panel>
   </div>;
 }
 function Count({ value, label }: { value: string | number; label: string }) { return <div className="impact-cell"><strong>{value}</strong><span>{label}</span></div>; }

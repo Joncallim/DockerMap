@@ -20,7 +20,9 @@ const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUp
  * service image/network ref, and an empty-name container (which puts the ""
  * key into byName so the resolved-count guard must exclude it). Empty strings
  * must stay VISIBLY RENDERABLE as "Unavailable …" plain text and never emit a
- * link.
+ * link. Also carries empty-ID records (network/volume/container), an empty
+ * mount source vs an empty volume ID (must NOT match), an empty mount target,
+ * and duplicate empty mount IDs on one service.
  */
 const fixture: DockerSnapshot = {
   containers: [
@@ -32,7 +34,11 @@ const fixture: DockerSnapshot = {
       role: "web",
       networks: [],
       ports: [],
-      mounts: [{ id: "m1", kind: "named_volume", source: "vol1", target: "/data", readOnly: false }],
+      mounts: [
+        { id: "m1", kind: "named_volume", source: "vol1", target: "/data", readOnly: false },
+        { id: "m_empty_src", kind: "named_volume", source: "", target: "/emptysrc", readOnly: false },
+        { id: "m_empty_target", kind: "named_volume", source: "vol1", target: "", readOnly: false }
+      ],
       dependsOn: []
     },
     {
@@ -54,7 +60,10 @@ const fixture: DockerSnapshot = {
       role: "worker",
       networks: [""],
       ports: [],
-      mounts: [],
+      mounts: [
+        { id: "", kind: "named_volume", source: "vol1", target: "/dup-a", readOnly: false },
+        { id: "", kind: "named_volume", source: "vol1", target: "/dup-b", readOnly: false }
+      ],
       dependsOn: []
     },
     {
@@ -66,9 +75,20 @@ const fixture: DockerSnapshot = {
       networks: ["", "", "bridge1", "bridge1"],
       ports: [],
       mounts: [
-        { id: "m_empty", kind: "named_volume", source: "", target: "/data", readOnly: false },
+        { id: "m_empty", kind: "named_volume", source: "", target: "", readOnly: false },
         { id: "m_anon", kind: "named_volume", source: null, target: "/anon", readOnly: false }
       ],
+      dependsOn: []
+    },
+    {
+      id: "",
+      name: "no-id-svc",
+      image: "",
+      status: "running",
+      role: "worker",
+      networks: [],
+      ports: [],
+      mounts: [],
       dependsOn: []
     }
   ],
@@ -76,8 +96,14 @@ const fixture: DockerSnapshot = {
     { image: "nginx:1", containers: ["", "app"], status: "running" },
     { image: "", containers: [""], status: "" }
   ],
-  networks: [{ id: "net1", name: "bridge1", driver: "bridge", internal: false, members: ["", "app"] }],
-  volumes: [{ id: "vol1", name: "vol1", attachedTo: ["", "app"] }],
+  networks: [
+    { id: "net1", name: "bridge1", driver: "bridge", internal: false, members: ["", "app"] },
+    { id: "", name: "empty-net", driver: "bridge", internal: true, members: [] }
+  ],
+  volumes: [
+    { id: "vol1", name: "vol1", attachedTo: ["", "app"] },
+    { id: "", name: "empty-vol", attachedTo: ["app"] }
+  ],
   lastUpdated: 0
 };
 
@@ -118,6 +144,9 @@ describe("detail surfaces keep empty identities visible and non-routable", () =>
     // byName carries the "" key (empty-name container), but the resolved count
     // must exclude the empty member identity: members ["", "app"] → 1 resolved.
     expect(html).toContain("<strong>1</strong><span>resolved members</span>");
+    // internal === false is labeled literally; nothing asserts exposure.
+    expect(html).toContain("not internal");
+    expect(html).not.toContain("externally reachable");
   });
 
   it("VolumeDetail renders an empty consumer as plain fallback text without a link", () => {
@@ -125,8 +154,23 @@ describe("detail surfaces keep empty identities visible and non-routable", () =>
     expect(html).toContain("Unavailable container name");
     expect(html).toContain("Mount details unavailable in this snapshot");
     expect(html).toContain('href="/services/app"');
-    // ConsumerList (app) + mount row (app) = 2; the empty consumer never links.
-    expect(countLinks(html)).toBe(2);
+    // A matched mount with an empty target renders the explicit fallback.
+    expect(html).toContain("Unavailable mount target");
+    // ConsumerList (app) + 2 matched mount rows (m1, m_empty_target) = 3; the
+    // empty consumer and the unmatched empty-source mount never link.
+    expect(countLinks(html)).toBe(3);
+  });
+
+  it("VolumeDetail never matches an empty mount source against an empty volume ID", () => {
+    const html = renderScreen("/volumes/empty-vol", "/volumes/:name", <VolumeDetail defaultOpen />);
+    // app's empty-source mount (target /emptysrc) must NOT match empty-vol's
+    // empty ID: "" === "" would have inflated both counts before the guard.
+    expect(html).toContain("Mount details unavailable in this snapshot");
+    expect(html).toContain("<strong>0</strong><span>read-only mounts</span>");
+    expect(html).toContain("<strong>0</strong><span>read-write mounts</span>");
+    expect(html).not.toContain("emptysrc");
+    // The expanded internals show an explicit placeholder for the empty ID.
+    expect(html).toContain("Unavailable volume ID");
   });
 
   it("ImageDetail renders an empty consumer as plain fallback text without a link", () => {
@@ -134,6 +178,10 @@ describe("detail surfaces keep empty identities visible and non-routable", () =>
     expect(html).toContain("Unavailable container name");
     expect(html).toContain('href="/services/app"');
     expect(countLinks(html)).toBe(1);
+    // derive_images keeps the FIRST consumer's status — label it as a sample,
+    // never as an image-wide aggregate.
+    expect(html).toContain("Sample consumer status");
+    expect(html).not.toContain("Raw aggregate status");
   });
 
   it("Images renders an empty consumer chip and empty image row as fallback text without links", () => {
@@ -167,6 +215,8 @@ describe("detail surfaces keep empty identities visible and non-routable", () =>
     // Empty named-volume source renders the volume placeholder; null stays "anonymous".
     expect(html).toContain("Unavailable volume name");
     expect(html).toContain("<code>anonymous</code>");
+    // An empty mount target renders the explicit fallback, never an empty <code>.
+    expect(html).toContain("<code>Unavailable mount target</code>");
     // Duplicate empty networks each render their own placeholder…
     expect(html.split("Unavailable network name").length - 1).toBe(2);
     // …and duplicate resolved networks each emit their own link (occurrence-qualified keys).
@@ -174,6 +224,16 @@ describe("detail surfaces keep empty identities visible and non-routable", () =>
     // Empty identities never emit detail links.
     expect(html).not.toContain('href="/volumes/');
     expect(html).not.toContain('href="/images/');
+  });
+
+  it("ServiceDetail Overview maps each network identity independently before joining", () => {
+    const html = renderScreen("/services/config-svc", "/services/:name", <ServiceDetail />);
+    // Per-entry mapping preserves duplicate empties and mixed identities;
+    // a raw join would have collapsed this to ", , bridge1, bridge1".
+    expect(html).toContain("Unavailable network name, Unavailable network name, bridge1, bridge1");
+    // The em dash is reserved for a genuinely empty array.
+    const none = renderScreen("/services/app", "/services/:name", <ServiceDetail />);
+    expect(none).toContain('<span class="kv-value">—</span>');
   });
 
   it("Map renders the empty-image/empty-network service as non-routable placeholder chips", () => {
@@ -184,6 +244,9 @@ describe("detail surfaces keep empty identities visible and non-routable", () =>
     // Neither the empty image ref nor the empty network ref may link.
     expect(html).not.toContain('href="/images/');
     expect(html).not.toContain('href="/networks/');
+    // Duplicate resolved mounts with duplicate EMPTY ids both render — the
+    // occurrence-qualified key keeps reconciliation stable.
+    expect(html.split('href="/volumes/vol1"').length - 1).toBe(2);
   });
 });
 
@@ -196,6 +259,13 @@ describe("disclosure aria-controls targets stay mounted in both states", () => {
     const expanded = renderScreen("/networks/bridge1", "/networks/:name", <NetworkDetail defaultOpen />);
     expect(expanded).toContain('id="network-internals"');
     expect(expanded).toContain('<span class="kv-label">Network ID</span>');
+  });
+
+  it("NetworkDetail renders an unavailable-ID placeholder when the network ID is empty", () => {
+    const expanded = renderScreen("/networks/empty-net", "/networks/:name", <NetworkDetail defaultOpen />);
+    expect(expanded).toContain('id="network-internals"');
+    expect(expanded).toContain('<span class="kv-label">Network ID</span>');
+    expect(expanded).toContain("Unavailable network ID");
   });
 
   it("VolumeDetail keeps the internals id mounted collapsed and expanded", () => {
@@ -211,7 +281,7 @@ describe("disclosure aria-controls targets stay mounted in both states", () => {
   it("ImageDetail keeps the internals id mounted collapsed and expanded", () => {
     const collapsed = renderScreen("/images/nginx:1", "/images/:image", <ImageDetail />);
     expect(collapsed).toContain('id="image-internals"');
-    expect(collapsed).toContain("Exact image references and raw status are hidden until you ask for them.");
+    expect(collapsed).toContain("Exact image references and sample consumer status are hidden until you ask for them.");
 
     const expanded = renderScreen("/images/nginx:1", "/images/:image", <ImageDetail defaultOpen />);
     expect(expanded).toContain('id="image-internals"');
@@ -229,5 +299,12 @@ describe("disclosure aria-controls targets stay mounted in both states", () => {
     // The expanded exact-image field renders the empty image as a placeholder, never a link.
     expect(expanded).toContain("Unavailable image reference");
     expect(expanded).not.toContain('href="/images/');
+  });
+
+  it("ServiceDetail internals render an unavailable-ID placeholder when the container ID is empty", () => {
+    const expanded = renderScreen("/services/no-id-svc", "/services/:name", <ServiceDetail defaultTab="config" defaultOpen />);
+    expect(expanded).toContain('id="service-internals"');
+    expect(expanded).toContain('<span class="kv-label">Container ID</span>');
+    expect(expanded).toContain("Unavailable container ID");
   });
 });

@@ -9,7 +9,7 @@ import { formatKbps, formatMb, formatPercent, formatRelative } from "../lib/form
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { IdentityRef } from "../components/identity";
-import { UNAVAILABLE_IMAGE, UNAVAILABLE_NETWORK, UNAVAILABLE_VOLUME } from "../lib/identity";
+import { UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_VOLUME } from "../lib/identity";
 import { Bar, EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, Sparkline, StatePill, StateDot, Tag } from "../components/primitives";
 
 type Tab = "overview" | "dependencies" | "resources" | "logs" | "config";
@@ -105,6 +105,10 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
 }
 
 function Overview({ service, model }: { service: Service; model: NonNullable<ReturnType<typeof useApp>["model"]> }) {
+  // Per-entry mapping preserves duplicate/empty network identities (unlike a
+  // raw join, which collapses ["", "bridge1"] to ", bridge1"); the em dash is
+  // reserved for a genuinely empty array.
+  const networksLabel = service.networks.length === 0 ? "—" : service.networks.map((network) => (network === "" ? UNAVAILABLE_NETWORK : network)).join(", ");
   return (
     <div className="grid-2">
       <Panel title="At a glance" icon="service">
@@ -112,7 +116,7 @@ function Overview({ service, model }: { service: Service; model: NonNullable<Ret
         <KeyValue label="Raw status" value={service.status} mono />
         <KeyValue label="Image" value={<IdentityRef name={service.image} fallback={UNAVAILABLE_IMAGE} to={model.imageByRef.has(service.image) ? `/images/${encodeURIComponent(service.image)}` : undefined} className="entity-detail-link" />} mono />
         <KeyValue label="Role" value={service.role} />
-        <KeyValue label="Networks" value={service.networks.join(", ") || "—"} />
+        <KeyValue label="Networks" value={networksLabel} />
       </Panel>
       <Panel title="Relationships" icon="link" actions={<Link className="ghost-link" to="/map">Trace</Link>}>
         <ServiceMap model={model} selectedId={service.id} onSelect={() => {}} interactive={false} height={240} />
@@ -221,7 +225,7 @@ function Config({
                 <Tag tone="muted">{m.kind.replace("_", " ")}</Tag>
                 {m.kind === "named_volume" && m.source && model.volumeByName.has(m.source) ? <Link className="entity-detail-link" to={`/volumes/${encodeURIComponent(m.source)}`}>{m.source}</Link> : <code>{m.source === "" ? UNAVAILABLE_VOLUME : m.source ?? "anonymous"}</code>}
                 <Icon name="arrow" size={13} />
-                <code>{m.target}</code>
+                <code>{m.target === "" ? UNAVAILABLE_MOUNT_TARGET : m.target}</code>
                 {m.readOnly && <Tag tone="warn">read-only</Tag>}
               </li>
             ))}
@@ -255,7 +259,7 @@ function Config({
         <div id="service-internals">
           {showInternals ? (
             <>
-              <KeyValue label="Container ID" value={service.id} mono />
+              <KeyValue label="Container ID" value={service.id === "" ? UNAVAILABLE_CONTAINER_ID : service.id} mono />
               <KeyValue label="Image reference" value={<IdentityRef name={service.image} fallback={UNAVAILABLE_IMAGE} to={model.imageByRef.has(service.image) ? `/images/${encodeURIComponent(service.image)}` : undefined} className="entity-detail-link" />} mono />
               <KeyValue label="Raw status" value={service.status} mono />
               <KeyValue label="Port bindings" value={service.ports.join(", ") || "none"} mono />
