@@ -52,6 +52,11 @@ const authNameHeader = readHeaderName(process.env.DOCKERMAP_AUTH_NAME_HEADER, "x
 const authEmailHeader = readHeaderName(process.env.DOCKERMAP_AUTH_EMAIL_HEADER, "x-remote-email");
 const authGroupsHeader = readHeaderName(process.env.DOCKERMAP_AUTH_GROUPS_HEADER, "x-remote-groups");
 const authRequired = process.env.DOCKERMAP_AUTH_REQUIRED === "true";
+const authMode: "none" | "bearer" | "forward-auth" = authRequired
+  ? "forward-auth"
+  : apiToken
+    ? "bearer"
+    : "none";
 const maxQueryLength = 256;
 const maxContainerNameLength = 128;
 const maxComposeFiles = 8;
@@ -163,27 +168,22 @@ function isPublicRoute(req: express.Request) {
   return req.method === "OPTIONS";
 }
 
-function requireBearerToken(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (!apiToken || isPublicRoute(req)) {
+function requireAuthentication(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (isPublicRoute(req) || authMode === "none") {
     next();
     return;
   }
 
-  const [scheme, token = ""] = (req.get("authorization") ?? "").split(/\s+/, 2);
-  if (scheme !== "Bearer" || !tokenMatches(token, apiToken)) {
+  if (authMode === "bearer") {
+    const [scheme, token = ""] = (req.get("authorization") ?? "").split(/\s+/, 2);
+    if (scheme === "Bearer" && apiToken && tokenMatches(token, apiToken)) {
+      next();
+      return;
+    }
     res.status(401).json({
       code: "unauthorized",
       message: "A valid Bearer token is required for this DockerMap API route"
     } satisfies ApiError);
-    return;
-  }
-
-  next();
-}
-
-function requireForwardAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (!authRequired || isPublicRoute(req)) {
-    next();
     return;
   }
 
@@ -214,6 +214,9 @@ app.use(
     optionsSuccessStatus: 204
   }),
 );
+// Auth precedes body parsing so unauthenticated callers cannot observe or
+// consume parser work; OPTIONS remains exempt inside requireAuthentication.
+app.use(requireAuthentication);
 app.use(express.json({ limit: "16kb" }));
 
 // Minimal redacted access log: method, pathname (never query strings, which
@@ -227,9 +230,6 @@ app.use((req, res, next) => {
   });
   next();
 });
-
-app.use(requireBearerToken);
-app.use(requireForwardAuth);
 
 // Versioned alias: /api/v1/* maps to the same read-only /api/* surface so
 // consumers can pin a version. Authentication and CORS behave identically.
@@ -507,6 +507,22 @@ function getMockResponse<T>(path: string): T {
 function sendError(res: express.Response, error: unknown) {
   if (error instanceof HttpError) {
     res.status(error.status).json(publishApiPayload(error.body));
+    return;
+  }
+
+  if (error instanceof SyntaxError && "body" in error) {
+    res.status(400).json({
+      code: "invalid_json",
+      message: "Request body is invalid"
+    } satisfies ApiError);
+    return;
+  }
+
+  if (typeof error === "object" && error !== null && "type" in error && (error as { type?: string }).type === "entity.too.large") {
+    res.status(413).json({
+      code: "payload_too_large",
+      message: "Request body is too large"
+    } satisfies ApiError);
     return;
   }
 
