@@ -202,6 +202,32 @@ test("session login attempts are rate-limited and redacted failures are logged b
   assert.doesNotMatch(logs, new RegExp(escapeRegExp(sentinel)));
 });
 
+test("trailing-slash session aliases remain public and rate-limited", async () => {
+  for (const path of ["/api/auth/session/", "/api/v1/auth/session/"]) {
+    const api = await startApi({
+      DOCKERMAP_ALLOW_MOCK: "true",
+      DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${await freePort()}`,
+      DOCKERMAP_API_TOKEN: "test-token"
+    });
+    const publicExchange = await request(api, path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "test-token" })
+    });
+    assert.equal(publicExchange.status, 204, path);
+    for (let attempt = 0; attempt < 19; attempt += 1) {
+      const failed = await request(api, path, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: "wrong-token" })
+      });
+      assert.equal(failed.status, 401, path);
+    }
+    const limited = await request(api, path, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: "wrong-token" })
+    });
+    assert.equal(limited.status, 429, path);
+  }
+});
+
 test("logging out closes cookie-authenticated SSE streams before another event", async () => {
   const api = await startApi({
     DOCKERMAP_ALLOW_MOCK: "true",
@@ -349,6 +375,19 @@ test("route manifest completeness rejects a planted direct registration", async 
   assert.match(result.error, /Live routes missing from manifest: GET \/api\/outside-manifest/);
 });
 
+test("route manifest completeness rejects every untracked response-capable layer", async () => {
+  const mutations = [
+    'app.use("/api/outside-path", (_req, res) => res.status(204).end());',
+    'app.use((_req, res, next) => process.env.DOCKERMAP_TEST_CONDITION === "respond" ? res.status(204).end() : next());',
+    'const router = express.Router(); router.get("/outside-mounted", (_req, res) => res.status(204).end()); app.use("/api", router);',
+    'app.use("/api/outside-preauth", (_req, res) => res.status(204).end()); const planted = app._router.stack.pop(); app._router.stack.splice(app._router.stack.findIndex((layer) => layer.handle?.name === "limitSessionAttempts"), 0, planted);'
+  ];
+  for (const mutation of mutations) {
+    const result = await inspectLiveRoutes(mutation);
+    assert.match(result.error, /Unknown Express layer|Live routes missing from manifest/, mutation);
+  }
+});
+
 test("every manifest route resolves its declared authentication and rate-limit policy", () => {
   for (const route of ROUTE_MANIFEST) {
     for (const routePath of route.paths) {
@@ -360,6 +399,15 @@ test("every manifest route resolves its declared authentication and rate-limit p
     }
   }
   assert.equal(routePolicyForRequest("OPTIONS", "/api/snapshot"), undefined, "OPTIONS stays outside route policy");
+});
+
+test("manifest policy resolution mirrors Express non-strict trailing slash routing", () => {
+  for (const path of ["/api/auth/session/", "/api/v1/auth/session/"]) {
+    assert.deepEqual(routePolicyForRequest("POST", path), { auth: "public-in-bearer", rateLimit: "session-attempts" }, path);
+  }
+  for (const path of ["/api/auth/session//", "/api/auth%2fsession/", "/api/v1/auth%2fsession/"]) {
+    assert.equal(routePolicyForRequest("POST", path), undefined, path);
+  }
 });
 
 test("session cookies are Secure for HTTPS forwarded requests", async () => {
@@ -1415,12 +1463,14 @@ test("SSE error payloads and invalid log service names cannot reflect hostile in
 async function inspectLiveRoutes(mutation = "") {
   const port = await freePort();
   const script = `
+    import express from "./apps/api/node_modules/express/lib/express.js";
     import { app, registeredRoutes } from "./apps/api/src/index.ts";
     import { assertRouteManifestComplete } from "./apps/api/src/routes.ts";
     ${mutation}
+    let routes = [];
     let error = "";
-    try { assertRouteManifestComplete(registeredRoutes(app)); } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
-    console.log("ROUTE_CHECK=" + JSON.stringify({ routes: registeredRoutes(app), error }));
+    try { routes = registeredRoutes(app); assertRouteManifestComplete(routes); } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+    console.log("ROUTE_CHECK=" + JSON.stringify({ routes, error }));
     process.exit(0);
   `;
   const child = spawn(process.execPath, ["node_modules/.bin/tsx", "--eval", script], {

@@ -72,9 +72,13 @@ export function routeById(id: RouteId) {
 function matchesPathTemplate(path: string, template: string) {
   const pathParts = path.split("/");
   const templateParts = template.split("/");
-  return pathParts.length === templateParts.length && templateParts.every(
+  const exactMatch = pathParts.length === templateParts.length && templateParts.every(
     (part, index) => part.startsWith(":") || part === pathParts[index]
   );
+  // Express uses non-strict routing by default: a route without a trailing
+  // slash also accepts exactly one trailing slash, but it does not collapse
+  // double slashes or encoded separators.
+  return exactMatch || (!template.endsWith("/") && path === `${template}/`);
 }
 
 export function routeForRequest(method: string, path: string) {
@@ -89,6 +93,11 @@ export function routePolicyForRequest(method: string, path: string) {
 }
 
 export function canonicalRoutePath(path: string) {
+  for (const route of ROUTE_MANIFEST) {
+    for (const routePath of route.paths) {
+      if (path === routePath.path) return routePath.canonicalPath;
+    }
+  }
   for (const route of ROUTE_MANIFEST) {
     for (const routePath of route.paths) {
       if (matchesPathTemplate(path, routePath.path)) return routePath.canonicalPath;
