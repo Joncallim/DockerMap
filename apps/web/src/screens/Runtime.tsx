@@ -78,6 +78,18 @@ export default function RuntimeScreen() {
   const selectedDetail = resolveDockerDetail(model, selected);
   const selectedImage = selected?.provider === "docker" && selected.type === "container" && typeof selected.metadata.image === "string" && selected.metadata.image !== "" ? model.imageByRef.get(selected.metadata.image) ?? null : null;
 
+  /**
+   * Shared selection handler for node-list buttons AND inspector relation
+   * buttons: after the inspector updates, focus moves to the corresponding
+   * persistent runtime-node button so keyboard users never lose their place
+   * (clicking a relation removes the focused relation button; without this,
+   * focus would fall to BODY).
+   */
+  const selectNode = (id: string) => {
+    setSelectedId(id);
+    window.requestAnimationFrame(() => nodeRefs.current.get(id)?.focus());
+  };
+
   return (
     <div className="screen map-screen">
       <header className="screen-head">
@@ -180,15 +192,19 @@ export default function RuntimeScreen() {
               <ul className="runtime-node-list">
                 {filteredNodes.map((node, index) => {
                   const selectable = runtime.byId.has(node.id);
+                  // Duplicate runtime ids (redaction-collided) stay visible
+                  // with the collision tag/hint but are never selectable.
+                  const collided = runtime.idCollisions.has(node.id);
                   const content = <>
                     <span className="runtime-node-main">
                       <Icon name={PROVIDER_ICON[node.provider]} size={15} />
                       <span className="runtime-node-copy">
-                        <span className="runtime-node-label">{identityText(node.label, UNAVAILABLE_RUNTIME_NODE)}</span>
+                        <span className={`runtime-node-label${collided ? " collision-identity" : ""}`} title={collided ? COLLISION_HINT : undefined}>{identityText(node.label, UNAVAILABLE_RUNTIME_NODE)}</span>
                         <span className="runtime-node-meta">{node.provider} · {node.type.replaceAll("_", " ")} · {LAYER_LABEL[node.layer]}</span>
                       </span>
                     </span>
                     <StatePill state={node.state} />
+                    {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
                   </>;
                   return (
                     <li key={`${node.id}-${index}`}>
@@ -197,8 +213,8 @@ export default function RuntimeScreen() {
                         className={`runtime-node-btn${selected?.id === node.id ? " is-active" : ""}`}
                         aria-pressed={selected?.id === node.id}
                         ref={(element) => { if (element) nodeRefs.current.set(node.id, element); }}
-                        onClick={() => setSelectedId(node.id)}
-                      >{content}</button> : <div className="runtime-node-btn runtime-node-unresolved" aria-label={`${identityText(node.label, UNAVAILABLE_RUNTIME_NODE)} is unavailable for selection`}>{content}</div>}
+                        onClick={() => selectNode(node.id)}
+                      >{content}</button> : <div className="runtime-node-btn runtime-node-unresolved" aria-label={`${identityText(node.label, UNAVAILABLE_RUNTIME_NODE)} is unavailable for selection${collided ? ` (${COLLISION_HINT})` : ""}`}>{content}</div>}
                     </li>
                   );
                 })}
@@ -276,8 +292,8 @@ export default function RuntimeScreen() {
                 </div>
               )}
 
-              <RelationList title="Outgoing relationships" selected={selected} model={model} edges={selected.outgoing} direction="outgoing" onSelect={setSelectedId} />
-              <RelationList title="Incoming relationships" selected={selected} model={model} edges={selected.incoming} direction="incoming" onSelect={setSelectedId} />
+              <RelationList title="Outgoing relationships" selected={selected} model={model} edges={selected.outgoing} direction="outgoing" onSelect={selectNode} />
+              <RelationList title="Incoming relationships" selected={selected} model={model} edges={selected.incoming} direction="incoming" onSelect={selectNode} />
 
               {selected.service?.logs.length ? (
                 <div className="inspector-section">

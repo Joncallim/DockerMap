@@ -46,14 +46,14 @@ export default function Changes() {
         ) : (
           <ol className="timeline">
             {filtered.map((event, index) => {
-              const routable = model?.byName.has(event.serviceName);
+              const routable = event.routeName !== null;
               return <li key={`${event.id}-${index}`} className={`timeline-row k-${event.kind}`}>
                 <span className="timeline-marker" aria-hidden="true">
                   <Icon name={iconForKind(event.kind)} size={13} />
                 </span>
                 <div className="timeline-body">
                   <div className="timeline-top">
-                    {routable ? <Link className="timeline-title" to={`/services/${encodeURIComponent(event.serviceName)}`}>{event.summary}</Link> : <span className="timeline-title">{event.summary}</span>}
+                    {routable ? <Link className="timeline-title" to={`/services/${encodeURIComponent(event.routeName!)}`}>{event.summary}</Link> : <span className="timeline-title">{event.summary}</span>}
                     <span className="timeline-time">{formatRelative(event.at)}</span>
                   </div>
                   {event.detail && <p className="timeline-detail">{event.detail}</p>}

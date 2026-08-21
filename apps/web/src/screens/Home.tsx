@@ -123,9 +123,15 @@ export default function Home() {
                 {changes.map((c, index) => (
                   <li key={`${c.id}-${index}`} className="feed-row">
                     <span className={`feed-kind k-${c.kind}`}>{c.kind.replace("_", " ")}</span>
-                    <Link className="feed-text" to={`/services/${encodeURIComponent(c.serviceName)}`}>
-                      {c.summary}
-                    </Link>
+                    {c.routeName !== null ? (
+                      <Link className="feed-text" to={`/services/${encodeURIComponent(c.routeName)}`}>
+                        {c.summary}
+                      </Link>
+                    ) : (
+                      // Empty/collided identity: the summary stays visible as
+                      // plain non-routable text (never a /services/ link).
+                      <span className="feed-text">{c.summary}</span>
+                    )}
                     <span className="feed-time">{formatRelative(c.at)}</span>
                   </li>
                 ))}

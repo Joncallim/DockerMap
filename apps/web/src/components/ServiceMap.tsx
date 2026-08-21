@@ -12,7 +12,7 @@ import { computeImpact, type Service, type SystemModel } from "../lib/model";
 import { layoutServices } from "../lib/layout";
 import Icon, { KIND_ICON } from "./Icon";
 import { StateDot } from "./primitives";
-import { identityText, UNAVAILABLE_NETWORK, UNAVAILABLE_SERVICE } from "../lib/identity";
+import { identityText, COLLISION_HINT, COLLISION_TAG, UNAVAILABLE_NETWORK, UNAVAILABLE_SERVICE } from "../lib/identity";
 
 const VIEW = 240;
 const PAD = 26;
@@ -34,9 +34,16 @@ export interface ServiceMapProps {
   filter?: (service: Service) => boolean;
   height?: number;
   focusNodeId?: string | null;
+  /**
+   * Monotonic focus-request token: paired with `focusNodeId`, it lets the
+   * parent re-request focus on the SAME node (e.g. clearing the selection a
+   * second time) — the effect dependency changes even when the node id does
+   * not, so the focus call runs again.
+   */
+  focusToken?: number;
 }
 
-export default function ServiceMap({ model, selectedId, onSelect, interactive = true, filter, height, focusNodeId }: ServiceMapProps) {
+export default function ServiceMap({ model, selectedId, onSelect, interactive = true, filter, height, focusNodeId, focusToken }: ServiceMapProps) {
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [transform, setTransform] = useState<Transform>({ k: 1, x: 0, y: 0 });
   const [hiddenNetworks, setHiddenNetworks] = useState<Set<string>>(() => new Set());
@@ -90,17 +97,30 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
 
   const visible = new Set(services.filter((service) => model.byId.has(service.id)).map((service) => service.id));
   const relationshipSummary = useMemo(() => {
-    if (model.relationships.length === 0) return "No service relationships are recorded.";
-    return model.relationships.map((relationship) => {
+    const parts: string[] = [];
+    if (model.relationships.length === 0) parts.push("No service relationships are recorded.");
+    else parts.push(model.relationships.map((relationship) => {
       const from = model.byId.get(relationship.from);
       const to = model.byId.get(relationship.to);
       return `${identityText(from?.name, UNAVAILABLE_SERVICE)} depends on ${identityText(to?.name, UNAVAILABLE_SERVICE)}.`;
-    }).join(" ");
+    }).join(" "));
+    // Collided occurrences (duplicate ids/names after redaction) are visible
+    // on the graph but noninteractive; the text alternative names them so
+    // screen-reader users get the same "collision" context sighted users see.
+    const collidedNames = [...new Set(
+      model.services
+        .filter((service) => model.serviceIdCollisions.has(service.id) || model.serviceNameCollisions.has(service.name))
+        .map((service) => identityText(service.name, UNAVAILABLE_SERVICE))
+    )];
+    if (collidedNames.length > 0) {
+      parts.push(`Identity collision: ${collidedNames.join(", ")} — multiple records share this identity, so selection and detail routing are unavailable.`);
+    }
+    return parts.join(" ");
   }, [model]);
 
   useEffect(() => {
     if (focusNodeId) nodeRefs.current.get(focusNodeId)?.focus();
-  }, [focusNodeId]);
+  }, [focusNodeId, focusToken]);
 
   const edgePoints = (from: { x: number; y: number }, to: { x: number; y: number }) => {
     const dx = to.x - from.x;
@@ -238,11 +258,15 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
           {services.map((service, serviceIndex) => {
             const p = place(service.id);
             const role = roleOf(service.id);
-            const selectable = interactive && model.byId.has(service.id);
+            // Collided occurrences (duplicate service id OR duplicate name
+            // after redaction) stay visible but are never interactive: no
+            // selection can be made without pointing at the wrong record.
+            const collided = model.serviceIdCollisions.has(service.id) || model.serviceNameCollisions.has(service.name);
+            const selectable = interactive && !collided && model.byId.has(service.id);
             return (
               <g
                 key={`${service.id}-${serviceIndex}`}
-                className={`node${selectable ? " node-interactive" : ""} node-${role} s-${service.state}`}
+                className={`node${selectable ? " node-interactive" : ""} node-${role} s-${service.state}${collided ? " node-collided" : ""}`}
                 transform={`translate(${p.x} ${p.y})`}
                 ref={(element) => {
                   if (element && selectable) nodeRefs.current.set(service.id, element);
@@ -266,6 +290,12 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
                 <text className="node-label" y={20} textAnchor="middle">
                   {identityText(service.name, UNAVAILABLE_SERVICE)}
                 </text>
+                {collided && (
+                  <>
+                    <title>{COLLISION_HINT}</title>
+                    <text className="node-collision-tag" y={30} textAnchor="middle">{COLLISION_TAG}</text>
+                  </>
+                )}
               </g>
             );
           })}

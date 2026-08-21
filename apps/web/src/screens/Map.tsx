@@ -1,7 +1,7 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../context";
-import { computeImpact, needsAttention, SERVICE_STATES, type ServiceState } from "../lib/model";
+import { computeImpact, needsAttention, SERVICE_STATES, type DependencyOccurrence, type ServiceState } from "../lib/model";
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { EmptyState, ErrorState, KeyValue, Loading, StatePill, StateDot, Tag } from "../components/primitives";
@@ -11,7 +11,8 @@ import { COLLISION_HINT, COLLISION_TAG, identityText, UNAVAILABLE_IMAGE, UNAVAIL
 export default function MapScreen({ initialSelectedId = null }: { initialSelectedId?: string | null }) {
   const { model, loading, error } = useApp();
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
-  const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
+  const [focusRequest, setFocusRequest] = useState<{ id: string; token: number } | null>(null);
+  const focusTokenRef = useRef(0);
   const [stateFilter, setStateFilter] = useState<ServiceState | "attention" | null>(null);
 
   const filter = useMemo(() => {
@@ -69,7 +70,7 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
 
       <div className="map-layout">
         <div className="map-stage">
-          <ServiceMap model={model} selectedId={selectedId} onSelect={setSelectedId} filter={filter} focusNodeId={focusNodeId} />
+          <ServiceMap model={model} selectedId={selectedId} onSelect={setSelectedId} filter={filter} focusNodeId={focusRequest?.id ?? null} focusToken={focusRequest?.token} />
         </div>
 
         <aside className="inspector" aria-label="Service inspector">
@@ -95,7 +96,7 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
                 <span className="inspector-kind">
                   <Icon name={KIND_ICON[selected.kind]} size={15} /> {selected.kind}
                 </span>
-                <button type="button" className="icon-btn" onClick={() => { setFocusNodeId(selected.id); setSelectedId(null); }} aria-label={`Clear ${identityText(selected.name, UNAVAILABLE_SERVICE)} service selection`}>
+                <button type="button" className="icon-btn" onClick={() => { focusTokenRef.current += 1; setFocusRequest({ id: selected.id, token: focusTokenRef.current }); setSelectedId(null); }} aria-label={`Clear ${identityText(selected.name, UNAVAILABLE_SERVICE)} service selection`}>
                   <Icon name="close" size={15} />
                 </button>
               </div>
@@ -113,8 +114,8 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
                 </div>
               </div>
 
-              <Relist title="Depends on" model={model} ids={selected.dependsOn} empty="Depends on nothing" />
-              <Relist title="Used by" model={model} ids={selected.dependents} empty="Nothing depends on this" />
+              <Relist title="Depends on" model={model} occurrences={selected.dependencyOccurrences} empty="Depends on nothing" />
+              <Relist title="Used by" model={model} occurrences={selected.dependents.map((id) => ({ ref: id, resolvedId: id }))} empty="Nothing depends on this" />
 
               {selected.ports.length > 0 && (
                 <div className="inspector-section">
@@ -179,29 +180,40 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
 function Relist({
   title,
   model,
-  ids,
+  occurrences,
   empty
 }: {
   title: string;
   model: ReturnType<typeof useApp>["model"];
-  ids: string[];
+  occurrences: DependencyOccurrence[];
   empty: string;
 }) {
   if (!model) return null;
   return (
     <div className="inspector-section">
       <h4>{title}</h4>
-      {ids.length === 0 ? (
+      {occurrences.length === 0 ? (
         <p className="muted-line">{empty}</p>
       ) : (
         <ul className="rel-list">
-          {ids.map((id, index) => {
-            const svc = model.byId.get(id);
-            if (!svc) return null;
+          {occurrences.map((occurrence, index) => {
+            const svc = occurrence.resolvedId ? model.byId.get(occurrence.resolvedId) : undefined;
+            if (svc) {
+              return (
+                <li key={`${occurrence.resolvedId}-${index}`}>
+                  <StateDot state={svc.state} />
+                  {model.byName.has(svc.name) ? <Link to={`/services/${encodeURIComponent(svc.name)}`}>{identityText(svc.name, UNAVAILABLE_SERVICE)}</Link> : <span>{identityText(svc.name, UNAVAILABLE_SERVICE)}</span>}
+                </li>
+              );
+            }
+            // Ambiguous/empty/unresolved raw occurrence: visible, non-routable.
+            const collided = occurrence.ref !== "" && model.serviceAliasCollisions.has(occurrence.ref);
             return (
-              <li key={`${id}-${index}`}>
-                <StateDot state={svc.state} />
-                {model.byName.has(svc.name) ? <Link to={`/services/${encodeURIComponent(svc.name)}`}>{identityText(svc.name, UNAVAILABLE_SERVICE)}</Link> : <span>{identityText(svc.name, UNAVAILABLE_SERVICE)}</span>}
+              <li key={`${occurrence.ref}-${index}`}>
+                <span className={collided ? "collision-identity" : undefined} title={collided ? COLLISION_HINT : undefined}>
+                  {identityText(occurrence.ref, UNAVAILABLE_SERVICE)}
+                </span>
+                {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
               </li>
             );
           })}

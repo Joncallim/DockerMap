@@ -94,29 +94,47 @@ test.describe("responsive and accessibility matrix", () => {
       });
     });
 
-    test(`axe ${theme}: service tabs and configuration states`, async ({ browser }, testInfo) => {
-      await withPage(browser, theme, async (page) => {
-        await openRoute(page, "/services/postgres", theme);
-        for (const tab of ["Overview", "Dependencies", "Resources", "Logs", "Configuration"]) {
+    // Every ServiceDetail tab is its OWN test with a fresh context: an axe
+    // violation in one state must never skip the scans of the remaining
+    // states (a single grouped test asserts immediately per scan).
+    for (const tab of ["Overview", "Dependencies", "Resources", "Logs", "Configuration"]) {
+      test(`axe ${theme}: service tab ${tab.toLowerCase()}`, async ({ browser }, testInfo) => {
+        await withPage(browser, theme, async (page) => {
+          await openRoute(page, "/services/postgres", theme);
           await page.getByRole("tab", { name: tab }).click();
           const activeId = await page.getByRole("tab", { name: tab }).getAttribute("id");
           await expect(page.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", activeId);
           await attachAxe(page, testInfo, `${theme}-service-${tab.toLowerCase()}`);
-        }
-        const internals = page.getByRole("button", { name: "Show service internals" });
-        await internals.click();
+        });
+      });
+    }
+
+    test(`axe ${theme}: service configuration internals expanded`, async ({ browser }, testInfo) => {
+      await withPage(browser, theme, async (page) => {
+        await openRoute(page, "/services/postgres", theme);
+        await page.getByRole("tab", { name: "Configuration" }).click();
+        await page.getByRole("button", { name: "Show service internals" }).click();
         await expect(page.getByRole("button", { name: "Hide service internals" })).toHaveAttribute("aria-expanded", "true");
         await attachAxe(page, testInfo, `${theme}-service-configuration-expanded`);
       });
     });
 
+    // Collapsed and expanded disclosure states are separate tests so a
+    // violation in one state cannot skip the scan of the other.
     for (const [name, route] of [["network", "/networks/application"], ["volume", "/volumes/postgres_data"], ["image", "/images/python%3A3.11-slim"]] as const) {
-      test(`axe ${theme}: ${name} disclosure states`, async ({ browser }, testInfo) => {
+      test(`axe ${theme}: ${name} disclosure collapsed`, async ({ browser }, testInfo) => {
         await withPage(browser, theme, async (page) => {
           await openRoute(page, route, theme);
           const disclosure = page.locator("[aria-controls]").first();
           await expect(disclosure).toHaveAttribute("aria-expanded", "false");
           await attachAxe(page, testInfo, `${theme}-${name}-collapsed`);
+        });
+      });
+
+      test(`axe ${theme}: ${name} disclosure expanded`, async ({ browser }, testInfo) => {
+        await withPage(browser, theme, async (page) => {
+          await openRoute(page, route, theme);
+          const disclosure = page.locator("[aria-controls]").first();
           await disclosure.click();
           await expect(disclosure).toHaveAttribute("aria-expanded", "true");
           await attachAxe(page, testInfo, `${theme}-${name}-expanded`);
@@ -124,13 +142,20 @@ test.describe("responsive and accessibility matrix", () => {
       });
     }
 
-    test(`axe ${theme}: command palette`, async ({ browser }, testInfo) => {
+    test(`axe ${theme}: command palette open`, async ({ browser }, testInfo) => {
       await withPage(browser, theme, async (page) => {
         await openRoute(page, "/", theme);
         await page.keyboard.press("Control+k");
         await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
         await attachAxe(page, testInfo, `${theme}-command-palette`);
+      });
+    });
 
+    test(`axe ${theme}: command palette empty state`, async ({ browser }, testInfo) => {
+      await withPage(browser, theme, async (page) => {
+        await openRoute(page, "/", theme);
+        await page.keyboard.press("Control+k");
+        await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
         // Empty-results state: a query matching no command renders the
         // "No matches" status outside the listbox; axe scans it here so the
         // matrix cannot silently miss an invalid listbox child again.
@@ -160,6 +185,14 @@ test.describe("responsive and accessibility matrix", () => {
       await page.getByRole("button", { name: "postgres, healthy" }).focus();
       await page.keyboard.press("Space");
       const clear = page.getByRole("button", { name: /Clear postgres service selection/ });
+      await expect(clear).toBeVisible();
+      await clear.click();
+      await expect(page.getByRole("button", { name: "postgres, healthy" })).toBeFocused();
+      // Regression: clearing the SAME node twice must restore focus BOTH
+      // times (the first clear left focusNodeId = postgres; a second
+      // select+clear must re-trigger the focus effect via the monotonic
+      // focus-request token, not silently keep focus on BODY).
+      await page.getByRole("button", { name: "postgres, healthy" }).click();
       await expect(clear).toBeVisible();
       await clear.click();
       await expect(page.getByRole("button", { name: "postgres, healthy" })).toBeFocused();
@@ -205,6 +238,30 @@ test.describe("responsive and accessibility matrix", () => {
       const runtimeClear = page.getByRole("button", { name: /Clear .* runtime selection/ });
       await runtimeClear.click();
       await expect(runtimeNode).toBeFocused();
+
+      // Regression: navigating via an inspector RELATION button must move
+      // focus to the destination node's persistent runtime-node button. The
+      // clicked relation button unmounts when the inspector updates, so
+      // without the shared selectNode handler focus would fall to BODY.
+      await runtimeNode.click();
+      await expect(runtimeNode).toHaveAttribute("aria-pressed", "true");
+      const edgeTarget = page.locator(".runtime-edge-target").first();
+      if (await edgeTarget.count() > 0) {
+        const edgeLabel = (await edgeTarget.locator("span").textContent())?.trim() ?? "";
+        await edgeTarget.click();
+        await expect.poll(() => page.evaluate(() => {
+          const active = document.activeElement as HTMLElement | null;
+          if (!active?.classList.contains("runtime-node-btn")) return null;
+          return active.querySelector(".runtime-node-label")?.textContent?.trim() ?? null;
+        })).toBe(edgeLabel);
+        // Clearing the new selection returns focus to the destination node.
+        await page.getByRole("button", { name: /Clear .* runtime selection/ }).click();
+        await expect.poll(() => page.evaluate(() => {
+          const active = document.activeElement as HTMLElement | null;
+          if (!active?.classList.contains("runtime-node-btn")) return null;
+          return active.querySelector(".runtime-node-label")?.textContent?.trim() ?? null;
+        })).toBe(edgeLabel);
+      }
 
       for (const control of await page.locator("[aria-controls]").all()) {
         const id = await control.getAttribute("aria-controls");
@@ -277,6 +334,47 @@ test.describe("responsive and accessibility matrix", () => {
           await assertUsableAtWidth(page, `${name} ${route}`, width);
         }
 
+        // Horizontal-rail contract at narrow widths: the rail is the
+        // top/horizontal form, the nav itself is the SCROLLABLE element
+        // (clientWidth < scrollWidth, overflow-x auto), the sticky overflow
+        // affordance is rendered, and BOTH keyboard (focus) and pointer
+        // (wheel) scrolling reach content past the right edge — the pre-fix
+        // 760px block widened .nav with flex:none so the rail clipped it with
+        // overflow:hidden and the Settings item sat unreachable off-viewport.
+        await openRoute(page, "/", "light");
+        const rail = page.locator(".rail");
+        await expect(rail).toHaveCSS("flex-direction", "row");
+        const nav = page.locator(".nav");
+        const navBox = await nav.evaluate((el) => {
+          const style = getComputedStyle(el);
+          return {
+            clientWidth: el.clientWidth,
+            scrollWidth: el.scrollWidth,
+            overflowX: style.overflowX,
+            after: getComputedStyle(el, "::after").content
+          };
+        });
+        expect(navBox.scrollWidth, `${width}px nav must be scrollable (clientWidth ${navBox.clientWidth} < scrollWidth ${navBox.scrollWidth})`).toBeGreaterThan(navBox.clientWidth);
+        expect(["auto", "scroll"]).toContain(navBox.overflowX);
+        expect(navBox.after, `${width}px nav overflow affordance`).not.toBe("none");
+        // Keyboard scrolling: focusing the last nav item scrolls it into view.
+        await page.locator('.nav a[href="/settings"]').focus();
+        const keyScrollLeft = await nav.evaluate((el) => el.scrollLeft);
+        expect(keyScrollLeft, `${width}px keyboard nav scroll`).toBeGreaterThan(0);
+        // Pointer scrolling: horizontal wheel over the nav scrolls it back
+        // toward the start (focusing Settings already scrolled to the END of
+        // the nav, so a positive delta has nowhere to go). Chromium consumes
+        // the first wheel event for scroll latching, so several events are
+        // dispatched; any movement past the keyboard position proves pointer
+        // scrolling works.
+        await nav.hover();
+        for (let i = 0; i < 4; i += 1) {
+          await page.mouse.wheel(-300, 0);
+          await page.waitForTimeout(80);
+        }
+        const pointerScrollLeft = await nav.evaluate((el) => el.scrollLeft);
+        expect(pointerScrollLeft, `${width}px pointer nav scroll`).toBeLessThan(keyScrollLeft);
+
         // TokenScreen at width: the real bearer-unauthorized event swaps in
         // the token gate; it must stay usable at both widths too.
         await page.goto(stack.webUrl, { waitUntil: "domcontentloaded" });
@@ -317,6 +415,23 @@ test.describe("responsive and accessibility matrix", () => {
         await page.getByRole("tab", { name: "Configuration" }).click();
         await page.getByRole("button", { name: "Show service internals" }).click();
         await assertUsableAtWidth(page, "service configuration internals expanded", width);
+
+        // Every ServiceDetail tab is a mandated stateful cell at BOTH widths.
+        for (const tabName of ["Overview", "Dependencies", "Resources", "Logs", "Configuration"]) {
+          await openRoute(page, "/services/postgres", "light");
+          await page.getByRole("tab", { name: tabName }).click();
+          await assertUsableAtWidth(page, `service tab ${tabName.toLowerCase()}`, width);
+        }
+
+        // Every detail disclosure expanded is a mandated stateful cell.
+        for (const route of ["/networks/application", "/volumes/postgres_data", "/images/python%3A3.11-slim"]) {
+          await openRoute(page, route, "light");
+          const disclosure = page.locator("[aria-controls]").first();
+          await disclosure.click();
+          await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+          await assertUsableAtWidth(page, `${route} disclosure expanded`, width);
+        }
+
         await openRoute(page, "/logs", "light");
         await assertUsableAtWidth(page, "logs", width);
         await openRoute(page, "/compose", "light");
@@ -401,11 +516,16 @@ test.describe("responsive and accessibility matrix", () => {
     // redirects the fresh boot (Landing -> /map) and the /api/snapshot
     // response is delayed, so the destination h1 mounts only AFTER focus has
     // settled on the #main-content fallback.
-    const delaySnapshot = (page: Page) =>
-      page.route("**/api/snapshot", async (route) => {
-        await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const delaySnapshot = (page: Page, milliseconds: number) => {
+      // The SSE stream drives refresh ticks that would ABORT the delayed
+      // snapshot fetch before it settles (each tick restarts the clock), so
+      // the stream is stalled for the duration of both scenarios.
+      void page.route("**/api/events/stream*", (route) => route.abort());
+      return page.route("**/api/snapshot", async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, milliseconds));
         await route.continue();
       });
+    };
     const contextWithMapDefault = async () => {
       const context = await browser.newContext({ colorScheme: "dark" });
       // Set BEFORE the app boots so Landing redirects to /map immediately.
@@ -415,12 +535,14 @@ test.describe("responsive and accessibility matrix", () => {
       return context;
     };
 
-    // Scenario 1 — promotion: the delayed h1 must receive focus once it mounts.
+    // Scenario 1 — promotion: the delayed h1 must receive focus once it
+    // mounts. The delay (5.5s) is LONGER than the former arbitrary 5s
+    // observer timeout, proving a late-mounting heading is still promoted.
     {
       const context = await contextWithMapDefault();
       const page = await context.newPage();
       try {
-        await delaySnapshot(page);
+        await delaySnapshot(page, 5_500);
         await page.goto(stack.webUrl, { waitUntil: "domcontentloaded" });
         await expect(page.getByRole("heading", { name: "Service Map" })).toBeFocused();
       } finally {
@@ -434,7 +556,7 @@ test.describe("responsive and accessibility matrix", () => {
       const context = await contextWithMapDefault();
       const page = await context.newPage();
       try {
-        await delaySnapshot(page);
+        await delaySnapshot(page, 1_500);
         await page.goto(stack.webUrl, { waitUntil: "domcontentloaded" });
         // The heading must still be pending (snapshot delayed)…
         await expect(page.getByRole("heading", { name: "Service Map" })).toHaveCount(0);

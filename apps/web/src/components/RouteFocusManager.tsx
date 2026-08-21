@@ -35,14 +35,16 @@ export default function RouteFocusManager() {
     };
 
     if (focusLoadedHeading()) return;
+    // Keep observing until the heading appears, the user moves focus away
+    // (focusLoadedHeading reports done in both cases), or the location effect
+    // cleans up on the next navigation. NO arbitrary timeout: a slow route
+    // body must still be promoted however late its h1 mounts.
     const observer = new MutationObserver(() => {
       if (focusLoadedHeading()) observer.disconnect();
     });
     observer.observe(main, { childList: true, subtree: true });
-    const timeout = window.setTimeout(() => observer.disconnect(), 5_000);
     return () => {
       observer.disconnect();
-      window.clearTimeout(timeout);
     };
   }, [location.pathname]);
 

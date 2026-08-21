@@ -1165,6 +1165,25 @@ kbd {
   pointer-events: none;
 }
 
+/* Collided graph occurrences (duplicate id/name after redaction) stay
+   visible with a dashed ring and a literal "identity collision" tag; they are
+   never interactive. The tag uses the map's local bright palette so it stays
+   >= 3:1 on the fixed dark canvas in both themes. */
+.node-collided .node-core {
+  stroke-dasharray: 2.5 1.5;
+}
+
+.node-collision-tag {
+  fill: #ffd166;
+  font-size: 6px;
+  font-weight: 650;
+  font-family: var(--font);
+  paint-order: stroke;
+  stroke: rgba(14, 17, 22, 0.9);
+  stroke-width: 2px;
+  pointer-events: none;
+}
+
 .node-self .node-halo,
 .node:hover .node-halo {
   opacity: 1;
@@ -2178,69 +2197,11 @@ kbd {
 }
 
 @media (max-width: 760px) {
-  .shell {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .rail {
-    gap: var(--s2);
-    max-height: none;
-    padding: var(--s3);
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    overflow: hidden;
-  }
-
-  .brand {
-    min-width: 0;
-  }
-
-  .nav {
-    flex: none;
-    flex-direction: row;
-    gap: var(--s2);
-    overflow-x: auto;
-    padding-bottom: 2px;
-  }
-
-  .nav-group {
-    flex-direction: row;
-    gap: 2px;
-    min-width: max-content;
-  }
-
-  .nav-heading {
-    display: none;
-  }
-
-  .nav-item {
-    padding: 7px 9px;
-  }
-
-  .rail-foot {
-    display: none;
-  }
-
-  .topbar {
-    align-items: flex-start;
-    flex-wrap: wrap;
-    padding: var(--s3);
-  }
-
-  .topbar-search {
-    width: auto;
-    max-width: none;
-    min-width: 0;
-    flex: 1 1 180px;
-  }
-
-  .topbar-status {
-    width: 100%;
-    margin-left: 0;
-    justify-content: space-between;
-    gap: var(--s3);
-  }
+  /* Phone/200%-zoom refinements ONLY. The shell/rail/nav/topbar/screen-header
+     and Map/Runtime composition lives in the <=900px block; duplicating it
+     here OVERRODE the horizontal-rail contract (e.g. .nav { flex: none }
+     widened the nav to its full content width so the rail clipped it instead
+     of scrolling it, leaving Settings unreachable at 640px). */
 
   .sys-state {
     flex-wrap: wrap;
@@ -2254,34 +2215,8 @@ kbd {
     max-width: none;
   }
 
-  .screen-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .map-screen {
-    min-height: 0;
-  }
-
-  .map-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .map-stage {
     min-height: 520px;
-  }
-
-  .inspector {
-    min-height: 220px;
-  }
-
-  .map-legend {
-    right: var(--s3);
-    flex-wrap: wrap;
-  }
-
-  .map-impact {
-    max-width: calc(100% - var(--s6));
   }
 
   .grid-2,

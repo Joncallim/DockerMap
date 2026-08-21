@@ -53,6 +53,21 @@ export interface Relationship {
   health: RelationshipHealth;
 }
 
+/**
+ * One RAW depends_on occurrence exactly as recorded in the snapshot. The
+ * reference may be a container id, container name, or compose service name
+ * (role), and may be empty, redaction-collided, or unknown. Every occurrence
+ * stays visible in relationship lists as non-routable evidence; only
+ * `resolvedId` values (unique, non-empty resolutions) enter the semantic
+ * graph (dependsOn edges, dependents, impact traversal).
+ */
+export interface DependencyOccurrence {
+  /** The raw reference verbatim from the snapshot (may be "" or ambiguous). */
+  ref: string;
+  /** Collision-safe resolved service id, or null when unresolvable. */
+  resolvedId: string | null;
+}
+
 export interface Service {
   id: string;
   name: string;
@@ -66,7 +81,13 @@ export interface Service {
   ports: string[];
   networks: string[];
   mounts: ContainerRecord["mounts"];
-  /** Services this one depends on (upstream). */
+  /**
+   * Raw dependency occurrences (unfiltered). Ambiguous/empty/unresolved
+   * occurrences are preserved here so renderers can show them as visible
+   * non-routable evidence instead of silently discarding the relationship.
+   */
+  dependencyOccurrences: DependencyOccurrence[];
+  /** Services this one depends on (upstream), resolved collision-safe only. */
   dependsOn: string[];
   /** Services that depend on this one (downstream). */
   dependents: string[];
@@ -248,12 +269,21 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
     (container) => [container.id, container.name, container.id.replace(/^container_/, ""), container.role],
     (container) => container.id
   );
-  const resolveId = (ref: string) => idByAlias.get(ref) ?? ref;
+
+  const resolveDependency = (ref: string): string | null => {
+    if (ref === "") return null;
+    const id = idByAlias.get(ref) ?? ref;
+    if (idByAlias.has(id) || id.startsWith("container_")) return id;
+    return null;
+  };
 
   const dependents = new Map<string, Set<string>>();
   for (const c of snapshot.containers) {
+    // Only resolved ids feed the semantic dependents sets; raw occurrences
+    // (empty, collided, or unknown refs) are preserved per service below.
     for (const dep of c.dependsOn) {
-      const target = resolveId(dep);
+      const target = resolveDependency(dep);
+      if (target === null) continue;
       if (!dependents.has(target)) dependents.set(target, new Set());
       dependents.get(target)!.add(c.id);
     }
@@ -262,6 +292,7 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   const services: Service[] = snapshot.containers.map((c) => {
     const { repo, tag } = splitImage(c.image);
     const updateAvailable = hashString(c.id + "update") > 0.74;
+    const occurrences: DependencyOccurrence[] = c.dependsOn.map((dep) => ({ ref: dep, resolvedId: resolveDependency(dep) }));
     return {
       id: c.id,
       name: c.name,
@@ -275,7 +306,8 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
       ports: c.ports,
       networks: c.networks.map((n) => networkNameById.get(n) ?? n.replace(/^network_/, "")),
       mounts: c.mounts,
-      dependsOn: c.dependsOn.map(resolveId).filter((id) => idByAlias.has(id) || id.startsWith("container_")),
+      dependencyOccurrences: occurrences,
+      dependsOn: occurrences.filter((o): o is DependencyOccurrence & { resolvedId: string } => o.resolvedId !== null).map((o) => o.resolvedId),
       dependents: [...(dependents.get(c.id) ?? [])],
       updateAvailable
     };

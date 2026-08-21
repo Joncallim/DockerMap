@@ -3,13 +3,13 @@ import { Link, useParams } from "react-router-dom";
 import type { LogsResponse } from "@dockermap/contracts";
 import { useApp } from "../context";
 import { useApiResource } from "../hooks/useApiResource";
-import { computeImpact, type Service } from "../lib/model";
+import { computeImpact, type DependencyOccurrence, type Service, type SystemModel } from "../lib/model";
 import { resourceFor, STUB_NOTICE } from "../lib/stubs";
 import { formatKbps, formatMb, formatPercent, formatRelative } from "../lib/format";
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { IdentityRef } from "../components/identity";
-import { identityText, UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_PORT, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_ROLE, UNAVAILABLE_SERVICE_STATUS, UNAVAILABLE_VOLUME } from "../lib/identity";
+import { COLLISION_HINT, COLLISION_TAG, identityText, UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_PORT, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_ROLE, UNAVAILABLE_SERVICE_STATUS, UNAVAILABLE_VOLUME } from "../lib/identity";
 import { Bar, EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, Sparkline, StatePill, StateDot, Tag } from "../components/primitives";
 
 type Tab = "overview" | "dependencies" | "resources" | "logs" | "config";
@@ -161,27 +161,40 @@ function Dependencies({ service, model }: { service: Service; model: NonNullable
   return (
     <div className="grid-2">
       <Panel title="Depends on" icon="up" hint="Upstream">
-        <RelList model={model} ids={service.dependsOn} empty="This service depends on nothing." />
+        <RelList model={model} occurrences={service.dependencyOccurrences} empty="This service depends on nothing." />
       </Panel>
       <Panel title="Used by" icon="down" hint="Downstream">
-        <RelList model={model} ids={service.dependents} empty="Nothing depends on this service." />
+        <RelList model={model} occurrences={service.dependents.map((id) => ({ ref: id, resolvedId: id }))} empty="Nothing depends on this service." />
       </Panel>
     </div>
   );
 }
 
-function RelList({ model, ids, empty }: { model: NonNullable<ReturnType<typeof useApp>["model"]>; ids: string[]; empty: string }) {
-  if (ids.length === 0) return <p className="muted-line">{empty}</p>;
+function RelList({ model, occurrences, empty }: { model: SystemModel; occurrences: DependencyOccurrence[]; empty: string }) {
+  if (occurrences.length === 0) return <p className="muted-line">{empty}</p>;
   return (
     <ul className="svc-list">
-      {ids.map((id, index) => {
-        const svc = model.byId.get(id);
-        if (!svc) return null;
+      {occurrences.map((occurrence, index) => {
+        const svc = occurrence.resolvedId ? model.byId.get(occurrence.resolvedId) : undefined;
+        if (svc) {
+          return (
+            <li key={`${occurrence.resolvedId}-${index}`} className="svc-row">
+              <Icon name={KIND_ICON[svc.kind]} size={15} />
+              <IdentityRef name={svc.name} fallback={UNAVAILABLE_SERVICE} to={model.byName.has(svc.name) ? `/services/${encodeURIComponent(svc.name)}` : undefined} className="svc-name" />
+              <StatePill state={svc.state} />
+            </li>
+          );
+        }
+        // Raw occurrence that could not be resolved uniquely (empty ref,
+        // redaction-collided alias, or unknown reference): it stays VISIBLE
+        // as non-routable evidence — never a link, never silently dropped.
+        const collided = occurrence.ref !== "" && model.serviceAliasCollisions.has(occurrence.ref);
         return (
-          <li key={`${id}-${index}`} className="svc-row">
-            <Icon name={KIND_ICON[svc.kind]} size={15} />
-            <IdentityRef name={svc.name} fallback={UNAVAILABLE_SERVICE} to={model.byName.has(svc.name) ? `/services/${encodeURIComponent(svc.name)}` : undefined} className="svc-name" />
-            <StatePill state={svc.state} />
+          <li key={`${occurrence.ref}-${index}`} className="svc-row">
+            <span className={`svc-name${collided ? " collision-identity" : ""}`} title={collided ? COLLISION_HINT : undefined}>
+              {identityText(occurrence.ref, UNAVAILABLE_SERVICE)}
+            </span>
+            {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
           </li>
         );
       })}

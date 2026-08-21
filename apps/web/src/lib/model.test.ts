@@ -300,7 +300,27 @@ describe("service and runtime identity indexes", () => {
     expect(model.serviceAliasCollisions.has("api")).toBe(true);
     expect(model.byName.has("[redacted]")).toBe(false);
     expect(model.byId.has("")).toBe(false);
+    // Ambiguous/empty refs never enter the SEMANTIC dependsOn list…
     expect(model.services[2].dependsOn).toEqual([]);
+    // …but every RAW occurrence stays visible for non-routable rendering:
+    // "[redacted]" is a redaction-collided alias and "api" an ambiguous role
+    // alias — neither may silently disappear from the relationship list.
+    expect(model.services[2].dependencyOccurrences).toEqual([
+      { ref: "[redacted]", resolvedId: null },
+      { ref: "api", resolvedId: null }
+    ]);
+  });
+
+  it("keeps unique resolutions in both the raw occurrences and the semantic dependsOn list", () => {
+    const model = buildModel(
+      snapshot([
+        container({ id: "container_web", name: "web", dependsOn: ["api"] }),
+        container({ id: "container_api", name: "api", role: "api" })
+      ]),
+      emptyRuntime
+    );
+    expect(model.byName.get("web")!.dependencyOccurrences).toEqual([{ ref: "api", resolvedId: "container_api" }]);
+    expect(model.byName.get("web")!.dependsOn).toEqual(["container_api"]);
   });
 
   it("excludes duplicate runtime ids instead of silently selecting the last node", () => {

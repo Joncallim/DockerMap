@@ -69,7 +69,7 @@ export default function Diagnostics() {
         {SEVERITY_ORDER.map((severity) => (
           <div key={severity} className="metric">
             <div className="metric-label">
-              <Tag tone={severity === "info" ? "muted" : severity === "warning" ? "warn" : "accent"}>{severity}</Tag>
+              <Tag tone={severity === "info" ? "muted" : severity === "warning" ? "warn" : "error"}>{severity}</Tag>
             </div>
             <div className="metric-value">{bySeverity[severity] ?? 0}</div>
           </div>
