@@ -390,13 +390,11 @@ test.describe("DockerMap GUI", () => {
     await expect(page.locator(".map-impact-kind")).toContainText("unique");
 
     // Flip the collision transition; the next refresh tick (SSE snapshot
-    // event) lands it while the pointer stays put.
+    // event) lands it while the pointer stays PARKED and unmoved — no
+    // pointerenter can replace the stale hover id, so the invalidation
+    // must happen without any pointer activity.
     collided = true;
     await expect(page.locator("g.node.node-collided", { hasText: "unique" })).toHaveCount(2);
-
-    // Park the pointer ON a collided occurrence — deliberately non-interactive,
-    // so no pointerenter can replace the stale hover id.
-    await page.locator("g.node.node-collided").first().locator("circle.node-core").hover();
 
     // The stale hover must be INVALIDATED: no collided node may carry
     // node-self, and with no selection the active state (and its banner)
@@ -441,10 +439,10 @@ test.describe("DockerMap GUI", () => {
     await expect(page.locator(".map-impact-kind")).toContainText("unique");
 
     // Flip the collision transition; the refresh tick lands it under the
-    // stationary pointer.
+    // parked, unmoved pointer — no pointerenter can replace the stale
+    // hover id, so the fallback must happen without any pointer activity.
     collided = true;
     await expect(page.locator("g.node.node-collided", { hasText: "unique" })).toHaveCount(2);
-    await page.locator("g.node.node-collided").first().locator("circle.node-core").hover();
 
     // The stale hover must fall back to the SELECTION: postgres carries
     // node-self, the banner names postgres, no collided node-self, and never
