@@ -1386,13 +1386,7 @@ fn mock_log_base_millis() -> u64 {
     *MOCK_LOG_BASE_MILLIS.get_or_init(unix_timestamp_millis)
 }
 
-pub fn mock_logs(
-    snapshot: &DockerSnapshot,
-    service: Option<&str>,
-    query: Option<&str>,
-    cursor: Option<LogCursor>,
-    limit: usize,
-) -> LogsResponse {
+pub fn mock_log_entries(snapshot: &DockerSnapshot, service: Option<&str>) -> Vec<LogEntry> {
     let mut entries = Vec::new();
     let now = mock_log_base_millis();
 
@@ -1431,6 +1425,20 @@ pub fn mock_logs(
             });
         }
     }
+
+    entries
+}
+
+pub fn mock_logs(
+    snapshot: &DockerSnapshot,
+    service: Option<&str>,
+    query: Option<&str>,
+    cursor: Option<LogCursor>,
+    limit: usize,
+) -> LogsResponse {
+    // Keep the raw mock generator reusable for publication layers that must
+    // sanitize messages before query filtering and cursor pagination.
+    let entries = mock_log_entries(snapshot, service);
 
     // Query filtering, sorting, and compound-cursor paging all live in the
     // shared helper so this mock agrees with the live-Docker daemon path and

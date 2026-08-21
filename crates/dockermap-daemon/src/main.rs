@@ -16,16 +16,16 @@ use bollard::{
 };
 use dockermap_core::{
     correlate_compose_runtime, derive_compose_graph, derive_graph, derive_images,
-    derive_runtime_map, discover_compose_files, mock_logs, mock_snapshot, page_log_entries,
+    derive_runtime_map, discover_compose_files, mock_log_entries, mock_snapshot, page_log_entries,
     parse_rfc3339_nano_millis, plan_compose_mount_edit, scan_compose_files,
     service_entity_kind_name, unix_timestamp_millis, ComposeDiagnostic, ComposeEditPlan,
-    ComposeGraph, ComposeMountKind, ComposeScan, ContainerMount, ContainerRecord,
-    DiagnosticSeverity, DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogCursor,
-    LogEntry, LogsResponse, NetworkRecord, RuntimeLocation, RuntimeMap, RuntimeMapDiagnostic,
-    RuntimeMapEdge, RuntimeMapNode, RuntimeMode, RuntimeNodeKind, RuntimeNodeLayer,
-    RuntimeOwnership, RuntimePackageEntity, RuntimeProviderKind, RuntimeRelationshipKind,
-    RuntimeServiceEntity, RuntimeServiceStatus, ServiceEntityKind, VolumeRecord,
-    DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+    ComposeFileOrigin, ComposeGraph, ComposeMountKind, ComposeScan, ContainerMount,
+    ContainerRecord, DiagnosticSeverity, DockerSnapshot, GraphResponse, HealthResponse,
+    HealthState, LogCursor, LogEntry, LogsResponse, NetworkRecord, RuntimeLocation, RuntimeMap,
+    RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode, RuntimeMode, RuntimeNodeKind,
+    RuntimeNodeLayer, RuntimeOwnership, RuntimePackageEntity, RuntimeProviderKind,
+    RuntimeRelationshipKind, RuntimeServiceEntity, RuntimeServiceStatus, ServiceEntityKind,
+    VolumeRecord, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 use futures_util::stream::StreamExt;
 use serde::Deserialize;
@@ -536,13 +536,13 @@ impl DockerCollector {
             }
         }
 
-        let (entries, next_cursor) = page_log_entries(entries, query, cursor, limit);
-
-        Ok(LogsResponse {
-            service: Some(service.to_string()),
+        Ok(publish_log_response(
+            Some(service),
             entries,
-            next_cursor,
-        })
+            query,
+            cursor,
+            limit,
+        ))
     }
 }
 
@@ -636,6 +636,29 @@ const MAX_LOG_STREAM_CAP: usize = MAX_LOG_CURSOR_TAIL + 1;
 /// same-ms entries at page boundaries.
 fn log_entry_id(service: &str, timestamp: u64, ordinal: usize) -> String {
     format!("{service}-{timestamp}-{ordinal:04x}")
+}
+
+/// Apply the common publication boundary to every log source BEFORE matching a
+/// query or calculating a cursor. This makes live Docker and mock logs agree
+/// on both what is visible and what can affect pagination.
+fn publish_log_response(
+    service: Option<&str>,
+    mut entries: Vec<LogEntry>,
+    query: Option<&str>,
+    cursor: Option<LogCursor>,
+    limit: usize,
+) -> LogsResponse {
+    for entry in &mut entries {
+        entry.id = redact_runtime_display_text(&entry.id);
+        entry.container = redact_runtime_display_text(&entry.container);
+        entry.message = redact_runtime_display_text(&entry.message);
+    }
+    let (entries, next_cursor) = page_log_entries(entries, query, cursor, limit);
+    LogsResponse {
+        service: service.map(redact_runtime_display_text),
+        entries,
+        next_cursor,
+    }
 }
 
 // Log page boundaries are decided by `dockermap_core::page_log_entries`
@@ -897,7 +920,13 @@ fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
     } else {
         collect_host_node(project_root.as_deref(), &mut nodes);
     }
-    collect_network_infrastructure(snapshot, &mut nodes, &mut edges, &mut diagnostics);
+    collect_network_infrastructure(
+        pid_namespace,
+        snapshot,
+        &mut nodes,
+        &mut edges,
+        &mut diagnostics,
+    );
     collect_host_scoped_runtime_providers(pid_namespace, &mut nodes, &mut edges, &mut diagnostics);
     collect_python_processes(pid_namespace.is_restricted(), &mut nodes, &mut diagnostics);
     collect_native_processes_with_scope(
@@ -909,7 +938,13 @@ fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
         // This root is an explicit project mount/configuration target rather
         // than namespace-global discovery, so npm remains available even to a
         // containerized daemon (and is documented as mounted project data).
-        collect_npm_projects(root, &mut nodes, &mut edges, &mut diagnostics);
+        collect_npm_projects(
+            root,
+            pid_namespace,
+            &mut nodes,
+            &mut edges,
+            &mut diagnostics,
+        );
     } else {
         push_provider_diagnostic(
             &mut diagnostics,
@@ -1290,11 +1325,44 @@ fn collect_host_scoped_runtime_providers(
 }
 
 fn collect_network_infrastructure(
+    pid_namespace: PidNamespaceScope,
     snapshot: &DockerSnapshot,
     nodes: &mut Vec<RuntimeMapNode>,
     edges: &mut Vec<RuntimeMapEdge>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
+    if pid_namespace.is_restricted() {
+        for (provider, message) in [
+            (
+                RuntimeProviderKind::Tailscale,
+                "Tailscale discovery skipped in restricted PID namespace",
+            ),
+            (
+                RuntimeProviderKind::Headscale,
+                "Headscale discovery skipped in restricted PID namespace",
+            ),
+            (
+                RuntimeProviderKind::ReverseProxy,
+                "Reverse-proxy configuration marker discovery skipped in restricted PID namespace",
+            ),
+            (
+                RuntimeProviderKind::LocalDns,
+                "Local DNS configuration marker discovery skipped in restricted PID namespace",
+            ),
+        ] {
+            push_provider_diagnostic(
+                diagnostics,
+                provider,
+                DiagnosticSeverity::Info,
+                message.into(),
+            );
+        }
+        // Docker snapshot records are affirmative host evidence even when the
+        // daemon itself cannot safely inspect namespace-local files or tools.
+        collect_network_containers(snapshot, nodes, edges);
+        return;
+    }
+
     collect_tailscale(nodes, diagnostics);
     collect_headscale(nodes, diagnostics);
     collect_network_config_markers(nodes);
@@ -3164,6 +3232,7 @@ fn is_native_process(args: &str) -> bool {
 
 fn collect_npm_projects(
     project_root: &StdPath,
+    pid_namespace: PidNamespaceScope,
     nodes: &mut Vec<RuntimeMapNode>,
     edges: &mut Vec<RuntimeMapEdge>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
@@ -3219,12 +3288,14 @@ fn collect_npm_projects(
             service: None,
             package: None,
         });
-        edges.push(RuntimeMapEdge {
-            source: node_id.clone(),
-            target: "host_local".into(),
-            relationship: RuntimeRelationshipKind::RunsOn,
-            metadata: BTreeMap::new(),
-        });
+        if !pid_namespace.is_restricted() {
+            edges.push(RuntimeMapEdge {
+                source: node_id.clone(),
+                target: "host_local".into(),
+                relationship: RuntimeRelationshipKind::RunsOn,
+                metadata: BTreeMap::new(),
+            });
+        }
 
         for (index, dependency) in project.dependencies.into_iter().enumerate() {
             let safe_package_name = redact_sensitive_text(&dependency.name);
@@ -3666,6 +3737,38 @@ fn redact_runtime_map(runtime_map: &mut RuntimeMap) {
     redact_runtime_nodes(&mut runtime_map.nodes);
     redact_runtime_edges(&mut runtime_map.edges);
     redact_runtime_diagnostics(&mut runtime_map.diagnostics);
+    normalize_runtime_map_topology(runtime_map);
+}
+
+/// Identifier normalization can collapse distinct hostile strings to the same
+/// replacement form. Reapply graph invariants after that boundary so clients
+/// never receive dangling endpoints or duplicate IDs/edges.
+fn normalize_runtime_map_topology(runtime_map: &mut RuntimeMap) {
+    runtime_map
+        .nodes
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    runtime_map
+        .nodes
+        .dedup_by(|left, right| left.id == right.id);
+
+    let node_ids = runtime_map
+        .nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<BTreeSet<_>>();
+    runtime_map.edges.retain(|edge| {
+        node_ids.contains(edge.source.as_str()) && node_ids.contains(edge.target.as_str())
+    });
+    runtime_map.edges.sort_by(|left, right| {
+        left.source
+            .cmp(&right.source)
+            .then(left.target.cmp(&right.target))
+    });
+    runtime_map.edges.dedup_by(|left, right| {
+        left.source == right.source
+            && left.target == right.target
+            && left.relationship == right.relationship
+    });
 }
 
 fn redact_runtime_nodes(nodes: &mut [RuntimeMapNode]) {
@@ -3675,6 +3778,7 @@ fn redact_runtime_nodes(nodes: &mut [RuntimeMapNode]) {
 }
 
 fn redact_runtime_node(node: &mut RuntimeMapNode) {
+    node.id = redact_runtime_display_text(&node.id);
     node.label = redact_runtime_display_text(&node.label);
     if let Some(status) = &mut node.status {
         *status = redact_runtime_display_text(status);
@@ -3708,10 +3812,12 @@ fn redact_service_entity(service: Option<&mut RuntimeServiceEntity>) {
         }
     }
     for log in &mut service.logs {
+        log.id = redact_runtime_display_text(&log.id);
         log.source = redact_runtime_display_text(&log.source);
         // log.level is a closed enum and cannot carry provider free text.
     }
     for event in &mut service.events {
+        event.id = redact_runtime_display_text(&event.id);
         event.kind = redact_runtime_display_text(&event.kind);
         if let Some(message) = &mut event.message {
             *message = redact_runtime_display_text(message);
@@ -3739,6 +3845,7 @@ fn redact_package_entity(package: Option<&mut RuntimePackageEntity>) {
             *latest = redact_runtime_display_text(latest);
         }
         for advisory in &mut update.advisories {
+            advisory.id = redact_runtime_display_text(&advisory.id);
             advisory.title = redact_runtime_display_text(&advisory.title);
             advisory.source = redact_runtime_display_text(&advisory.source);
             if let Some(fixed) = &mut advisory.fixed_version {
@@ -3775,6 +3882,8 @@ fn redact_location(location: Option<&mut RuntimeLocation>) {
 
 fn redact_runtime_edges(edges: &mut [RuntimeMapEdge]) {
     for edge in edges {
+        edge.source = redact_runtime_display_text(&edge.source);
+        edge.target = redact_runtime_display_text(&edge.target);
         for value in edge.metadata.values_mut() {
             *value = redact_runtime_display_text(value);
         }
@@ -3787,35 +3896,69 @@ fn redact_runtime_diagnostics(diagnostics: &mut [RuntimeMapDiagnostic]) {
     }
 }
 
-/// Redact secret-bearing free-text fields from a compose scan before it is
-/// returned by the API. Environment VALUES are redacted (keys stay so the
-/// shape remains useful), and mount/correlation path fields are redacted for
-/// consistency with provider metadata redaction.
+/// Apply the same redact-and-normalize publication boundary to compose data
+/// before it is returned directly or used to derive a graph. Compose paths and
+/// diagnostic origins are provider-controlled display text just like runtime
+/// provider output.
 fn redact_compose_scan(scan: &mut ComposeScan) {
+    for file in &mut scan.files {
+        *file = redact_runtime_display_text(file);
+    }
+    scan.project_root = redact_runtime_display_text(&scan.project_root);
     for service in &mut scan.services {
+        service.name = redact_runtime_display_text(&service.name);
+        if let Some(image) = &mut service.image {
+            *image = redact_runtime_display_text(image);
+        }
         for value in service.environment.values_mut() {
-            *value = redact_sensitive_text(value);
+            *value = redact_runtime_display_text(value);
+        }
+        for dependency in &mut service.depends_on {
+            *dependency = redact_runtime_display_text(dependency);
         }
     }
     for mount in &mut scan.mounts {
+        mount.id = redact_runtime_display_text(&mount.id);
+        mount.service = redact_runtime_display_text(&mount.service);
         if let Some(source) = &mut mount.source {
-            *source = redact_sensitive_text(source);
+            *source = redact_runtime_display_text(source);
         }
         if let Some(source) = &mut mount.resolved_source {
-            *source = redact_sensitive_text(source);
+            *source = redact_runtime_display_text(source);
         }
+        mount.target = redact_runtime_display_text(&mount.target);
+        redact_compose_origin(&mut mount.origin);
     }
     for correlation in &mut scan.correlations {
+        correlation.id = redact_runtime_display_text(&correlation.id);
+        correlation.service = redact_runtime_display_text(&correlation.service);
+        if let Some(container) = &mut correlation.container {
+            *container = redact_runtime_display_text(container);
+        }
+        if let Some(mount_id) = &mut correlation.compose_mount_id {
+            *mount_id = redact_runtime_display_text(mount_id);
+        }
+        correlation.target = redact_runtime_display_text(&correlation.target);
         if let Some(source) = &mut correlation.declared_source {
-            *source = redact_sensitive_text(source);
+            *source = redact_runtime_display_text(source);
         }
         if let Some(source) = &mut correlation.runtime_source {
-            *source = redact_sensitive_text(source);
+            *source = redact_runtime_display_text(source);
         }
     }
     for diagnostic in &mut scan.diagnostics {
-        diagnostic.message = redact_sensitive_text(&diagnostic.message);
+        diagnostic.id = redact_runtime_display_text(&diagnostic.id);
+        diagnostic.message = redact_runtime_display_text(&diagnostic.message);
+        redact_compose_origin(&mut diagnostic.origin);
     }
+}
+
+fn redact_compose_origin(origin: &mut ComposeFileOrigin) {
+    origin.file = redact_runtime_display_text(&origin.file);
+    if let Some(service) = &mut origin.service {
+        *service = redact_runtime_display_text(service);
+    }
+    origin.field = redact_runtime_display_text(&origin.field);
 }
 
 /// Redact secret-bearing lines from a unified diff body while keeping the
@@ -4225,7 +4368,13 @@ async fn get_logs(
                 message,
             })?
     } else {
-        mock_logs(&snapshot, service, q, cursor, limit)
+        publish_log_response(
+            service,
+            mock_log_entries(&snapshot, service),
+            q,
+            cursor,
+            limit,
+        )
     };
 
     Ok(Json(response))
@@ -4642,6 +4791,10 @@ fn reject_symlink_path(project_root: &StdPath, canonical: &StdPath) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dockermap_core::{
+        ComposeMount, RuntimeAdvisorySeverity, RuntimeEventRef, RuntimeLogLevel, RuntimeLogRef,
+        RuntimeOwnershipKind, RuntimePackageAdvisory, RuntimePackageUpdate,
+    };
     use std::collections::HashSet;
 
     #[test]
@@ -6091,7 +6244,13 @@ mod tests {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
         let mut diagnostics = Vec::new();
-        collect_npm_projects(&project_root, &mut nodes, &mut edges, &mut diagnostics);
+        collect_npm_projects(
+            &project_root,
+            PidNamespaceScope::Host { diagnostic: None },
+            &mut nodes,
+            &mut edges,
+            &mut diagnostics,
+        );
         redact_runtime_nodes(&mut nodes);
         redact_runtime_edges(&mut edges);
         redact_runtime_diagnostics(&mut diagnostics);
@@ -6748,7 +6907,13 @@ mod tests {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
         let mut diagnostics = Vec::new();
-        collect_npm_projects(&project_root, &mut nodes, &mut edges, &mut diagnostics);
+        collect_npm_projects(
+            &project_root,
+            PidNamespaceScope::Host { diagnostic: None },
+            &mut nodes,
+            &mut edges,
+            &mut diagnostics,
+        );
 
         let dependency = nodes
             .iter()
@@ -7128,6 +7293,311 @@ mod tests {
             RuntimeCollectionGuard::acquire(in_flight).is_some(),
             "the next refresh may run after the original collection finishes"
         );
+    }
+
+    #[test]
+    fn publishes_live_and_mock_logs_through_the_shared_sanitizer_before_paging() {
+        let sentinel = "DOCKERMAP_TEST_FAKE_LIVE_LOG_SECRET";
+        let live = publish_log_response(
+            Some("service\u{202e}name"),
+            vec![LogEntry {
+                id: "live\u{202e}id".into(),
+                timestamp: 1,
+                container: "container\u{202e}name".into(),
+                level: dockermap_core::LogLevel::Info,
+                message: format!("token={sentinel}"),
+            }],
+            Some("redacted"),
+            None,
+            10,
+        );
+        let live_json = serde_json::to_string(&live).expect("response should serialize");
+        assert!(!live_json.contains(sentinel));
+        assert!(!live_json.contains('\u{202e}'));
+        assert_eq!(live.entries.len(), 1, "filtering sees the redacted message");
+        assert_eq!(live.service.as_deref(), Some("service�name"));
+
+        let mut snapshot = mock_snapshot();
+        snapshot.containers[0].role = format!("token={sentinel}");
+        let mock = publish_log_response(
+            None,
+            mock_log_entries(&snapshot, None),
+            Some("redacted"),
+            None,
+            MAX_LOG_PAGE_SIZE,
+        );
+        let mock_json = serde_json::to_string(&mock).expect("response should serialize");
+        assert!(!mock_json.contains(sentinel));
+        assert!(
+            mock.entries
+                .iter()
+                .any(|entry| entry.message == REDACTED_VALUE),
+            "mock messages are redacted before filtering"
+        );
+
+        let raw_secret_query = publish_log_response(
+            None,
+            mock_log_entries(&snapshot, None),
+            Some(sentinel),
+            None,
+            MAX_LOG_PAGE_SIZE,
+        );
+        assert!(
+            raw_secret_query.entries.is_empty(),
+            "a raw secret must not influence observable mock filtering"
+        );
+    }
+
+    #[test]
+    fn restricted_namespace_skips_tailnet_and_filesystem_marker_collectors() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers.clear();
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut diagnostics = Vec::new();
+
+        collect_network_infrastructure(
+            PidNamespaceScope::Restricted,
+            &snapshot,
+            &mut nodes,
+            &mut edges,
+            &mut diagnostics,
+        );
+
+        assert!(nodes
+            .iter()
+            .all(|node| node.kind != RuntimeNodeKind::TailnetNode));
+        assert!(nodes
+            .iter()
+            .all(|node| !node.id.starts_with("reverse_proxy_config_")));
+        for (provider, message) in [
+            (
+                RuntimeProviderKind::Tailscale,
+                "Tailscale discovery skipped in restricted PID namespace",
+            ),
+            (
+                RuntimeProviderKind::Headscale,
+                "Headscale discovery skipped in restricted PID namespace",
+            ),
+            (
+                RuntimeProviderKind::ReverseProxy,
+                "Reverse-proxy configuration marker discovery skipped in restricted PID namespace",
+            ),
+            (
+                RuntimeProviderKind::LocalDns,
+                "Local DNS configuration marker discovery skipped in restricted PID namespace",
+            ),
+        ] {
+            assert!(diagnostics.iter().any(|diagnostic| {
+                diagnostic.provider == provider
+                    && diagnostic.severity == DiagnosticSeverity::Info
+                    && diagnostic.message == message
+            }));
+        }
+    }
+
+    #[test]
+    fn runtime_graph_edges_resolve_in_host_and_restricted_namespaces() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/providers/redaction");
+        let snapshot = mock_snapshot();
+
+        for scope in [
+            PidNamespaceScope::Host { diagnostic: None },
+            PidNamespaceScope::Restricted,
+        ] {
+            let mut nodes = Vec::new();
+            let mut edges = Vec::new();
+            let mut diagnostics = Vec::new();
+            if !scope.is_restricted() {
+                collect_host_node(None, &mut nodes);
+            }
+            collect_npm_projects(
+                &project_root,
+                scope,
+                &mut nodes,
+                &mut edges,
+                &mut diagnostics,
+            );
+            let mut map = derive_runtime_map(&snapshot, nodes, edges, diagnostics);
+            redact_runtime_map(&mut map);
+            let ids = map
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<HashSet<_>>();
+            assert!(map.edges.iter().all(|edge| {
+                ids.contains(edge.source.as_str()) && ids.contains(edge.target.as_str())
+            }));
+            if scope.is_restricted() {
+                assert!(map.nodes.iter().all(|node| node.id != "host_local"));
+                assert!(map.edges.iter().all(|edge| {
+                    !(edge.relationship == RuntimeRelationshipKind::RunsOn
+                        && edge.target == "host_local")
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_map_publication_normalizes_all_ids_and_keeps_edges_consistent() {
+        let unsafe_id = "node\u{202e}id";
+        let unsafe_package_id = "package\u{202e}id";
+        let mut service =
+            RuntimeServiceEntity::minimal("service".into(), RuntimeServiceStatus::Running);
+        service.logs.push(RuntimeLogRef {
+            id: "log\u{202e}id".into(),
+            source: "source".into(),
+            level: Some(RuntimeLogLevel::Info),
+        });
+        service.events.push(RuntimeEventRef {
+            id: "event\u{202e}id".into(),
+            kind: "event".into(),
+            timestamp: None,
+            message: None,
+        });
+        service.owner = Some(RuntimeOwnership {
+            kind: RuntimeOwnershipKind::Person,
+            name: "owner".into(),
+            id: Some("owner\u{202e}id".into()),
+        });
+        let mut package = RuntimePackageEntity::minimal("package".into(), "1.0.0".into());
+        package.update = Some(RuntimePackageUpdate {
+            current_version: "1.0.0".into(),
+            latest_version: None,
+            available: true,
+            advisories: vec![RuntimePackageAdvisory {
+                id: "advisory\u{202e}id".into(),
+                source: "source".into(),
+                title: "title".into(),
+                severity: RuntimeAdvisorySeverity::Low,
+                fixed_version: None,
+                url: None,
+                published_at: None,
+            }],
+        });
+        let node = RuntimeMapNode {
+            id: unsafe_id.into(),
+            provider: RuntimeProviderKind::Other,
+            kind: RuntimeNodeKind::Service,
+            label: "node".into(),
+            status: None,
+            layer: None,
+            metadata: BTreeMap::new(),
+            service: Some(service),
+            package: None,
+        };
+        let duplicate_after_normalization = RuntimeMapNode {
+            id: "node\u{202d}id".into(),
+            ..node.clone()
+        };
+        let package_node = RuntimeMapNode {
+            id: unsafe_package_id.into(),
+            provider: RuntimeProviderKind::Npm,
+            kind: RuntimeNodeKind::PackageDependency,
+            label: "package".into(),
+            status: None,
+            layer: None,
+            metadata: BTreeMap::new(),
+            service: None,
+            package: Some(package),
+        };
+        let edge = RuntimeMapEdge {
+            source: unsafe_id.into(),
+            target: unsafe_package_id.into(),
+            relationship: RuntimeRelationshipKind::DependsOn,
+            metadata: BTreeMap::new(),
+        };
+        let mut map = RuntimeMap {
+            nodes: vec![node, duplicate_after_normalization, package_node],
+            edges: vec![edge.clone(), edge],
+            diagnostics: Vec::new(),
+            last_updated: 0,
+        };
+
+        redact_runtime_map(&mut map);
+
+        let ids = map
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(map.nodes.len(), 2, "normalized node IDs are deduplicated");
+        assert_eq!(
+            map.edges.len(),
+            1,
+            "normalized equivalent edges are deduplicated"
+        );
+        assert!(map.edges.iter().all(|edge| {
+            ids.contains(edge.source.as_str()) && ids.contains(edge.target.as_str())
+        }));
+        let service = map
+            .nodes
+            .iter()
+            .find_map(|node| node.service.as_ref())
+            .expect("service node remains");
+        assert_eq!(service.logs[0].id, "log�id");
+        assert_eq!(service.events[0].id, "event�id");
+        assert_eq!(
+            service.owner.as_ref().and_then(|owner| owner.id.as_deref()),
+            Some("owner�id")
+        );
+        let advisory = map
+            .nodes
+            .iter()
+            .find_map(|node| node.package.as_ref())
+            .and_then(|package| package.update.as_ref())
+            .and_then(|update| update.advisories.first())
+            .expect("package advisory remains");
+        assert_eq!(advisory.id, "advisory�id");
+    }
+
+    #[test]
+    fn compose_publication_normalizes_diagnostics_and_graph_inputs() {
+        let mut scan = ComposeScan {
+            files: vec!["/project\u{202e}/compose.yaml".into()],
+            project_root: "/project\u{202e}".into(),
+            services: Vec::new(),
+            mounts: vec![ComposeMount {
+                id: "mount\u{202e}id".into(),
+                service: "service\u{202e}name".into(),
+                kind: ComposeMountKind::Bind,
+                source: Some("/host\u{202e}/source".into()),
+                resolved_source: Some("/host\u{202e}/source".into()),
+                target: "/container\u{202e}/target".into(),
+                read_only: false,
+                origin: ComposeFileOrigin {
+                    file: "/project\u{202e}/compose.yaml".into(),
+                    service: Some("service\u{202e}name".into()),
+                    field: "services\u{202e}.volumes".into(),
+                },
+            }],
+            correlations: Vec::new(),
+            diagnostics: vec![ComposeDiagnostic {
+                id: "diagnostic\u{202e}id".into(),
+                severity: DiagnosticSeverity::Warning,
+                message: "message\u{202e}text".into(),
+                origin: ComposeFileOrigin {
+                    file: "/project\u{202e}/compose.yaml".into(),
+                    service: Some("service\u{202e}name".into()),
+                    field: "services\u{202e}.volumes".into(),
+                },
+            }],
+        };
+
+        redact_compose_scan(&mut scan);
+        let graph = derive_compose_graph(&scan);
+        let scan_json = serde_json::to_string(&scan).expect("scan should serialize");
+        let graph_json = serde_json::to_string(&graph).expect("graph should serialize");
+        assert!(!scan_json.contains('\u{202e}'));
+        assert!(!graph_json.contains('\u{202e}'));
+        assert_eq!(scan.diagnostics[0].id, "diagnostic�id");
+        assert_eq!(scan.diagnostics[0].origin.file, "/project�/compose.yaml");
+        assert_eq!(
+            scan.diagnostics[0].origin.service.as_deref(),
+            Some("service�name")
+        );
+        assert_eq!(scan.diagnostics[0].origin.field, "services�.volumes");
     }
 
     fn assert_no_raw_secrets<T: serde::Serialize>(value: &T, secrets: &[&str]) {
