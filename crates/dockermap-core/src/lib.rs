@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -1237,7 +1238,7 @@ pub fn derive_runtime_map(
     snapshot: &DockerSnapshot,
     mut nodes: Vec<RuntimeMapNode>,
     mut edges: Vec<RuntimeMapEdge>,
-    diagnostics: Vec<RuntimeMapDiagnostic>,
+    mut diagnostics: Vec<RuntimeMapDiagnostic>,
 ) -> RuntimeMap {
     for container in &snapshot.containers {
         let mut metadata = BTreeMap::new();
@@ -1252,7 +1253,10 @@ pub fn derive_runtime_map(
         }
 
         nodes.push(RuntimeMapNode {
-            id: format!("docker_container_{}", sanitize_id(&container.id)),
+            id: format!(
+                "docker_container_{}",
+                collision_resistant_id_component(&container.id)
+            ),
             provider: RuntimeProviderKind::Docker,
             kind: RuntimeNodeKind::Container,
             label: container.name.clone(),
@@ -1268,15 +1272,24 @@ pub fn derive_runtime_map(
 
         for network_id in &container.networks {
             edges.push(RuntimeMapEdge {
-                source: format!("docker_container_{}", sanitize_id(&container.id)),
-                target: format!("docker_network_{}", sanitize_id(network_id)),
+                source: format!(
+                    "docker_container_{}",
+                    collision_resistant_id_component(&container.id)
+                ),
+                target: format!(
+                    "docker_network_{}",
+                    collision_resistant_id_component(network_id)
+                ),
                 relationship: RuntimeRelationshipKind::ConnectedTo,
                 metadata: BTreeMap::new(),
             });
         }
 
         for port in &container.ports {
-            let listener_id = format!("network_listener_{}", sanitize_id(port));
+            let listener_id = format!(
+                "network_listener_{}",
+                collision_resistant_id_component(port)
+            );
             let mut metadata = BTreeMap::new();
             metadata.insert("port".into(), port.clone());
             nodes.push(RuntimeMapNode {
@@ -1291,7 +1304,10 @@ pub fn derive_runtime_map(
                 package: None,
             });
             edges.push(RuntimeMapEdge {
-                source: format!("docker_container_{}", sanitize_id(&container.id)),
+                source: format!(
+                    "docker_container_{}",
+                    collision_resistant_id_component(&container.id)
+                ),
                 target: listener_id,
                 relationship: RuntimeRelationshipKind::Exposes,
                 metadata: BTreeMap::new(),
@@ -1304,7 +1320,10 @@ pub fn derive_runtime_map(
         metadata.insert("driver".into(), network.driver.clone());
         metadata.insert("internal".into(), network.internal.to_string());
         nodes.push(RuntimeMapNode {
-            id: format!("docker_network_{}", sanitize_id(&network.id)),
+            id: format!(
+                "docker_network_{}",
+                collision_resistant_id_component(&network.id)
+            ),
             provider: RuntimeProviderKind::Docker,
             kind: RuntimeNodeKind::DockerNetwork,
             label: network.name.clone(),
@@ -1323,7 +1342,10 @@ pub fn derive_runtime_map(
             service_entity_kind_name(&ServiceEntityKind::Storage).into(),
         );
         nodes.push(RuntimeMapNode {
-            id: format!("docker_volume_{}", sanitize_id(&volume.id)),
+            id: format!(
+                "docker_volume_{}",
+                collision_resistant_id_component(&volume.id)
+            ),
             provider: RuntimeProviderKind::Docker,
             kind: RuntimeNodeKind::DockerVolume,
             label: volume.name.clone(),
@@ -1341,8 +1363,14 @@ pub fn derive_runtime_map(
                 .find(|container| container.name == *attached)
             {
                 edges.push(RuntimeMapEdge {
-                    source: format!("docker_container_{}", sanitize_id(&container.id)),
-                    target: format!("docker_volume_{}", sanitize_id(&volume.id)),
+                    source: format!(
+                        "docker_container_{}",
+                        collision_resistant_id_component(&container.id)
+                    ),
+                    target: format!(
+                        "docker_volume_{}",
+                        collision_resistant_id_component(&volume.id)
+                    ),
                     relationship: RuntimeRelationshipKind::Mounts,
                     metadata: BTreeMap::new(),
                 });
@@ -1350,8 +1378,22 @@ pub fn derive_runtime_map(
         }
     }
 
+    let mut duplicate_node_ids = BTreeSet::new();
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
-    nodes.dedup_by(|left, right| left.id == right.id);
+    nodes.dedup_by(|left, right| {
+        let duplicate = left.id == right.id;
+        if duplicate {
+            duplicate_node_ids.insert(left.id.clone());
+        }
+        duplicate
+    });
+    for _ in duplicate_node_ids {
+        diagnostics.push(RuntimeMapDiagnostic {
+            provider: RuntimeProviderKind::Other,
+            severity: DiagnosticSeverity::Warning,
+            message: "Duplicate generated runtime topology ID; retaining one node".into(),
+        });
+    }
     edges.sort_by(|left, right| {
         left.source
             .cmp(&right.source)
@@ -1628,8 +1670,8 @@ pub fn derive_compose_graph(scan: &ComposeScan) -> ComposeGraph {
 
         let target_id = format!(
             "compose_container_path_{}_{}",
-            sanitize_id(&mount.service),
-            sanitize_id(&mount.target)
+            collision_resistant_id_component(&mount.service),
+            collision_resistant_id_component(&mount.target)
         );
         nodes_by_id
             .entry(target_id.clone())
@@ -1650,15 +1692,24 @@ pub fn derive_compose_graph(scan: &ComposeScan) -> ComposeGraph {
                 .as_ref()
                 .or(mount.source.as_ref())
                 .map(|source| {
-                    let id = format!("compose_host_path_{}", sanitize_id(source));
+                    let id = format!(
+                        "compose_host_path_{}",
+                        collision_resistant_id_component(source)
+                    );
                     (id, ComposeNodeKind::HostPath, source.clone())
                 }),
             ComposeMountKind::NamedVolume => mount.source.as_ref().map(|source| {
-                let id = format!("compose_named_volume_{}", sanitize_id(source));
+                let id = format!(
+                    "compose_named_volume_{}",
+                    collision_resistant_id_component(source)
+                );
                 (id, ComposeNodeKind::NamedVolume, source.clone())
             }),
             ComposeMountKind::AnonymousVolume => Some((
-                format!("compose_anonymous_volume_{}", sanitize_id(&mount.id)),
+                format!(
+                    "compose_anonymous_volume_{}",
+                    collision_resistant_id_component(&mount.id)
+                ),
                 ComposeNodeKind::AnonymousVolume,
                 "anonymous volume".into(),
             )),
@@ -2543,19 +2594,43 @@ fn unified_diff(file: &str, original: &str, planned: &str) -> String {
 }
 
 fn compose_service_node_id(service: &str) -> String {
-    format!("compose_service_{}", sanitize_id(service))
+    format!(
+        "compose_service_{}",
+        collision_resistant_id_component(service)
+    )
 }
 
-fn sanitize_id(value: &str) -> String {
-    let mut output = String::new();
+/// Build a stable topology-ID component from the complete raw identity.
+///
+/// The readable slug deliberately preserves case and the common `-`, `_`, and
+/// `.` punctuation; all other scalars may collapse for readability, but the
+/// full SHA-256 suffix is calculated from the untouched UTF-8 bytes. Therefore
+/// distinct paths, package names, controls, and punctuation variants cannot
+/// merge merely because their display slugs look alike.
+pub fn collision_resistant_id_component(value: &str) -> String {
+    let mut slug = String::new();
+    let mut emitted_separator = false;
     for character in value.chars() {
-        if character.is_ascii_alphanumeric() {
-            output.push(character.to_ascii_lowercase());
-        } else {
-            output.push('_');
+        if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+            slug.push(character);
+            emitted_separator = false;
+        } else if !emitted_separator {
+            slug.push('-');
+            emitted_separator = true;
         }
     }
-    output.trim_matches('_').to_string()
+    let slug = slug.trim_matches('-');
+    let readable: String = if slug.is_empty() {
+        "identity".into()
+    } else {
+        slug.chars().take(48).collect()
+    };
+    let digest = Sha256::digest(value.as_bytes());
+    let suffix = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{readable}--{suffix}")
 }
 
 #[cfg(test)]
@@ -2943,6 +3018,110 @@ mod tests {
             .edges
             .iter()
             .any(|edge| edge.relationship == RuntimeRelationshipKind::ConnectedTo));
+    }
+
+    #[test]
+    fn collision_resistant_topology_ids_preserve_distinct_raw_identities() {
+        // Every raw identity below used to collide after lowercasing and
+        // punctuation/control replacement. Docker inventory, Compose services,
+        // bind paths, and package-shaped identifiers must remain distinct.
+        let identities = [
+            "sol-r4-a-b",
+            "sol-r4-a_b",
+            "SOL-R4-A",
+            "sol-r4-a",
+            "bidi\u{202e}value",
+            "bidi\u{202d}value",
+            "/srv/sol-r4-a-b",
+            "/srv/sol-r4-a_b",
+            "@scope/sol-r4-a-b",
+            "@scope_sol-r4-a-b",
+        ];
+
+        let mut snapshot = mock_snapshot();
+        snapshot.volumes = identities
+            .iter()
+            .map(|identity| VolumeRecord {
+                id: (*identity).into(),
+                name: (*identity).into(),
+                attached_to: Vec::new(),
+            })
+            .collect();
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let volume_ids = runtime_map
+            .nodes
+            .iter()
+            .filter(|node| node.kind == RuntimeNodeKind::DockerVolume)
+            .map(|node| node.id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            volume_ids.len(),
+            identities.len(),
+            "distinct Docker volume identities must not merge"
+        );
+
+        let scan = ComposeScan {
+            files: Vec::new(),
+            project_root: "/project".into(),
+            services: identities
+                .iter()
+                .map(|identity| ComposeService {
+                    name: (*identity).into(),
+                    image: None,
+                    environment: BTreeMap::new(),
+                    depends_on: Vec::new(),
+                })
+                .collect(),
+            mounts: identities
+                .iter()
+                .enumerate()
+                .map(|(index, identity)| ComposeMount {
+                    id: format!("mount-{index}"),
+                    service: (*identity).into(),
+                    kind: ComposeMountKind::Bind,
+                    source: Some((*identity).into()),
+                    resolved_source: Some((*identity).into()),
+                    target: format!("/target/{index}"),
+                    read_only: false,
+                    origin: ComposeFileOrigin {
+                        file: "/project/compose.yaml".into(),
+                        service: Some((*identity).into()),
+                        field: format!("services.{index}.volumes"),
+                    },
+                })
+                .collect(),
+            correlations: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        let graph = derive_compose_graph(&scan);
+        let service_nodes = graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind == ComposeNodeKind::Service)
+            .collect::<Vec<_>>();
+        let host_path_nodes = graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind == ComposeNodeKind::HostPath)
+            .collect::<Vec<_>>();
+        assert_eq!(service_nodes.len(), identities.len());
+        assert_eq!(host_path_nodes.len(), identities.len());
+        assert_eq!(
+            service_nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            identities.len()
+        );
+        assert_eq!(
+            host_path_nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            identities.len()
+        );
     }
 
     #[test]

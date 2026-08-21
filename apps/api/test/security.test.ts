@@ -598,7 +598,9 @@ test("daemon HTTP errors stay redacted on JSON routes and event streams unless e
     headers: { Authorization: "Bearer test-token" }
   });
   assert.equal(exposedJson.status, 500);
-  assert.equal((await exposedJson.json()).details, "tmux pane SECRET=alpha-secret");
+  const exposedBody = await exposedJson.json();
+  assert.equal(exposedBody.details, "[redacted]");
+  assert.doesNotMatch(exposedBody.details, /alpha-secret/);
 });
 
 test("SSE stream survives a client disconnect mid-emit without crashing the API", async () => {
@@ -766,6 +768,176 @@ test("API forwards fixed read-only daemon paths with normalized query encoding",
   );
 });
 
+test("API publishes redacted and normalized daemon data on every response route", async () => {
+  const sentinel = "DOCKERMAP_TEST_FAKE_API_ROUTE_SECRET";
+  const hostile = `token=${sentinel}\u202e\u200b\u001b\u2028\ufdd0`;
+  const snapshot = {
+    containers: [
+      {
+        id: hostile,
+        name: hostile,
+        image: hostile,
+        status: hostile,
+        role: hostile,
+        networks: [hostile],
+        ports: [hostile],
+        mounts: [{ id: hostile, kind: "bind", source: hostile, target: hostile, readOnly: false }],
+        dependsOn: [hostile]
+      }
+    ],
+    images: [{ image: hostile, containers: [hostile], status: hostile }],
+    networks: [{ id: hostile, name: hostile, driver: hostile, internal: false, members: [hostile] }],
+    volumes: [{ id: hostile, name: hostile, attachedTo: [hostile] }],
+    lastUpdated: 1
+  };
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") {
+      sendJson(res, 200, {
+        status: "degraded",
+        mode: "mock",
+        dockerReachable: false,
+        lastUpdated: 1,
+        snapshotVersion: hostile,
+        message: hostile
+      });
+      return;
+    }
+    if (req.url === "/daemon/snapshot") {
+      sendJson(res, 200, snapshot);
+      return;
+    }
+    if (req.url === "/daemon/graph") {
+      sendJson(res, 200, { nodes: [{ id: hostile, type: "container", label: hostile }], edges: [{ source: hostile, target: hostile, relationship: "mounts" }] });
+      return;
+    }
+    if (req.url === "/daemon/runtime/map") {
+      sendJson(res, 200, {
+        nodes: [{ id: hostile, provider: "other", type: "service", label: hostile, status: hostile, metadata: { [hostile]: hostile } }],
+        edges: [{ source: hostile, target: hostile, relationship: "depends_on", metadata: { [hostile]: hostile } }],
+        diagnostics: [{ provider: "other", severity: "warning", message: hostile }],
+        lastUpdated: 1
+      });
+      return;
+    }
+    if (req.url === "/daemon/containers") {
+      sendJson(res, 200, { containers: snapshot.containers });
+      return;
+    }
+    if (req.url?.startsWith("/daemon/containers/")) {
+      sendJson(res, 200, snapshot.containers[0]);
+      return;
+    }
+    if (req.url === "/daemon/images") {
+      sendJson(res, 200, { images: snapshot.images });
+      return;
+    }
+    if (req.url === "/daemon/networks") {
+      sendJson(res, 200, { networks: snapshot.networks });
+      return;
+    }
+    if (req.url === "/daemon/volumes") {
+      sendJson(res, 200, { volumes: snapshot.volumes });
+      return;
+    }
+    if (req.url?.startsWith("/daemon/logs")) {
+      sendJson(res, 200, {
+        service: hostile,
+        entries: [{ id: hostile, timestamp: 1, container: hostile, level: "info", message: hostile }],
+        nextCursor: null
+      });
+      return;
+    }
+    if (req.url?.startsWith("/daemon/compose/scan")) {
+      sendJson(res, 200, {
+        files: [hostile],
+        projectRoot: hostile,
+        services: [{ name: hostile, image: hostile, environment: { [hostile]: hostile }, dependsOn: [hostile] }],
+        mounts: [],
+        correlations: [],
+        diagnostics: [{ id: hostile, severity: "warning", message: hostile, origin: { file: hostile, service: hostile, field: hostile } }]
+      });
+      return;
+    }
+    if (req.url?.startsWith("/daemon/compose/graph")) {
+      sendJson(res, 200, { nodes: [{ id: hostile, type: "service", label: hostile }], edges: [{ source: hostile, target: hostile, relationship: "declares_mount" }] });
+      return;
+    }
+    if (req.url?.startsWith("/daemon/compose/edit-plan")) {
+      sendJson(res, 200, {
+        file: hostile,
+        service: hostile,
+        mountId: hostile,
+        originalSource: hostile,
+        originalTarget: hostile,
+        newSource: hostile,
+        newTarget: hostile,
+        unifiedDiff: hostile,
+        diagnostics: [{ id: hostile, severity: "warning", message: hostile, origin: { file: hostile, service: hostile, field: hostile } }],
+        willWrite: false
+      });
+      return;
+    }
+    sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+  const auth = { Authorization: "Bearer test-token" };
+  const routes = [
+    "/health",
+    "/api/health",
+    "/api/status",
+    "/api/snapshot",
+    "/api/graph",
+    "/api/runtime/map",
+    "/api/diagnostics",
+    "/api/containers",
+    "/api/containers/api",
+    "/api/images",
+    "/api/networks",
+    "/api/volumes",
+    "/api/logs",
+    "/api/compose/scan",
+    "/api/compose/graph",
+    "/api/compose/edit-plan?file=compose.yaml&service=api&mount=0"
+  ];
+
+  for (const path of routes) {
+    const response = await request(api, path, { headers: auth });
+    assert.equal(response.status, 200, path);
+    assertPublishedPayload(await response.json(), sentinel, path);
+  }
+
+  const stream = await request(api, "/api/events/stream", { headers: auth });
+  assertPublishedPayload(await readFirstChunk(stream), sentinel, "SSE snapshot");
+});
+
+test("SSE error payloads and invalid log service names cannot reflect hostile input", async () => {
+  const sentinel = "DOCKERMAP_TEST_FAKE_API_SSE_SECRET";
+  const hostile = `token=${sentinel}\u202e\u200b\u001b\u2028\ufdd0`;
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") {
+      res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(hostile);
+      return;
+    }
+    sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token",
+    DOCKERMAP_EXPOSE_ERROR_DETAILS: "true"
+  });
+  const auth = { Authorization: "Bearer test-token" };
+
+  const invalidService = await request(api, `/api/logs?service=${encodeURIComponent(hostile)}`, { headers: auth });
+  assert.equal(invalidService.status, 400);
+  assertPublishedPayload(await invalidService.json(), sentinel, "invalid service response");
+
+  const stream = await request(api, "/api/events/stream", { headers: auth });
+  const frame = await readFirstChunk(stream);
+  assert.match(frame, /event: error/);
+  assertPublishedPayload(frame, sentinel, "SSE error");
+});
+
 async function startApi(env: Record<string, string>): Promise<ApiProcess> {
   const port = await freePort();
   const child = spawn(process.execPath, ["node_modules/.bin/tsx", apiEntry], {
@@ -872,6 +1044,18 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
     "Content-Length": Buffer.byteLength(payload)
   });
   res.end(payload);
+}
+
+function assertPublishedPayload(payload: unknown, sentinel: string, label: string) {
+  // SSE framing uses LF separators by design; remove only those separators
+  // before checking the JSON payload for hostile C0/C1 display scalars.
+  const serialized = (typeof payload === "string" ? payload : JSON.stringify(payload)).replace(/[\r\n]/g, "");
+  assert.doesNotMatch(serialized, new RegExp(escapeRegExp(sentinel)), label);
+  assert.doesNotMatch(
+    serialized,
+    /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufdd0-\ufdef\ufeff]/u,
+    label
+  );
 }
 
 async function readFirstChunk(response: Response) {
