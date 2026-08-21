@@ -114,6 +114,22 @@ fallback for the published label/comm (never the args column). Per matched pid,
 rewrites such as `avahi-daemon: running [host]`). The daemon's own pid and the transient
 `ps` process are excluded from results.
 
+The snapshot and the later per-pid `/proc/<pid>/comm` and cgroup reads have an
+intentional PID-reuse TOCTOU window. It measured about 79ms on Hearth (the
+`ps` command, parsing, then 1,225 cgroup and comm reads): a process can exit
+and its pid can be reused before the later read, producing a wrong comm or
+container-filter decision. This is cosmetic rather than a secret-amplification
+path because comm is process-controlled either way and raw args are never
+published; the next 2-second refresh bounds the staleness. The collector does
+not add `/proc/<pid>/stat` reads solely to narrow that short window.
+
+Python labels may expose one argv-derived entry token: a `.py` script path,
+`-m` module, or framework module spec. Tokens with control bytes are rejected
+before publication, and raw args remain omitted. A printable secret-shaped
+script or module name can still be visible to a local process observer, so it
+is an accepted residual rather than a reason to impose an over-broad charset
+allowlist.
+
 `/proc/<pid>/stat`, `/proc/<pid>/status`, `/proc/<pid>/cmdline`, and `/proc/<pid>/cwd`
 remain the preferred sources for a richer future collector (parent pid, uptime, cwd,
 runtime hints) — see Follow-Up Issues.
