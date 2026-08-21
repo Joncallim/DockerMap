@@ -165,6 +165,67 @@ test("forward-auth does not bypass the bearer session login endpoint", async () 
   assert.equal(forwarded.status, 401);
 });
 
+test("session login attempts are rate-limited and redacted failures are logged before authentication", async () => {
+  const sentinel = "DOCKERMAP_TEST_SESSION_LOG_SECRET";
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${await freePort()}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const response = await request(api, `/api/auth/session?token=${sentinel}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${sentinel}`, Cookie: `secret=${sentinel}` },
+      body: JSON.stringify({ token: "wrong-token", sentinel })
+    });
+    assert.equal(response.status, 401);
+  }
+  const limited = await request(api, "/api/auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: "wrong-token" })
+  });
+  assert.equal(limited.status, 429);
+  assert.match(limited.headers.get("retry-after") ?? "", /^[1-9]\d*$/);
+  assert.equal((await limited.json()).code, "rate_limited");
+
+  await delay(20);
+  const logs = api.logs.join("");
+  assert.match(logs, /POST \/api\/auth\/session 401/);
+  assert.match(logs, /POST \/api\/auth\/session 429/);
+  assert.doesNotMatch(logs, new RegExp(escapeRegExp(sentinel)));
+});
+
+test("logging out closes cookie-authenticated SSE streams before another event", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${await freePort()}`,
+    DOCKERMAP_API_TOKEN: "test-token",
+    DOCKERMAP_SSE_INTERVAL_MS: "1000"
+  });
+  const session = await request(api, "/api/auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: "test-token" })
+  });
+  const cookie = (session.headers.get("set-cookie") ?? "").split(";", 1)[0];
+  const stream = await request(api, "/api/events/stream", { headers: { Cookie: cookie } });
+  const reader = stream.body?.getReader();
+  assert.ok(reader, "expected a streaming response body");
+  const initial = await reader.read();
+  assert.equal(initial.done, false);
+  assert.match(new TextDecoder().decode(initial.value), /event: snapshot/);
+
+  const logout = await request(api, "/api/auth/session/logout", { method: "POST", headers: { Cookie: cookie } });
+  assert.equal(logout.status, 204);
+  const afterLogout = await Promise.race([
+    reader.read(),
+    delay(2_000).then(() => { throw new Error("SSE stream did not close after logout"); })
+  ]);
+  assert.equal(afterLogout.done, true, "logout must end the active SSE stream");
+});
+
 test("session cookies are Secure for HTTPS forwarded requests", async () => {
   const api = await startApi({
     DOCKERMAP_ALLOW_MOCK: "true",

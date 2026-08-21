@@ -205,6 +205,36 @@ export async function startLiveDockerStack(): Promise<Stack> {
   };
 }
 
+export async function startTokenConfiguredCompose(): Promise<{ health: string; stop: () => Promise<void> }> {
+  const docker = detectDockerCommand();
+  if (!docker) throw new SkipLiveDockerError("Docker is not reachable by the current user or sudo -n docker.");
+
+  const projectName = `dockermap-compose-e2e-${Date.now().toString(36)}`;
+  const env = { ...process.env, DOCKERMAP_API_TOKEN: "dockermap-compose-e2e-token" };
+  try {
+    runDocker(docker, ["compose", "-p", projectName, "up", "--detach", "--build"], repoRoot, env);
+    const container = `${projectName}-dockermap-1`;
+    let health = "";
+    await waitForCondition(async () => {
+      health = dockerOutput(docker, ["inspect", "--format", "{{.State.Health.Status}}", container], repoRoot).trim();
+      return health === "healthy";
+    }, `healthy Compose container ${container}`);
+    return {
+      health,
+      stop: async () => {
+        runDocker(docker, ["compose", "-p", projectName, "down", "--volumes", "--remove-orphans"], repoRoot, env);
+      }
+    };
+  } catch (error) {
+    try {
+      runDocker(docker, ["compose", "-p", projectName, "down", "--volumes", "--remove-orphans"], repoRoot, env);
+    } catch {
+      // Preserve the original failure.
+    }
+    throw error;
+  }
+}
+
 export class SkipLiveDockerError extends Error {}
 
 async function allocatePorts() {
@@ -680,15 +710,22 @@ exit 1
   }
 }
 
-function runDocker(docker: string[], args: string[], cwd: string) {
+function runDocker(docker: string[], args: string[], cwd: string, env?: NodeJS.ProcessEnv) {
   const result = spawnSync(docker[0], [...docker.slice(1), ...args], {
     cwd,
+    env,
     encoding: "utf8",
     timeout: 120_000
   });
   if (result.status !== 0) {
     throw new Error(`Docker command failed: ${docker.join(" ")} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   }
+}
+
+function dockerOutput(docker: string[], args: string[], cwd: string) {
+  const result = spawnSync(docker[0], [...docker.slice(1), ...args], { cwd, encoding: "utf8", timeout: 120_000 });
+  if (result.status !== 0) throw new Error(`Docker command failed: ${docker.join(" ")} ${args.join(" ")}\n${result.stderr}`);
+  return result.stdout;
 }
 
 function cleanupLiveDocker(docker: string[], fixture: Fixture) {

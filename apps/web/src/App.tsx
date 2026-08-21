@@ -36,7 +36,7 @@ export function App() {
   if (needsToken) return <TokenScreen onAuthenticated={() => setNeedsToken(false)} />;
   return (
     <Routes>
-      <Route element={<AppShell />}>
+      <Route element={<AppShell onBearerSignOut={() => setNeedsToken(true)} />}>
         <Route index element={<Landing />} />
         <Route path="map" element={<MapScreen />} />
         <Route path="runtime" element={<RuntimeScreen />} />

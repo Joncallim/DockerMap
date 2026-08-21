@@ -122,6 +122,17 @@ jobs:
             sleep 1
           done
           curl --fail --silent --show-error http://127.0.0.1:3999/api/snapshot
+          for attempt in {1..60}; do
+            if [ "$(docker inspect --format '{{.State.Health.Status}}' dockermap-smoke)" = healthy ]; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker inspect dockermap-smoke
+              docker logs dockermap-smoke
+              exit 1
+            fi
+            sleep 1
+          done
           if docker logs dockermap-smoke 2>&1 | grep --quiet 'ERR_MODULE_NOT_FOUND'; then
             docker logs dockermap-smoke
             exit 1
