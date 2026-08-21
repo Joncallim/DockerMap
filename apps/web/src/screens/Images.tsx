@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import { EmptyState, ErrorState, Loading, Panel, StateDot, Tag } from "../components/primitives";
-import { UNAVAILABLE_CONTAINER } from "../lib/identity";
+import { COLLISION_HINT, COLLISION_TAG, UNAVAILABLE_CONTAINER } from "../lib/identity";
 
 export default function Images() {
   const { model, loading, error } = useApp();
@@ -60,24 +60,28 @@ export default function Images() {
       ) : (
         <Panel title="In use" icon="image">
           <ul className="svc-list">
-            {visible.map((img, index) => (
-              <li key={`${img.image}-${index}`} className="svc-row image-row">
-                {img.image ? <Link className="image-detail-link" to={`/images/${encodeURIComponent(img.image)}`}>{img.image}</Link> : <code className="image-name">Unavailable image reference</code>}
-                <Tag tone="muted">{img.containers.length} service{img.containers.length === 1 ? "" : "s"}</Tag>
-                <div className="tag-wrap">
-                  {img.containers.map((c, index) => {
-                    const svc = c ? model?.byName.get(c) : undefined;
-                    return svc ? (
-                      <Link key={`${c}-${index}`} className="ref-chip" to={`/services/${encodeURIComponent(svc.name)}`}>
-                        <StateDot state={svc.state} /> {c}
-                      </Link>
-                    ) : (
-                      <span key={`${c}-${index}`} className="ref-chip"><StateDot state="unknown" /> {c || UNAVAILABLE_CONTAINER}</span>
-                    );
-                  })}
-                </div>
-              </li>
-            ))}
+            {visible.map((img, index) => {
+              const collided = img.image !== "" && model.imageRefCollisions.has(img.image);
+              return (
+                <li key={`${img.image}-${index}`} className="svc-row image-row">
+                  {img.image ? (collided ? <code className="image-name collision-identity" title={COLLISION_HINT}>{img.image}</code> : <Link className="image-detail-link" to={`/images/${encodeURIComponent(img.image)}`}>{img.image}</Link>) : <code className="image-name">Unavailable image reference</code>}
+                  <Tag tone="muted">{img.containers.length} service{img.containers.length === 1 ? "" : "s"}</Tag>
+                  {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
+                  <div className="tag-wrap">
+                    {img.containers.map((c, index) => {
+                      const svc = c ? model?.byName.get(c) : undefined;
+                      return svc ? (
+                        <Link key={`${c}-${index}`} className="ref-chip" to={`/services/${encodeURIComponent(svc.name)}`}>
+                          <StateDot state={svc.state} /> {c}
+                        </Link>
+                      ) : (
+                        <span key={`${c}-${index}`} className="ref-chip"><StateDot state="unknown" /> {c || UNAVAILABLE_CONTAINER}</span>
+                      );
+                    })}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </Panel>
       )}

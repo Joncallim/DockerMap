@@ -18,3 +18,12 @@ export const UNAVAILABLE_VOLUME_ID = "Unavailable volume ID";
 export const UNAVAILABLE_MOUNT_TARGET = "Unavailable mount target";
 export const UNAVAILABLE_IMAGE_STATUS = "Unavailable image status";
 export const UNAVAILABLE_NETWORK_DRIVER = "Unavailable network driver";
+
+/**
+ * Collision wording for redacted identity collisions. Distinct records can
+ * sanitize to the SAME published identity string (e.g. two networks both
+ * named "[redacted]"); such identities are non-routable because no single
+ * record can be selected without pointing at the wrong one.
+ */
+export const COLLISION_TAG = "identity collision";
+export const COLLISION_HINT = "Multiple records share this identity after redaction — detail routing is unavailable.";

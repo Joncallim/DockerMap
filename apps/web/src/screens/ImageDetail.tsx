@@ -13,7 +13,9 @@ export default function ImageDetail({ defaultOpen = false }: { defaultOpen?: boo
   const record = useMemo(() => model?.imageByRef.get(image) ?? null, [model, image]);
   if (loading && !model) return <Loading label={`Loading ${image}…`} />;
   if (error && !model) return <ErrorState title="Image unavailable" body={error} />;
-  if (!model || !record) return <EmptyState icon="image" title="Image not found" body={`No image reference "${image}" is in the current snapshot.`} action={<Link className="primary-link" to="/images">Back to Images</Link>} />;
+  if (!model) return <EmptyState icon="image" title="Image not found" body={`No image reference "${image}" is in the current snapshot.`} action={<Link className="primary-link" to="/images">Back to Images</Link>} />;
+  if (model.imageRefCollisions.has(image)) return <EmptyState icon="image" title="Image unavailable" body={`Multiple images share the identity "${image}" after redaction — no single record can be routed to safely.`} action={<Link className="primary-link" to="/images">Back to Images</Link>} />;
+  if (!record) return <EmptyState icon="image" title="Image not found" body={`No image reference "${image}" is in the current snapshot.`} action={<Link className="primary-link" to="/images">Back to Images</Link>} />;
   const consumers = record.containers.map((container) => ({ container, service: container ? model.byName.get(container) : undefined }));
   const states = new Set(consumers.flatMap(({ service }) => service ? [service.state] : []));
   // ONE display value for every status surface: record.status is derive_images'

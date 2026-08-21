@@ -14,7 +14,9 @@ export default function VolumeDetail({ defaultOpen = false }: { defaultOpen?: bo
   const volume = useMemo(() => model?.volumeByName.get(name) ?? null, [model, name]);
   if (loading && !model) return <Loading label={`Loading ${name}…`} />;
   if (error && !model) return <ErrorState title="Volume unavailable" body={error} />;
-  if (!model || !volume) return <EmptyState icon="storage" title="Volume not found" body={`No volume named "${name}" is in the current snapshot.`} action={<Link className="primary-link" to="/storage">Back to Storage</Link>} />;
+  if (!model) return <EmptyState icon="storage" title="Volume not found" body={`No volume named "${name}" is in the current snapshot.`} action={<Link className="primary-link" to="/storage">Back to Storage</Link>} />;
+  if (model.volumeNameCollisions.has(name)) return <EmptyState icon="storage" title="Volume unavailable" body={`Multiple volumes share the identity "${name}" after redaction — no single record can be routed to safely.`} action={<Link className="primary-link" to="/storage">Back to Storage</Link>} />;
+  if (!volume) return <EmptyState icon="storage" title="Volume not found" body={`No volume named "${name}" is in the current snapshot.`} action={<Link className="primary-link" to="/storage">Back to Storage</Link>} />;
   // Each attachedTo entry keeps its occurrence index so duplicate consumers
   // correlate to THEIR OWN matching mounts — counts stay equal to rendered rows.
   const consumers = volume.attachedTo.map((member, occurrence) => ({ member, occurrence, service: member ? model.byName.get(member) : undefined }));

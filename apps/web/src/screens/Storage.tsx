@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import Icon from "../components/Icon";
 import { EmptyState, ErrorState, Loading, Panel, StateDot, Tag } from "../components/primitives";
+import { COLLISION_HINT, COLLISION_TAG } from "../lib/identity";
 
 export default function Storage() {
   const { model, loading, error } = useApp();
@@ -43,31 +44,36 @@ export default function Storage() {
         <EmptyState icon="search" title="No matching volumes" body="No volumes match the current filter." />
       ) : (
         <div className="card-grid">
-          {volumes.map((vol, index) => (
-            <Panel key={`${vol.id}-${index}`} title={vol.name ? <Link className="entity-detail-link" to={`/volumes/${encodeURIComponent(vol.name)}`}>{vol.name}</Link> : "Unavailable volume name"} icon="storage" actions={vol.name ? <Link className="ghost-link entity-detail-action" aria-label={`Open ${vol.name} volume detail`} to={`/volumes/${encodeURIComponent(vol.name)}`}>Open detail</Link> : undefined}>
-              <div className="tag-wrap">
-                <Tag tone={vol.attachedTo.length ? "accent" : "muted"}>
-                  {vol.attachedTo.length ? `${vol.attachedTo.length} consumer${vol.attachedTo.length === 1 ? "" : "s"}` : "idle"}
-                </Tag>
-              </div>
-              {vol.attachedTo.length === 0 ? (
-                <p className="muted-line">Not mounted by any service.</p>
-              ) : (
-                <ul className="rel-list">
-                  {vol.attachedTo.map((member) => {
-                    const svc = model.byName.get(member);
-                    return (
-                      <li key={member}>
-                        <Icon name="arrow" size={13} />
-                        <StateDot state={svc?.state ?? "unknown"} />
-                        {svc ? <Link to={`/services/${encodeURIComponent(svc.name)}`}>{svc.name}</Link> : <span>{member}</span>}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </Panel>
-          ))}
+          {volumes.map((vol, index) => {
+            const collided = vol.name !== "" && model.volumeNameCollisions.has(vol.name);
+            const routable = vol.name !== "" && !collided;
+            return (
+              <Panel key={`${vol.id}-${index}`} title={routable ? <Link className="entity-detail-link" to={`/volumes/${encodeURIComponent(vol.name)}`}>{vol.name}</Link> : vol.name === "" ? "Unavailable volume name" : <span className="collision-identity" title={COLLISION_HINT}>{vol.name}</span>} icon="storage" actions={routable ? <Link className="ghost-link entity-detail-action" aria-label={`Open ${vol.name} volume detail`} to={`/volumes/${encodeURIComponent(vol.name)}`}>Open detail</Link> : undefined}>
+                <div className="tag-wrap">
+                  <Tag tone={vol.attachedTo.length ? "accent" : "muted"}>
+                    {vol.attachedTo.length ? `${vol.attachedTo.length} consumer${vol.attachedTo.length === 1 ? "" : "s"}` : "idle"}
+                  </Tag>
+                  {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
+                </div>
+                {vol.attachedTo.length === 0 ? (
+                  <p className="muted-line">Not mounted by any service.</p>
+                ) : (
+                  <ul className="rel-list">
+                    {vol.attachedTo.map((member) => {
+                      const svc = model.byName.get(member);
+                      return (
+                        <li key={member}>
+                          <Icon name="arrow" size={13} />
+                          <StateDot state={svc?.state ?? "unknown"} />
+                          {svc ? <Link to={`/services/${encodeURIComponent(svc.name)}`}>{svc.name}</Link> : <span>{member}</span>}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </Panel>
+            );
+          })}
         </div>
       )}
     </div>

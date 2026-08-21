@@ -14,7 +14,9 @@ export default function NetworkDetail({ defaultOpen = false }: { defaultOpen?: b
 
   if (loading && !model) return <Loading label={`Loading ${name}…`} />;
   if (error && !model) return <ErrorState title="Network unavailable" body={error} />;
-  if (!model || !network) return <EmptyState icon="network" title="Network not found" body={`No network named "${name}" is in the current snapshot.`} action={<Link className="primary-link" to="/networking">Back to Networking</Link>} />;
+  if (!model) return <EmptyState icon="network" title="Network not found" body={`No network named "${name}" is in the current snapshot.`} action={<Link className="primary-link" to="/networking">Back to Networking</Link>} />;
+  if (model.networkNameCollisions.has(name)) return <EmptyState icon="network" title="Network unavailable" body={`Multiple networks share the identity "${name}" after redaction — no single record can be routed to safely.`} action={<Link className="primary-link" to="/networking">Back to Networking</Link>} />;
+  if (!network) return <EmptyState icon="network" title="Network not found" body={`No network named "${name}" is in the current snapshot.`} action={<Link className="primary-link" to="/networking">Back to Networking</Link>} />;
 
   const resolved = network.members.filter((member) => member !== "" && model.byName.has(member)).length;
   // ONE display value for every driver surface; the contract permits "".
