@@ -3,7 +3,7 @@ import { useApp } from "../context";
 import { needsAttention, summarize, type Service } from "../lib/model";
 import { changeFeed, causalChain, STUB_CHANGES_NOTICE } from "../lib/stubs";
 import { formatRelative } from "../lib/format";
-import { identityText, UNAVAILABLE_SERVICE } from "../lib/identity";
+import { identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_SERVICE } from "../lib/identity";
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { Bar, EmptyState, ErrorState, Loading, Metric, Panel, StatePill, StateDot, Tag } from "../components/primitives";
@@ -143,7 +143,7 @@ export default function Home() {
                       {identityText(service.name, UNAVAILABLE_SERVICE)}
                     </Link> : <span className="svc-name">{identityText(service.name, UNAVAILABLE_SERVICE)}</span>}
                     <Tag tone="accent" icon="image">
-                      {service.imageRepo}:{service.imageTag}
+                      {identityText(service.imageRepo, UNAVAILABLE_IMAGE)}:{identityText(service.imageTag, UNAVAILABLE_IMAGE)}
                     </Tag>
                   </li>
                 ))}

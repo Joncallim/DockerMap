@@ -23,6 +23,7 @@ export const UNAVAILABLE_SERVICE_ID = "Unavailable service ID";
 export const UNAVAILABLE_SERVICE_ROLE = "Unavailable service role";
 export const UNAVAILABLE_SERVICE_STATUS = "Unavailable service status";
 export const UNAVAILABLE_PORT = "Unavailable port";
+export const UNAVAILABLE_PACKAGE = "Unavailable package name";
 export const UNAVAILABLE_RUNTIME_NODE = "Unavailable runtime node";
 export const UNAVAILABLE_RUNTIME_ID = "Unavailable runtime ID";
 export const UNAVAILABLE_COMPOSE_SERVICE = "Unavailable Compose service";

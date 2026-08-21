@@ -1,5 +1,5 @@
 import { computeImpact, type Service, type SystemModel } from "./model";
-import { identityText, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "./identity";
+import { identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "./identity";
 
 /**
  * The Copilot interprets the topology. It does not control anything and it does
@@ -169,7 +169,7 @@ function changeAnswer(model: SystemModel, q: string): CopilotAnswer {
   const body: string[] = [];
   if (updates.length > 0) {
     body.push(`${updates.length} service${updates.length === 1 ? " has" : "s have"} an update available:`);
-    for (const s of updates) body.push(`• ${identityText(s.name, UNAVAILABLE_SERVICE)} (${s.imageRepo}:${s.imageTag})`);
+    for (const s of updates) body.push(`• ${identityText(s.name, UNAVAILABLE_SERVICE)} (${identityText(s.imageRepo, UNAVAILABLE_IMAGE)}:${identityText(s.imageTag, UNAVAILABLE_IMAGE)})`);
   } else {
     body.push("No pending updates detected.");
   }
@@ -184,7 +184,7 @@ function serviceOverviewAnswer(model: SystemModel, service: Service, q: string):
     headline: `${identityText(service.name, UNAVAILABLE_SERVICE)} overview`,
     body: [
       `State: ${service.state} (${identityText(service.status, UNAVAILABLE_SERVICE_STATUS)})`,
-      `Image: ${service.imageRepo}:${service.imageTag}`,
+      `Image: ${identityText(service.imageRepo, UNAVAILABLE_IMAGE)}:${identityText(service.imageTag, UNAVAILABLE_IMAGE)}`,
       `Depends on ${service.dependsOn.length}, used by ${impact.downstream.length}.`,
       publishedPorts.length ? `Ports: ${publishedPorts.join(", ")}` : "No published ports."
     ],

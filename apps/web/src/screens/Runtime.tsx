@@ -6,7 +6,7 @@ import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord } from "../
 import { formatRelative } from "../lib/format";
 import Icon, { type IconName } from "../components/Icon";
 import { EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, StateDot, StatePill, Tag } from "../components/primitives";
-import { identityText, UNAVAILABLE_DIAGNOSTIC_MESSAGE, UNAVAILABLE_LOG_SOURCE, UNAVAILABLE_RUNTIME_NODE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "../lib/identity";
+import { COLLISION_HINT, COLLISION_TAG, identityText, UNAVAILABLE_DIAGNOSTIC_MESSAGE, UNAVAILABLE_LOG_SOURCE, UNAVAILABLE_PACKAGE, UNAVAILABLE_RUNTIME_ID, UNAVAILABLE_RUNTIME_NODE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "../lib/identity";
 
 const PROVIDER_ICON: Record<RuntimeProviderKind, IconName> = {
   docker: "service",
@@ -266,7 +266,7 @@ export default function RuntimeScreen() {
               {selected.package && (
                 <div className="inspector-section">
                   <h4>Package metadata</h4>
-                  <KeyValue label="Package" value={selected.package.name} />
+                  <KeyValue label="Package" value={identityText(selected.package.name, UNAVAILABLE_PACKAGE)} />
                   <KeyValue label="Manager" value={selected.package.manager} />
                   <KeyValue label="Version" value={selected.package.version} mono />
                   <KeyValue
@@ -369,10 +369,12 @@ function RelationList({
             const targetId = direction === "outgoing" ? edge.target : edge.source;
             const node = model.runtime.byId.get(targetId);
             if (!node) {
+              const collided = model.runtime.idCollisions.has(targetId);
               return (
                 <li key={`${edge.relationship}-${index}`} className="runtime-edge-row">
                   <Tag tone="muted">{edge.relationship.replaceAll("_", " ")}</Tag>
-                  <span>{targetId}</span>
+                  <span className={collided ? "collision-identity" : undefined} title={collided ? COLLISION_HINT : undefined}>{identityText(targetId, UNAVAILABLE_RUNTIME_ID)}</span>
+                  {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
                 </li>
               );
             }
