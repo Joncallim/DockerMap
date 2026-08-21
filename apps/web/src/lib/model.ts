@@ -1,6 +1,7 @@
 import type {
   ContainerRecord,
   DockerSnapshot,
+  ImageRecord,
   NetworkRecord,
   RuntimeMap,
   RuntimeMapDiagnostic,
@@ -78,9 +79,23 @@ export interface SystemModel {
   relationships: Relationship[];
   networks: NetworkRecord[];
   volumes: VolumeRecord[];
+  images: ImageRecord[];
   runtime: RuntimeModel;
   byId: Map<string, Service>;
   byName: Map<string, Service>;
+  networkByName: Map<string, NetworkRecord>;
+  volumeByName: Map<string, VolumeRecord>;
+  imageByRef: Map<string, ImageRecord>;
+  /**
+   * Identity keys that MORE THAN ONE record sanitized to after publication
+   * redaction (e.g. two distinct networks both published as "[redacted]").
+   * Collided keys are absent from the maps above so a lookup can never route
+   * to the wrong record; lists render them as plain non-routable text and
+   * detail routes show a collision state instead.
+   */
+  networkNameCollisions: Set<string>;
+  volumeNameCollisions: Set<string>;
+  imageRefCollisions: Set<string>;
   lastUpdated: number;
 }
 
@@ -209,7 +224,16 @@ export function hashString(value: string): number {
 }
 
 export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): SystemModel {
-  const networkNameById = new Map(snapshot.networks.map((n) => [n.id, n.name]));
+  // Network ids are engine-unique, so this plain id→name map is unambiguous:
+  // a duplicate id resolves to the FIRST record's name so Service.networks
+  // stays consistent with the name indexes (a last-wins `new Map(...)` would
+  // leave containers pointing at a name that misses networkByName). Unlike
+  // this id map, the NAME routing indexes below (networkByName,
+  // volumeByName, imageByRef) are collision-safe — see buildIdentityIndex.
+  const networkNameById = new Map<string, string>();
+  for (const n of snapshot.networks) {
+    if (n.id !== "" && !networkNameById.has(n.id)) networkNameById.set(n.id, n.name);
+  }
 
   // dependsOn references can be container ids, container names, or compose
   // service names (the container's role — com.docker.compose.service label);
@@ -257,6 +281,9 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
 
   const byId = new Map(services.map((s) => [s.id, s]));
   const byName = new Map(services.map((s) => [s.name, s]));
+  const { index: networkByName, collisions: networkNameCollisions } = buildIdentityIndex(snapshot.networks, (network) => network.name);
+  const { index: volumeByName, collisions: volumeNameCollisions } = buildIdentityIndex(snapshot.volumes, (volume) => volume.name);
+  const { index: imageByRef, collisions: imageRefCollisions } = buildIdentityIndex(snapshot.images, (image) => image.image);
 
   const relationships = buildRelationships(services, snapshot, byId);
   const runtime = buildRuntimeModel(runtimeMap);
@@ -266,11 +293,52 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
     relationships,
     networks: snapshot.networks,
     volumes: snapshot.volumes,
+    images: snapshot.images,
     runtime,
     byId,
     byName,
+    networkByName,
+    volumeByName,
+    imageByRef,
+    networkNameCollisions,
+    volumeNameCollisions,
+    imageRefCollisions,
     lastUpdated: Math.max(snapshot.lastUpdated, runtime.lastUpdated)
   };
+}
+
+/**
+ * Identity index for detail routing. The daemon redacts identity strings
+ * before publication (`redact_docker_snapshot`), so DISTINCT records can
+ * sanitize to the SAME display value (e.g. two networks both named
+ * "[redacted]"). A first-wins map would keep only one record: the other
+ * record's detail route would be unreachable and every link for the collided
+ * value would open the WRONG record. Collided keys are therefore excluded
+ * from the index entirely (lookup fails closed) and reported in `collisions`
+ * so lists can render them as non-routable text and detail routes can show a
+ * collision state instead of silently resolving to the first record. Empty
+ * keys cannot route and are neither indexed nor collided (the screens already
+ * render "Unavailable …" placeholders for them).
+ */
+function buildIdentityIndex<T>(records: T[], keyFor: (record: T) => string): { index: Map<string, T>; collisions: Set<string> } {
+  const counts = new Map<string, number>();
+  for (const record of records) {
+    const key = keyFor(record);
+    if (key === "") continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const index = new Map<string, T>();
+  const collisions = new Set<string>();
+  for (const record of records) {
+    const key = keyFor(record);
+    if (key === "") continue;
+    if ((counts.get(key) ?? 0) > 1) {
+      collisions.add(key);
+      continue;
+    }
+    if (!index.has(key)) index.set(key, record);
+  }
+  return { index, collisions };
 }
 
 function buildRelationships(

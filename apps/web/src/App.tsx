@@ -4,6 +4,9 @@ import Home from "./screens/Home";
 import MapScreen from "./screens/Map";
 import RuntimeScreen from "./screens/Runtime";
 import ServiceDetail from "./screens/ServiceDetail";
+import NetworkDetail from "./screens/NetworkDetail";
+import VolumeDetail from "./screens/VolumeDetail";
+import ImageDetail from "./screens/ImageDetail";
 import Changes from "./screens/Changes";
 import Copilot from "./screens/Copilot";
 import Networking from "./screens/Networking";
@@ -41,6 +44,9 @@ export function App() {
         <Route path="map" element={<MapScreen />} />
         <Route path="runtime" element={<RuntimeScreen />} />
         <Route path="services/:name" element={<ServiceDetail />} />
+        <Route path="networks/:name" element={<NetworkDetail />} />
+        <Route path="volumes/:name" element={<VolumeDetail />} />
+        <Route path="images/:image" element={<ImageDetail />} />
         <Route path="changes" element={<Changes />} />
         <Route path="copilot" element={<Copilot />} />
         <Route path="networking" element={<Networking />} />

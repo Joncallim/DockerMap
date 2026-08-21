@@ -221,6 +221,93 @@ describe("summarize", () => {
   });
 });
 
+describe("empty schema-valid identities stay visible and non-routable", () => {
+  it("keeps empty image, network, volume, and container strings in the model but out of the routing indexes", () => {
+    const model = buildModel(
+      {
+        containers: [container({ id: "c1", name: "", image: "", networks: [""] })],
+        images: [{ image: "", containers: [""], status: "" }],
+        networks: [{ id: "net1", name: "", driver: "bridge", internal: false, members: [""] }],
+        volumes: [{ id: "vol1", name: "", attachedTo: [""] }],
+        lastUpdated: 0
+      },
+      emptyRuntime
+    );
+    // The contract permits empty strings and the model keeps the recorded
+    // evidence visible in every relationship list…
+    expect(model.services[0].image).toBe("");
+    expect(model.services[0].networks).toEqual([""]);
+    expect(model.networks[0].members).toEqual([""]);
+    expect(model.volumes[0].attachedTo).toEqual([""]);
+    expect(model.images[0].containers).toEqual([""]);
+    // …but empty keys never enter the collision-safe routing indexes, so empty
+    // identities can never emit a detail link.
+    expect(model.imageByRef.has("")).toBe(false);
+    expect(model.networkByName.has("")).toBe(false);
+    expect(model.volumeByName.has("")).toBe(false);
+  });
+});
+
+describe("collision-safe redacted identities", () => {
+  // Distinct records whose identities sanitize to the SAME published value
+  // (the daemon redacts sensitive identity strings to "[redacted]" before
+  // publication). A first-wins index would keep only ONE record: the other
+  // record's detail route becomes unreachable and every link for the collided
+  // value opens the WRONG record. The index must exclude collided keys
+  // entirely (lookup fails closed) and report them so the UI can render
+  // non-routable text instead of silently routing.
+  const collided: DockerSnapshot = {
+    containers: [
+      container({ id: "c_a", name: "svc-a", image: "img-a:1" }),
+      container({ id: "c_b", name: "svc-b", image: "img-b:1" })
+    ],
+    images: [
+      { image: "[redacted]", containers: ["svc-a"], status: "running" },
+      { image: "[redacted]", containers: ["svc-b"], status: "exited" }
+    ],
+    networks: [
+      { id: "net_a", name: "[redacted]", driver: "bridge", internal: false, members: ["svc-a"] },
+      { id: "net_b", name: "[redacted]", driver: "overlay", internal: true, members: ["svc-b"] },
+      { id: "net_ok", name: "bridge1", driver: "bridge", internal: false, members: [] }
+    ],
+    volumes: [
+      { id: "vol_a", name: "[redacted]", attachedTo: ["svc-a"] },
+      { id: "vol_b", name: "[redacted]", attachedTo: ["svc-b"] }
+    ],
+    lastUpdated: 0
+  };
+  const model = buildModel(collided, emptyRuntime);
+
+  it("keeps EVERY collided record in the arrays so both rows stay visible", () => {
+    expect(model.networks).toHaveLength(3);
+    expect(model.networks.filter((n) => n.name === "[redacted]")).toHaveLength(2);
+    expect(model.volumes).toHaveLength(2);
+    expect(model.images).toHaveLength(2);
+  });
+
+  it("excludes collided keys from every routing index (lookup fails closed)", () => {
+    expect(model.networkByName.has("[redacted]")).toBe(false);
+    expect(model.volumeByName.has("[redacted]")).toBe(false);
+    expect(model.imageByRef.has("[redacted]")).toBe(false);
+    // No record — not even the first — is routable under the collided key,
+    // so a link for either record can never open the wrong one.
+    expect(model.networkByName.get("[redacted]")).toBeUndefined();
+    expect(model.volumeByName.get("[redacted]")).toBeUndefined();
+    expect(model.imageByRef.get("[redacted]")).toBeUndefined();
+  });
+
+  it("reports collided keys so lists and detail routes can render a collision state", () => {
+    expect(model.networkNameCollisions.has("[redacted]")).toBe(true);
+    expect(model.volumeNameCollisions.has("[redacted]")).toBe(true);
+    expect(model.imageRefCollisions.has("[redacted]")).toBe(true);
+  });
+
+  it("leaves unique identities fully routable", () => {
+    expect(model.networkByName.get("bridge1")?.id).toBe("net_ok");
+    expect(model.networkNameCollisions.has("bridge1")).toBe(false);
+  });
+});
+
 describe("hashString", () => {
   it("is deterministic and normalized to [0, 1)", () => {
     const first = hashString("container_api");

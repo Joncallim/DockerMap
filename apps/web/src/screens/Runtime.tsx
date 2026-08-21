@@ -68,7 +68,8 @@ export default function RuntimeScreen() {
   }, [attentionOnly, layerFilter, providerFilter, runtime.nodes]);
 
   const selected = (selectedId ? runtime.byId.get(selectedId) : null) ?? filteredNodes[0] ?? null;
-  const selectedDetailUrl = selected && model.byName.has(selected.label) ? `/services/${encodeURIComponent(selected.label)}` : null;
+  const selectedDetail = resolveDockerDetail(model, selected);
+  const selectedImage = selected?.provider === "docker" && selected.type === "container" && typeof selected.metadata.image === "string" && selected.metadata.image !== "" ? model.imageByRef.get(selected.metadata.image) ?? null : null;
 
   return (
     <div className="screen map-screen">
@@ -235,9 +236,14 @@ export default function RuntimeScreen() {
                 </div>
               )}
 
-              {selected.service?.name && (
-                <Link className="primary-link" to={`/services/${encodeURIComponent(selected.service.name)}`}>
-                  Open service detail <Icon name="arrow" size={14} />
+              {selectedDetail && (
+                <Link className="primary-link" to={selectedDetail.url}>
+                  {selectedDetail.label} <Icon name="arrow" size={14} />
+                </Link>
+              )}
+              {selectedImage && (
+                <Link className="primary-link" to={`/images/${encodeURIComponent(selectedImage.image)}`}>
+                  Open image detail <Icon name="arrow" size={14} />
                 </Link>
               )}
 
@@ -296,18 +302,29 @@ export default function RuntimeScreen() {
                   </div>
                 </div>
               )}
-
-              {selectedDetailUrl && (
-                <Link className="primary-link" to={selectedDetailUrl}>
-                  Open matching Docker service <Icon name="arrow" size={14} />
-                </Link>
-              )}
             </div>
           )}
         </aside>
       </div>
     </div>
   );
+}
+
+function resolveDockerDetail(model: NonNullable<ReturnType<typeof useApp>["model"]>, selected: RuntimeNodeRecord | null): { url: string; label: string } | null {
+  if (!selected || selected.provider !== "docker" || selected.label === "") return null;
+  if (selected.type === "container") {
+    const service = model.byName.get(selected.label);
+    return service ? { url: `/services/${encodeURIComponent(service.name)}`, label: "Open service detail" } : null;
+  }
+  if (selected.type === "docker_network") {
+    const network = model.networkByName.get(selected.label);
+    return network ? { url: `/networks/${encodeURIComponent(network.name)}`, label: "Open network detail" } : null;
+  }
+  if (selected.type === "docker_volume") {
+    const volume = model.volumeByName.get(selected.label);
+    return volume ? { url: `/volumes/${encodeURIComponent(volume.name)}`, label: "Open volume detail" } : null;
+  }
+  return null;
 }
 
 function RelationList({

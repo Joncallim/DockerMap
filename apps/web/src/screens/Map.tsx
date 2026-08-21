@@ -1,14 +1,16 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import { computeImpact, needsAttention, SERVICE_STATES, type ServiceState } from "../lib/model";
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { EmptyState, ErrorState, KeyValue, Loading, StatePill, StateDot, Tag } from "../components/primitives";
+import { IdentityRef } from "../components/identity";
+import { COLLISION_HINT, COLLISION_TAG, UNAVAILABLE_IMAGE, UNAVAILABLE_NETWORK, UNAVAILABLE_VOLUME } from "../lib/identity";
 
-export default function MapScreen() {
+export default function MapScreen({ initialSelectedId = null }: { initialSelectedId?: string | null }) {
   const { model, loading, error } = useApp();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
   const [stateFilter, setStateFilter] = useState<ServiceState | "attention" | null>(null);
 
   const filter = useMemo(() => {
@@ -118,7 +120,42 @@ export default function MapScreen() {
                 </div>
               )}
 
-              <KeyValue label="Image" value={`${selected.imageRepo}:${selected.imageTag}`} mono />
+              <KeyValue label="Image" value={<IdentityRef name={selected.image} fallback={UNAVAILABLE_IMAGE} to={model.imageByRef.has(selected.image) ? `/images/${encodeURIComponent(selected.image)}` : undefined} className="entity-detail-link" />} mono />
+              {selected.networks.length > 0 && <div className="inspector-section"><h4>Networks</h4><div className="tag-wrap">{selected.networks.map((network, index) => model.networkByName.has(network) ? <Link key={`${network}-${index}`} className="ref-chip" to={`/networks/${encodeURIComponent(network)}`}>{network}</Link> : <Tag key={`${network}-${index}`} icon="network"><IdentityRef name={network} fallback={UNAVAILABLE_NETWORK} /></Tag>)}</div></div>}
+              {selected.mounts.some((mount) => mount.kind === "named_volume") && (
+                <div className="inspector-section">
+                  <h4>Named volumes</h4>
+                  <div className="tag-wrap">
+                    {selected.mounts.map((mount, index) => {
+                      if (mount.kind !== "named_volume") return null;
+                      // Occurrence-qualified keys keep duplicate/empty mount ids
+                      // distinct. A source links only when it resolves to exactly
+                      // one volume record; collided (excluded from volumeByName),
+                      // unresolved, and empty sources stay VISIBLE as non-routable
+                      // evidence — "Unavailable volume name" for "", "anonymous"
+                      // for null, plus the collision hint/tag when the source is a
+                      // collided redacted identity.
+                      const source = mount.source;
+                      const routable = source !== null && source !== "" && model.volumeByName.has(source);
+                      const collided = source !== null && source !== "" && model.volumeNameCollisions.has(source);
+                      return routable ? (
+                        <Link key={`${mount.id}-${index}`} className="ref-chip" to={`/volumes/${encodeURIComponent(source)}`}>{source}</Link>
+                      ) : (
+                        <Fragment key={`${mount.id}-${index}`}>
+                          <Tag icon="storage">
+                            {collided ? (
+                              <span className="collision-identity" title={COLLISION_HINT}>{source}</span>
+                            ) : (
+                              <span>{source === "" ? UNAVAILABLE_VOLUME : source ?? "anonymous"}</span>
+                            )}
+                          </Tag>
+                          {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
+                        </Fragment>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <Link className="primary-link" to={`/services/${encodeURIComponent(selected.name)}`}>
                 Open service detail <Icon name="arrow" size={14} />
               </Link>

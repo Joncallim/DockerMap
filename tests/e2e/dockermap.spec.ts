@@ -47,6 +47,77 @@ test.describe("DockerMap GUI", () => {
       await expect(page.getByRole("main")).toContainText(marker);
     }
 
+    // Inventory detail routes use the shared snapshot and preserve relationships.
+    await openSpace(page, "Networking", "/networking");
+    await page.locator(".entity-detail-link", { hasText: "application" }).click();
+    await expect(page).toHaveURL(/\/networks\/application$/);
+    await expect(page.getByRole("heading", { name: "application" })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("bridge");
+    for (const service of ["gateway", "api", "worker"]) await expect(page.getByRole("main")).toContainText(service);
+    await page.locator(".svc-list").getByRole("link", { name: "gateway", exact: true }).click();
+    await expect(page).toHaveURL(/\/services\/gateway$/);
+
+    await openSpace(page, "Storage", "/storage");
+    await page.locator(".entity-detail-link", { hasText: "postgres_data" }).click();
+    await expect(page).toHaveURL(/\/volumes\/postgres_data$/);
+    await expect(page.getByRole("heading", { name: "postgres_data" })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("postgres");
+    await expect(page.getByRole("main")).toContainText("/var/lib/postgresql/data");
+    await expect(page.getByRole("main")).toContainText("read-write");
+
+    await openSpace(page, "Images", "/images");
+    await page.locator(".image-detail-link", { hasText: "python:3.11-slim" }).click();
+    await expect(page).toHaveURL(/\/images\/python%3A3\.11-slim$/);
+    await expect(page.getByRole("heading", { name: "python:3.11-slim" })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("api");
+    await expect(page.getByRole("main")).toContainText("worker");
+
+    // A slash-bearing reference must resolve through the browser router's %2F
+    // decoding: the missing-image case below could still pass if decoding were
+    // broken (it reaches the same not-found state), so prove the POSITIVE
+    // lookup against the mock fixture image too.
+    await page.goto(`${stack.webUrl}/images/${encodeURIComponent("ghcr.io/dockermap/example:1.0")}`, { waitUntil: "domcontentloaded" });
+    await expect(page).toHaveURL(/\/images\/ghcr\.io%2Fdockermap%2Fexample%3A1\.0$/);
+    await expect(page.getByRole("heading", { name: "ghcr.io/dockermap/example:1.0" })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("Sample consumer status: running");
+    await expect(page.getByRole("main")).toContainText("registry");
+    await expect(page.getByRole("heading", { name: "Image not found" })).not.toBeVisible();
+
+    await openSpace(page, "Runtime", "/runtime");
+    const applicationRuntime = page.locator(".runtime-node-btn", { hasText: "application" }).filter({ hasText: "docker network" });
+    await applicationRuntime.click();
+    await expect(page.getByRole("link", { name: "Open network detail" })).toHaveAttribute("href", "/networks/application");
+    await page.getByRole("link", { name: "Open network detail" }).click();
+    await expect(page).toHaveURL(/\/networks\/application$/);
+    await openSpace(page, "Runtime", "/runtime");
+    const postgresVolumeRuntime = page.locator(".runtime-node-btn", { hasText: "postgres_data" }).filter({ hasText: "docker volume" });
+    await postgresVolumeRuntime.click();
+    await expect(page.getByRole("link", { name: "Open volume detail" })).toHaveAttribute("href", "/volumes/postgres_data");
+
+    await openSpace(page, "Service Map", "/map");
+    await page.getByRole("button", { name: "postgres, healthy" }).click();
+    await page.getByRole("link", { name: "postgres:16-alpine" }).click();
+    await expect(page.getByRole("heading", { name: "postgres:16-alpine" })).toBeVisible();
+    await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "postgres, healthy" }).click();
+    await page.getByRole("link", { name: "data", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "data" })).toBeVisible();
+    await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "postgres, healthy" }).click();
+    await page.getByRole("link", { name: "postgres_data" }).click();
+    await expect(page.getByRole("heading", { name: "postgres_data" })).toBeVisible();
+
+    await page.goto(`${stack.webUrl}/images/${encodeURIComponent("ghcr.io/example/missing:tag")}`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Image not found" })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("ghcr.io/example/missing:tag");
+    await expect(page.getByRole("link", { name: "Back to Images" })).toHaveAttribute("href", "/images");
+    await page.goto(`${stack.webUrl}/networks/missing`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Network not found" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Back to Networking" })).toHaveAttribute("href", "/networking");
+    await page.goto(`${stack.webUrl}/volumes/missing`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Volume not found" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Back to Storage" })).toHaveAttribute("href", "/storage");
+
     // Logs controls narrow the stream without a reload.
     await openSpace(page, "Logs", "/logs");
     await page.locator("input.log-search").fill("traffic");
@@ -138,6 +209,34 @@ test.describe("DockerMap GUI", () => {
     await openSpace(page, "Storage", "/storage");
     await expect(page.getByRole("main")).toContainText(`${projectName}_live-cache`);
     await expect(page.getByRole("main")).toContainText(`${projectName}_live-logs`);
+
+    const relationshipNetwork = snapshot.networks.find((network: { name: string; driver: string; members: string[] }) => network.name && network.members.some((member) => member === apiName || member === workerName));
+    const relationshipVolume = snapshot.volumes.find((volume: { name: string; id: string; attachedTo: string[] }) => volume.name && volume.attachedTo.length > 0 && snapshot.containers.some((container: { name: string; mounts: { kind: string; source: string | null; target: string }[] }) => volume.attachedTo.includes(container.name) && container.mounts.some((mount) => mount.kind === "named_volume" && (mount.source === volume.name || mount.source === volume.id))));
+    const busyboxImage = snapshot.images.find((image: { image: string; containers: string[] }) => image.image === "busybox:1.36.1" && image.containers.length > 0);
+    expect(relationshipNetwork).toBeTruthy();
+    expect(relationshipVolume).toBeTruthy();
+    expect(busyboxImage).toBeTruthy();
+    const volumeConsumer = snapshot.containers.find((container: { name: string; mounts: { kind: string; source: string | null; target: string }[] }) => relationshipVolume.attachedTo.includes(container.name) && container.mounts.some((mount) => mount.kind === "named_volume" && (mount.source === relationshipVolume.name || mount.source === relationshipVolume.id)));
+    const volumeTarget = volumeConsumer.mounts.find((mount: { kind: string; source: string | null; target: string }) => mount.kind === "named_volume" && (mount.source === relationshipVolume.name || mount.source === relationshipVolume.id))?.target;
+    expect(volumeConsumer).toBeTruthy();
+    expect(volumeTarget).toBeTruthy();
+
+    // Detail links use relationship-bearing keys from this live snapshot.
+    await openSpace(page, "Networking", "/networking");
+    await page.locator(".entity-detail-link", { hasText: relationshipNetwork.name }).click();
+    await expect(page.getByRole("heading", { name: relationshipNetwork.name })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText(relationshipNetwork.driver);
+    await expect(page.getByRole("main")).toContainText(relationshipNetwork.members[0]);
+    await openSpace(page, "Storage", "/storage");
+    await page.locator(".entity-detail-link", { hasText: relationshipVolume.name }).click();
+    await expect(page.getByRole("heading", { name: relationshipVolume.name })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText(volumeConsumer.name);
+    await expect(page.getByRole("main")).toContainText(volumeTarget);
+    await openSpace(page, "Images", "/images");
+    await page.locator(".image-detail-link", { hasText: busyboxImage.image }).click();
+    await expect(page).toHaveURL(new RegExp(`/images/${encodeURIComponent(busyboxImage.image)}$`));
+    await expect(page.getByRole("heading", { name: busyboxImage.image })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText(busyboxImage.containers[0]);
 
     await openSpace(page, "Logs", "/logs");
     await page.locator("select.service-select").selectOption(workerName!);

@@ -1,20 +1,19 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import type { ImageRecord } from "@dockermap/contracts";
 import { useApp } from "../context";
-import { useApiResource } from "../hooks/useApiResource";
 import { EmptyState, ErrorState, Loading, Panel, StateDot, Tag } from "../components/primitives";
+import { COLLISION_HINT, COLLISION_TAG, UNAVAILABLE_CONTAINER } from "../lib/identity";
 
 export default function Images() {
-  const { model, tick } = useApp();
-  const resource = useApiResource<{ images: ImageRecord[] }>("/api/images", tick);
+  const { model, loading, error } = useApp();
   const [sort, setSort] = useState<"name" | "usage">("name");
   const [search, setSearch] = useState("");
 
-  if (resource.loading && !resource.data) return <Loading label="Grouping services by image…" />;
-  if (resource.error) return <ErrorState title="Images unavailable" body={resource.error} />;
+  if (loading && !model) return <Loading label="Grouping services by image…" />;
+  if (error && !model) return <ErrorState title="Images unavailable" body={error} />;
+  if (!model) return <EmptyState icon="image" title="No images" body="Connect a Docker host to inspect image usage." />;
 
-  const images = resource.data?.images ?? [];
+  const images = model.images;
   const needle = search.trim().toLowerCase();
   const visible = [...images]
     .filter((img) => needle === "" || img.image.toLowerCase().includes(needle))
@@ -61,22 +60,28 @@ export default function Images() {
       ) : (
         <Panel title="In use" icon="image">
           <ul className="svc-list">
-            {visible.map((img) => (
-              <li key={img.image} className="svc-row image-row">
-                <code className="image-name">{img.image}</code>
-                <Tag tone="muted">{img.containers.length} service{img.containers.length === 1 ? "" : "s"}</Tag>
-                <div className="tag-wrap">
-                  {img.containers.map((c) => {
-                    const svc = model?.byName.get(c);
-                    return (
-                      <Link key={c} className="ref-chip" to={`/services/${encodeURIComponent(c)}`}>
-                        <StateDot state={svc?.state ?? "unknown"} /> {c}
-                      </Link>
-                    );
-                  })}
-                </div>
-              </li>
-            ))}
+            {visible.map((img, index) => {
+              const collided = img.image !== "" && model.imageRefCollisions.has(img.image);
+              return (
+                <li key={`${img.image}-${index}`} className="svc-row image-row">
+                  {img.image ? (collided ? <code className="image-name collision-identity" title={COLLISION_HINT}>{img.image}</code> : <Link className="image-detail-link" to={`/images/${encodeURIComponent(img.image)}`}>{img.image}</Link>) : <code className="image-name">Unavailable image reference</code>}
+                  <Tag tone="muted">{img.containers.length} service{img.containers.length === 1 ? "" : "s"}</Tag>
+                  {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
+                  <div className="tag-wrap">
+                    {img.containers.map((c, index) => {
+                      const svc = c ? model?.byName.get(c) : undefined;
+                      return svc ? (
+                        <Link key={`${c}-${index}`} className="ref-chip" to={`/services/${encodeURIComponent(svc.name)}`}>
+                          <StateDot state={svc.state} /> {c}
+                        </Link>
+                      ) : (
+                        <span key={`${c}-${index}`} className="ref-chip"><StateDot state="unknown" /> {c || UNAVAILABLE_CONTAINER}</span>
+                      );
+                    })}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </Panel>
       )}

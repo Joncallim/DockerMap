@@ -8,6 +8,8 @@ import { resourceFor, STUB_NOTICE } from "../lib/stubs";
 import { formatKbps, formatMb, formatPercent, formatRelative } from "../lib/format";
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
+import { IdentityRef } from "../components/identity";
+import { UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_VOLUME } from "../lib/identity";
 import { Bar, EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, Sparkline, StatePill, StateDot, Tag } from "../components/primitives";
 
 type Tab = "overview" | "dependencies" | "resources" | "logs" | "config";
@@ -19,11 +21,11 @@ const TABS: { id: Tab; label: string; icon: Parameters<typeof Icon>[0]["name"] }
   { id: "config", label: "Configuration", icon: "layers" }
 ];
 
-export default function ServiceDetail() {
+export default function ServiceDetail({ defaultTab = "overview", defaultOpen = false }: { defaultTab?: Tab; defaultOpen?: boolean }) {
   const { name = "" } = useParams();
   const { model, loading, error, tick } = useApp();
-  const [tab, setTab] = useState<Tab>("overview");
-  const [showInternals, setShowInternals] = useState(false);
+  const [tab, setTab] = useState<Tab>(defaultTab);
+  const [showInternals, setShowInternals] = useState(defaultOpen);
 
   const service = useMemo(() => model?.byName.get(name) ?? null, [model, name]);
 
@@ -96,21 +98,25 @@ export default function ServiceDetail() {
       {tab === "resources" && <Resources service={service} />}
       {tab === "logs" && <Logs name={service.name} tick={tick} />}
       {tab === "config" && (
-        <Config service={service} showInternals={showInternals} onToggleInternals={() => setShowInternals((v) => !v)} />
+        <Config service={service} model={model} showInternals={showInternals} onToggleInternals={() => setShowInternals((v) => !v)} />
       )}
     </div>
   );
 }
 
 function Overview({ service, model }: { service: Service; model: NonNullable<ReturnType<typeof useApp>["model"]> }) {
+  // Per-entry mapping preserves duplicate/empty network identities (unlike a
+  // raw join, which collapses ["", "bridge1"] to ", bridge1"); the em dash is
+  // reserved for a genuinely empty array.
+  const networksLabel = service.networks.length === 0 ? "—" : service.networks.map((network) => (network === "" ? UNAVAILABLE_NETWORK : network)).join(", ");
   return (
     <div className="grid-2">
       <Panel title="At a glance" icon="service">
         <KeyValue label="State" value={<StatePill state={service.state} />} />
         <KeyValue label="Raw status" value={service.status} mono />
-        <KeyValue label="Image" value={`${service.imageRepo}:${service.imageTag}`} mono />
+        <KeyValue label="Image" value={<IdentityRef name={service.image} fallback={UNAVAILABLE_IMAGE} to={model.imageByRef.has(service.image) ? `/images/${encodeURIComponent(service.image)}` : undefined} className="entity-detail-link" />} mono />
         <KeyValue label="Role" value={service.role} />
-        <KeyValue label="Networks" value={service.networks.join(", ") || "—"} />
+        <KeyValue label="Networks" value={networksLabel} />
       </Panel>
       <Panel title="Relationships" icon="link" actions={<Link className="ghost-link" to="/map">Trace</Link>}>
         <ServiceMap model={model} selectedId={service.id} onSelect={() => {}} interactive={false} height={240} />
@@ -198,10 +204,12 @@ function Logs({ name, tick }: { name: string; tick: number }) {
 
 function Config({
   service,
+  model,
   showInternals,
   onToggleInternals
 }: {
   service: Service;
+  model: NonNullable<ReturnType<typeof useApp>["model"]>;
   showInternals: boolean;
   onToggleInternals: () => void;
 }) {
@@ -212,12 +220,12 @@ function Config({
           <p className="muted-line">No volumes or bind mounts.</p>
         ) : (
           <ul className="mount-list">
-            {service.mounts.map((m) => (
-              <li key={m.id} className="mount-row">
+            {service.mounts.map((m, index) => (
+              <li key={`${m.id}-${index}`} className="mount-row">
                 <Tag tone="muted">{m.kind.replace("_", " ")}</Tag>
-                <code>{m.source ?? "anonymous"}</code>
+                {m.kind === "named_volume" && m.source && model.volumeByName.has(m.source) ? <Link className="entity-detail-link" to={`/volumes/${encodeURIComponent(m.source)}`}>{m.source}</Link> : <code>{m.source === "" ? UNAVAILABLE_VOLUME : m.source ?? "anonymous"}</code>}
                 <Icon name="arrow" size={13} />
-                <code>{m.target}</code>
+                <code>{m.target === "" ? UNAVAILABLE_MOUNT_TARGET : m.target}</code>
                 {m.readOnly && <Tag tone="warn">read-only</Tag>}
               </li>
             ))}
@@ -227,11 +235,9 @@ function Config({
 
       <Panel title="Networking" icon="network">
         <div className="tag-wrap">
-          {service.networks.map((n) => (
-            <Tag key={n} icon="network">
-              {n}
-            </Tag>
-          ))}
+          {service.networks.map((n, index) =>
+            model.networkByName.has(n) ? <Link key={`${n}-${index}`} className="ref-chip" to={`/networks/${encodeURIComponent(n)}`}>{n}</Link> : <Tag key={`${n}-${index}`} icon="network"><IdentityRef name={n} fallback={UNAVAILABLE_NETWORK} /></Tag>
+          )}
           {service.ports.map((p) => (
             <Tag key={p} icon="link" tone="accent">
               {p}
@@ -245,21 +251,23 @@ function Config({
         icon="layers"
         hint="Layer 4 — shown on request"
         actions={
-          <button type="button" className="ghost-link" onClick={onToggleInternals}>
+          <button type="button" className="ghost-link" aria-label={showInternals ? "Hide service internals" : "Show service internals"} aria-expanded={showInternals} aria-controls="service-internals" onClick={onToggleInternals}>
             {showInternals ? "Hide" : "Show"} <Icon name={showInternals ? "up" : "down"} size={13} />
           </button>
         }
       >
-        {showInternals ? (
-          <>
-            <KeyValue label="Container ID" value={service.id} mono />
-            <KeyValue label="Image reference" value={service.image} mono />
-            <KeyValue label="Raw status" value={service.status} mono />
-            <KeyValue label="Port bindings" value={service.ports.join(", ") || "none"} mono />
-          </>
-        ) : (
-          <p className="muted-line">Container IDs, raw image refs and port bindings are hidden until you ask for them.</p>
-        )}
+        <div id="service-internals">
+          {showInternals ? (
+            <>
+              <KeyValue label="Container ID" value={service.id === "" ? UNAVAILABLE_CONTAINER_ID : service.id} mono />
+              <KeyValue label="Image reference" value={<IdentityRef name={service.image} fallback={UNAVAILABLE_IMAGE} to={model.imageByRef.has(service.image) ? `/images/${encodeURIComponent(service.image)}` : undefined} className="entity-detail-link" />} mono />
+              <KeyValue label="Raw status" value={service.status} mono />
+              <KeyValue label="Port bindings" value={service.ports.join(", ") || "none"} mono />
+            </>
+          ) : (
+            <p className="muted-line">Container IDs, raw image refs and port bindings are hidden until you ask for them.</p>
+          )}
+        </div>
       </Panel>
     </div>
   );
