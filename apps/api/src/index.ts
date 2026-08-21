@@ -67,6 +67,9 @@ const sessionTtlMs = 24 * 60 * 60 * 1_000;
 const maxSessions = 1_024;
 const sessions = new Map<string, number>();
 const activeSessionStreams = new Map<string, Set<express.Response>>();
+const maxStreamsPerSession = readBoundedNumber(process.env.DOCKERMAP_MAX_SSE_STREAMS_PER_SESSION, 8, 1, 64);
+const maxStreams = readBoundedNumber(process.env.DOCKERMAP_MAX_SSE_STREAMS, 128, 1, 1_024);
+let activeStreamCount = 0;
 const sessionAttemptWindowMs = 60_000;
 const maxSessionAttemptsPerWindow = 20;
 const maxSessionAttemptSources = 1_024;
@@ -195,12 +198,12 @@ function readCookie(req: express.Request, name: string) {
 function issueSession() {
   const now = Date.now();
   for (const [session, expiresAt] of sessions) {
-    if (expiresAt <= now) sessions.delete(session);
+    if (expiresAt <= now) revokeSession(session);
   }
   while (sessions.size >= maxSessions) {
     const oldest = sessions.keys().next().value;
     if (!oldest) break;
-    sessions.delete(oldest);
+    revokeSession(oldest);
   }
   const session = randomBytes(32).toString("base64url");
   sessions.set(session, now + sessionTtlMs);
@@ -211,7 +214,7 @@ function validSession(session: string) {
   const expiresAt = sessions.get(session);
   if (!expiresAt) return false;
   if (expiresAt <= Date.now()) {
-    sessions.delete(session);
+    revokeSession(session);
     return false;
   }
   return true;
@@ -223,18 +226,37 @@ function closeSessionStreams(session: string) {
   }
 }
 
+function revokeSession(session: string) {
+  sessions.delete(session);
+  closeSessionStreams(session);
+}
+
 function registerSessionStream(session: string, response: express.Response) {
-  if (!session) return;
+  if (activeStreamCount >= maxStreams) return "process" as const;
   const streams = activeSessionStreams.get(session) ?? new Set<express.Response>();
+  if (session && streams.size >= maxStreamsPerSession) return "session" as const;
   streams.add(response);
   activeSessionStreams.set(session, streams);
+  activeStreamCount += 1;
+  return "accepted" as const;
 }
 
 function unregisterSessionStream(session: string, response: express.Response) {
   const streams = activeSessionStreams.get(session);
   if (!streams) return;
-  streams.delete(response);
+  if (streams.delete(response)) activeStreamCount = Math.max(0, activeStreamCount - 1);
   if (streams.size === 0) activeSessionStreams.delete(session);
+}
+
+function canonicalLogPath(path: string) {
+  if (/^\/api(?:\/v1)?\/containers\/[^/]+$/.test(path)) return "/api/containers/:name";
+  const known = new Set([
+    "/health", "/api/health", "/api/status", "/api/snapshot", "/api/graph", "/api/runtime/map",
+    "/api/diagnostics", "/api/containers", "/api/images", "/api/networks", "/api/volumes", "/api/logs",
+    "/api/compose/scan", "/api/compose/graph", "/api/compose/edit-plan", "/api/events/stream",
+    "/api/auth/session", "/api/auth/session/logout", "/api/auth/whoami", "/api/v1", "/api/v1/"
+  ]);
+  return known.has(path) ? path : "/unknown";
 }
 
 function limitSessionAttempts(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -310,6 +332,9 @@ function requireAuthentication(req: express.Request, res: express.Response, next
 }
 
 app.disable("x-powered-by");
+// Only the loopback nginx hop that ships in the image may supply forwarding
+// metadata. The image nginx overwrites X-Forwarded-For from its peer address.
+app.set("trust proxy", "loopback");
 app.use(helmet({ strictTransportSecurity: false }));
 app.use(
   cors({
@@ -331,7 +356,7 @@ app.use((req, res, next) => {
   const started = process.hrtime.bigint();
   res.on("finish", () => {
     const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
-    console.log(`${req.method} ${req.path} ${res.statusCode} ${durationMs.toFixed(1)}ms`);
+    console.log(`${req.method} ${canonicalLogPath(req.path)} ${res.statusCode} ${durationMs.toFixed(1)}ms`);
   });
   next();
 });
@@ -356,8 +381,7 @@ app.post("/api/auth/session", (req, res) => {
 
 app.post("/api/auth/session/logout", (req, res) => {
   const session = readCookie(req, authCookieName);
-  sessions.delete(session);
-  closeSessionStreams(session);
+  revokeSession(session);
   res.setHeader("Set-Cookie", `${authCookieName}=; ${sessionCookieAttributes(req, 0)}`);
   res.status(204).end();
 });
@@ -1186,11 +1210,18 @@ app.get("/api/compose/edit-plan", async (req, res) => {
 app.get("/api/events/stream", async (req, res) => {
   const requestedSession = readCookie(req, authCookieName);
   const cookieSession = authMode === "bearer" && validSession(requestedSession) ? requestedSession : "";
+  const registration = registerSessionStream(cookieSession, res);
+  if (registration !== "accepted") {
+    res.status(registration === "session" ? 429 : 503).json({
+      code: "stream_limit_reached",
+      message: registration === "session" ? "Too many streams for this session" : "Too many active streams"
+    } satisfies ApiError);
+    return;
+  }
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
-  registerSessionStream(cookieSession, res);
 
   // Serialize emits: fetchDaemon can take up to 4s, so without a busy guard
   // a slow daemon stacks overlapping emits. And a client that disconnects
