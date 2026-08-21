@@ -52,7 +52,26 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
   const descriptionId = useId();
 
   const services = useMemo(() => (filter ? model.services.filter(filter) : model.services), [model.services, filter]);
-  const layout = useMemo(() => layoutServices(model.services, model.relationships), [model.services, model.relationships]);
+  // The layout is keyed by SERVICE OCCURRENCE (duplicate canonical ids would
+  // otherwise share ONE coordinate and paint over each other). Nodes look up
+  // their own occurrence key; semantic edges (which only reference uniquely
+  // resolved canonical ids) attach to the FIRST occurrence of that id.
+  const layout = useMemo(
+    () => layoutServices(model.services, model.relationships, (service, index) => `${service.id}\u0000${index}`),
+    [model.services, model.relationships]
+  );
+  const layoutKeyByService = useMemo(() => {
+    const map = new Map<Service, string>();
+    model.services.forEach((service, index) => map.set(service, `${service.id}\u0000${index}`));
+    return map;
+  }, [model.services]);
+  const firstLayoutKeyForId = useMemo(() => {
+    const map = new Map<string, string>();
+    model.services.forEach((service, index) => {
+      if (!map.has(service.id)) map.set(service.id, `${service.id}\u0000${index}`);
+    });
+    return map;
+  }, [model.services]);
   const servicesById = useMemo(() => new Map(services.filter((service) => model.byId.has(service.id)).map((service) => [service.id, service])), [model.byId, services]);
   const networks = useMemo(() => {
     const networkOrder = new Map(model.networks.map((network, index) => [network.name, index]));
@@ -72,8 +91,8 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
     [hiddenNetworks, networks]
   );
 
-  const place = (id: string) => {
-    const p = layout.get(id);
+  const place = (key: string | undefined) => {
+    const p = key ? layout.get(key) : undefined;
     const half = VIEW / 2;
     const usable = half - PAD;
     return {
@@ -213,8 +232,8 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
             const fromService = servicesById.get(rel.from);
             const toService = servicesById.get(rel.to);
             if (!fromService || !toService) return null;
-            const a = place(rel.from);
-            const b = place(rel.to);
+            const a = place(firstLayoutKeyForId.get(rel.from));
+            const b = place(firstLayoutKeyForId.get(rel.to));
             const points = edgePoints(a, b);
             const lit = activeId ? rel.from === activeId || rel.to === activeId : false;
             const inImpact = activeId
@@ -256,7 +275,7 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
             );
           })}
           {services.map((service, serviceIndex) => {
-            const p = place(service.id);
+            const p = place(layoutKeyByService.get(service));
             const role = roleOf(service.id);
             // Collided occurrences (duplicate service id OR duplicate name
             // after redaction) stay visible but are never interactive: no

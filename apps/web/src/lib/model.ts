@@ -263,7 +263,11 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   // dependsOn references can be container ids, container names, or compose
   // service names (the container's role — com.docker.compose.service label);
   // normalise all of them to ids so live depends_on edges resolve even when
-  // names are project-prefixed (`immich_redis` vs role `redis`).
+  // names are project-prefixed (`immich_redis` vs role `redis`). Ownership is
+  // tracked PER RECORD OCCURRENCE: two records sharing a canonical id are two
+  // owners, so no alias of either may ever resolve. Aliases of a record whose
+  // canonical id collides are invalidated too — resolving to either occurrence
+  // would be ambiguous even when the alias string itself is unique.
   const { index: idByAlias, collisions: serviceAliasCollisions } = buildAliasIndex(
     snapshot.containers,
     (container) => [container.id, container.name, container.id.replace(/^container_/, ""), container.role],
@@ -271,10 +275,12 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   );
 
   const resolveDependency = (ref: string): string | null => {
+    // Fail closed: only aliases that resolve UNIQUELY through the index become
+    // semantic edges. Unknown refs (including any `container_*` id no record
+    // owns) and collided aliases stay null — they never enter dependsOn,
+    // dependents, or the relationship graph.
     if (ref === "") return null;
-    const id = idByAlias.get(ref) ?? ref;
-    if (idByAlias.has(id) || id.startsWith("container_")) return id;
-    return null;
+    return idByAlias.get(ref) ?? null;
   };
 
   const dependents = new Map<string, Set<string>>();
@@ -379,32 +385,56 @@ function buildIdentityIndex<T>(records: T[], keyFor: (record: T) => string): { i
 }
 
 /**
- * Aliases resolve dependencies but are not always canonical identities. Treat
- * each source record's repeated alias once, then keep only aliases owned by
- * exactly one non-empty service id. This avoids a last-wins dependency edge
- * when redaction makes a name or compose role ambiguous.
+ * Aliases resolve dependencies but are not always canonical identities.
+ * Ownership is tracked by RECORD OCCURRENCE (the record's index), never by
+ * the canonical id VALUE: two records sharing a canonical id occupy two
+ * distinct occurrences, so they can never collapse into a single owner and
+ * let an ambiguous alias resolve. An alias resolves only when exactly one
+ * occurrence owns it AND that occurrence's canonical id is itself unique —
+ * an alias of a duplicate-id record is invalidated even when the alias
+ * string is unique, because the resolution target would be ambiguous.
  */
 function buildAliasIndex<T>(
   records: T[],
   aliasesFor: (record: T) => string[],
   valueFor: (record: T) => string
 ): { index: Map<string, string>; collisions: Set<string> } {
-  const owners = new Map<string, Set<string>>();
+  const owners = new Map<string, Set<number>>();
+  records.forEach((record, occurrence) => {
+    const value = valueFor(record);
+    if (value === "") return;
+    for (const alias of new Set(aliasesFor(record))) {
+      if (alias === "") continue;
+      const found = owners.get(alias) ?? new Set<number>();
+      found.add(occurrence);
+      owners.set(alias, found);
+    }
+  });
+
+  // Canonical ids shared by more than one record: EVERY alias of those
+  // records is ambiguous (either occurrence would be an arbitrary target).
+  const collidedValues = new Set<string>();
+  const valueCounts = new Map<string, number>();
   for (const record of records) {
     const value = valueFor(record);
     if (value === "") continue;
-    for (const alias of new Set(aliasesFor(record))) {
-      if (alias === "") continue;
-      const values = owners.get(alias) ?? new Set<string>();
-      values.add(value);
-      owners.set(alias, values);
-    }
+    valueCounts.set(value, (valueCounts.get(value) ?? 0) + 1);
   }
+  for (const [value, count] of valueCounts) {
+    if (count > 1) collidedValues.add(value);
+  }
+
   const index = new Map<string, string>();
   const collisions = new Set<string>();
-  for (const [alias, values] of owners) {
-    if (values.size === 1) index.set(alias, [...values][0]);
-    else collisions.add(alias);
+  for (const [alias, occurrences] of owners) {
+    if (occurrences.size === 1) {
+      const record = records[[...occurrences][0]];
+      if (!collidedValues.has(valueFor(record))) {
+        index.set(alias, valueFor(record));
+        continue;
+      }
+    }
+    collisions.add(alias);
   }
   return { index, collisions };
 }

@@ -139,6 +139,38 @@ test.describe("DockerMap GUI", () => {
     await expect(page.getByRole("main")).toContainText("Dependencies");
   });
 
+  test("runtime relation navigation widens filters, keeps the destination selected and focused", async ({ page }) => {
+    stack = await startMockStack();
+
+    await page.goto(stack.webUrl, { waitUntil: "domcontentloaded" });
+    await openSpace(page, "Runtime", "/runtime");
+
+    // Select the api container (its label is unique among runtime rows)…
+    const apiNode = page.locator("button.runtime-node-btn", { hasText: "api" });
+    await apiNode.click();
+    await expect(apiNode).toHaveAttribute("aria-pressed", "true");
+
+    // …then narrow the layer filter to Container. The api node's outgoing
+    // "application" network relation lives in the network layer, so its
+    // destination row is now EXCLUDED from the node list — but the inspector
+    // still offers the relation button.
+    await page.getByRole("button", { name: /^Container \(\d+\)$/ }).click();
+    const applicationNode = page.locator("button.runtime-node-btn", { hasText: "application" }).filter({ hasText: "docker network" });
+    await expect(applicationNode).toHaveCount(0);
+
+    // Follow the relation anyway: the destination must become visible (the
+    // incompatible layer filter is widened), stay SELECTED, and receive FOCUS
+    // on its persistent row button — never BODY. Previously the visibility
+    // effect cleared the selection and the one-frame rAF focus found no row.
+    await page.locator(".runtime-edge-target", { hasText: "application" }).click();
+    await expect(applicationNode).toBeVisible();
+    await expect(applicationNode).toHaveAttribute("aria-pressed", "true");
+    await expect(applicationNode).toBeFocused();
+    await expect(page.getByRole("button", { name: "All layers" })).toHaveAttribute("aria-pressed", "true");
+    // The inspector shows the newly selected network node.
+    await expect(page.getByRole("heading", { name: "application" })).toBeVisible();
+  });
+
   test("maps a live Docker Compose fixture through the GUI @live-docker", async ({ page, request }) => {
     test.skip(!process.env.DOCKERMAP_E2E_LIVE_DOCKER, "Set DOCKERMAP_E2E_LIVE_DOCKER=1 to create live Docker fixtures.");
 

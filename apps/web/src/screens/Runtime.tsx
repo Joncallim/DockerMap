@@ -53,6 +53,15 @@ export default function RuntimeScreen() {
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
+  /**
+   * KEYED focus request: set by selectNode, consumed by the layout effect
+   * once the destination row actually commits. Relation navigation may widen
+   * the filters in the SAME batch as the selection, so the row is not
+   * rendered yet when the request is made — a single requestAnimationFrame
+   * would fire too early (or not at all when the row never mounts) and focus
+   * would fall to BODY.
+   */
+  const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
 
   const runtime = model?.runtime;
   const filteredNodes = useMemo(() => {
@@ -70,6 +79,19 @@ export default function RuntimeScreen() {
     if (!filteredNodes.some((node) => node.id === selectedId && runtime.byId.has(node.id))) setSelectedId(null);
   }, [filteredNodes, runtime, selectedId]);
 
+  // Consume a pending focus request once its row is rendered. Stale refs
+  // (rows filtered out or the whole list unmounted) are dropped by the ref
+  // callback and the unmount cleanup, so a focus here always lands on a live
+  // button.
+  useEffect(() => {
+    if (!pendingFocusId) return;
+    if (!filteredNodes.some((node) => node.id === pendingFocusId)) return;
+    nodeRefs.current.get(pendingFocusId)?.focus();
+    setPendingFocusId(null);
+  }, [filteredNodes, pendingFocusId]);
+
+  useEffect(() => () => nodeRefs.current.clear(), []);
+
   if (loading && !model) return <Loading label="Reading runtime topology…" />;
   if (error && !model) return <ErrorState title="Runtime unavailable" body={error} />;
   if (!model || !runtime) return <EmptyState icon="layers" title="No runtime map yet" body="Connect a host or enable Demo Mode to inspect runtime signals." />;
@@ -84,10 +106,23 @@ export default function RuntimeScreen() {
    * persistent runtime-node button so keyboard users never lose their place
    * (clicking a relation removes the focused relation button; without this,
    * focus would fall to BODY).
+   *
+   * Relation targets may be EXCLUDED by the active provider/layer/attention
+   * filters (e.g. Container layer filter + an API→application network
+   * relation). The destination must be made visible FIRST — otherwise the
+   * visibility effect clears the selection and there is no row to focus —
+   * then the keyed focus request is consumed once the row commits.
    */
   const selectNode = (id: string) => {
     setSelectedId(id);
-    window.requestAnimationFrame(() => nodeRefs.current.get(id)?.focus());
+    const node = runtime?.byId.get(id);
+    if (!node) return;
+    if (!filteredNodes.some((n) => n.id === id)) {
+      setProviderFilter("all");
+      setLayerFilter("all");
+      setAttentionOnly(false);
+    }
+    setPendingFocusId(id);
   };
 
   return (
@@ -212,7 +247,10 @@ export default function RuntimeScreen() {
                         type="button"
                         className={`runtime-node-btn${selected?.id === node.id ? " is-active" : ""}`}
                         aria-pressed={selected?.id === node.id}
-                        ref={(element) => { if (element) nodeRefs.current.set(node.id, element); }}
+                        ref={(element) => {
+                          if (element) nodeRefs.current.set(node.id, element);
+                          else nodeRefs.current.delete(node.id);
+                        }}
                         onClick={() => selectNode(node.id)}
                       >{content}</button> : <div className="runtime-node-btn runtime-node-unresolved" aria-label={`${identityText(node.label, UNAVAILABLE_RUNTIME_NODE)} is unavailable for selection${collided ? ` (${COLLISION_HINT})` : ""}`}>{content}</div>}
                     </li>
@@ -235,7 +273,7 @@ export default function RuntimeScreen() {
                 <span className="inspector-kind">
                   <Icon name={PROVIDER_ICON[selected.provider]} size={15} /> {selected.provider}
                 </span>
-                <button type="button" className="icon-btn" onClick={() => { setSelectedId(null); window.requestAnimationFrame(() => nodeRefs.current.get(selected.id)?.focus()); }} aria-label={`Clear ${identityText(selected.label, UNAVAILABLE_RUNTIME_NODE)} runtime selection`}>
+                <button type="button" className="icon-btn" onClick={() => { setSelectedId(null); setPendingFocusId(selected.id); }} aria-label={`Clear ${identityText(selected.label, UNAVAILABLE_RUNTIME_NODE)} runtime selection`}>
                   <Icon name="close" size={15} />
                 </button>
               </div>

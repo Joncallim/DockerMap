@@ -343,6 +343,75 @@ describe("service and runtime identity indexes", () => {
   });
 });
 
+describe("fail-closed dependency resolution for duplicate and unknown container ids", () => {
+  it("keeps duplicate container_* ids unresolvable and collision-tagged for EVERY alias", () => {
+    // Two records share the canonical id `container_dup`: a ref to that id —
+    // or to ANY alias of either record (unique name, role, stripped id) —
+    // must stay null. The old value-based owner set collapsed both records
+    // into ONE owner and resolved the id to itself, entering the semantic
+    // graph and attributing dependents to a duplicate occurrence.
+    const model = buildModel(
+      snapshot([
+        container({ id: "container_dup", name: "web", role: "api", dependsOn: ["container_dup"] }),
+        container({ id: "container_dup", name: "worker", role: "worker" })
+      ]),
+      emptyRuntime
+    );
+    expect(model.serviceAliasCollisions.has("container_dup")).toBe(true);
+    expect(model.serviceAliasCollisions.has("web")).toBe(true);
+    expect(model.serviceAliasCollisions.has("worker")).toBe(true);
+    expect(model.serviceAliasCollisions.has("dup")).toBe(true);
+    expect(model.services[0].dependsOn).toEqual([]);
+    expect(model.services[0].dependencyOccurrences).toEqual([{ ref: "container_dup", resolvedId: null }]);
+    // No semantic edge and no dependent attribution to either occurrence.
+    expect(model.relationships).toHaveLength(0);
+    expect(model.services[0].dependents).toEqual([]);
+    expect(model.services[1].dependents).toEqual([]);
+  });
+
+  it("never resolves an alias pointing at a duplicate canonical id", () => {
+    // `db` is the UNIQUE role of a record whose canonical id collides with
+    // another record: resolving it would pick an arbitrary occurrence.
+    const model = buildModel(
+      snapshot([
+        container({ id: "container_db", name: "primary", role: "db" }),
+        container({ id: "container_db", name: "secondary", role: "replica" }),
+        container({ id: "container_app", name: "app", dependsOn: ["db"] })
+      ]),
+      emptyRuntime
+    );
+    expect(model.serviceAliasCollisions.has("db")).toBe(true);
+    expect(model.byName.get("app")!.dependsOn).toEqual([]);
+    expect(model.byName.get("app")!.dependencyOccurrences).toEqual([{ ref: "db", resolvedId: null }]);
+    expect(model.services[0].dependents).toEqual([]);
+    expect(model.services[1].dependents).toEqual([]);
+    expect(model.relationships).toHaveLength(0);
+  });
+
+  it("leaves unknown container_* references unresolved instead of self-resolving", () => {
+    // The removed `container_` fallback used to resolve ANY unknown
+    // container_-prefixed ref to itself, fabricating a resolvedId and a
+    // semantic edge for a service that does not exist.
+    const model = buildModel(
+      snapshot([
+        container({ id: "container_app", name: "app", dependsOn: ["container_ghost"] }),
+        container({ id: "container_web", name: "web", dependsOn: ["container_app"] })
+      ]),
+      emptyRuntime
+    );
+    expect(model.services[0].dependencyOccurrences).toEqual([{ ref: "container_ghost", resolvedId: null }]);
+    expect(model.services[0].dependsOn).toEqual([]);
+    // The ghost ref must never emit a semantic edge FROM the app service.
+    expect(model.relationships.filter((r) => r.from === "container_app")).toHaveLength(0);
+    // Positive control: a UNIQUE canonical id is its own alias and still
+    // resolves through the index.
+    expect(model.services[1].dependencyOccurrences).toEqual([{ ref: "container_app", resolvedId: "container_app" }]);
+    expect(model.services[1].dependsOn).toEqual(["container_app"]);
+    expect(model.relationships).toHaveLength(1);
+    expect(model.relationships[0]).toMatchObject({ from: "container_web", to: "container_app", kind: "depends_on" });
+  });
+});
+
 describe("collision-safe redacted identities", () => {
   // Distinct records whose identities sanitize to the SAME published value
   // (the daemon redacts sensitive identity strings to "[redacted]" before
