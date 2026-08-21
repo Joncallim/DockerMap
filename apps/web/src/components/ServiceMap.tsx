@@ -1,4 +1,6 @@
 import {
+  useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -10,6 +12,7 @@ import { computeImpact, type Service, type SystemModel } from "../lib/model";
 import { layoutServices } from "../lib/layout";
 import Icon, { KIND_ICON } from "./Icon";
 import { StateDot } from "./primitives";
+import { identityText, UNAVAILABLE_NETWORK, UNAVAILABLE_SERVICE } from "../lib/identity";
 
 const VIEW = 240;
 const PAD = 26;
@@ -30,17 +33,20 @@ export interface ServiceMapProps {
   interactive?: boolean;
   filter?: (service: Service) => boolean;
   height?: number;
+  focusNodeId?: string | null;
 }
 
-export default function ServiceMap({ model, selectedId, onSelect, interactive = true, filter, height }: ServiceMapProps) {
+export default function ServiceMap({ model, selectedId, onSelect, interactive = true, filter, height, focusNodeId }: ServiceMapProps) {
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [transform, setTransform] = useState<Transform>({ k: 1, x: 0, y: 0 });
   const [hiddenNetworks, setHiddenNetworks] = useState<Set<string>>(() => new Set());
   const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  const nodeRefs = useRef(new Map<string, SVGGElement>());
+  const descriptionId = useId();
 
   const services = useMemo(() => (filter ? model.services.filter(filter) : model.services), [model.services, filter]);
   const layout = useMemo(() => layoutServices(model.services, model.relationships), [model.services, model.relationships]);
-  const servicesById = useMemo(() => new Map(services.map((service) => [service.id, service])), [services]);
+  const servicesById = useMemo(() => new Map(services.filter((service) => model.byId.has(service.id)).map((service) => [service.id, service])), [model.byId, services]);
   const networks = useMemo(() => {
     const networkOrder = new Map(model.networks.map((network, index) => [network.name, index]));
     const names = [...new Set(services.flatMap((service) => service.networks))].sort((a, b) => {
@@ -82,7 +88,19 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
     return "dim";
   };
 
-  const visible = new Set(services.map((s) => s.id));
+  const visible = new Set(services.filter((service) => model.byId.has(service.id)).map((service) => service.id));
+  const relationshipSummary = useMemo(() => {
+    if (model.relationships.length === 0) return "No service relationships are recorded.";
+    return model.relationships.map((relationship) => {
+      const from = model.byId.get(relationship.from);
+      const to = model.byId.get(relationship.to);
+      return `${identityText(from?.name, UNAVAILABLE_SERVICE)} depends on ${identityText(to?.name, UNAVAILABLE_SERVICE)}.`;
+    }).join(" ");
+  }, [model]);
+
+  useEffect(() => {
+    if (focusNodeId) nodeRefs.current.get(focusNodeId)?.focus();
+  }, [focusNodeId]);
 
   const edgePoints = (from: { x: number; y: number }, to: { x: number; y: number }) => {
     const dx = to.x - from.x;
@@ -150,12 +168,14 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
   const reset = () => setTransform({ k: 1, x: 0, y: 0 });
 
   return (
-    <div className="map" style={height ? { height } : undefined}>
+    <>
+      <div className="map" style={height ? { height } : undefined}>
       <svg
         className={`map-svg${interactive ? " is-interactive" : ""}`}
         viewBox={`0 0 ${VIEW} ${VIEW}`}
-        role="img"
+        role={interactive ? "group" : "img"}
         aria-label="Service dependency map"
+        aria-describedby={descriptionId}
         onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -168,7 +188,7 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
           </marker>
         </defs>
         <g transform={`translate(${transform.x} ${transform.y}) translate(${VIEW / 2} ${VIEW / 2}) scale(${transform.k}) translate(${-VIEW / 2} ${-VIEW / 2})`}>
-          {model.relationships.map((rel) => {
+          {model.relationships.map((rel, relationshipIndex) => {
             if (!visible.has(rel.from) || !visible.has(rel.to)) return null;
             const fromService = servicesById.get(rel.from);
             const toService = servicesById.get(rel.to);
@@ -184,7 +204,7 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
             const toNetworks = new Set(toService.networks);
             const edgeNetworks = fromService.networks.filter((network) => toNetworks.has(network) && enabledNetworkNames.has(network));
             return (
-              <g key={rel.id} className="edge-group">
+              <g key={`${rel.id}-${relationshipIndex}`} className="edge-group">
                 <title>
                   {fromService.name} depends on {toService.name}
                   {edgeNetworks.length > 0 ? ` via ${edgeNetworks.join(", ")}` : ""}
@@ -194,7 +214,7 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
                   const track = offsetPoints(points, index, edgeNetworks.length);
                   return (
                     <line
-                      key={`${rel.id}:${network}`}
+                      key={`${rel.id}-${relationshipIndex}:${network}-${index}`}
                       className={`network-edge${activeId && !inImpact ? " is-dim" : ""}`}
                       style={{ "--network-color": networkDef?.color ?? NETWORK_COLORS[0] } as CSSProperties}
                       x1={track.x1}
@@ -215,28 +235,35 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
               </g>
             );
           })}
-          {services.map((service) => {
+          {services.map((service, serviceIndex) => {
             const p = place(service.id);
             const role = roleOf(service.id);
+            const selectable = interactive && model.byId.has(service.id);
             return (
               <g
-                key={service.id}
-                className={`node node-${role} s-${service.state}`}
+                key={`${service.id}-${serviceIndex}`}
+                className={`node${selectable ? " node-interactive" : ""} node-${role} s-${service.state}`}
                 transform={`translate(${p.x} ${p.y})`}
-                onClick={() => onSelect(service.id === selectedId ? null : service.id)}
-                onPointerEnter={() => setHoverId(service.id)}
-                onPointerLeave={() => setHoverId(null)}
-                role="button"
-                tabIndex={0}
-                aria-label={`${service.name}, ${service.state}`}
+                ref={(element) => {
+                  if (element && selectable) nodeRefs.current.set(service.id, element);
+                }}
+                onClick={selectable ? () => onSelect(service.id === selectedId ? null : service.id) : undefined}
+                onPointerEnter={selectable ? () => setHoverId(service.id) : undefined}
+                onPointerLeave={selectable ? () => setHoverId(null) : undefined}
+                role={selectable ? "button" : undefined}
+                tabIndex={selectable ? 0 : undefined}
+                aria-label={selectable ? `${identityText(service.name, UNAVAILABLE_SERVICE)}, ${service.state}` : undefined}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") onSelect(service.id);
+                  if (selectable && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    onSelect(service.id);
+                  }
                 }}
               >
                 <circle className="node-halo" r={11} />
                 <circle className="node-core" r={7} />
                 <text className="node-label" y={20} textAnchor="middle">
-                  {service.name}
+                  {identityText(service.name, UNAVAILABLE_SERVICE)}
                 </text>
               </g>
             );
@@ -262,11 +289,11 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
         <div className="map-network-panel" aria-label="Network overlays">
           <div className="map-network-title">Networks</div>
           <div className="map-network-list">
-            {networks.map((network) => (
-              <label key={network.name} className="map-network-option" style={{ "--network-color": network.color } as CSSProperties}>
+            {networks.map((network, index) => (
+              <label key={`${network.name}-${index}`} className="map-network-option" style={{ "--network-color": network.color } as CSSProperties}>
                 <input type="checkbox" checked={!hiddenNetworks.has(network.name)} onChange={() => toggleNetwork(network.name)} />
                 <span className="network-swatch" aria-hidden="true" />
-                <span>{network.name}</span>
+                <span>{identityText(network.name, UNAVAILABLE_NETWORK)}</span>
               </label>
             ))}
           </div>
@@ -276,7 +303,7 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
       <div className="map-legend">
         {(["healthy", "warning", "degraded", "offline"] as const).map((s) => (
           <span key={s}>
-            <StateDot state={s} /> {s}
+            <StateDot state={s} decorative /> {s}
           </span>
         ))}
       </div>
@@ -295,6 +322,8 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
           </span>
         </div>
       )}
-    </div>
+      </div>
+      <p id={descriptionId} className="sr-only">{relationshipSummary}</p>
+    </>
   );
 }

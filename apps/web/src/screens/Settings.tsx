@@ -5,6 +5,7 @@ import type { AuthProviderPreset, Density, ThemePreference } from "../lib/settin
 import { fetchJson } from "../utils/api";
 import { Panel, Tag } from "../components/primitives";
 import Icon from "../components/Icon";
+import { identityText, UNAVAILABLE_USER } from "../lib/identity";
 
 const ROUTE_OPTIONS: { value: string; label: string }[] = [
   { value: "/", label: "Home" },
@@ -60,12 +61,13 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (val
   );
 }
 
-function FieldRow({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function FieldRow({ label, hint, controlId, children }: { label: string; hint?: string; controlId?: string; children: React.ReactNode }) {
+  const hintId = controlId && hint ? `${controlId}-hint` : undefined;
   return (
     <div className="field-row">
       <div className="field-label">
-        <span>{label}</span>
-        {hint && <span className="field-hint">{hint}</span>}
+        {controlId ? <label htmlFor={controlId}>{label}</label> : <span>{label}</span>}
+        {hint && <span id={hintId} className="field-hint">{hint}</span>}
       </div>
       <div className="field-control">{children}</div>
     </div>
@@ -104,8 +106,10 @@ export default function Settings() {
 
       <div className="stack">
         <Panel title="Appearance" icon="layers" hint="Stored locally in this browser">
-          <FieldRow label="Theme" hint="Follow your OS, or force light/dark">
+          <FieldRow label="Theme" controlId="settings-theme" hint="Follow your OS, or force light/dark">
             <select
+              id="settings-theme"
+              aria-describedby="settings-theme-hint"
               className="service-select"
               value={settings.theme}
               onChange={(e) => updateSettings({ theme: e.target.value as ThemePreference })}
@@ -115,8 +119,10 @@ export default function Settings() {
               <option value="light">Light</option>
             </select>
           </FieldRow>
-          <FieldRow label="Density" hint="Compact reduces padding for smaller screens">
+          <FieldRow label="Density" controlId="settings-density" hint="Compact reduces padding for smaller screens">
             <select
+              id="settings-density"
+              aria-describedby="settings-density-hint"
               className="service-select"
               value={settings.density}
               onChange={(e) => updateSettings({ density: e.target.value as Density })}
@@ -125,8 +131,10 @@ export default function Settings() {
               <option value="compact">Compact</option>
             </select>
           </FieldRow>
-          <FieldRow label="Default landing page" hint="Screen shown when DockerMap opens">
+          <FieldRow label="Default landing page" controlId="settings-default-route" hint="Screen shown when DockerMap opens">
             <select
+              id="settings-default-route"
+              aria-describedby="settings-default-route-hint"
               className="service-select"
               value={settings.defaultRoute}
               onChange={(e) => updateSettings({ defaultRoute: e.target.value })}
@@ -143,9 +151,12 @@ export default function Settings() {
         <Panel title="Refresh" icon="refresh">
           <FieldRow
             label="Auto-refresh interval"
+            controlId="settings-refresh-interval"
             hint="Controls Demo Mode's simulated refresh cadence. Live-mode refresh is set by the daemon (DOCKERMAP_SSE_INTERVAL_MS)."
           >
             <select
+              id="settings-refresh-interval"
+              aria-describedby="settings-refresh-interval-hint"
               className="service-select"
               value={settings.refreshIntervalMs}
               onChange={(e) => updateSettings({ refreshIntervalMs: Number(e.target.value) })}
@@ -194,8 +205,10 @@ export default function Settings() {
             />
           </FieldRow>
 
-          <FieldRow label="Provider preset" hint="Prefills the header names this proxy typically sends">
+          <FieldRow label="Provider preset" controlId="settings-auth-provider" hint="Prefills the header names this proxy typically sends">
             <select
+              id="settings-auth-provider"
+              aria-describedby="settings-auth-provider-hint"
               className="service-select"
               value={settings.auth.provider}
               onChange={(e) => updateSettings({ auth: { provider: e.target.value as AuthProviderPreset } })}
@@ -209,8 +222,10 @@ export default function Settings() {
           </FieldRow>
           <p className="muted-line">{AUTH_PRESETS[settings.auth.provider].hint}</p>
 
-          <FieldRow label="Sign-in URL" hint="Link shown to start a session with your proxy's login portal">
+          <FieldRow label="Sign-in URL" controlId="settings-login-url" hint="Link shown to start a session with your proxy's login portal">
             <input
+              id="settings-login-url"
+              aria-describedby="settings-login-url-hint"
               className="service-select"
               type="url"
               placeholder="https://auth.example.com/"
@@ -218,8 +233,10 @@ export default function Settings() {
               onChange={(e) => updateSettings({ auth: { loginUrl: e.target.value } })}
             />
           </FieldRow>
-          <FieldRow label="Sign-out URL" hint="Link shown to end the proxy session">
+          <FieldRow label="Sign-out URL" controlId="settings-logout-url" hint="Link shown to end the proxy session">
             <input
+              id="settings-logout-url"
+              aria-describedby="settings-logout-url-hint"
               className="service-select"
               type="url"
               placeholder="https://auth.example.com/logout"
@@ -253,9 +270,9 @@ DOCKERMAP_AUTH_EMAIL_HEADER=${preset.email}`}
                 <span className="muted-line">{whoamiError}</span>
               ) : !whoami ? (
                 <span className="muted-line">Checking…</span>
-              ) : whoami.user ? (
+              ) : whoami.user !== null ? (
                 <Tag tone="accent" icon="check">
-                  Signed in as {whoami.name ?? whoami.user}
+                  Signed in as {identityText(whoami.name || whoami.user, UNAVAILABLE_USER)}
                 </Tag>
               ) : (
                 <Tag tone={whoami.required ? "warn" : "muted"}>

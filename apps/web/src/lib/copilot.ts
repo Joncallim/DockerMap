@@ -22,9 +22,9 @@ export interface CopilotSuggestion {
 
 export function suggestions(model: SystemModel): CopilotSuggestion[] {
   const out: CopilotSuggestion[] = [{ label: "Show unhealthy services", query: "show unhealthy services" }];
-  const offline = model.services.find((s) => s.state === "offline");
+  const offline = model.services.find((s) => s.state === "offline" && model.byName.has(s.name));
   if (offline) out.push({ label: `Why is ${offline.name} offline?`, query: `why is ${offline.name} offline` });
-  const db = model.services.find((s) => s.kind === "database");
+  const db = model.services.find((s) => s.kind === "database" && model.byName.has(s.name));
   if (db) out.push({ label: `What depends on ${db.name}?`, query: `what depends on ${db.name}` });
   out.push({ label: "What changed recently?", query: "what changed recently" });
   out.push({ label: "Show everything using port 443", query: "show everything using port 443" });
@@ -69,7 +69,7 @@ export function answer(model: SystemModel, raw: string): CopilotAnswer {
 function findService(model: SystemModel, lower: string): Service | null {
   let best: Service | null = null;
   for (const service of model.services) {
-    if (lower.includes(service.name.toLowerCase())) {
+    if (service.name !== "" && model.byName.has(service.name) && lower.includes(service.name.toLowerCase())) {
       if (!best || service.name.length > best.name.length) best = service;
     }
   }

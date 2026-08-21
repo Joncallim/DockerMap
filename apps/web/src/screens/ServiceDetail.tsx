@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { LogsResponse } from "@dockermap/contracts";
 import { useApp } from "../context";
@@ -9,7 +9,7 @@ import { formatKbps, formatMb, formatPercent, formatRelative } from "../lib/form
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { IdentityRef } from "../components/identity";
-import { UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_VOLUME } from "../lib/identity";
+import { UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_SERVICE, UNAVAILABLE_VOLUME } from "../lib/identity";
 import { Bar, EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, Sparkline, StatePill, StateDot, Tag } from "../components/primitives";
 
 type Tab = "overview" | "dependencies" | "resources" | "logs" | "config";
@@ -25,12 +25,17 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
   const { name = "" } = useParams();
   const { model, loading, error, tick } = useApp();
   const [tab, setTab] = useState<Tab>(defaultTab);
+  const [focusedTab, setFocusedTab] = useState<Tab>(defaultTab);
+  const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
   const [showInternals, setShowInternals] = useState(defaultOpen);
 
   const service = useMemo(() => model?.byName.get(name) ?? null, [model, name]);
 
   if (loading && !model) return <Loading label={`Loading ${name}…`} />;
   if (error && !model) return <ErrorState title="Service unavailable" body={error} />;
+  if (model?.serviceNameCollisions.has(name)) {
+    return <div className="screen"><section className="empty"><h1>Service unavailable</h1><p>Multiple services share the identity “{name}” after redaction, so detail routing is unavailable.</p><Link className="primary-link" to="/map">Back to Service Map</Link></section></div>;
+  }
   if (!model || !service) {
     return (
       <EmptyState
@@ -47,6 +52,18 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
   }
 
   const impact = computeImpact(model, service.id);
+  const moveFocus = (index: number) => {
+    const next = TABS[(index + TABS.length) % TABS.length].id;
+    setFocusedTab(next);
+    tabRefs.current.get(next)?.focus();
+  };
+  const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number, id: Tab) => {
+    if (event.key === "ArrowRight") { event.preventDefault(); moveFocus(index + 1); }
+    else if (event.key === "ArrowLeft") { event.preventDefault(); moveFocus(index - 1); }
+    else if (event.key === "Home") { event.preventDefault(); moveFocus(0); }
+    else if (event.key === "End") { event.preventDefault(); moveFocus(TABS.length - 1); }
+    else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setTab(id); setFocusedTab(id); }
+  };
 
   return (
     <div className="screen">
@@ -85,21 +102,36 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
         </div>
       </div>
 
-      <nav className="tabs" aria-label="Service sections">
-        {TABS.map((t) => (
-          <button key={t.id} type="button" className={`tab${tab === t.id ? " is-on" : ""}`} onClick={() => setTab(t.id)}>
-            <Icon name={t.icon} size={14} /> {t.label}
+      <nav className="tabs" aria-label="Service sections" role="tablist">
+        {TABS.map((item, index) => (
+          <button
+            key={item.id}
+            ref={(element) => { if (element) tabRefs.current.set(item.id, element); }}
+            id={`service-tab-${item.id}`}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
+            aria-controls="service-tabpanel"
+            tabIndex={focusedTab === item.id ? 0 : -1}
+            className={`tab${tab === item.id ? " is-on" : ""}`}
+            onFocus={() => setFocusedTab(item.id)}
+            onKeyDown={(event) => onTabKeyDown(event, index, item.id)}
+            onClick={() => { setTab(item.id); setFocusedTab(item.id); }}
+          >
+            <Icon name={item.icon} size={14} /> {item.label}
           </button>
         ))}
       </nav>
 
-      {tab === "overview" && <Overview service={service} model={model} />}
-      {tab === "dependencies" && <Dependencies service={service} model={model} />}
-      {tab === "resources" && <Resources service={service} />}
-      {tab === "logs" && <Logs name={service.name} tick={tick} />}
-      {tab === "config" && (
-        <Config service={service} model={model} showInternals={showInternals} onToggleInternals={() => setShowInternals((v) => !v)} />
-      )}
+      <div id="service-tabpanel" role="tabpanel" aria-labelledby={`service-tab-${tab}`}>
+        {tab === "overview" && <Overview service={service} model={model} />}
+        {tab === "dependencies" && <Dependencies service={service} model={model} />}
+        {tab === "resources" && <Resources service={service} />}
+        {tab === "logs" && <Logs name={service.name} tick={tick} />}
+        {tab === "config" && (
+          <Config service={service} model={model} showInternals={showInternals} onToggleInternals={() => setShowInternals((v) => !v)} />
+        )}
+      </div>
     </div>
   );
 }
@@ -142,15 +174,13 @@ function RelList({ model, ids, empty }: { model: NonNullable<ReturnType<typeof u
   if (ids.length === 0) return <p className="muted-line">{empty}</p>;
   return (
     <ul className="svc-list">
-      {ids.map((id) => {
+      {ids.map((id, index) => {
         const svc = model.byId.get(id);
         if (!svc) return null;
         return (
-          <li key={id} className="svc-row">
+          <li key={`${id}-${index}`} className="svc-row">
             <Icon name={KIND_ICON[svc.kind]} size={15} />
-            <Link className="svc-name" to={`/services/${encodeURIComponent(svc.name)}`}>
-              {svc.name}
-            </Link>
+            <IdentityRef name={svc.name} fallback={UNAVAILABLE_SERVICE} to={model.byName.has(svc.name) ? `/services/${encodeURIComponent(svc.name)}` : undefined} className="svc-name" />
             <StatePill state={svc.state} />
           </li>
         );

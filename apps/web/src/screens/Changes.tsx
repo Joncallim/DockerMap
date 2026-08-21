@@ -33,7 +33,7 @@ export default function Changes() {
         </div>
         <div className="filter-row">
           {KINDS.map((k) => (
-            <button key={k.id} type="button" className={`filter-chip${kind === k.id ? " is-on" : ""}`} onClick={() => setKind(k.id)}>
+            <button key={k.id} type="button" aria-pressed={kind === k.id} className={`filter-chip${kind === k.id ? " is-on" : ""}`} onClick={() => setKind(k.id)}>
               {k.label}
             </button>
           ))}
@@ -45,22 +45,21 @@ export default function Changes() {
           <EmptyState icon="history" title="No change recorded" body="Deployments, restarts and failures will appear here." />
         ) : (
           <ol className="timeline">
-            {filtered.map((event) => (
-              <li key={event.id} className={`timeline-row k-${event.kind}`}>
+            {filtered.map((event, index) => {
+              const routable = model?.byName.has(event.serviceName);
+              return <li key={`${event.id}-${index}`} className={`timeline-row k-${event.kind}`}>
                 <span className="timeline-marker" aria-hidden="true">
                   <Icon name={iconForKind(event.kind)} size={13} />
                 </span>
                 <div className="timeline-body">
                   <div className="timeline-top">
-                    <Link className="timeline-title" to={`/services/${encodeURIComponent(event.serviceName)}`}>
-                      {event.summary}
-                    </Link>
+                    {routable ? <Link className="timeline-title" to={`/services/${encodeURIComponent(event.serviceName)}`}>{event.summary}</Link> : <span className="timeline-title">{event.summary}</span>}
                     <span className="timeline-time">{formatRelative(event.at)}</span>
                   </div>
                   {event.detail && <p className="timeline-detail">{event.detail}</p>}
                 </div>
-              </li>
-            ))}
+              </li>;
+            })}
           </ol>
         )}
       </Panel>

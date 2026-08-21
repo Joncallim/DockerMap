@@ -30,6 +30,7 @@
     "test:web": "npm run test --workspace @dockermap/web --if-present",
     "test:contracts": "npm run test --workspace @dockermap/contracts --if-present",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
+    "test:e2e:a11y": "playwright test --config tests/e2e/playwright.config.ts a11y.spec.ts",
     "test:live-docker": "DOCKERMAP_E2E_LIVE_DOCKER=1 playwright test --config tests/e2e/playwright.config.ts --grep @live-docker",
     "test:rust": "cargo test --manifest-path crates/Cargo.toml",
     "test:rust:core": "cargo test -p dockermap-core --manifest-path crates/Cargo.toml",
@@ -41,6 +42,7 @@
     "node": ">=22.0.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.61.0"
   }
 }

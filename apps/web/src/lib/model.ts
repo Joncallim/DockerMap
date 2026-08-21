@@ -83,6 +83,9 @@ export interface SystemModel {
   runtime: RuntimeModel;
   byId: Map<string, Service>;
   byName: Map<string, Service>;
+  serviceIdCollisions: Set<string>;
+  serviceNameCollisions: Set<string>;
+  serviceAliasCollisions: Set<string>;
   networkByName: Map<string, NetworkRecord>;
   volumeByName: Map<string, VolumeRecord>;
   imageByRef: Map<string, ImageRecord>;
@@ -136,6 +139,7 @@ export interface RuntimeModel {
   edges: RuntimeMapEdge[];
   diagnostics: RuntimeMapDiagnostic[];
   byId: Map<string, RuntimeNodeRecord>;
+  idCollisions: Set<string>;
   providerSummary: RuntimeBucketSummary<RuntimeProviderKind>[];
   layerSummary: RuntimeBucketSummary<RuntimeLayerId>[];
   summary: RuntimeSummary;
@@ -239,14 +243,12 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   // service names (the container's role — com.docker.compose.service label);
   // normalise all of them to ids so live depends_on edges resolve even when
   // names are project-prefixed (`immich_redis` vs role `redis`).
-  const idByAlias = new Map<string, string>();
-  for (const c of snapshot.containers) {
-    idByAlias.set(c.id, c.id);
-    idByAlias.set(c.name, c.id);
-    idByAlias.set(c.id.replace(/^container_/, ""), c.id);
-    if (c.role) idByAlias.set(c.role, c.id);
-  }
-  const resolveId = (ref: string) => idByAlias.get(ref) ?? idByAlias.get(ref.replace(/^container_/, "")) ?? ref;
+  const { index: idByAlias, collisions: serviceAliasCollisions } = buildAliasIndex(
+    snapshot.containers,
+    (container) => [container.id, container.name, container.id.replace(/^container_/, ""), container.role],
+    (container) => container.id
+  );
+  const resolveId = (ref: string) => idByAlias.get(ref) ?? ref;
 
   const dependents = new Map<string, Set<string>>();
   for (const c of snapshot.containers) {
@@ -279,8 +281,8 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
     };
   });
 
-  const byId = new Map(services.map((s) => [s.id, s]));
-  const byName = new Map(services.map((s) => [s.name, s]));
+  const { index: byId, collisions: serviceIdCollisions } = buildIdentityIndex(services, (service) => service.id);
+  const { index: byName, collisions: serviceNameCollisions } = buildIdentityIndex(services, (service) => service.name);
   const { index: networkByName, collisions: networkNameCollisions } = buildIdentityIndex(snapshot.networks, (network) => network.name);
   const { index: volumeByName, collisions: volumeNameCollisions } = buildIdentityIndex(snapshot.volumes, (volume) => volume.name);
   const { index: imageByRef, collisions: imageRefCollisions } = buildIdentityIndex(snapshot.images, (image) => image.image);
@@ -297,6 +299,9 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
     runtime,
     byId,
     byName,
+    serviceIdCollisions,
+    serviceNameCollisions,
+    serviceAliasCollisions,
     networkByName,
     volumeByName,
     imageByRef,
@@ -337,6 +342,37 @@ function buildIdentityIndex<T>(records: T[], keyFor: (record: T) => string): { i
       continue;
     }
     if (!index.has(key)) index.set(key, record);
+  }
+  return { index, collisions };
+}
+
+/**
+ * Aliases resolve dependencies but are not always canonical identities. Treat
+ * each source record's repeated alias once, then keep only aliases owned by
+ * exactly one non-empty service id. This avoids a last-wins dependency edge
+ * when redaction makes a name or compose role ambiguous.
+ */
+function buildAliasIndex<T>(
+  records: T[],
+  aliasesFor: (record: T) => string[],
+  valueFor: (record: T) => string
+): { index: Map<string, string>; collisions: Set<string> } {
+  const owners = new Map<string, Set<string>>();
+  for (const record of records) {
+    const value = valueFor(record);
+    if (value === "") continue;
+    for (const alias of new Set(aliasesFor(record))) {
+      if (alias === "") continue;
+      const values = owners.get(alias) ?? new Set<string>();
+      values.add(value);
+      owners.set(alias, values);
+    }
+  }
+  const index = new Map<string, string>();
+  const collisions = new Set<string>();
+  for (const [alias, values] of owners) {
+    if (values.size === 1) index.set(alias, [...values][0]);
+    else collisions.add(alias);
   }
   return { index, collisions };
 }
@@ -483,7 +519,7 @@ function buildRuntimeModel(runtimeMap: RuntimeMap): RuntimeModel {
       return left.label.localeCompare(right.label);
     });
 
-  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const { index: byId, collisions: idCollisions } = buildIdentityIndex(nodes, (node) => node.id);
   const providerSummary = summarizeRuntimeBuckets<RuntimeProviderKind>(nodes, (node) => node.provider);
   const layerSummary = summarizeRuntimeBuckets<RuntimeLayerId>(nodes, (node) => node.layer);
   const attention = nodes.filter((node) => needsAttention(node.state)).length;
@@ -493,6 +529,7 @@ function buildRuntimeModel(runtimeMap: RuntimeMap): RuntimeModel {
     edges: runtimeMap.edges,
     diagnostics: runtimeMap.diagnostics,
     byId,
+    idCollisions,
     providerSummary,
     layerSummary,
     summary: {

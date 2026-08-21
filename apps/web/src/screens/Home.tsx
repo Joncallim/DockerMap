@@ -135,14 +135,14 @@ export default function Home() {
           {updates.length > 0 && (
             <Panel title="Updates available" icon="up" hint={`${updates.length}`}>
               <ul className="svc-list">
-                {updates.map((s) => (
-                  <li key={s.id} className="svc-row">
-                    <StateDot state={s.state} />
-                    <Link className="svc-name" to={`/services/${encodeURIComponent(s.name)}`}>
-                      {s.name}
-                    </Link>
+                {updates.map((service, index) => (
+                  <li key={`${service.id}-${index}`} className="svc-row">
+                    <StateDot state={service.state} />
+                    {model.byId.has(service.id) && model.byName.has(service.name) ? <Link className="svc-name" to={`/services/${encodeURIComponent(service.name)}`}>
+                      {service.name || "Unavailable service name"}
+                    </Link> : <span className="svc-name">{service.name || "Unavailable service name"}</span>}
                     <Tag tone="accent" icon="image">
-                      {s.imageRepo}:{s.imageTag}
+                      {service.imageRepo}:{service.imageTag}
                     </Tag>
                   </li>
                 ))}
@@ -162,9 +162,9 @@ function ServiceRow({ model, service }: { model: ReturnType<typeof useApp>["mode
   return (
     <li className="svc-row">
       <Icon name={KIND_ICON[service.kind]} size={16} />
-      <Link className="svc-name" to={`/services/${encodeURIComponent(service.name)}`}>
-        {service.name}
-      </Link>
+      {model.byId.has(service.id) && model.byName.has(service.name) ? <Link className="svc-name" to={`/services/${encodeURIComponent(service.name)}`}>
+        {service.name || "Unavailable service name"}
+      </Link> : <span className="svc-name">{service.name || "Unavailable service name"}</span>}
       <StatePill state={service.state} />
       <span className="svc-meta">{dependents > 0 ? `${dependents} dependent${dependents === 1 ? "" : "s"}` : "no dependents"}</span>
       <span className="svc-res">

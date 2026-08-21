@@ -11,7 +11,9 @@ import { formatClock } from "../lib/format";
 import { AppContext } from "../context";
 import Icon, { type IconName } from "./Icon";
 import CommandPalette from "./CommandPalette";
+import RouteFocusManager from "./RouteFocusManager";
 import { StateDot, Tag } from "./primitives";
+import { UNAVAILABLE_USER } from "../lib/identity";
 
 interface NavItem {
   to: string;
@@ -93,10 +95,10 @@ function AuthStatus({ onBearerSignOut }: { onBearerSignOut: () => void }) {
           Sign out
         </button>
       )}
-      {settings.auth.showStatus && (user ? (
+      {settings.auth.showStatus && (user !== null && user !== undefined ? (
         <>
           <Tag tone="accent" icon="shield">
-            {whoami.data?.name ?? user}
+            {whoami.data?.name || user || UNAVAILABLE_USER}
           </Tag>
           {settings.auth.logoutUrl && (
             <a className="ghost-link" href={settings.auth.logoutUrl}>
@@ -161,8 +163,11 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
 
   return (
     <AppContext.Provider value={ctx}>
-      <div className="shell">
-        <aside className="rail">
+      <div className="shell" inert={commandOpen || undefined}>
+        <a className="skip-link" href="#main-content">
+          Skip to main content
+        </a>
+        <aside className="rail" aria-label="Application navigation and status">
           <div className="brand">
             <span className="brand-mark" aria-hidden="true">
               <Icon name="map" size={20} />
@@ -220,10 +225,11 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
             </div>
           </header>
 
-          <main className="content">
+          <main id="main-content" className="content" tabIndex={-1} aria-label="Main content">
             <Outlet />
           </main>
         </div>
+        <RouteFocusManager />
       </div>
 
       <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} model={model} />

@@ -1,19 +1,15 @@
 import { Link } from "react-router-dom";
-import { EmptyState } from "../components/primitives";
+import Icon from "../components/Icon";
 
 export default function NotFound() {
   return (
     <div className="screen">
-      <EmptyState
-        icon="search"
-        title="Nothing here"
-        body="That view does not exist."
-        action={
-          <Link className="primary-link" to="/">
-            Back to Command Center
-          </Link>
-        }
-      />
+      <section className="empty">
+        <span className="empty-icon"><Icon name="search" size={22} /></span>
+        <h1>Nothing here</h1>
+        <p>That view does not exist.</p>
+        <Link className="primary-link" to="/">Back to Command Center</Link>
+      </section>
     </div>
   );
 }

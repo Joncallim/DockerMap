@@ -185,9 +185,9 @@ export default function Logs() {
           aria-label="Filter by service"
         >
           <option value="">All services</option>
-          {model?.services.map((s) => (
-            <option key={s.id} value={s.name}>
-              {s.name}
+          {model?.services.filter((service) => model.byId.has(service.id) && model.byName.has(service.name)).map((service, index) => (
+            <option key={`${service.id}-${index}`} value={service.name}>
+              {service.name}
             </option>
           ))}
         </select>

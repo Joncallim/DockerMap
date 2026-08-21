@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { RuntimeProviderKind } from "@dockermap/contracts";
 import { useApp } from "../context";
@@ -6,6 +6,7 @@ import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord } from "../
 import { formatRelative } from "../lib/format";
 import Icon, { type IconName } from "../components/Icon";
 import { EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, StateDot, StatePill, Tag } from "../components/primitives";
+import { identityText, UNAVAILABLE_LOG_SOURCE, UNAVAILABLE_RUNTIME_NODE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "../lib/identity";
 
 const PROVIDER_ICON: Record<RuntimeProviderKind, IconName> = {
   docker: "service",
@@ -51,23 +52,29 @@ export default function RuntimeScreen() {
   const [layerFilter, setLayerFilter] = useState<RuntimeLayerId | "all">("all");
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
 
-  if (loading && !model) return <Loading label="Reading runtime topology…" />;
-  if (error && !model) return <ErrorState title="Runtime unavailable" body={error} />;
-  if (!model) return <EmptyState icon="layers" title="No runtime map yet" body="Connect a host or enable Demo Mode to inspect runtime signals." />;
-
-  const runtime = model.runtime;
-
+  const runtime = model?.runtime;
   const filteredNodes = useMemo(() => {
+    if (!runtime) return [];
     return runtime.nodes.filter((node) => {
       if (providerFilter !== "all" && node.provider !== providerFilter) return false;
       if (layerFilter !== "all" && node.layer !== layerFilter) return false;
       if (attentionOnly && !needsAttention(node.state)) return false;
       return true;
     });
-  }, [attentionOnly, layerFilter, providerFilter, runtime.nodes]);
+  }, [attentionOnly, layerFilter, providerFilter, runtime]);
 
-  const selected = (selectedId ? runtime.byId.get(selectedId) : null) ?? filteredNodes[0] ?? null;
+  useEffect(() => {
+    if (!runtime || !selectedId) return;
+    if (!filteredNodes.some((node) => node.id === selectedId && runtime.byId.has(node.id))) setSelectedId(null);
+  }, [filteredNodes, runtime, selectedId]);
+
+  if (loading && !model) return <Loading label="Reading runtime topology…" />;
+  if (error && !model) return <ErrorState title="Runtime unavailable" body={error} />;
+  if (!model || !runtime) return <EmptyState icon="layers" title="No runtime map yet" body="Connect a host or enable Demo Mode to inspect runtime signals." />;
+
+  const selected = selectedId ? runtime.byId.get(selectedId) ?? null : null;
   const selectedDetail = resolveDockerDetail(model, selected);
   const selectedImage = selected?.provider === "docker" && selected.type === "container" && typeof selected.metadata.image === "string" && selected.metadata.image !== "" ? model.imageByRef.get(selected.metadata.image) ?? null : null;
 
@@ -81,6 +88,7 @@ export default function RuntimeScreen() {
         <div className="filter-row">
           <button
             type="button"
+            aria-pressed={attentionOnly}
             className={`filter-chip${attentionOnly ? " is-on" : ""}`}
             onClick={() => setAttentionOnly((value) => !value)}
           >
@@ -88,6 +96,7 @@ export default function RuntimeScreen() {
           </button>
           <button
             type="button"
+            aria-pressed={providerFilter === "all"}
             className={`filter-chip${providerFilter === "all" ? " is-on" : ""}`}
             onClick={() => setProviderFilter("all")}
           >
@@ -97,6 +106,7 @@ export default function RuntimeScreen() {
             <button
               key={bucket.id}
               type="button"
+              aria-pressed={providerFilter === bucket.id}
               className={`filter-chip${providerFilter === bucket.id ? " is-on" : ""}`}
               onClick={() => setProviderFilter((current) => (current === bucket.id ? "all" : bucket.id))}
             >
@@ -122,6 +132,7 @@ export default function RuntimeScreen() {
           <div className="tag-wrap">
             <button
               type="button"
+              aria-pressed={layerFilter === "all"}
               className={`filter-chip${layerFilter === "all" ? " is-on" : ""}`}
               onClick={() => setLayerFilter("all")}
             >
@@ -131,6 +142,7 @@ export default function RuntimeScreen() {
               <button
                 key={bucket.id}
                 type="button"
+                aria-pressed={layerFilter === bucket.id}
                 className={`filter-chip${layerFilter === bucket.id ? " is-on" : ""}`}
                 onClick={() => setLayerFilter((current) => (current === bucket.id ? "all" : bucket.id))}
               >
@@ -151,7 +163,7 @@ export default function RuntimeScreen() {
                     <Icon name={PROVIDER_ICON[diagnostic.provider]} size={13} /> {diagnostic.provider}
                   </span>
                   <span className="diag-message">{diagnostic.message}</span>
-                  <Tag tone={diagnostic.severity === "info" ? "muted" : diagnostic.severity === "warning" ? "warn" : "accent"}>{diagnostic.severity}</Tag>
+                  <Tag tone={diagnostic.severity === "info" ? "muted" : diagnostic.severity === "warning" ? "warn" : "error"}>{diagnostic.severity}</Tag>
                 </li>
               ))}
             </ul>
@@ -166,35 +178,39 @@ export default function RuntimeScreen() {
               <EmptyState icon="search" title="No matching nodes" body="Clear one of the runtime filters to widen the view." />
             ) : (
               <ul className="runtime-node-list">
-                {filteredNodes.map((node) => (
-                  <li key={node.id}>
-                    <button
-                      type="button"
-                      className={`runtime-node-btn${selected?.id === node.id ? " is-active" : ""}`}
-                      onClick={() => setSelectedId(node.id)}
-                    >
-                      <span className="runtime-node-main">
-                        <Icon name={PROVIDER_ICON[node.provider]} size={15} />
-                        <span className="runtime-node-copy">
-                          <span className="runtime-node-label">{node.label}</span>
-                          <span className="runtime-node-meta">
-                            {node.provider} · {node.type.replaceAll("_", " ")} · {LAYER_LABEL[node.layer]}
-                          </span>
-                        </span>
+                {filteredNodes.map((node, index) => {
+                  const selectable = runtime.byId.has(node.id);
+                  const content = <>
+                    <span className="runtime-node-main">
+                      <Icon name={PROVIDER_ICON[node.provider]} size={15} />
+                      <span className="runtime-node-copy">
+                        <span className="runtime-node-label">{identityText(node.label, UNAVAILABLE_RUNTIME_NODE)}</span>
+                        <span className="runtime-node-meta">{node.provider} · {node.type.replaceAll("_", " ")} · {LAYER_LABEL[node.layer]}</span>
                       </span>
-                      <StatePill state={node.state} />
-                    </button>
-                  </li>
-                ))}
+                    </span>
+                    <StatePill state={node.state} />
+                  </>;
+                  return (
+                    <li key={`${node.id}-${index}`}>
+                      {selectable ? <button
+                        type="button"
+                        className={`runtime-node-btn${selected?.id === node.id ? " is-active" : ""}`}
+                        aria-pressed={selected?.id === node.id}
+                        ref={(element) => { if (element) nodeRefs.current.set(node.id, element); }}
+                        onClick={() => setSelectedId(node.id)}
+                      >{content}</button> : <div className="runtime-node-btn runtime-node-unresolved" aria-label={`${identityText(node.label, UNAVAILABLE_RUNTIME_NODE)} is unavailable for selection`}>{content}</div>}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </Panel>
         </div>
 
-        <aside className="inspector">
+        <aside className="inspector" aria-label="Runtime inspector">
           {!selected ? (
             <div className="inspector-hint">
-              <h3>Provider signals, unified</h3>
+              <h2>Provider signals, unified</h2>
               <p>Pick any runtime node to inspect its provider, layer, dependencies, diagnostics, and recorded evidence.</p>
             </div>
           ) : (
@@ -203,7 +219,7 @@ export default function RuntimeScreen() {
                 <span className="inspector-kind">
                   <Icon name={PROVIDER_ICON[selected.provider]} size={15} /> {selected.provider}
                 </span>
-                <button type="button" className="icon-btn" onClick={() => setSelectedId(null)} aria-label="Clear selection">
+                <button type="button" className="icon-btn" onClick={() => { setSelectedId(null); window.requestAnimationFrame(() => nodeRefs.current.get(selected.id)?.focus()); }} aria-label={`Clear ${identityText(selected.label, UNAVAILABLE_RUNTIME_NODE)} runtime selection`}>
                   <Icon name="close" size={15} />
                 </button>
               </div>
@@ -228,8 +244,8 @@ export default function RuntimeScreen() {
               {selected.service && (
                 <div className="inspector-section">
                   <h4>Service evidence</h4>
-                  <KeyValue label="Service name" value={selected.service.name} />
-                  <KeyValue label="Reported status" value={selected.service.status} />
+                  <KeyValue label="Service name" value={identityText(selected.service.name, UNAVAILABLE_SERVICE)} />
+                  <KeyValue label="Reported status" value={identityText(selected.service.status, UNAVAILABLE_SERVICE_STATUS)} />
                   <KeyValue label="Health" value={selected.service.health?.message ?? selected.service.health?.state ?? "—"} />
                   <KeyValue label="Owner" value={selected.service.owner?.name ?? "—"} />
                   <KeyValue label="Location" value={selected.service.location ? `${selected.service.location.kind}: ${selected.service.location.value}` : "—"} />
@@ -269,7 +285,7 @@ export default function RuntimeScreen() {
                   <ul className="runtime-evidence-list">
                     {selected.service.logs.map((entry) => (
                       <li key={entry.id}>
-                        <Tag tone="muted">{entry.source}</Tag>
+                        <Tag tone="muted">{identityText(entry.source, UNAVAILABLE_LOG_SOURCE)}</Tag>
                         <span>{entry.level ?? "log reference"}</span>
                       </li>
                     ))}

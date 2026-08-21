@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import Icon from "../components/Icon";
 import { EmptyState, ErrorState, Loading, Panel, StateDot, Tag } from "../components/primitives";
-import { COLLISION_HINT, COLLISION_TAG } from "../lib/identity";
+import { IdentityRef } from "../components/identity";
+import { COLLISION_HINT, COLLISION_TAG, UNAVAILABLE_CONTAINER } from "../lib/identity";
 
 export default function Storage() {
   const { model, loading, error } = useApp();
@@ -59,13 +60,13 @@ export default function Storage() {
                   <p className="muted-line">Not mounted by any service.</p>
                 ) : (
                   <ul className="rel-list">
-                    {vol.attachedTo.map((member) => {
+                    {vol.attachedTo.map((member, memberIndex) => {
                       const svc = model.byName.get(member);
                       return (
-                        <li key={member}>
+                        <li key={`${member}-${memberIndex}`}>
                           <Icon name="arrow" size={13} />
                           <StateDot state={svc?.state ?? "unknown"} />
-                          {svc ? <Link to={`/services/${encodeURIComponent(svc.name)}`}>{svc.name}</Link> : <span>{member}</span>}
+                          <IdentityRef name={member} fallback={UNAVAILABLE_CONTAINER} to={svc ? `/services/${encodeURIComponent(svc.name)}` : undefined} />
                         </li>
                       );
                     })}

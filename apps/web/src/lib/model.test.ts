@@ -248,6 +248,45 @@ describe("empty schema-valid identities stay visible and non-routable", () => {
   });
 });
 
+describe("service and runtime identity indexes", () => {
+  it("keeps duplicate and empty service evidence while excluding ambiguous semantic lookups", () => {
+    const model = buildModel(
+      snapshot([
+        container({ id: "container_a", name: "[redacted]", role: "api" }),
+        container({ id: "container_b", name: "[redacted]", role: "api" }),
+        container({ id: "", name: "", dependsOn: ["[redacted]", "api"] })
+      ]),
+      emptyRuntime
+    );
+
+    expect(model.services).toHaveLength(3);
+    expect(model.serviceNameCollisions.has("[redacted]")).toBe(true);
+    expect(model.serviceAliasCollisions.has("api")).toBe(true);
+    expect(model.byName.has("[redacted]")).toBe(false);
+    expect(model.byId.has("")).toBe(false);
+    expect(model.services[2].dependsOn).toEqual([]);
+  });
+
+  it("excludes duplicate runtime ids instead of silently selecting the last node", () => {
+    const runtime: RuntimeMap = {
+      nodes: [
+        { id: "runtime-duplicate", provider: "docker", type: "container", label: "first", status: "running", metadata: {} },
+        { id: "runtime-duplicate", provider: "docker", type: "container", label: "second", status: "running", metadata: {} },
+        { id: "", provider: "docker", type: "container", label: "empty", status: "running", metadata: {} }
+      ],
+      edges: [],
+      diagnostics: [],
+      lastUpdated: 0
+    };
+    const model = buildModel(snapshot([]), runtime);
+
+    expect(model.runtime.nodes).toHaveLength(3);
+    expect(model.runtime.idCollisions.has("runtime-duplicate")).toBe(true);
+    expect(model.runtime.byId.has("runtime-duplicate")).toBe(false);
+    expect(model.runtime.byId.has("")).toBe(false);
+  });
+});
+
 describe("collision-safe redacted identities", () => {
   // Distinct records whose identities sanitize to the SAME published value
   // (the daemon redacts sensitive identity strings to "[redacted]" before

@@ -3,6 +3,7 @@ import { useApp } from "../context";
 import { useApiResource } from "../hooks/useApiResource";
 import Icon from "../components/Icon";
 import { EmptyState, ErrorState, Loading, Panel, Tag } from "../components/primitives";
+import { identityText, UNAVAILABLE_COMPOSE_SERVICE, UNAVAILABLE_COMPOSE_SOURCE, UNAVAILABLE_COMPOSE_TARGET, UNAVAILABLE_DIAGNOSTIC_FILE, UNAVAILABLE_DIAGNOSTIC_MESSAGE } from "../lib/identity";
 
 const STATUS_TONE = { matched: "accent", missing: "warn", extra: "muted" } as const;
 
@@ -32,9 +33,13 @@ export default function Compose() {
       {diagnostics.length > 0 && (
         <Panel title="Diagnostics" icon="alert">
           <ul className="diag-list">
-            {diagnostics.map((d) => (
-              <li key={d.id} className={`diag-row sev-${d.severity}`}>
-                <Icon name="alert" size={13} /> {d.message}
+            {diagnostics.map((diagnostic, index) => (
+              <li key={`${diagnostic.id}-${index}`} className={`diag-row sev-${diagnostic.severity}`}>
+                <Icon name="alert" size={13} />
+                <span className="diag-message">{identityText(diagnostic.message, UNAVAILABLE_DIAGNOSTIC_MESSAGE)}</span>
+                <Tag tone={diagnostic.severity === "info" ? "muted" : diagnostic.severity === "warning" ? "warn" : "error"}>{diagnostic.severity}</Tag>
+                <Tag tone="muted">Compose · {identityText(diagnostic.origin.file, UNAVAILABLE_DIAGNOSTIC_FILE)}</Tag>
+                {diagnostic.origin.service !== null && <Tag tone="muted">{identityText(diagnostic.origin.service, UNAVAILABLE_COMPOSE_SERVICE)}</Tag>}
               </li>
             ))}
           </ul>
@@ -51,12 +56,12 @@ export default function Compose() {
         <div className="grid-2">
           <Panel title="Services" icon="layers" hint={`${services.length}`}>
             <ul className="svc-list">
-              {services.map((s) => (
-                <li key={s.name} className="svc-row">
+              {services.map((service, index) => (
+                <li key={`${service.name}-${index}`} className="svc-row">
                   <Icon name="service" size={15} />
-                  <span className="svc-name">{s.name}</span>
-                  {s.image && <Tag tone="muted">{s.image}</Tag>}
-                  {s.dependsOn.length > 0 && <span className="svc-meta">depends on {s.dependsOn.join(", ")}</span>}
+                  <span className="svc-name">{identityText(service.name, UNAVAILABLE_COMPOSE_SERVICE)}</span>
+                  {service.image !== null && <Tag tone="muted">{identityText(service.image, UNAVAILABLE_COMPOSE_SOURCE)}</Tag>}
+                  {service.dependsOn.length > 0 && <span className="svc-meta">depends on {service.dependsOn.map((dependency) => identityText(dependency, UNAVAILABLE_COMPOSE_SERVICE)).join(", ")}</span>}
                 </li>
               ))}
             </ul>
@@ -67,13 +72,13 @@ export default function Compose() {
               <p className="muted-line">No mount correlations found.</p>
             ) : (
               <ul className="mount-list">
-                {correlations.map((c) => (
-                  <li key={c.id} className="mount-row">
-                    <Tag tone={STATUS_TONE[c.status]}>{c.status}</Tag>
-                    <span className="svc-meta">{c.service}</span>
-                    <code>{c.declaredSource ?? c.runtimeSource ?? "—"}</code>
+                {correlations.map((correlation, index) => (
+                  <li key={`${correlation.id}-${index}`} className="mount-row">
+                    <Tag tone={STATUS_TONE[correlation.status]}>{correlation.status}</Tag>
+                    <span className="svc-meta">{identityText(correlation.service, UNAVAILABLE_COMPOSE_SERVICE)}</span>
+                    <code>{identityText(correlation.declaredSource ?? correlation.runtimeSource, UNAVAILABLE_COMPOSE_SOURCE)}</code>
                     <Icon name="arrow" size={13} />
-                    <code>{c.target}</code>
+                    <code>{identityText(correlation.target, UNAVAILABLE_COMPOSE_TARGET)}</code>
                   </li>
                 ))}
               </ul>

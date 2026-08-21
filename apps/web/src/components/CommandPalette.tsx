@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { useNavigate } from "react-router-dom";
 import type { SystemModel } from "../lib/model";
 import Icon, { type IconName, KIND_ICON } from "./Icon";
+import { identityText, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_ROLE } from "../lib/identity";
+
+type CloseReason = "cancel" | "navigate";
 
 interface Command {
   id: string;
@@ -19,7 +22,7 @@ export default function CommandPalette({
   model
 }: {
   open: boolean;
-  onClose: () => void;
+  onClose: (reason?: CloseReason) => void;
   model: SystemModel | null;
 }) {
   const navigate = useNavigate();
@@ -29,22 +32,30 @@ export default function CommandPalette({
   const dialogRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLLIElement | null)[]>([]);
   const triggerRef = useRef<HTMLElement | null>(null);
+  const closeReason = useRef<CloseReason>("cancel");
 
   useEffect(() => {
     if (open) {
       triggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      closeReason.current = "cancel";
       setQuery("");
       setActive(0);
-      window.setTimeout(() => inputRef.current?.focus(), 10);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
     } else if (triggerRef.current) {
-      triggerRef.current.focus();
+      if (closeReason.current === "cancel") triggerRef.current.focus();
       triggerRef.current = null;
+      closeReason.current = "cancel";
     }
   }, [open]);
 
+  const close = (reason: CloseReason = "cancel") => {
+    closeReason.current = reason;
+    onClose(reason);
+  };
   const go = (path: string) => {
+    closeReason.current = "navigate";
     navigate(path);
-    onClose();
+    onClose("navigate");
   };
 
   const commands = useMemo<Command[]>(() => {
@@ -60,15 +71,17 @@ export default function CommandPalette({
       { id: "nav-logs", label: "Logs", icon: "logs", group: "Navigate", run: () => go("/logs") },
       { id: "nav-compose", label: "Compose", icon: "compose", group: "Navigate", run: () => go("/compose") }
     ];
-    const services: Command[] = (model?.services ?? []).map((s) => ({
-      id: `svc-${s.id}`,
-      label: `Go to ${s.name}`,
-      hint: s.role,
-      icon: KIND_ICON[s.kind],
-      group: "Services",
-      keywords: `${s.name} ${s.role} ${s.imageRepo}`,
-      run: () => go(`/services/${encodeURIComponent(s.name)}`)
-    }));
+    const services: Command[] = (model?.services ?? [])
+      .filter((service) => model?.byId.has(service.id) && model.byName.has(service.name))
+      .map((service) => ({
+        id: `svc-${service.id}`,
+        label: `Go to ${identityText(service.name, UNAVAILABLE_SERVICE)}`,
+        hint: identityText(service.role, UNAVAILABLE_SERVICE_ROLE),
+        icon: KIND_ICON[service.kind],
+        group: "Services",
+        keywords: `${service.name} ${service.role} ${service.imageRepo}`,
+        run: () => go(`/services/${encodeURIComponent(service.name)}`)
+      }));
     return [...nav, ...services];
   }, [model]);
 
@@ -76,21 +89,13 @@ export default function CommandPalette({
   const filtered = useMemo(() => {
     if (!trimmed) return commands;
     const q = trimmed.toLowerCase();
-    return commands.filter((c) => (c.label + " " + (c.keywords ?? "")).toLowerCase().includes(q));
+    return commands.filter((command) => (command.label + " " + (command.keywords ?? "")).toLowerCase().includes(q));
   }, [commands, trimmed]);
-
   const askCopilot: Command | null = trimmed
-    ? {
-        id: "ask",
-        label: `Ask Copilot: "${trimmed}"`,
-        icon: "spark",
-        group: "Copilot",
-        run: () => go(`/copilot?q=${encodeURIComponent(trimmed)}`)
-      }
+    ? { id: "ask", label: `Ask Copilot: "${trimmed}"`, icon: "spark", group: "Copilot", run: () => go(`/copilot?q=${encodeURIComponent(trimmed)}`) }
     : null;
-
   const items = askCopilot ? [askCopilot, ...filtered] : filtered;
-  const clampedActive = Math.min(active, Math.max(0, items.length - 1));
+  const clampedActive = Math.min(Math.max(0, active), Math.max(0, items.length - 1));
 
   useEffect(() => {
     itemRefs.current[clampedActive]?.scrollIntoView({ block: "nearest" });
@@ -101,29 +106,19 @@ export default function CommandPalette({
   const trapFocus = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
       event.preventDefault();
-      onClose();
+      close();
       return;
     }
     if (event.key !== "Tab") return;
-    const focusables = Array.from(
-      dialogRef.current?.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-      ) ?? []
-    ).filter((el) => !el.hasAttribute("disabled"));
+    const focusables = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>("input, [tabindex]:not([tabindex=\"-1\"])") ?? [])
+      .filter((element) => !element.hasAttribute("disabled"));
     if (focusables.length === 0) return;
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
+    event.preventDefault();
+    (event.shiftKey ? focusables[focusables.length - 1] : focusables[0]).focus();
   };
 
   return (
-    <div className="cmdk-backdrop" onClick={onClose} role="presentation">
+    <div className="cmdk-backdrop" onMouseDown={() => close()} role="presentation">
       <div
         className="cmdk"
         role="dialog"
@@ -131,7 +126,7 @@ export default function CommandPalette({
         aria-label="Command palette"
         ref={dialogRef}
         onKeyDown={trapFocus}
-        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="cmdk-input">
           <Icon name="search" size={17} />
@@ -144,19 +139,26 @@ export default function CommandPalette({
             aria-expanded="true"
             aria-controls="cmdk-listbox"
             aria-autocomplete="list"
-            onChange={(e) => {
-              setQuery(e.target.value);
+            aria-label="Search commands"
+            onChange={(event) => {
+              setQuery(event.target.value);
               setActive(0);
             }}
-            onKeyDown={(e) => {
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setActive((a) => Math.min(items.length - 1, a + 1));
-              } else if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setActive((a) => Math.max(0, a - 1));
-              } else if (e.key === "Enter") {
-                e.preventDefault();
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown" && items.length > 0) {
+                event.preventDefault();
+                setActive((current) => Math.min(items.length - 1, current + 1));
+              } else if (event.key === "ArrowUp" && items.length > 0) {
+                event.preventDefault();
+                setActive((current) => Math.max(0, current - 1));
+              } else if (event.key === "Home" && items.length > 0) {
+                event.preventDefault();
+                setActive(0);
+              } else if (event.key === "End" && items.length > 0) {
+                event.preventDefault();
+                setActive(items.length - 1);
+              } else if (event.key === "Enter") {
+                event.preventDefault();
                 items[clampedActive]?.run();
               }
             }}
@@ -164,28 +166,22 @@ export default function CommandPalette({
           <kbd>esc</kbd>
         </div>
         <ul id="cmdk-listbox" className="cmdk-list" role="listbox" aria-label="Commands">
-          {items.length === 0 && <li className="cmdk-empty">No matches</li>}
-          {items.map((c, i) => (
+          {items.length === 0 && <li className="cmdk-empty" role="status">No matches</li>}
+          {items.map((command, index) => (
             <li
-              key={c.id}
-              id={`cmdk-option-${i}`}
+              key={command.id}
+              id={`cmdk-option-${index}`}
               role="option"
-              aria-selected={i === clampedActive}
-              ref={(el) => {
-                itemRefs.current[i] = el;
-              }}
+              aria-selected={index === clampedActive}
+              className={`cmdk-item${index === clampedActive ? " is-active" : ""}`}
+              ref={(element) => { itemRefs.current[index] = element; }}
+              onMouseMove={() => setActive(index)}
+              onClick={command.run}
             >
-              <button
-                type="button"
-                className={`cmdk-item${i === clampedActive ? " is-active" : ""}`}
-                onMouseEnter={() => setActive(i)}
-                onClick={c.run}
-              >
-                <Icon name={c.icon} size={15} />
-                <span className="cmdk-item-label">{c.label}</span>
-                {c.hint && <span className="cmdk-item-hint">{c.hint}</span>}
-                <span className="cmdk-item-group">{c.group}</span>
-              </button>
+              <Icon name={command.icon} size={15} />
+              <span className="cmdk-item-label">{command.label}</span>
+              {command.hint && <span className="cmdk-item-hint">{command.hint}</span>}
+              <span className="cmdk-item-group">{command.group}</span>
             </li>
           ))}
         </ul>
