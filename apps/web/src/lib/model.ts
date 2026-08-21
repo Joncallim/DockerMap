@@ -283,10 +283,31 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
     return idByAlias.get(ref) ?? null;
   };
 
+  // A semantic dependency edge requires BOTH endpoints to be unique AND
+  // non-empty. resolveDependency already fails closed on the TARGET (collided
+  // aliases and empty refs stay null); the SOURCE (this record's canonical
+  // id) needs the same guarantee: two records sharing a collided id are two
+  // DISTINCT occurrences, so an edge attributed to that id would attach to an
+  // arbitrary one (the layout springs to the FIRST occurrence) and inflate
+  // dependents/impact with the wrong identity.
+  const sourceIdCounts = new Map<string, number>();
+  for (const c of snapshot.containers) {
+    if (c.id === "") continue;
+    sourceIdCounts.set(c.id, (sourceIdCounts.get(c.id) ?? 0) + 1);
+  }
+  const collidedSourceIds = new Set<string>();
+  for (const [id, count] of sourceIdCounts) {
+    if (count > 1) collidedSourceIds.add(id);
+  }
+  const isSemanticSource = (id: string) => id !== "" && !collidedSourceIds.has(id);
+
   const dependents = new Map<string, Set<string>>();
   for (const c of snapshot.containers) {
     // Only resolved ids feed the semantic dependents sets; raw occurrences
     // (empty, collided, or unknown refs) are preserved per service below.
+    // A collided/empty SOURCE cannot be attributed to one occurrence, so it
+    // never enters the dependents sets either.
+    if (!isSemanticSource(c.id)) continue;
     for (const dep of c.dependsOn) {
       const target = resolveDependency(dep);
       if (target === null) continue;
@@ -298,7 +319,15 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   const services: Service[] = snapshot.containers.map((c) => {
     const { repo, tag } = splitImage(c.image);
     const updateAvailable = hashString(c.id + "update") > 0.74;
-    const occurrences: DependencyOccurrence[] = c.dependsOn.map((dep) => ({ ref: dep, resolvedId: resolveDependency(dep) }));
+    const semantic = isSemanticSource(c.id);
+    // Raw occurrences stay visible as non-routable evidence; resolvedId is
+    // collision-safe on BOTH ends — a collided/empty source leaves the target
+    // resolution null too (occurrence-qualified), so no semantic join can
+    // silently attach the wrong occurrence.
+    const occurrences: DependencyOccurrence[] = c.dependsOn.map((dep) => ({
+      ref: dep,
+      resolvedId: semantic ? resolveDependency(dep) : null
+    }));
     return {
       id: c.id,
       name: c.name,
@@ -313,7 +342,7 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
       networks: c.networks.map((n) => networkNameById.get(n) ?? n.replace(/^network_/, "")),
       mounts: c.mounts,
       dependencyOccurrences: occurrences,
-      dependsOn: occurrences.filter((o): o is DependencyOccurrence & { resolvedId: string } => o.resolvedId !== null).map((o) => o.resolvedId),
+      dependsOn: semantic ? occurrences.filter((o): o is DependencyOccurrence & { resolvedId: string } => o.resolvedId !== null).map((o) => o.resolvedId) : [],
       dependents: [...(dependents.get(c.id) ?? [])],
       updateAvailable
     };
@@ -457,8 +486,12 @@ function buildRelationships(
     return "healthy";
   };
 
-  // Primary: explicit service-to-service dependencies.
+  // Primary: explicit service-to-service dependencies. BOTH endpoints must
+  // resolve uniquely through the collision-safe byId index (which excludes
+  // empty and collided ids): a collided SOURCE would make the edge's
+  // attribution ambiguous (the layout would spring to the first occurrence).
   for (const service of services) {
+    if (!byId.has(service.id)) continue;
     for (const dep of service.dependsOn) {
       if (!byId.has(dep)) continue;
       const id = `dep:${service.id}->${dep}`;

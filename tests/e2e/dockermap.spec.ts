@@ -150,11 +150,14 @@ test.describe("DockerMap GUI", () => {
     await apiNode.click();
     await expect(apiNode).toHaveAttribute("aria-pressed", "true");
 
-    // …then narrow the layer filter to Container. The api node's outgoing
-    // "application" network relation lives in the network layer, so its
-    // destination row is now EXCLUDED from the node list — but the inspector
-    // still offers the relation button.
+    // …then narrow the layer filter to Container AND the provider filter to
+    // docker. The provider filter is COMPATIBLE with the destination (the
+    // "application" network is a docker node); the layer filter is not (the
+    // relation lives in the network layer), so its destination row is now
+    // EXCLUDED from the node list — but the inspector still offers the
+    // relation button.
     await page.getByRole("button", { name: /^Container \(\d+\)$/ }).click();
+    await page.getByRole("button", { name: /^docker \(\d+\)$/ }).click();
     const applicationNode = page.locator("button.runtime-node-btn", { hasText: "application" }).filter({ hasText: "docker network" });
     await expect(applicationNode).toHaveCount(0);
 
@@ -163,12 +166,125 @@ test.describe("DockerMap GUI", () => {
     // on its persistent row button — never BODY. Previously the visibility
     // effect cleared the selection and the one-frame rAF focus found no row.
     await page.locator(".runtime-edge-target", { hasText: "application" }).click();
+    // F5: each predicate widens INDEPENDENTLY — ONLY the incompatible layer
+    // filter changes; the compatible provider=docker filter keeps its
+    // user-chosen state (and attention-only was never activated).
+    await expect(page.getByRole("button", { name: "All layers" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: /^docker \(\d+\)$/ })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Attention only" })).toHaveAttribute("aria-pressed", "false");
     await expect(applicationNode).toBeVisible();
     await expect(applicationNode).toHaveAttribute("aria-pressed", "true");
+    // F4: the keyed focus request is consumed by a LAYOUT effect (which runs
+    // before paint), so the destination button is already focused at the NEXT
+    // PAINT after the click — no body-focus frame can ever paint. A passive
+    // effect may run after paint, so an eventual-focus assertion could not
+    // catch a body-focus frame; probing inside requestAnimationFrame can.
+    const focusAtNextPaint = await page.evaluate(() => new Promise<string | null>((resolve) => {
+      requestAnimationFrame(() => {
+        const active = document.activeElement;
+        resolve(
+          active instanceof HTMLElement && active.classList.contains("runtime-node-btn")
+            ? active.querySelector(".runtime-node-label")?.textContent?.trim() ?? null
+            : null
+        );
+      });
+    }));
+    expect(focusAtNextPaint).toBe("application");
     await expect(applicationNode).toBeFocused();
-    await expect(page.getByRole("button", { name: "All layers" })).toHaveAttribute("aria-pressed", "true");
     // The inspector shows the newly selected network node.
     await expect(page.getByRole("heading", { name: "application" })).toBeVisible();
+  });
+
+  test("collision tags stay inside the 240×240 map viewBox (browser-measured)", async ({ page, request }) => {
+    stack = await startMockStack();
+
+    // The same duplicate-identity fixture the renderer regression uses: two
+    // records share a canonical id, two share a name, one is unique. jsdom
+    // cannot measure glyph/stroke ink — the earlier renderer test only proved
+    // node CENTERS stay in [30, 210], which silently certified a tag whose
+    // transformed, stroke-inclusive bottom edge reached ~242 (outside the
+    // viewBox). This browser regression asserts every tag's TRANSFORMED
+    // getBBox() + stroke bounds within 0..240.
+    const extraContainers = [
+      { id: "c_dup", name: "first", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: ["c_dup"] },
+      { id: "c_dup", name: "second", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: ["c_ok"] },
+      { id: "c_name1", name: "dup-name", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] },
+      { id: "c_name2", name: "dup-name", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] },
+      { id: "c_ok", name: "unique", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] }
+    ];
+    const baseSnapshot = (await (await request.get(`${stack.apiUrl}/api/snapshot`)).json()) as { containers: Array<{ id: string }> };
+    await page.route("**/api/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = (await response.json()) as { containers: Array<{ id: string }> };
+      // Idempotent against the app's refresh ticks: compute the BASE id set
+      // ONCE per response (before any push) so the two duplicate-id records
+      // are both injected — a per-push `some(id === extra.id)` check would
+      // skip the SECOND c_dup because the first was just added.
+      const baseIds = new Set(snapshot.containers.map((container) => container.id));
+      for (const extra of extraContainers) {
+        if (!baseIds.has(extra.id)) {
+          snapshot.containers.push(extra as (typeof snapshot.containers)[number]);
+        }
+      }
+      await route.fulfill({ response, json: snapshot });
+    });
+
+    await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Service Map" })).toBeVisible();
+    await expect(page.locator(".node-collision-tag").first()).toBeVisible();
+
+    const bounds = await page.evaluate(() => {
+      const svg = document.querySelector<SVGSVGElement>(".map-svg")!;
+      const svgCtm = svg.getScreenCTM()!;
+      // Compose tag-local user space -> viewBox user space: getScreenCTM of
+      // the svg maps viewBox coordinates to screen, so its inverse applied to
+      // the tag's screen CTM yields the tag's full ancestor transform chain
+      // (node translate + view pan/zoom) in viewBox units.
+      return Array.from(document.querySelectorAll<SVGTextElement>(".node-collision-tag")).map((tag) => {
+        const box = tag.getBBox();
+        const stroke = Number.parseFloat(getComputedStyle(tag).strokeWidth) || 0;
+        const m = svgCtm.inverse().multiply(tag.getScreenCTM()!);
+        const corners = [
+          { x: box.x - stroke / 2, y: box.y - stroke / 2 },
+          { x: box.x + box.width + stroke / 2, y: box.y - stroke / 2 },
+          { x: box.x - stroke / 2, y: box.y + box.height + stroke / 2 },
+          { x: box.x + box.width + stroke / 2, y: box.y + box.height + stroke / 2 }
+        ].map((point) => ({ x: m.a * point.x + m.c * point.y + m.e, y: m.b * point.x + m.d * point.y + m.f }));
+        return {
+          minX: Math.min(...corners.map((c) => c.x)),
+          maxX: Math.max(...corners.map((c) => c.x)),
+          minY: Math.min(...corners.map((c) => c.y)),
+          maxY: Math.max(...corners.map((c) => c.y))
+        };
+      });
+    });
+
+    // Four collided occurrences carry the tag; every ink bound (glyph bbox +
+    // stroke) must sit inside the 240×240 viewBox.
+    expect(bounds.length).toBe(4);
+    for (const b of bounds) {
+      expect(b.minX, `tag minX ${b.minX}`).toBeGreaterThanOrEqual(0);
+      expect(b.maxX, `tag maxX ${b.maxX}`).toBeLessThanOrEqual(240);
+      expect(b.minY, `tag minY ${b.minY}`).toBeGreaterThanOrEqual(0);
+      expect(b.maxY, `tag maxY ${b.maxY}`).toBeLessThanOrEqual(240);
+    }
+
+    // Retain the distinct-transform contract in the browser too: every
+    // occurrence (including both `c_dup` records) gets its own coordinate.
+    const transforms = await page.locator("g.node").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("transform")));
+    expect(transforms).toHaveLength(baseSnapshot.containers.length + extraContainers.length);
+    expect(new Set(transforms).size).toBe(transforms.length);
+
+    // F1: the second duplicate-id record depends on the unique `c_ok`, but
+    // its ambiguous SOURCE must never render a semantic edge — no rendered
+    // edge title may reference either duplicate record (the base snapshot's
+    // own relationships still render as edge groups).
+    const edgeTitles = await page.locator(".edge-group title").allTextContents();
+    expect(edgeTitles.length).toBeGreaterThan(0);
+    for (const title of edgeTitles) {
+      expect(title).not.toContain("first");
+      expect(title).not.toContain("second");
+    }
   });
 
   test("maps a live Docker Compose fixture through the GUI @live-docker", async ({ page, request }) => {

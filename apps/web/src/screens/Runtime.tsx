@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { RuntimeLocation, RuntimeProviderKind } from "@dockermap/contracts";
 import { useApp } from "../context";
@@ -79,14 +79,20 @@ export default function RuntimeScreen() {
     if (!filteredNodes.some((node) => node.id === selectedId && runtime.byId.has(node.id))) setSelectedId(null);
   }, [filteredNodes, runtime, selectedId]);
 
-  // Consume a pending focus request once its row is rendered. Stale refs
-  // (rows filtered out or the whole list unmounted) are dropped by the ref
-  // callback and the unmount cleanup, so a focus here always lands on a live
-  // button.
-  useEffect(() => {
+  // Consume a pending focus request in a LAYOUT effect, once its row is
+  // actually LIVE in the DOM. Layout effects run synchronously after the
+  // commit and BEFORE paint, so the destination button is focused in the
+  // same frame as the filter-widening commit — no body-focus frame can ever
+  // paint (a passive effect may run after paint). The request is cleared
+  // ONLY after a live element was found AND focused; if the row is filtered
+  // out or not yet mounted, the request stays pending for the next commit
+  // instead of being dropped.
+  useLayoutEffect(() => {
     if (!pendingFocusId) return;
     if (!filteredNodes.some((node) => node.id === pendingFocusId)) return;
-    nodeRefs.current.get(pendingFocusId)?.focus();
+    const element = nodeRefs.current.get(pendingFocusId);
+    if (!element) return;
+    element.focus();
     setPendingFocusId(null);
   }, [filteredNodes, pendingFocusId]);
 
@@ -118,9 +124,14 @@ export default function RuntimeScreen() {
     const node = runtime?.byId.get(id);
     if (!node) return;
     if (!filteredNodes.some((n) => n.id === id)) {
-      setProviderFilter("all");
-      setLayerFilter("all");
-      setAttentionOnly(false);
+      // Widen each predicate INDEPENDENTLY: only a filter that actually hides
+      // the destination is reset, so a COMPATIBLE filter keeps its
+      // user-chosen state (e.g. provider=docker must survive navigating to a
+      // docker network). Resetting every filter would destructively discard
+      // state the user never asked to clear.
+      if (providerFilter !== "all" && node.provider !== providerFilter) setProviderFilter("all");
+      if (layerFilter !== "all" && node.layer !== layerFilter) setLayerFilter("all");
+      if (attentionOnly && !needsAttention(node.state)) setAttentionOnly(false);
     }
     setPendingFocusId(id);
   };

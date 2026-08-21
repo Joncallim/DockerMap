@@ -29,6 +29,16 @@ interface Transform {
 export interface ServiceMapProps {
   model: SystemModel;
   selectedId: string | null;
+  /**
+   * Exact service OCCURRENCE for the selection, when the caller can identify
+   * one (e.g. ServiceDetail resolves a unique NAME). Selection is then
+   * compared by layout key, so a redaction-collided canonical id still
+   * highlights exactly the intended occurrence instead of every record that
+   * shares the id. When omitted, an id-only selection is honoured ONLY for
+   * unique ids — a collided id cannot identify one occurrence, so the
+   * selected state is suppressed entirely.
+   */
+  selectedService?: Service | null;
   onSelect: (id: string | null) => void;
   interactive?: boolean;
   filter?: (service: Service) => boolean;
@@ -43,7 +53,7 @@ export interface ServiceMapProps {
   focusToken?: number;
 }
 
-export default function ServiceMap({ model, selectedId, onSelect, interactive = true, filter, height, focusNodeId, focusToken }: ServiceMapProps) {
+export default function ServiceMap({ model, selectedId, selectedService, onSelect, interactive = true, filter, height, focusNodeId, focusToken }: ServiceMapProps) {
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [transform, setTransform] = useState<Transform>({ k: 1, x: 0, y: 0 });
   const [hiddenNetworks, setHiddenNetworks] = useState<Set<string>>(() => new Set());
@@ -101,14 +111,26 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
     };
   };
 
-  const activeId = hoverId ?? selectedId;
+  // The ACTIVE selection is occurrence-qualified: an exact service object
+  // resolves to its own layout key; an id-only selection resolves through the
+  // first-occurrence map ONLY for unique ids. A collided id cannot identify
+  // one occurrence, so the selected state is suppressed (no node-self, no
+  // impact) rather than highlighting every record that shares the id.
+  const selectedKey = useMemo(() => {
+    if (selectedService) return layoutKeyByService.get(selectedService) ?? null;
+    if (!selectedId) return null;
+    if (model.serviceIdCollisions.has(selectedId)) return null;
+    return firstLayoutKeyForId.get(selectedId) ?? null;
+  }, [selectedService, selectedId, layoutKeyByService, firstLayoutKeyForId, model.serviceIdCollisions]);
+
+  const activeId = hoverId ?? (selectedKey ? (selectedService?.id ?? selectedId) : null);
   const impact = useMemo(() => (activeId ? computeImpact(model, activeId) : null), [model, activeId]);
   const upstream = useMemo(() => new Set(impact?.upstream ?? []), [impact]);
   const downstream = useMemo(() => new Set(impact?.downstream ?? []), [impact]);
 
-  const roleOf = (id: string): "self" | "up" | "down" | "dim" | "none" => {
-    if (!activeId) return "none";
-    if (id === activeId) return "self";
+  const roleOf = (key: string, id: string): "self" | "up" | "down" | "dim" | "none" => {
+    if (!selectedKey) return "none";
+    if (key === selectedKey) return "self";
     if (downstream.has(id)) return "down";
     if (upstream.has(id)) return "up";
     return "dim";
@@ -276,7 +298,7 @@ export default function ServiceMap({ model, selectedId, onSelect, interactive = 
           })}
           {services.map((service, serviceIndex) => {
             const p = place(layoutKeyByService.get(service));
-            const role = roleOf(service.id);
+            const role = roleOf(layoutKeyByService.get(service)!, service.id);
             // Collided occurrences (duplicate service id OR duplicate name
             // after redaction) stay visible but are never interactive: no
             // selection can be made without pointing at the wrong record.

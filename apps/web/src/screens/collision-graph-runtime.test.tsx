@@ -6,6 +6,7 @@ import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
 import { AppContext, type AppContextValue } from "../context";
 import { buildModel } from "../lib/model";
 import { COLLISION_HINT, COLLISION_TAG } from "../lib/identity";
+import ServiceMap from "../components/ServiceMap";
 import MapScreen from "./Map";
 import RuntimeScreen from "./Runtime";
 import ServiceDetail from "./ServiceDetail";
@@ -16,13 +17,16 @@ import ServiceDetail from "./ServiceDetail";
  * stay visible on the graph and in the runtime list WITH the collision tag
  * and hint, and none of the collided occurrences may become a selectable
  * node (graph button or runtime row button). The first duplicate-id record
- * also depends on the duplicate id itself, so the dependency list must show
- * a VISIBLE collision-tagged non-routable row for that raw occurrence.
+ * depends on the duplicate id itself, so the dependency list must show a
+ * VISIBLE collision-tagged non-routable row for that raw occurrence. The
+ * SECOND duplicate-id record depends on the UNIQUE `c_ok`: its source id is
+ * ambiguous, so no semantic edge may render, no dependent attribution may
+ * reach `c_ok`, and no spring may attach to either duplicate occurrence.
  */
 const fixture: DockerSnapshot = {
   containers: [
     { id: "c_dup", name: "first", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: ["c_dup"] },
-    { id: "c_dup", name: "second", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] },
+    { id: "c_dup", name: "second", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: ["c_ok"] },
     { id: "c_name1", name: "dup-name", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] },
     { id: "c_name2", name: "dup-name", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] },
     { id: "c_ok", name: "unique", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] }
@@ -88,6 +92,11 @@ describe("collision tags on graph nodes and runtime rows", () => {
     // Collided labels render as plain text, not buttons.
     expect(html).not.toContain('aria-label="first, healthy"');
     expect(html).not.toContain('aria-label="dup-name, healthy"');
+    // The SECOND duplicate-id record depends on the UNIQUE `c_ok`, but its
+    // SOURCE id is ambiguous: no semantic edge may render (no spring, no
+    // relationship summary entry, no edge group at all).
+    expect(html.split('class="edge-group"').length - 1).toBe(0);
+    expect(html).toContain("No service relationships are recorded.");
   });
 
   it("ServiceMap gives duplicate-id occurrences DISTINCT in-viewport transforms", () => {
@@ -111,8 +120,10 @@ describe("collision tags on graph nodes and runtime rows", () => {
     expect(`${first.x},${first.y}`).not.toBe(`${second.x},${second.y}`);
     // All nodes sit inside the 240×240 viewBox within the collision-tag-safe
     // margin: centers stay within [30, 210], so the 6px "identity collision"
-    // tag (baseline at center+30, ~30px half-width) is fully visible inside
-    // 0..240 — a node at the old ±1 extreme rendered its tag off-viewport.
+    // tag (baseline at center+30, 2px paint-order stroke) is fully visible
+    // inside 0..240 — a node at the old ±1 extreme rendered its tag
+    // off-viewport. The BROWSER-level regression (tests/e2e) additionally
+    // measures every tag's transformed getBBox()+stroke bounds within 0..240.
     for (const node of nodes) {
       expect(node.x).toBeGreaterThanOrEqual(30);
       expect(node.x).toBeLessThanOrEqual(210);
@@ -131,6 +142,51 @@ describe("collision tags on graph nodes and runtime rows", () => {
     expect(html).toContain('class="svc-name collision-identity"');
     // …and is NON-ROUTABLE: no detail link may point at the ambiguous id.
     expect(html).not.toContain('href="/services/c_dup"');
+  });
+
+  it("ServiceDetail highlights EXACTLY the intended occurrence of a duplicate id", () => {
+    // The route identifies one of the two `c_dup` records by its UNIQUE name;
+    // the embedded map must mark only that occurrence node-self — never both
+    // (and never the first record for the second one). Node groups are
+    // matched as whole <g class="node…">…</g> blocks (a plain split on
+    // 'class="node' would be cut at the inner node-label text element).
+    const nodeGroups = (html: string) => html.match(/<g class="node[^"]*"[^>]*>[\s\S]*?<\/g>/g) ?? [];
+    const htmlFirst = renderScreen("/services/first", "/services/:name", <ServiceDetail defaultTab="overview" />);
+    const selfFirst = nodeGroups(htmlFirst).filter((group) => group.includes("node-self"));
+    expect(selfFirst).toHaveLength(1);
+    expect(selfFirst[0]).toContain(">first<");
+
+    const htmlSecond = renderScreen("/services/second", "/services/:name", <ServiceDetail defaultTab="overview" />);
+    const selfSecond = nodeGroups(htmlSecond).filter((group) => group.includes("node-self"));
+    expect(selfSecond).toHaveLength(1);
+    expect(selfSecond[0]).toContain(">second<");
+    // The other duplicate occurrence is never marked selected…
+    expect(selfSecond[0]).not.toContain(">first<");
+    // The embedded map is read-only (no interactive buttons at all); the
+    // duplicate nodes' non-selectability on the INTERACTIVE map is asserted
+    // by the MapScreen regression (exactly one role="button" — the unique
+    // service — even with a selection present).
+    expect(htmlSecond.split('role="button"').length - 1).toBe(0);
+  });
+
+  it("suppresses the selected state for an id-only selection of a collided id", () => {
+    // Without an exact occurrence (selectedService), a collided id cannot
+    // identify one record — NO node may receive node-self; the selection is
+    // suppressed instead of highlighting every occurrence.
+    const html = renderToStaticMarkup(
+      <AppContext.Provider value={contextValue}>
+        <ServiceMap model={model} selectedId="c_dup" onSelect={() => {}} interactive={false} />
+      </AppContext.Provider>
+    );
+    expect(html.split("node-self").length - 1).toBe(0);
+    // A UNIQUE id still selects normally through the first-occurrence map.
+    const htmlUnique = renderToStaticMarkup(
+      <AppContext.Provider value={contextValue}>
+        <ServiceMap model={model} selectedId="c_ok" onSelect={() => {}} interactive={false} />
+      </AppContext.Provider>
+    );
+    expect(htmlUnique.split("node-self").length - 1).toBe(1);
+    expect(htmlUnique).toContain("node-self");
   });
 
   it("Runtime keeps collided id rows visible with a tag and hint, never selectable", () => {

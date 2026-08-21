@@ -410,6 +410,50 @@ describe("fail-closed dependency resolution for duplicate and unknown container 
     expect(model.relationships).toHaveLength(1);
     expect(model.relationships[0]).toMatchObject({ from: "container_web", to: "container_app", kind: "depends_on" });
   });
+
+  it("requires the SOURCE endpoint to be unique too — a collided source never joins semantics", () => {
+    // Two records share the canonical id `dup`; only the SECOND depends on the
+    // unique `target`. The target resolves fine, but the edge's SOURCE is
+    // ambiguous: attributing the dependency to `dup` would point at the FIRST
+    // occurrence (the layout springs to it) and report `dup` as a downstream
+    // of `target` — evidence about the WRONG record. No semantic join may
+    // enter dependents, relationships, impact, or (via relationships) springs.
+    const model = buildModel(
+      snapshot([
+        container({ id: "dup", name: "first", dependsOn: [] }),
+        container({ id: "dup", name: "second", dependsOn: ["target"] }),
+        container({ id: "target", name: "target" })
+      ]),
+      emptyRuntime
+    );
+    const first = model.services.find((service) => service.name === "first")!;
+    const second = model.services.find((service) => service.name === "second")!;
+    const target = model.byName.get("target")!;
+
+    // No semantic edge may reference the ambiguous id in EITHER direction…
+    expect(model.relationships.filter((relationship) => relationship.from === "dup" || relationship.to === "dup")).toEqual([]);
+    // …the unique target gains NO dependent attribution…
+    expect(target.dependents).toEqual([]);
+    // …impact reports nothing downstream of the target…
+    expect(computeImpact(model, "target").downstream).toEqual([]);
+    // …and the collided SOURCE keeps an empty semantic dependsOn while its
+    // raw occurrence stays VISIBLE as occurrence-qualified unresolved
+    // evidence (the ref itself is preserved, resolution is null).
+    expect(second.dependsOn).toEqual([]);
+    expect(second.dependencyOccurrences).toEqual([{ ref: "target", resolvedId: null }]);
+    expect(first.dependsOn).toEqual([]);
+    // Positive control: a UNIQUE source still joins the semantic graph.
+    const control = buildModel(
+      snapshot([
+        container({ id: "app", name: "app", dependsOn: ["target"] }),
+        container({ id: "target", name: "target" })
+      ]),
+      emptyRuntime
+    );
+    expect(control.relationships).toHaveLength(1);
+    expect(control.byName.get("target")!.dependents).toEqual(["app"]);
+    expect(computeImpact(control, "target").downstream).toEqual(["app"]);
+  });
 });
 
 describe("collision-safe redacted identities", () => {

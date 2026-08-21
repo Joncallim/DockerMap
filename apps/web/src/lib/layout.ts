@@ -41,7 +41,15 @@ export function layoutServices(
     if (!firstKeyForId.has(p.id)) firstKeyForId.set(p.id, p.key);
   }
 
-  const springs = relationships.filter((r) => firstKeyForId.has(r.from) && firstKeyForId.has(r.to));
+  // Springs may only join UNIQUE canonical ids. A collided endpoint cannot be
+  // attributed to one occurrence — `firstKeyForId` would resolve it to the
+  // FIRST record, an arbitrary target. The model layer already excludes such
+  // relationships; this guard keeps the invariant even if a collided-endpoint
+  // edge ever slips through upstream.
+  const idCounts = new Map<string, number>();
+  for (const p of points) idCounts.set(p.id, (idCounts.get(p.id) ?? 0) + 1);
+  const uniqueId = (id: string) => (idCounts.get(id) ?? 0) === 1;
+  const springs = relationships.filter((r) => firstKeyForId.has(r.from) && firstKeyForId.has(r.to) && uniqueId(r.from) && uniqueId(r.to));
 
   const kRepel = 0.02;
   const kSpring = 0.08;
@@ -104,14 +112,17 @@ export function layoutServices(
 
 /**
  * Coordinates are normalised to ±EDGE_MARGIN (not ±1) so every node's ink
- * stays inside the 240×240 map viewBox once scaled by the map's `place()`:
- * a collision tag's baseline sits 30px below the node center and its 6px
- * text spans ~30px either side, so centers must stay within [30, 210]
- * (120 ± 90; 90/94 = 0.9574 is the exact bound — 0.95 leaves a hair of
- * room). Without this, a node pushed to the old ±1 extreme (214px) rendered
- * its collision tag below the viewport edge, invisible.
+ * stays inside the 240×240 map viewBox once scaled by the map's `place()`.
+ * The binding constraint is the collision tag: its baseline sits 30px below
+ * the node center and, at 6px font with a 2px paint-order stroke, its ink
+ * extends ~32.7px BELOW the center (baseline + glyph descender + half stroke)
+ * — browser-measured at 241.996px viewBox-max for the five-node fixture at
+ * margin 0.95. A center at normalized `m` maps to 120 + m·94, so the tag's
+ * bottom bound is 120 + m·94 + 32.7 ≤ 240 requires m ≤ 0.9287; 0.92 keeps a
+ * real margin for font-metric variance (the browser regression asserts every
+ * tag's transformed getBBox()+stroke bounds within 0..240).
  */
-const EDGE_MARGIN = 0.95;
+const EDGE_MARGIN = 0.92;
 
 function normalize(points: LayoutPoint[]): LayoutMap {
   let minX = Infinity;

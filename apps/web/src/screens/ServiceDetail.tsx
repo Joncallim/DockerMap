@@ -151,7 +151,11 @@ function Overview({ service, model }: { service: Service; model: NonNullable<Ret
         <KeyValue label="Networks" value={networksLabel} />
       </Panel>
       <Panel title="Relationships" icon="link" actions={<Link className="ghost-link" to="/map">Trace</Link>}>
-        <ServiceMap model={model} selectedId={service.id} onSelect={() => {}} interactive={false} height={240} />
+        {/* The route identifies this service by its UNIQUE NAME; pass the exact
+            occurrence so the map highlights only it — a collided canonical id
+            (duplicate container ids after redaction) must never highlight every
+            record that shares the id. */}
+        <ServiceMap model={model} selectedId={service.id} selectedService={service} onSelect={() => {}} interactive={false} height={240} />
       </Panel>
     </div>
   );
