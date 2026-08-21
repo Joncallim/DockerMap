@@ -182,7 +182,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let body = serde_json::json!({
             "code": self.status.as_str(),
-            "message": self.message,
+            "message": redact_runtime_display_text(&self.message),
         });
         (self.status, Json(body)).into_response()
     }
@@ -4501,6 +4501,17 @@ async fn get_volumes(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "volumes": snapshot.volumes }))
 }
 
+fn docker_log_collection_failed(error: &str) -> ApiError {
+    eprintln!(
+        "Docker log collection failed: {}",
+        redact_runtime_display_text(error)
+    );
+    ApiError {
+        status: StatusCode::BAD_GATEWAY,
+        message: "Docker log collection failed".into(),
+    }
+}
+
 async fn get_logs(
     State(state): State<AppState>,
     Query(query): Query<LogsQuery>,
@@ -4539,17 +4550,13 @@ async fn get_logs(
                 next_cursor: None,
             }));
         };
-        let collector = docker_collector(&state).await.map_err(|message| ApiError {
-            status: StatusCode::BAD_GATEWAY,
-            message,
-        })?;
+        let collector = docker_collector(&state)
+            .await
+            .map_err(|error| docker_log_collection_failed(&error))?;
         collector
             .collect_logs(service, q, cursor, limit)
             .await
-            .map_err(|message| ApiError {
-                status: StatusCode::BAD_GATEWAY,
-                message,
-            })?
+            .map_err(|error| docker_log_collection_failed(&error))?
     } else {
         publish_log_response(
             service,
@@ -5031,6 +5038,51 @@ mod tests {
         RuntimeOwnershipKind, RuntimePackageAdvisory, RuntimePackageUpdate,
     };
     use std::collections::HashSet;
+
+    #[test]
+    fn docker_stub_log_errors_have_a_fixed_location_neutral_client_message() {
+        // Mirrors the body returned by a Unix-socket Docker stub during logs
+        // collection: provider text is diagnostic-only and never a response.
+        let provider_error = "Docker stub 500: /srv/private/docker.log via 10.1.2.3:2375 token=DOCKERMAP_TEST_FAKE_SOL6_DOCKER_ERROR_SECRET";
+        let error = docker_log_collection_failed(provider_error);
+        assert_eq!(error.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(error.message, "Docker log collection failed");
+        for forbidden in [
+            "/srv/private/docker.log",
+            "10.1.2.3:2375",
+            "DOCKERMAP_TEST_FAKE_SOL6_DOCKER_ERROR_SECRET",
+        ] {
+            assert!(
+                !error.message.contains(forbidden),
+                "Docker-provider detail leaked into client error: {}",
+                error.message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn api_error_response_sanitizes_every_message_before_serialization() {
+        let hostile = "failure at /srv/private/docker.log from 10.1.2.3:2375 token=DOCKERMAP_TEST_FAKE_SOL6_DOCKER_ERROR_SECRET";
+        let response = ApiError {
+            status: StatusCode::BAD_GATEWAY,
+            message: hostile.into(),
+        }
+        .into_response();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("ApiError response body should be readable");
+        let published = String::from_utf8(bytes.to_vec()).expect("ApiError response is UTF-8 JSON");
+        for forbidden in [
+            "/srv/private/docker.log",
+            "10.1.2.3:2375",
+            "DOCKERMAP_TEST_FAKE_SOL6_DOCKER_ERROR_SECRET",
+        ] {
+            assert!(
+                !published.contains(forbidden),
+                "ApiError publication leaked {forbidden}"
+            );
+        }
+    }
 
     #[test]
     fn rejects_too_many_compose_files() {

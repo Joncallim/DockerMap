@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { gzipSync } from "node:zlib";
 import net from "node:net";
 import { afterEach, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -131,6 +132,69 @@ test("whoami publishes every forward-auth identity field before responding", asy
   assert.equal(body.authenticated, true);
   assert.equal(body.required, true);
   assertPublishedPayload(body, sentinel, "whoami identity response");
+});
+
+test("forward-auth mode wins over a configured bearer token, including SSE", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_API_TOKEN: "test-token",
+    DOCKERMAP_AUTH_REQUIRED: "true"
+  });
+  const identity = { "X-Remote-User": "alice" };
+
+  const identityOnly = await request(api, "/api/snapshot", { headers: identity });
+  assert.equal(identityOnly.status, 200);
+
+  const bearerOnly = await request(api, "/api/snapshot", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(bearerOnly.status, 401);
+  assert.equal((await bearerOnly.json()).code, "auth_required");
+
+  const stream = await request(api, "/api/events/stream", { headers: identity });
+  assert.equal(stream.status, 200);
+  assert.match(await readFirstChunk(stream), /event: snapshot/);
+});
+
+test("auth runs before JSON parsing and authenticated parser failures are neutral", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+  const malformed = Buffer.from("{not json");
+  const oversized = Buffer.from(JSON.stringify({ value: "x".repeat(20_000) }));
+  const compressedMalformed = gzipSync(malformed);
+
+  for (const [body, encoding] of [[malformed, undefined], [oversized, undefined], [compressedMalformed, "gzip"]] as const) {
+    const response = await rawRequest(api, "/api/snapshot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(encoding ? { "Content-Encoding": encoding } : {}) },
+      body
+    });
+    assert.equal(response.status, 401, response.body);
+  }
+
+  const authenticatedMalformed = await rawRequest(api, "/api/snapshot", {
+    method: "POST",
+    headers: { Authorization: "Bearer test-token", "Content-Type": "application/json" },
+    body: malformed
+  });
+  assert.equal(authenticatedMalformed.status, 400);
+  assert.deepEqual(JSON.parse(authenticatedMalformed.body), {
+    code: "invalid_json",
+    message: "Request body is invalid"
+  });
+
+  const authenticatedOversized = await rawRequest(api, "/api/snapshot", {
+    method: "POST",
+    headers: { Authorization: "Bearer test-token", "Content-Type": "application/json" },
+    body: oversized
+  });
+  assert.equal(authenticatedOversized.status, 413);
+  assert.deepEqual(JSON.parse(authenticatedOversized.body), {
+    code: "payload_too_large",
+    message: "Request body is too large"
+  });
 });
 
 test("query validation rejects oversized, malformed, and excessive compose requests", async () => {
@@ -1087,6 +1151,28 @@ function captureProcess(port: number, child: ChildProcessWithoutNullStreams): Ap
 
 async function request(api: ApiProcess, path: string, init?: RequestInit) {
   return fetch(`http://127.0.0.1:${api.port}${path}`, init);
+}
+
+function rawRequest(
+  api: ApiProcess,
+  path: string,
+  options: { method: string; headers: Record<string, string>; body: Buffer }
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port: api.port,
+      path,
+      method: options.method,
+      headers: { ...options.headers, "Content-Length": String(options.body.length) }
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));
+    });
+    request.once("error", reject);
+    request.end(options.body);
+  });
 }
 
 async function waitForListening(api: ApiProcess) {
