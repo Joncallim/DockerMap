@@ -2,8 +2,8 @@
 
 ## Certification boundary
 
-- **Tested application commit:** `520b47f07f54cae227b36533c8cdca89bee09305`
-- **Evidence recorded:** 2026-08-22T02:39:13+08:00
+- **Tested application commit:** `00e1325fb179d9547c48db78ab373f38be30a646`
+- **Evidence recorded:** 2026-08-22T02:52:10+08:00
 - **Operator/environment:** Hermes Agent; Chromium 149.0.7827.55 / Playwright 1.61.0 on Linux 7.0.0-29-generic.
 - **Node/npm:** v22.23.2 / 10.9.8
 - **Axe:** `@axe-core/playwright` 4.13.0 / `axe-core` 4.13.0
