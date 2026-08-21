@@ -281,10 +281,15 @@ test.describe("responsive and accessibility matrix", () => {
         await page.goto(`${stack.webUrl}/`, { waitUntil: "domcontentloaded" });
         await expect(page.locator("main h1").first()).toBeVisible();
         await page.keyboard.press("Control+k");
-        await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
+        const paletteDialog = page.getByRole("dialog", { name: "Command palette" });
+        await expect(paletteDialog).toBeVisible();
+        // Escape is handled by the dialog's keydown trap, so wait for the
+        // autofocused combobox before dismissing (a race here flakes the
+        // close assertion).
+        await expect(paletteDialog.getByRole("combobox")).toBeFocused();
         await assertUsableAtWidth(page, "command palette open", width);
         await page.keyboard.press("Escape");
-        await expect(page.getByRole("dialog", { name: "Command palette" })).toBeHidden();
+        await expect(paletteDialog).toBeHidden();
 
         // Map selected state at width.
         await openRoute(page, "/map", "light");
