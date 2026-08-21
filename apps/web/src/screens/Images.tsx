@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import { EmptyState, ErrorState, Loading, Panel, StateDot, Tag } from "../components/primitives";
+import { UNAVAILABLE_CONTAINER } from "../lib/identity";
 
 export default function Images() {
   const { model, loading, error } = useApp();
@@ -65,13 +66,13 @@ export default function Images() {
                 <Tag tone="muted">{img.containers.length} service{img.containers.length === 1 ? "" : "s"}</Tag>
                 <div className="tag-wrap">
                   {img.containers.map((c, index) => {
-                    const svc = model?.byName.get(c);
+                    const svc = c ? model?.byName.get(c) : undefined;
                     return svc ? (
                       <Link key={`${c}-${index}`} className="ref-chip" to={`/services/${encodeURIComponent(svc.name)}`}>
                         <StateDot state={svc.state} /> {c}
                       </Link>
                     ) : (
-                      <span key={`${c}-${index}`} className="ref-chip"><StateDot state="unknown" /> {c}</span>
+                      <span key={`${c}-${index}`} className="ref-chip"><StateDot state="unknown" /> {c || UNAVAILABLE_CONTAINER}</span>
                     );
                   })}
                 </div>

@@ -221,6 +221,33 @@ describe("summarize", () => {
   });
 });
 
+describe("empty schema-valid identities stay visible and non-routable", () => {
+  it("keeps empty image, network, volume, and container strings in the model but out of the routing indexes", () => {
+    const model = buildModel(
+      {
+        containers: [container({ id: "c1", name: "", image: "", networks: [""] })],
+        images: [{ image: "", containers: [""], status: "" }],
+        networks: [{ id: "net1", name: "", driver: "bridge", internal: false, members: [""] }],
+        volumes: [{ id: "vol1", name: "", attachedTo: [""] }],
+        lastUpdated: 0
+      },
+      emptyRuntime
+    );
+    // The contract permits empty strings and the model keeps the recorded
+    // evidence visible in every relationship list…
+    expect(model.services[0].image).toBe("");
+    expect(model.services[0].networks).toEqual([""]);
+    expect(model.networks[0].members).toEqual([""]);
+    expect(model.volumes[0].attachedTo).toEqual([""]);
+    expect(model.images[0].containers).toEqual([""]);
+    // …but empty keys never enter the first-wins routing indexes, so empty
+    // identities can never emit a detail link.
+    expect(model.imageByRef.has("")).toBe(false);
+    expect(model.networkByName.has("")).toBe(false);
+    expect(model.volumeByName.has("")).toBe(false);
+  });
+});
+
 describe("hashString", () => {
   it("is deterministic and normalized to [0, 1)", () => {
     const first = hashString("container_api");

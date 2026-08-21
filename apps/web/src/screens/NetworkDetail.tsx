@@ -3,6 +3,8 @@ import { Link, useParams } from "react-router-dom";
 import { useApp } from "../context";
 import Icon from "../components/Icon";
 import { EmptyState, ErrorState, KeyValue, Loading, Panel, StateDot, Tag } from "../components/primitives";
+import { IdentityRef } from "../components/identity";
+import { UNAVAILABLE_CONTAINER } from "../lib/identity";
 
 export default function NetworkDetail() {
   const { name = "" } = useParams();
@@ -24,4 +26,4 @@ export default function NetworkDetail() {
   </div>;
 }
 function Count({ value, label }: { value: string | number; label: string }) { return <div className="impact-cell"><strong>{value}</strong><span>{label}</span></div>; }
-function Members({ members }: { members: string[] }) { const { model } = useApp(); if (members.length === 0) return <p className="muted-line">No connected containers in the current snapshot.</p>; return <ul className="svc-list">{members.map((member, index) => { const service = model!.byName.get(member); return <li className="svc-row" key={`${member}-${index}`}><StateDot state={service?.state ?? "unknown"} />{service ? <Link className="svc-name" to={`/services/${encodeURIComponent(service.name)}`}>{member}</Link> : <span>{member}</span>}</li>; })}</ul>; }
+function Members({ members }: { members: string[] }) { const { model } = useApp(); if (members.length === 0) return <p className="muted-line">No connected containers in the current snapshot.</p>; return <ul className="svc-list">{members.map((member, index) => { const service = member ? model!.byName.get(member) : undefined; return <li className="svc-row" key={`${member}-${index}`}><StateDot state={service?.state ?? "unknown"} /><IdentityRef name={member} fallback={UNAVAILABLE_CONTAINER} to={service ? `/services/${encodeURIComponent(service.name)}` : undefined} className="svc-name" /></li>; })}</ul>; }

@@ -5,6 +5,8 @@ import { computeImpact, needsAttention, SERVICE_STATES, type ServiceState } from
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { EmptyState, ErrorState, KeyValue, Loading, StatePill, StateDot, Tag } from "../components/primitives";
+import { IdentityRef } from "../components/identity";
+import { UNAVAILABLE_IMAGE, UNAVAILABLE_NETWORK } from "../lib/identity";
 
 export default function MapScreen() {
   const { model, loading, error } = useApp();
@@ -118,8 +120,8 @@ export default function MapScreen() {
                 </div>
               )}
 
-              <KeyValue label="Image" value={model.imageByRef.has(selected.image) ? <Link className="entity-detail-link" to={`/images/${encodeURIComponent(selected.image)}`}>{selected.image}</Link> : selected.image} mono />
-              {selected.networks.length > 0 && <div className="inspector-section"><h4>Networks</h4><div className="tag-wrap">{selected.networks.map((network) => model.networkByName.has(network) ? <Link key={network} className="ref-chip" to={`/networks/${encodeURIComponent(network)}`}>{network}</Link> : <Tag key={network} icon="network">{network}</Tag>)}</div></div>}
+              <KeyValue label="Image" value={<IdentityRef name={selected.image} fallback={UNAVAILABLE_IMAGE} to={model.imageByRef.has(selected.image) ? `/images/${encodeURIComponent(selected.image)}` : undefined} className="entity-detail-link" />} mono />
+              {selected.networks.length > 0 && <div className="inspector-section"><h4>Networks</h4><div className="tag-wrap">{selected.networks.map((network, index) => model.networkByName.has(network) ? <Link key={`${network}-${index}`} className="ref-chip" to={`/networks/${encodeURIComponent(network)}`}>{network}</Link> : <Tag key={`${network}-${index}`} icon="network"><IdentityRef name={network} fallback={UNAVAILABLE_NETWORK} /></Tag>)}</div></div>}
               {selected.mounts.filter((mount) => mount.kind === "named_volume" && mount.source && model.volumeByName.has(mount.source)).length > 0 && <div className="inspector-section"><h4>Named volumes</h4><div className="tag-wrap">{selected.mounts.filter((mount) => mount.kind === "named_volume" && mount.source && model.volumeByName.has(mount.source)).map((mount) => <Link key={mount.id} className="ref-chip" to={`/volumes/${encodeURIComponent(mount.source!)}`}>{mount.source}</Link>)}</div></div>}
               <Link className="primary-link" to={`/services/${encodeURIComponent(selected.name)}`}>
                 Open service detail <Icon name="arrow" size={14} />
