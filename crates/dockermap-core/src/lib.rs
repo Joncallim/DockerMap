@@ -1033,6 +1033,17 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 mounts: Vec::new(),
                 depends_on: vec![],
             },
+            ContainerRecord {
+                id: "container_registry".into(),
+                name: "registry".into(),
+                image: "ghcr.io/dockermap/example:1.0".into(),
+                status: "running".into(),
+                role: "registry mirror".into(),
+                networks: vec![],
+                ports: vec![],
+                mounts: Vec::new(),
+                depends_on: vec![],
+            },
         ],
         images: vec![
             ImageRecord {
@@ -1053,6 +1064,11 @@ pub fn mock_snapshot() -> DockerSnapshot {
             ImageRecord {
                 image: "redis:7-alpine".into(),
                 containers: vec!["redis".into()],
+                status: "running".into(),
+            },
+            ImageRecord {
+                image: "ghcr.io/dockermap/example:1.0".into(),
+                containers: vec!["registry".into()],
                 status: "running".into(),
             },
         ],
@@ -2669,7 +2685,7 @@ mod tests {
     #[test]
     fn mock_snapshot_has_expected_shape() {
         let snapshot = mock_snapshot();
-        assert_eq!(snapshot.containers.len(), 5);
+        assert_eq!(snapshot.containers.len(), 6);
         assert_eq!(snapshot.networks.len(), 3);
         assert_eq!(snapshot.volumes.len(), 2);
         assert!(snapshot.last_updated > 0);
@@ -2693,7 +2709,8 @@ mod tests {
     fn derives_graph_with_nodes_and_edges() {
         let snapshot = mock_snapshot();
         let graph = derive_graph(&snapshot);
-        assert_eq!(graph.nodes.len(), 10);
+        // 6 containers + 3 networks + 2 volumes.
+        assert_eq!(graph.nodes.len(), 11);
         assert!(graph.edges.iter().any(|edge| edge.target == "network_data"));
         assert!(graph
             .edges

@@ -72,6 +72,17 @@ test.describe("DockerMap GUI", () => {
     await expect(page.getByRole("main")).toContainText("api");
     await expect(page.getByRole("main")).toContainText("worker");
 
+    // A slash-bearing reference must resolve through the browser router's %2F
+    // decoding: the missing-image case below could still pass if decoding were
+    // broken (it reaches the same not-found state), so prove the POSITIVE
+    // lookup against the mock fixture image too.
+    await page.goto(`${stack.webUrl}/images/${encodeURIComponent("ghcr.io/dockermap/example:1.0")}`, { waitUntil: "domcontentloaded" });
+    await expect(page).toHaveURL(/\/images\/ghcr\.io%2Fdockermap%2Fexample%3A1\.0$/);
+    await expect(page.getByRole("heading", { name: "ghcr.io/dockermap/example:1.0" })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("Sample consumer status: running");
+    await expect(page.getByRole("main")).toContainText("registry");
+    await expect(page.getByRole("heading", { name: "Image not found" })).not.toBeVisible();
+
     await openSpace(page, "Runtime", "/runtime");
     const applicationRuntime = page.locator(".runtime-node-btn", { hasText: "application" }).filter({ hasText: "docker network" });
     await applicationRuntime.click();
