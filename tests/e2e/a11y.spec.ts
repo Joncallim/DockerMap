@@ -214,6 +214,49 @@ test.describe("responsive and accessibility matrix", () => {
     });
   }
 
+  test("non-text contrast keeps state dots, focus rings, and map tracks at 3:1", async ({ browser }) => {
+    for (const theme of themes) {
+      await withPage(browser, theme, async (page) => {
+        await openRoute(page, "/map", theme);
+        const ratios = await page.evaluate(() => {
+          const rgb = (value: string) => {
+            const hex = value.trim();
+            if (/^#[0-9a-f]{6}$/i.test(hex)) return [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16));
+            return hex.match(/\d+(?:\.\d+)?/g)?.slice(0, 3).map(Number) ?? [];
+          };
+          const luminance = (color: number[]) => {
+            const [red, green, blue] = color.map((channel) => {
+              const normalized = channel / 255;
+              return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+            });
+            return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+          };
+          const contrast = (foreground: number[], background: number[]) => {
+            const [light, dark] = [luminance(foreground), luminance(background)].sort((left, right) => right - left);
+            return (light + 0.05) / (dark + 0.05);
+          };
+          const blend = (foreground: number[], background: number[], alpha: number) => foreground.map((channel, index) => channel * alpha + background[index] * (1 - alpha));
+          const root = getComputedStyle(document.documentElement);
+          const surface = rgb(root.getPropertyValue("--surface"));
+          const focus = rgb(root.getPropertyValue("--focus-ring"));
+          const healthy = rgb(root.getPropertyValue("--s-healthy"));
+          const track = document.querySelector<SVGLineElement>(".network-edge");
+          const trackStyle = track ? getComputedStyle(track) : null;
+          const mapBase = [17, 21, 27];
+          const trackColor = trackStyle ? rgb(trackStyle.stroke) : mapBase;
+          return {
+            focus: contrast(focus, surface),
+            state: contrast(healthy, surface),
+            track: contrast(blend(trackColor, mapBase, Number(trackStyle?.opacity ?? 1)), mapBase)
+          };
+        });
+        expect(ratios.focus, `${theme} focus ring`).toBeGreaterThanOrEqual(3);
+        expect(ratios.state, `${theme} state dot`).toBeGreaterThanOrEqual(3);
+        expect(ratios.track, `${theme} map track`).toBeGreaterThanOrEqual(3);
+      });
+    }
+  });
+
   test("reduced motion disables every visible infinite animation", async ({ browser }) => {
     const context = await browser.newContext({ colorScheme: "dark" });
     const page = await context.newPage();
