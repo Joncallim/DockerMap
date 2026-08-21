@@ -68,6 +68,50 @@ export async function startMockStack(): Promise<Stack> {
   };
 }
 
+export async function startProductionImageStack(): Promise<Stack> {
+  const docker = detectDockerCommand();
+  if (!docker) {
+    throw new SkipLiveDockerError("Docker is not reachable by the current user or sudo -n docker.");
+  }
+
+  const fixtureDir = mkdtempSync(join(tmpdir(), "dockermap-production-e2e-"));
+  const image = `dockermap-e2e:${Date.now().toString(36)}`;
+  const container = `dockermap-production-e2e-${process.pid}`;
+  const port = await freePort();
+  const token = "dockermap-production-e2e-token";
+
+  try {
+    runDocker(docker, ["build", "--tag", image, "."], repoRoot);
+    runDocker(
+      docker,
+      [
+        "run", "--detach", "--name", container,
+        "--publish", `127.0.0.1:${port}:3233`,
+        "--env", "DOCKERMAP_ALLOW_MOCK=true",
+        "--env", `DOCKERMAP_API_TOKEN=${token}`,
+        image
+      ],
+      repoRoot,
+    );
+    await waitForHttp(`http://127.0.0.1:${port}/health`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+  } catch (error) {
+    cleanupProductionImage(docker, image, container, fixtureDir);
+    throw error;
+  }
+
+  return {
+    apiUrl: `http://127.0.0.1:${port}`,
+    webUrl: `http://127.0.0.1:${port}`,
+    daemonUrl: "",
+    fixtureDir,
+    projectName: null,
+    controlContainerName: null,
+    stop: async () => cleanupProductionImage(docker, image, container, fixtureDir)
+  };
+}
+
 export async function startAuthenticatedMockDaemon(
   token: string,
   options?: { apiTokenFallback?: boolean }
@@ -340,9 +384,9 @@ async function waitForJson(url: string) {
   }, url);
 }
 
-async function waitForHttp(url: string) {
+async function waitForHttp(url: string, init?: RequestInit) {
   await waitForCondition(async () => {
-    const response = await fetch(url);
+    const response = await fetch(url, init);
     return response.ok;
   }, url);
 }
@@ -663,6 +707,20 @@ function cleanupLiveDocker(docker: string[], fixture: Fixture) {
     // Best-effort cleanup should not hide the original test result.
   }
   rmSync(fixture.dir, { recursive: true, force: true });
+}
+
+function cleanupProductionImage(docker: string[], image: string, container: string, fixtureDir: string) {
+  try {
+    runDocker(docker, ["rm", "--force", container], repoRoot);
+  } catch {
+    // Best-effort cleanup should not hide the original test result.
+  }
+  try {
+    runDocker(docker, ["image", "rm", "--force", image], repoRoot);
+  } catch {
+    // Best-effort cleanup should not hide the original test result.
+  }
+  rmSync(fixtureDir, { recursive: true, force: true });
 }
 
 function envPairs(env: NodeJS.ProcessEnv) {

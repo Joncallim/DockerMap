@@ -80,6 +80,113 @@ test("every browser API route is bearer-gated except CORS preflight", async () =
   assert.ok(Array.isArray((await runtimeAuthenticated.json()).nodes));
 });
 
+test("bearer mode exchanges the API token for a strict HttpOnly session cookie and can log out", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${await freePort()}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  const session = await request(api, "/api/auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: "test-token" })
+  });
+  assert.equal(session.status, 204);
+  const setCookie = session.headers.get("set-cookie") ?? "";
+  assert.match(setCookie, /HttpOnly/);
+  assert.match(setCookie, /Path=\//);
+  assert.match(setCookie, /SameSite=Strict/);
+  assert.doesNotMatch(setCookie, /Secure/);
+  assert.doesNotMatch(setCookie, /test-token/);
+  const cookie = setCookie.split(";", 1)[0];
+
+  const authenticated = await request(api, "/api/snapshot", { headers: { Cookie: cookie } });
+  assert.equal(authenticated.status, 200);
+
+  const whoami = await request(api, "/api/auth/whoami", {
+    headers: { Cookie: cookie }
+  });
+  assert.equal(whoami.status, 200);
+  assert.equal((await whoami.json()).authenticated, true);
+
+  const logout = await request(api, "/api/auth/session/logout", {
+    method: "POST",
+    headers: { Cookie: cookie }
+  });
+  assert.equal(logout.status, 204);
+  const clearCookie = logout.headers.get("set-cookie") ?? "";
+  assert.match(clearCookie, /dockermap_session=;/);
+  assert.match(clearCookie, /Max-Age=0/);
+  assert.match(clearCookie, /Path=\//);
+  assert.match(clearCookie, /HttpOnly/);
+  assert.match(clearCookie, /SameSite=Strict/);
+  assert.doesNotMatch(clearCookie, /Secure/);
+  assert.equal((await request(api, "/api/snapshot", { headers: { Cookie: cookie } })).status, 401);
+
+  const invalidSession = await request(api, "/api/auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: "wrong-token" })
+  });
+  assert.equal(invalidSession.status, 401);
+
+  const wrongCookie = await request(api, "/api/snapshot", {
+    headers: { Cookie: "dockermap_session=wrong-token" }
+  });
+  assert.equal(wrongCookie.status, 401);
+
+  const lookalike = await request(api, "/api/snapshot", {
+    headers: { Cookie: "other=dockermap_session=test-token" }
+  });
+  assert.equal(lookalike.status, 401);
+});
+
+test("forward-auth does not bypass the bearer session login endpoint", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_API_TOKEN: "test-token",
+    DOCKERMAP_AUTH_REQUIRED: "true"
+  });
+
+  const unauthenticated = await request(api, "/api/auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: "test-token" })
+  });
+  assert.equal(unauthenticated.status, 401);
+  assert.equal((await unauthenticated.json()).code, "auth_required");
+
+  const forwarded = await request(api, "/api/auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Remote-User": "alice" },
+    body: JSON.stringify({ token: "test-token" })
+  });
+  assert.equal(forwarded.status, 401);
+});
+
+test("session cookies are Secure for HTTPS forwarded requests", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+  const session = await request(api, "/api/auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Forwarded-Proto": "https" },
+    body: JSON.stringify({ token: "test-token" })
+  });
+  assert.equal(session.status, 204);
+  assert.match(session.headers.get("set-cookie") ?? "", /Secure/);
+
+  const cookie = (session.headers.get("set-cookie") ?? "").split(";", 1)[0];
+  const logout = await request(api, "/api/auth/session/logout", {
+    method: "POST",
+    headers: { Cookie: cookie, "X-Forwarded-Proto": "https" }
+  });
+  assert.equal(logout.status, 204);
+  assert.match(logout.headers.get("set-cookie") ?? "", /Secure/);
+});
+
 test("CORS only reflects explicitly allowed origins", async () => {
   const api = await startApi({
     DOCKERMAP_ALLOW_MOCK: "true",

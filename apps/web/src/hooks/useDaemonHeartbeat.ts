@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { HealthResponse } from "@dockermap/contracts";
 import { apiUrl } from "../utils/api";
+import { fetchJson, notifyBearerUnauthorized, ApiResponseError } from "../utils/api";
 import { getDemoHealth } from "../lib/demoData";
 import { useSettings } from "./useSettings";
 
@@ -29,6 +30,11 @@ export function useDaemonHeartbeat() {
     });
 
     source.addEventListener("error", () => {
+      void fetchJson("/api/auth/whoami").catch((error) => {
+        if (error instanceof ApiResponseError && error.status === 401 && error.code === "unauthorized") {
+          notifyBearerUnauthorized();
+        }
+      });
       setHealth((current) =>
         current
           ? { ...current, status: "degraded", message: "Live stream interrupted" }

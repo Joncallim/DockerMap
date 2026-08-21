@@ -15,6 +15,8 @@ import Diagnostics from "./screens/Diagnostics";
 import Settings from "./screens/Settings";
 import NotFound from "./screens/NotFound";
 import { useSettings } from "./hooks/useSettings";
+import { useEffect, useState } from "react";
+import TokenScreen from "./components/TokenScreen";
 
 function Landing() {
   const { settings } = useSettings();
@@ -25,6 +27,13 @@ function Landing() {
 }
 
 export function App() {
+  const [needsToken, setNeedsToken] = useState(false);
+  useEffect(() => {
+    const onUnauthorized = () => setNeedsToken(true);
+    window.addEventListener("dockermap:bearer-unauthorized", onUnauthorized);
+    return () => window.removeEventListener("dockermap:bearer-unauthorized", onUnauthorized);
+  }, []);
+  if (needsToken) return <TokenScreen onAuthenticated={() => setNeedsToken(false)} />;
   return (
     <Routes>
       <Route element={<AppShell />}>

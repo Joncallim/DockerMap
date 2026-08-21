@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
@@ -52,6 +52,7 @@ const authNameHeader = readHeaderName(process.env.DOCKERMAP_AUTH_NAME_HEADER, "x
 const authEmailHeader = readHeaderName(process.env.DOCKERMAP_AUTH_EMAIL_HEADER, "x-remote-email");
 const authGroupsHeader = readHeaderName(process.env.DOCKERMAP_AUTH_GROUPS_HEADER, "x-remote-groups");
 const authRequired = process.env.DOCKERMAP_AUTH_REQUIRED === "true";
+const authCookieName = readCookieName(process.env.DOCKERMAP_AUTH_COOKIE, "dockermap_session");
 const authMode: "none" | "bearer" | "forward-auth" = authRequired
   ? "forward-auth"
   : apiToken
@@ -62,6 +63,9 @@ const maxContainerNameLength = 128;
 const maxComposeFiles = 8;
 const maxComposeFileLength = 512;
 const maxLogPageSize = 500;
+const sessionTtlMs = 24 * 60 * 60 * 1_000;
+const maxSessions = 1_024;
+const sessions = new Map<string, number>();
 // Base timestamp for the mock log timeline, fixed once per process so a
 // compound "millis:offset" cursor taken from one request still matches
 // entries on the next. A fresh Date.now() per request shifts the whole
@@ -134,6 +138,14 @@ function readHeaderName(value: string | undefined, fallback: string) {
   return name;
 }
 
+function readCookieName(value: string | undefined, fallback: string) {
+  const name = (value ?? fallback).trim();
+  if (!/^[a-zA-Z0-9!#$%&'*+.^_`|~-]+$/.test(name)) {
+    throw new Error(`Invalid auth cookie name: ${value}`);
+  }
+  return name;
+}
+
 function readApiToken(value: string | undefined) {
   if (value === undefined) {
     return null;
@@ -164,8 +176,51 @@ function tokenMatches(received: string, expected: string) {
   return receivedBuffer.length === expectedBuffer.length && timingSafeEqual(receivedBuffer, expectedBuffer);
 }
 
+function readCookie(req: express.Request, name: string) {
+  const prefix = `${name}=`;
+  for (const cookie of (req.get("cookie") ?? "").split(";")) {
+    const value = cookie.trim();
+    if (value.startsWith(prefix)) {
+      return value.slice(prefix.length);
+    }
+  }
+  return "";
+}
+
+function issueSession() {
+  const now = Date.now();
+  for (const [session, expiresAt] of sessions) {
+    if (expiresAt <= now) sessions.delete(session);
+  }
+  while (sessions.size >= maxSessions) {
+    const oldest = sessions.keys().next().value;
+    if (!oldest) break;
+    sessions.delete(oldest);
+  }
+  const session = randomBytes(32).toString("base64url");
+  sessions.set(session, now + sessionTtlMs);
+  return session;
+}
+
+function validSession(session: string) {
+  const expiresAt = sessions.get(session);
+  if (!expiresAt) return false;
+  if (expiresAt <= Date.now()) {
+    sessions.delete(session);
+    return false;
+  }
+  return true;
+}
+
+function sessionCookieAttributes(req: express.Request, maxAge: number) {
+  // Only mark the cookie Secure when the external request was HTTPS. This
+  // preserves local loopback HTTP development while protecting forwarded HTTPS.
+  const secure = req.get("x-forwarded-proto")?.trim().toLowerCase() === "https";
+  return `Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Strict${secure ? "; Secure" : ""}`;
+}
+
 function isPublicRoute(req: express.Request) {
-  return req.method === "OPTIONS";
+  return req.method === "OPTIONS" || (authMode === "bearer" && req.method === "POST" && req.path === "/api/auth/session");
 }
 
 function requireAuthentication(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -175,8 +230,13 @@ function requireAuthentication(req: express.Request, res: express.Response, next
   }
 
   if (authMode === "bearer") {
-    const [scheme, token = ""] = (req.get("authorization") ?? "").split(/\s+/, 2);
-    if (scheme === "Bearer" && apiToken && tokenMatches(token, apiToken)) {
+    const [scheme, headerToken = ""] = (req.get("authorization") ?? "").split(/\s+/, 2);
+    const cookieToken = readCookie(req, authCookieName);
+    if (scheme === "Bearer" && apiToken && tokenMatches(headerToken, apiToken)) {
+      next();
+      return;
+    }
+    if (!scheme && validSession(cookieToken)) {
       next();
       return;
     }
@@ -210,7 +270,8 @@ app.use(
       }
       callback(null, false);
     },
-    methods: ["GET", "HEAD"],
+    methods: ["GET", "HEAD", "POST"],
+    credentials: true,
     optionsSuccessStatus: 204
   }),
 );
@@ -218,6 +279,25 @@ app.use(
 // consume parser work; OPTIONS remains exempt inside requireAuthentication.
 app.use(requireAuthentication);
 app.use(express.json({ limit: "16kb" }));
+
+app.post("/api/auth/session", (req, res) => {
+  if (authMode !== "bearer" || !apiToken || typeof req.body?.token !== "string" || !tokenMatches(req.body.token, apiToken)) {
+    res.status(401).json({ code: "unauthorized", message: "A valid API token is required" } satisfies ApiError);
+    return;
+  }
+  const session = issueSession();
+  res.setHeader(
+    "Set-Cookie",
+    `${authCookieName}=${session}; ${sessionCookieAttributes(req, Math.floor(sessionTtlMs / 1_000))}`,
+  );
+  res.status(204).end();
+});
+
+app.post("/api/auth/session/logout", (req, res) => {
+  sessions.delete(readCookie(req, authCookieName));
+  res.setHeader("Set-Cookie", `${authCookieName}=; ${sessionCookieAttributes(req, 0)}`);
+  res.status(204).end();
+});
 
 // Minimal redacted access log: method, pathname (never query strings, which
 // can carry tokens), status, and duration. Logged for every request so
@@ -885,7 +965,7 @@ app.get("/api/auth/whoami", (req, res) => {
 
   res.json(
     publishApiPayload({
-      authenticated: Boolean(user),
+      authenticated: authMode === "bearer" || Boolean(user),
       required: authRequired,
       user,
       name,

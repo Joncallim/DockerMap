@@ -3,6 +3,7 @@ import {
   SkipLiveDockerError,
   startLiveDockerStack,
   startMockStack,
+  startProductionImageStack,
   type Stack
 } from "./dockermapHarness";
 
@@ -198,5 +199,43 @@ test.describe("DockerMap GUI", () => {
     } else {
       await expect(page.getByRole("main")).toContainText("Mount drift");
     }
+  });
+
+  test("serves the browser from the production image with bearer session-cookie auth @production-image", async ({ page, request }) => {
+    test.skip(!process.env.DOCKERMAP_E2E_PRODUCTION_IMAGE, "Set DOCKERMAP_E2E_PRODUCTION_IMAGE=1 to build the production image.");
+
+    try {
+      stack = await startProductionImageStack();
+    } catch (error) {
+      if (error instanceof SkipLiveDockerError) {
+        test.skip(true, error.message);
+      }
+      throw error;
+    }
+
+    const unauthenticated = await request.get(`${stack.apiUrl}/api/snapshot`);
+    expect(unauthenticated.status()).toBe(401);
+
+    await page.goto(stack.webUrl);
+    await expect(page.getByRole("heading", { name: "Enter your API token" })).toBeVisible();
+    await page.getByRole("textbox", { name: "API token" }).fill("dockermap-production-e2e-token");
+    await page.getByRole("button", { name: "Connect" }).click();
+    await expect(page.getByText("DockerMap", { exact: true })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("Command Center");
+    await expect(page.getByText(/Mock Engine/)).toBeVisible();
+
+    const cookies = await page.context().cookies(stack.webUrl);
+    const sessionCookie = cookies.find((cookie) => cookie.name === "dockermap_session");
+    expect(sessionCookie).toBeTruthy();
+    expect(sessionCookie?.value).not.toBe("dockermap-production-e2e-token");
+    expect(sessionCookie?.httpOnly).toBe(true);
+
+    const receivedSnapshot = await page.evaluate(() => new Promise<boolean>((resolve, reject) => {
+      const source = new EventSource("/api/events/stream");
+      const timer = window.setTimeout(() => { source.close(); reject(new Error("SSE snapshot timed out")); }, 10_000);
+      source.addEventListener("snapshot", () => { window.clearTimeout(timer); source.close(); resolve(true); }, { once: true });
+      source.addEventListener("error", () => { window.clearTimeout(timer); source.close(); reject(new Error("SSE stream failed")); }, { once: true });
+    }));
+    expect(receivedSnapshot).toBe(true);
   });
 });

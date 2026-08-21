@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { publishApiPayload, publishLogsResponse } from "../src/publication.js";
+import { publishApiPayload, publishDisplayText, publishLogsResponse } from "../src/publication.js";
+
+test("hostile bidi and control characters become visible replacement controls", () => {
+  const hostile = "service\u202eweb\u001b\u200b\u2028";
+  assert.equal(publishDisplayText(hostile), "service\uFFFDweb\uFFFD\uFFFD\uFFFD");
+});
 
 test("publication boundary redacts nested payloads and hostile display scalars", () => {
   const sentinel = "DOCKERMAP_TEST_FAKE_API_PUBLICATION_SECRET";

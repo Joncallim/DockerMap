@@ -16,6 +16,16 @@ export interface FetchJsonOptions {
   timeoutMs?: number;
 }
 
+export class ApiResponseError extends Error {
+  constructor(readonly status: number, readonly code: string | null, path: string) {
+    super(`${path} failed with ${status}`);
+  }
+}
+
+export function notifyBearerUnauthorized() {
+  window.dispatchEvent(new Event("dockermap:bearer-unauthorized"));
+}
+
 export async function fetchJson<T>(path: string, options?: FetchJsonOptions): Promise<T> {
   if (isDemoMode()) {
     return getDemoResponse<T>(path);
@@ -37,9 +47,17 @@ export async function fetchJson<T>(path: string, options?: FetchJsonOptions): Pr
   }
 
   try {
-    const response = await fetch(apiUrl(path), { signal: controller.signal });
+    const response = await fetch(apiUrl(path), { signal: controller.signal, credentials: "include" });
     if (!response.ok) {
-      throw new Error(`${path} failed with ${response.status}`);
+      let code: string | null = null;
+      try {
+        const body = (await response.clone().json()) as { code?: unknown };
+        code = typeof body.code === "string" ? body.code : null;
+      } catch {
+        // Preserve the status when an upstream returns a non-JSON error.
+      }
+      if (response.status === 401 && code === "unauthorized") notifyBearerUnauthorized();
+      throw new ApiResponseError(response.status, code, path);
     }
     return (await response.json()) as T;
   } finally {
