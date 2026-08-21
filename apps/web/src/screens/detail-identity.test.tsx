@@ -118,9 +118,10 @@ const contextValue: AppContextValue = {
   openCommand: () => {}
 };
 
-function renderScreen(initialPath: string, route: string, element: ReactElement) {
+function renderScreen(initialPath: string, route: string, element: ReactElement, modelOverride?: typeof model) {
+  const value = modelOverride ? { ...contextValue, model: modelOverride } : contextValue;
   return renderToStaticMarkup(
-    <AppContext.Provider value={contextValue}>
+    <AppContext.Provider value={value}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route path={route} element={element} />
@@ -306,5 +307,94 @@ describe("disclosure aria-controls targets stay mounted in both states", () => {
     expect(expanded).toContain('id="service-internals"');
     expect(expanded).toContain('<span class="kv-label">Container ID</span>');
     expect(expanded).toContain("Unavailable container ID");
+  });
+});
+
+describe("image status and network driver display use one qualified fallback value", () => {
+  // F1: differing consumer states — record.status is derive_images' FIRST
+  // consumer sample, so it must be labeled as a sample, never image-wide truth.
+  const mixed: DockerSnapshot = {
+    containers: [
+      { id: "c_mixed_a", name: "svc-a", image: "mixed:1", status: "running", role: "web", networks: [], ports: [], mounts: [], dependsOn: [] },
+      { id: "c_mixed_b", name: "svc-b", image: "mixed:1", status: "exited", role: "worker", networks: [], ports: [], mounts: [], dependsOn: [] }
+    ],
+    images: [{ image: "mixed:1", containers: ["svc-a", "svc-b"], status: "running" }],
+    networks: [],
+    volumes: [],
+    lastUpdated: 0
+  };
+
+  it("ImageDetail qualifies the header tag and reuses ONE sample status in all three locations", () => {
+    const html = renderScreen("/images/mixed:1", "/images/:image", <ImageDetail defaultOpen />, buildModel(mixed, emptyRuntime));
+    // The header tag is visibly qualified, never a bare unqualified status.
+    expect(html).toContain('<span class="tag tag-muted">Sample consumer status: running</span>');
+    // The qualified phrase appears exactly once (the header tag).
+    expect(html.split("Sample consumer status: running").length - 1).toBe(1);
+    // Overview and internals reuse the same single value through their own label.
+    expect(html.split('<span class="kv-label">Sample consumer status</span><span class="kv-value mono">running</span>').length - 1).toBe(2);
+    // Consumers keep their own differing states — the sample is not image-wide truth.
+    expect(html).toContain(">offline<");
+  });
+
+  // F1: the contract permits "" — a non-empty image with an empty status must
+  // render the explicit fallback in the header tag, Overview, and internals.
+  const blank: DockerSnapshot = {
+    containers: [
+      { id: "c_blank", name: "svc-a", image: "blank:1", status: "running", role: "web", networks: [], ports: [], mounts: [], dependsOn: [] }
+    ],
+    images: [{ image: "blank:1", containers: ["svc-a"], status: "" }],
+    networks: [],
+    volumes: [],
+    lastUpdated: 0
+  };
+
+  it("ImageDetail renders Unavailable image status in header, Overview, and internals when status is empty", () => {
+    const html = renderScreen("/images/blank:1", "/images/:image", <ImageDetail defaultOpen />, buildModel(blank, emptyRuntime));
+    expect(html).toContain('<span class="tag tag-muted">Sample consumer status: Unavailable image status</span>');
+    expect(html.split("Unavailable image status").length - 1).toBe(3);
+    // No empty tag or blank status value may remain.
+    expect(html).not.toContain('<span class="tag tag-muted"></span>');
+    expect(html).not.toContain('<span class="kv-value mono"></span>');
+  });
+
+  // F2: multiple resolved consumers in the SAME state plus one unresolved — the
+  // count is distinct states among RESOLVED consumers only.
+  const twin: DockerSnapshot = {
+    containers: [
+      { id: "c_twin_a", name: "svc-a", image: "twin:1", status: "running", role: "web", networks: [], ports: [], mounts: [], dependsOn: [] },
+      { id: "c_twin_b", name: "svc-b", image: "twin:1", status: "running", role: "worker", networks: [], ports: [], mounts: [], dependsOn: [] }
+    ],
+    images: [{ image: "twin:1", containers: ["svc-a", "svc-b", ""], status: "running" }],
+    networks: [],
+    volumes: [],
+    lastUpdated: 0
+  };
+
+  it("ImageDetail labels the fourth count distinct resolved service states", () => {
+    const html = renderScreen("/images/twin:1", "/images/:image", <ImageDetail />, buildModel(twin, emptyRuntime));
+    expect(html).toContain("<strong>2</strong><span>resolved consumers</span>");
+    expect(html).toContain("<strong>1</strong><span>unresolved consumers</span>");
+    expect(html).toContain("<strong>1</strong><span>distinct resolved service states</span>");
+    expect(html).not.toContain("<span>service states</span>");
+  });
+
+  // F3: a schema-valid empty driver on a non-empty network must not blank the
+  // header tag or the Overview value.
+  const nodriver: DockerSnapshot = {
+    containers: [
+      { id: "c_drv", name: "app", image: "nginx:1", status: "running", role: "web", networks: [], ports: [], mounts: [], dependsOn: [] }
+    ],
+    images: [],
+    networks: [{ id: "net_x", name: "nodriver", driver: "", internal: false, members: ["app"] }],
+    volumes: [],
+    lastUpdated: 0
+  };
+
+  it("NetworkDetail renders Unavailable network driver in the header tag and Overview when the driver is empty", () => {
+    const html = renderScreen("/networks/nodriver", "/networks/:name", <NetworkDetail />, buildModel(nodriver, emptyRuntime));
+    expect(html).toContain('<span class="tag tag-muted">Unavailable network driver</span>');
+    expect(html).toContain('<span class="kv-label">Driver</span><span class="kv-value">Unavailable network driver</span>');
+    expect(html.split("Unavailable network driver").length - 1).toBe(2);
+    expect(html).not.toContain('<span class="kv-value"></span>');
   });
 });

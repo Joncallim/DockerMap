@@ -16,3 +16,5 @@ export const UNAVAILABLE_CONTAINER_ID = "Unavailable container ID";
 export const UNAVAILABLE_NETWORK_ID = "Unavailable network ID";
 export const UNAVAILABLE_VOLUME_ID = "Unavailable volume ID";
 export const UNAVAILABLE_MOUNT_TARGET = "Unavailable mount target";
+export const UNAVAILABLE_IMAGE_STATUS = "Unavailable image status";
+export const UNAVAILABLE_NETWORK_DRIVER = "Unavailable network driver";

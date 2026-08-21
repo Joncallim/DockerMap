@@ -89,7 +89,7 @@ All labels below are from the published snapshot; no values are fabricated.
 
 #### Network detail
 
-- Header/title: `name`; eyebrow `Docker network`; tags for `driver` and `internal`/`externally reachable` (the latter is UI wording for `internal === false`, not a reachability probe).
+- Header/title: `name`; eyebrow `Docker network`; tags for `driver` and `internal`/`not internal` (the latter is literal UI wording for `internal === false`; never claim external reachability).
 - Impact band: `members.length`, resolved members, unresolved members, and internal yes/no.
 - Overview panel: name, driver, internal yes/no, connected-container count.
 - Connected containers panel: every `members` entry, resolved through `model.byName`, linked to `/services/:name` with `StateDot`; unresolved entries remain plain text.
@@ -102,17 +102,17 @@ All labels below are from the published snapshot; no values are fabricated.
 - Impact band: `attachedTo.length`, resolved consumers, read-only matched mounts, and read-write matched mounts.
 - Overview panel: name, consumer count, use state.
 - Connected containers panel: every `attachedTo` entry linked when resolvable.
-- Mount configuration panel: for each resolved consumer, derive matching `service.mounts` where `kind === "named_volume"` and `source === volume.name || source === volume.id`; show service link, target, and read-only/read-write status. If the summary says attached but no mount detail matches, retain the consumer and show “Mount details unavailable in this snapshot” rather than claiming a mode/target.
+- Mount configuration panel: for each resolved consumer, derive matching `service.mounts` where `kind === "named_volume"` and the source is non-empty (`source !== "" && source !== null`) and `(source === volume.name || (volume.id !== "" && source === volume.id))` — an empty source must never match an empty volume name/ID; show service link, target, and read-only/read-write status. If the summary says attached but no mount detail matches, retain the consumer and show “Mount details unavailable in this snapshot” rather than claiming a mode/target.
 - Internals panel: volume ID behind show/hide.
 - Edges: `attachedTo` is populated from live container mount names (`main.rs:815-823,887-901`). Runtime `mounts` edges are derived from that same list (`lib.rs:1359-1377`) and add no fields.
 
 #### Image detail
 
-- Header/title: the full `image` reference in monospace; eyebrow `Docker image`; status tag from `status` without mapping it to health unless an existing status mapper is explicitly used.
+- Header/title: the full `image` reference in monospace; eyebrow `Docker image`; the header tag is visibly qualified as `Sample consumer status: <value>` — `status` is the first consumer recorded for the image (`derive_images`), never image-wide truth, and is not mapped to health.
 - Impact band: `containers.length`, resolved consumers, unresolved consumers, and distinct resolved service states.
-- Overview panel: image reference, raw aggregate status, consumer count.
+- Overview panel: image reference, the same qualified sample consumer status (an empty `status` renders the `Unavailable image status` fallback), consumer count.
 - Connected containers panel: every `containers` entry linked when resolvable, with service state and role/status already available on the model.
-- Configuration/internals panel: exact image reference and raw status; do not claim digest, local image ID, tag freshness, size, creation date, layers, or update availability. The current service `updateAvailable` value is stub-derived (`model.ts:236-255`) and must not appear as real image metadata.
+- Configuration/internals panel: exact image reference and the same sample consumer status value with its unavailable fallback; do not claim digest, local image ID, tag freshness, size, creation date, layers, or update availability. The current service `updateAvailable` value is stub-derived (`model.ts:236-255`) and must not appear as real image metadata.
 - Edges: `derive_images` groups the snapshot containers by exact image string; `ImageRecord.containers` is sufficient for image-to-container usage. No image node exists in `RuntimeMap`, so do not manufacture one.
 
 #### Redaction boundary
