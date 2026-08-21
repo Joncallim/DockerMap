@@ -80,12 +80,14 @@ check_sse() {
 }
 
 echo "[dockermap] smoke target: $BASE_URL"
-require_http_200 "/api/health"
 
 if [[ -n "$TOKEN" ]]; then
-  echo "[dockermap] verifying protected routes reject unauthenticated direct access"
+  echo "[dockermap] verifying browser API routes reject unauthenticated direct access"
+  require_http_status "/api/health" "401"
   require_http_status "/api/snapshot" "401"
 fi
+
+require_auth_json "/api/health"
 
 require_auth_json "/api/snapshot"
 require_auth_json "/api/runtime/map"

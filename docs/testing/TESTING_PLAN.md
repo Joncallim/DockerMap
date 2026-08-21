@@ -209,8 +209,9 @@ Use this after larger changes or before a demo:
 
 ## Bearer-Token Auth Smoke Test
 
-When `DOCKERMAP_API_TOKEN` is set, `/api/health` should stay open, but other API routes
-should require the token.
+When `DOCKERMAP_API_TOKEN` is set, every browser-facing route requires the token
+except a CORS preflight request. If `DOCKERMAP_DAEMON_TOKEN` is set, it protects every
+daemon route independently (and non-loopback daemon binding is refused without it).
 
 ```bash
 DOCKERMAP_API_TOKEN="replace-with-a-long-random-value" npm run dev:api
@@ -218,9 +219,9 @@ DOCKERMAP_API_TOKEN="replace-with-a-long-random-value" npm run dev:api
 
 Expected behavior:
 
-- `GET /api/health` returns JSON without a token.
+- `GET /api/health` returns `401` without a token.
 - `GET /api/snapshot` returns `401` without a token.
-- `GET /api/snapshot` works with
+- Both routes work with
   `Authorization: Bearer replace-with-a-long-random-value`.
 
 ## Reverse-Proxy Review Smoke Test

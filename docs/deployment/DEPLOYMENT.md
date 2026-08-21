@@ -76,7 +76,7 @@ Current runtime provider behavior:
 | systemd, cron, PM2, tmux, listeners | Runs fixed local read-only commands or reads local `/proc`/cron files. | No user-supplied shell and no configured external destination. |
 | reverse-proxy and local DNS markers | Checks fixed local marker paths and Docker image/name signals. | Does not read proxy/DNS config contents or call DNS/proxy provider APIs. |
 | Tailscale and Headscale | Runs fixed local CLI commands if the tools are installed. | DockerMap does not add tokens, URLs, or user input, but those CLIs inherit the daemon environment and may use the operator's existing daemon/config to contact their configured control plane. |
-| Node API to Rust daemon | Uses `DOCKERMAP_DAEMON_URL`, defaulting to `http://127.0.0.1:4100`. | Non-loopback daemon URLs are rejected unless `DOCKERMAP_ALLOW_REMOTE_DAEMON=true`. |
+| Node API to Rust daemon | Uses `DOCKERMAP_DAEMON_URL`, defaulting to `http://127.0.0.1:4100`, and forwards `DOCKERMAP_DAEMON_TOKEN` (falling back to `DOCKERMAP_API_TOKEN`) as Bearer auth. | Non-loopback daemon URLs are rejected unless `DOCKERMAP_ALLOW_REMOTE_DAEMON=true`; the daemon itself refuses a non-loopback bind without that credential. |
 | Public review access | Disabled unless you deploy a reverse proxy. | The proxy, SSO, VPN, or DNS provider may have its own network behavior outside DockerMap. |
 
 ## Environment File
@@ -158,9 +158,9 @@ the token server-side.
 The smoke script currently verifies:
 
 - `/api/health` returns `200`.
-- Protected API routes return `401` without a token when `DOCKERMAP_API_TOKEN`
+- Browser API routes return `401` without a token when `DOCKERMAP_API_TOKEN`
   is provided locally.
-- `/api/snapshot`, `/api/runtime/map`, and `/api/compose/scan` return `200`
+- `/api/health`, `/api/snapshot`, `/api/runtime/map`, and `/api/compose/scan` return `200`
   with the expected auth path.
 - `/api/events/stream` emits at least one `snapshot` SSE event.
 
@@ -174,5 +174,5 @@ The smoke script currently verifies:
 - `/api/events/stream` stays live through the proxy without buffering away the
   event stream.
 - Viewer authentication is enabled at the proxy.
-- `DOCKERMAP_API_TOKEN` is set and non-health API routes reject direct unauthenticated
+- `DOCKERMAP_API_TOKEN` is set and browser API routes reject direct unauthenticated
   requests.

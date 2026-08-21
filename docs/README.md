@@ -74,7 +74,7 @@ them:
 - Bounded filesystem discovery.
 - No unredacted secrets in API responses, fixtures, logs, screenshots, or docs.
 - Loopback-only daemon by default.
-- Bearer-token protection for non-health API routes when configured.
+- Bearer-token protection for every browser API route when configured.
 - Compose edit plans return diffs with `willWrite: false`.
 
 Read [security/THREAT_MODEL.md](security/THREAT_MODEL.md) before changing API,

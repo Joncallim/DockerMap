@@ -1,7 +1,8 @@
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
+    extract::{Path, Query, Request, State},
+    http::{header::AUTHORIZATION, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{any, get},
     Json, Router,
 };
@@ -74,6 +75,9 @@ struct AppState {
     /// unwind. Do not start a second expensive collection while that happens.
     runtime_collection_in_flight: Arc<AtomicBool>,
 }
+
+#[derive(Clone)]
+struct DaemonAuthToken(Option<Arc<str>>);
 
 #[derive(Clone)]
 struct DaemonCache {
@@ -230,6 +234,10 @@ async fn main() {
         }
     }
 
+    let daemon_token = read_daemon_token_env();
+    let port = read_port_env("DOCKERMAP_DAEMON_PORT", 4100);
+    let host = read_bind_host_env("DOCKERMAP_DAEMON_HOST", daemon_token.0.is_some());
+    let address = SocketAddr::from((host, port));
     let state = AppState {
         cache: Arc::new(RwLock::new(DaemonCache::mock())),
         docker: Arc::new(RwLock::new(None)),
@@ -239,7 +247,21 @@ async fn main() {
     refresh_cache(&state).await;
     tokio::spawn(refresh_loop(state.clone()));
 
-    let app = Router::new()
+    let app = daemon_router(state, daemon_token);
+    let listener = TcpListener::bind(address)
+        .await
+        .expect("daemon listener should bind");
+
+    println!("dockermap-daemon listening on http://{address}");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("daemon server should run");
+}
+
+fn daemon_router(state: AppState, daemon_token: DaemonAuthToken) -> Router {
+    Router::new()
         .route("/daemon/health", get(get_health))
         .route("/daemon/snapshot", get(get_snapshot))
         .route("/daemon/graph", get(get_graph))
@@ -254,21 +276,57 @@ async fn main() {
         .route("/daemon/compose/graph", get(get_compose_graph))
         .route("/daemon/compose/edit-plan", get(get_compose_edit_plan))
         .fallback(any(not_found))
-        .with_state(state);
+        .layer(middleware::from_fn_with_state(
+            daemon_token,
+            require_daemon_bearer_token,
+        ))
+        .with_state(state)
+}
 
-    let port = read_port_env("DOCKERMAP_DAEMON_PORT", 4100);
-    let host = read_bind_host_env("DOCKERMAP_DAEMON_HOST");
-    let address = SocketAddr::from((host, port));
-    let listener = TcpListener::bind(address)
-        .await
-        .expect("daemon listener should bind");
+async fn require_daemon_bearer_token(
+    State(daemon_token): State<DaemonAuthToken>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(expected) = daemon_token.0.as_deref() else {
+        return next.run(request).await;
+    };
+    let received = request
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            let mut parts = value.split_whitespace();
+            match (parts.next(), parts.next(), parts.next()) {
+                (Some("Bearer"), Some(token), None) => Some(token),
+                _ => None,
+            }
+        });
 
-    println!("dockermap-daemon listening on http://{address}");
+    if received.is_some_and(|token| daemon_token_matches(token, expected)) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "code": "unauthorized",
+                "message": "A valid Bearer token is required for this DockerMap daemon route"
+            })),
+        )
+            .into_response()
+    }
+}
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("daemon server should run");
+fn daemon_token_matches(received: &str, expected: &str) -> bool {
+    if received.len() != expected.len() {
+        return false;
+    }
+
+    received
+        .bytes()
+        .zip(expected.bytes())
+        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+        == 0
 }
 
 impl DaemonCache {
@@ -3927,18 +3985,39 @@ fn redact_compose_scan(scan: &mut ComposeScan) {
         *file = redact_runtime_display_text(file);
     }
     scan.project_root = redact_runtime_display_text(&scan.project_root);
+    let diagnostic_file = scan.files.first().cloned().unwrap_or_default();
+    let mut environment_key_collisions = Vec::new();
     for service in &mut scan.services {
         service.name = redact_runtime_display_text(&service.name);
         if let Some(image) = &mut service.image {
             *image = redact_runtime_display_text(image);
         }
-        for value in service.environment.values_mut() {
-            *value = redact_runtime_display_text(value);
+        let mut environment = BTreeMap::new();
+        for (key, value) in std::mem::take(&mut service.environment) {
+            let published_key = redact_runtime_display_text(&key);
+            let published_value = redact_runtime_display_text(&value);
+            if environment.contains_key(&published_key) {
+                environment_key_collisions.push(ComposeDiagnostic {
+                    id: "compose_environment_key_collision".into(),
+                    severity: DiagnosticSeverity::Warning,
+                    message: "An environment key was dropped after publication normalization"
+                        .into(),
+                    origin: ComposeFileOrigin {
+                        file: diagnostic_file.clone(),
+                        service: Some(service.name.clone()),
+                        field: "environment".into(),
+                    },
+                });
+                continue;
+            }
+            environment.insert(published_key, published_value);
         }
+        service.environment = environment;
         for dependency in &mut service.depends_on {
             *dependency = redact_runtime_display_text(dependency);
         }
     }
+    scan.diagnostics.extend(environment_key_collisions);
     for mount in &mut scan.mounts {
         mount.id = redact_runtime_display_text(&mount.id);
         mount.service = redact_runtime_display_text(&mount.service);
@@ -4484,6 +4563,39 @@ async fn get_logs(
     Ok(Json(response))
 }
 
+fn compose_file_unavailable(diagnostic: String) -> ApiError {
+    eprintln!(
+        "Compose request unavailable: {}",
+        redact_runtime_display_text(&diagnostic)
+    );
+    ApiError {
+        status: StatusCode::BAD_REQUEST,
+        message: "requested Compose file is unavailable".into(),
+    }
+}
+
+fn compose_inspection_unavailable(diagnostic: String) -> ApiError {
+    eprintln!(
+        "Compose inspection unavailable: {}",
+        redact_runtime_display_text(&diagnostic)
+    );
+    ApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: "Compose inspection is unavailable".into(),
+    }
+}
+
+fn compose_scan_unavailable(diagnostic: String) -> ApiError {
+    eprintln!(
+        "Compose scan unavailable: {}",
+        redact_runtime_display_text(&diagnostic)
+    );
+    ApiError {
+        status: StatusCode::BAD_REQUEST,
+        message: "Compose scan is unavailable".into(),
+    }
+}
+
 async fn get_compose_scan(
     State(state): State<AppState>,
     Query(query): Query<ComposeScanQuery>,
@@ -4509,26 +4621,16 @@ async fn get_compose_graph(
 async fn get_compose_edit_plan(
     Query(query): Query<ComposeEditPlanQuery>,
 ) -> Result<Json<ComposeEditPlan>, ApiError> {
-    let project_root = project_root().map_err(|message| ApiError {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message,
-    })?;
-    let file = resolve_scannable_file(&project_root, &query.file).map_err(|message| ApiError {
-        status: StatusCode::BAD_REQUEST,
-        message,
-    })?;
+    let project_root = project_root().map_err(compose_inspection_unavailable)?;
+    let file =
+        resolve_scannable_file(&project_root, &query.file).map_err(compose_file_unavailable)?;
     let service = validate_required_value(&query.service, "service", MAX_LOG_SERVICE_CHARS)?;
     let source =
         validate_optional_query(query.source.as_deref(), "source", MAX_COMPOSE_FILE_CHARS)?;
     let target =
         validate_optional_query(query.target.as_deref(), "target", MAX_COMPOSE_FILE_CHARS)?;
-    let scan =
-        scan_compose_files(&project_root, std::slice::from_ref(&file)).map_err(|message| {
-            ApiError {
-                status: StatusCode::BAD_REQUEST,
-                message,
-            }
-        })?;
+    let scan = scan_compose_files(&project_root, std::slice::from_ref(&file))
+        .map_err(compose_scan_unavailable)?;
     let mount = scan
         .mounts
         .iter()
@@ -4543,9 +4645,11 @@ async fn get_compose_edit_plan(
             status: StatusCode::NOT_FOUND,
             message: format!("mount {} for service `{service}` not found", query.mount),
         })?;
-    let content = fs::read_to_string(&file).map_err(|error| ApiError {
-        status: StatusCode::BAD_REQUEST,
-        message: format!("failed to read compose file `{}`: {error}", file.display()),
+    let content = fs::read_to_string(&file).map_err(|error| {
+        compose_file_unavailable(format!(
+            "failed to read compose file `{}`: {error}",
+            file.display()
+        ))
     })?;
 
     let mut plan = plan_compose_mount_edit(&file, &content, mount, source, target);
@@ -4554,10 +4658,7 @@ async fn get_compose_edit_plan(
 }
 
 async fn scan_compose_query(query: ComposeScanQuery) -> Result<ComposeScan, ApiError> {
-    let project_root = project_root().map_err(|message| ApiError {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message,
-    })?;
+    let project_root = project_root().map_err(compose_inspection_unavailable)?;
 
     let files = match query.file {
         Some(value) if !value.trim().is_empty() => {
@@ -4566,10 +4667,7 @@ async fn scan_compose_query(query: ComposeScanQuery) -> Result<ComposeScan, ApiE
                 .iter()
                 .map(|value| resolve_scannable_file(&project_root, value))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|message| ApiError {
-                    status: StatusCode::BAD_REQUEST,
-                    message,
-                })?
+                .map_err(compose_file_unavailable)?
         }
         _ => discover_compose_files(&project_root)
             .iter()
@@ -4581,16 +4679,10 @@ async fn scan_compose_query(query: ComposeScanQuery) -> Result<ComposeScan, ApiE
                 resolve_scannable_file(&project_root, &requested)
             })
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|message| ApiError {
-                status: StatusCode::BAD_REQUEST,
-                message,
-            })?,
+            .map_err(compose_file_unavailable)?,
     };
 
-    let scan = scan_compose_files(&project_root, &files).map_err(|message| ApiError {
-        status: StatusCode::BAD_REQUEST,
-        message,
-    })?;
+    let scan = scan_compose_files(&project_root, &files).map_err(compose_scan_unavailable)?;
 
     Ok(scan)
 }
@@ -4617,24 +4709,63 @@ fn read_port_env(name: &str, fallback: u16) -> u16 {
     }
 }
 
-fn read_bind_host_env(name: &str) -> IpAddr {
-    let value = std::env::var(name).unwrap_or_else(|_| "127.0.0.1".into());
-    let host = value.parse::<IpAddr>().unwrap_or_else(|_| {
-        eprintln!("{name} must be an IP address, got `{value}`");
-        std::process::exit(2);
-    });
+fn read_daemon_token_env() -> DaemonAuthToken {
+    let token = read_optional_token_env("DOCKERMAP_DAEMON_TOKEN")
+        .or_else(|| read_optional_token_env("DOCKERMAP_API_TOKEN"));
+    DaemonAuthToken(token.map(Arc::<str>::from))
+}
 
-    if !host.is_loopback()
-        && std::env::var("DOCKERMAP_ALLOW_REMOTE_DAEMON")
-            .ok()
-            .as_deref()
-            != Some("true")
-    {
-        eprintln!("{name} must be loopback unless DOCKERMAP_ALLOW_REMOTE_DAEMON=true");
+fn read_optional_token_env(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(value) => {
+            let token = value.trim();
+            if token.is_empty() {
+                eprintln!("{name} must not be empty when set");
+                std::process::exit(2);
+            }
+            Some(token.into())
+        }
+        Err(_) => None,
+    }
+}
+
+fn read_bind_host_env(name: &str, has_daemon_token: bool) -> IpAddr {
+    let value = std::env::var(name).unwrap_or_else(|_| "127.0.0.1".into());
+    let allow_remote = std::env::var("DOCKERMAP_ALLOW_REMOTE_DAEMON")
+        .ok()
+        .as_deref()
+        == Some("true");
+    validate_bind_host(&value, allow_remote, has_daemon_token).unwrap_or_else(|message| {
+        eprintln!("{name} {message}");
         std::process::exit(2);
+    })
+}
+
+fn validate_bind_host(
+    value: &str,
+    allow_remote: bool,
+    has_daemon_token: bool,
+) -> Result<IpAddr, String> {
+    let value = if value.eq_ignore_ascii_case("localhost") {
+        "127.0.0.1"
+    } else {
+        value
+    };
+    let host = value
+        .parse::<IpAddr>()
+        .map_err(|_| "must be an IP address or localhost".to_string())?;
+
+    if !host.is_loopback() && !allow_remote {
+        return Err("must be loopback unless DOCKERMAP_ALLOW_REMOTE_DAEMON=true".into());
+    }
+    if !host.is_loopback() && !has_daemon_token {
+        return Err(
+            "requires a non-empty DOCKERMAP_DAEMON_TOKEN or DOCKERMAP_API_TOKEN for non-loopback binding"
+                .into(),
+        );
     }
 
-    host
+    Ok(host)
 }
 
 fn run_cli(command: &str, args: &[String]) -> Result<i32, String> {
@@ -7071,6 +7202,62 @@ mod tests {
                 "DOCKERMAP_TEST_FAKE_COMPOSE_PASSWORD",
             ],
         );
+    }
+
+    #[test]
+    fn non_loopback_daemon_bindings_require_remote_opt_in_and_a_token() {
+        assert_eq!(
+            validate_bind_host("localhost", false, false).expect("localhost is loopback"),
+            "127.0.0.1".parse::<IpAddr>().expect("loopback address")
+        );
+        assert_eq!(
+            validate_bind_host("::1", false, false).expect("IPv6 loopback is allowed"),
+            "::1".parse::<IpAddr>().expect("IPv6 loopback address")
+        );
+        assert!(validate_bind_host("0.0.0.0", false, true).is_err());
+        assert!(validate_bind_host("0.0.0.0", true, false).is_err());
+        assert_eq!(
+            validate_bind_host("0.0.0.0", true, true)
+                .expect("token-protected remote binding is allowed"),
+            "0.0.0.0".parse::<IpAddr>().expect("remote address")
+        );
+    }
+
+    #[test]
+    fn redacts_compose_environment_keys_and_reports_normalization_collisions() {
+        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/providers/redaction");
+        let file = project_root.join("compose-environment.yaml");
+        let mut scan =
+            scan_compose_files(&project_root, std::slice::from_ref(&file)).expect("fixture scans");
+        let environment = &mut scan.services[0].environment;
+        environment.insert(
+            "DOCKERMAP_TEST_FAKE_SOL5_VALID_ENV_KEY".into(),
+            "safe".into(),
+        );
+        environment.insert("bidi\u{202e}control\u{001b}key".into(), "safe".into());
+        environment.insert("collision\u{200b}".into(), "first".into());
+        environment.insert("collision\u{202e}".into(), "second".into());
+
+        redact_compose_scan(&mut scan);
+
+        let serialized = serde_json::to_string(&scan).expect("scan should serialize");
+        assert!(!serialized.contains("DOCKERMAP_TEST_FAKE_SOL5_VALID_ENV_KEY"));
+        assert!(!serialized.contains('\u{202e}'));
+        assert!(!serialized.contains('\u{001b}'));
+        let environment = &scan.services[0].environment;
+        assert_eq!(
+            environment
+                .keys()
+                .filter(|key| key.as_str() == "collision�")
+                .count(),
+            1,
+            "normalization collisions retain one deterministic published key"
+        );
+        assert!(scan
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.id == "compose_environment_key_collision"));
     }
 
     #[test]

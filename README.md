@@ -35,9 +35,11 @@ docker run --rm -p 127.0.0.1:3233:3233 \
 ```
 
 The port is bound to loopback (127.0.0.1) because with no `DOCKERMAP_API_TOKEN`
-set the API is unauthenticated read-only — do not expose it on the LAN. For
+set the browser API is unauthenticated read-only — do not expose it on the LAN. For
 remote access, set `DOCKERMAP_API_TOKEN` (see `.env.example`) and publish the
-port on the interface of your choice, e.g. `-p 3233:3233`.
+port on the interface of your choice, e.g. `-p 3233:3233`. If the Rust daemon is
+also intentionally bound off-host, set `DOCKERMAP_DAEMON_TOKEN` (or use the API
+token fallback); its routes, including health, require that bearer credential.
 
 That Docker socket mount is read-only. DockerMap needs it so it can inspect
 containers, images, networks, volumes, and logs.
@@ -142,7 +144,7 @@ Field meanings:
 - `healthy` / `attention` / `offline` — container counts by state, where
   `containers = healthy + attention + offline`.
 
-Like every non-health API route, `/api/status` requires a Bearer token when
+Like every browser API route, `/api/status` requires a Bearer token when
 `DOCKERMAP_API_TOKEN` is set (or equivalent reverse-proxy forward-auth).
 
 Homepage custom-widget example (place under your Homepage `services.yaml`):
@@ -179,8 +181,11 @@ DockerMap treats host data as sensitive. Its current safety rules are:
 - Keep daemon routes read-only.
 - Use fixed provider commands, not user-supplied shell commands.
 - Keep Compose edits as dry-run previews only.
-- Require bearer-token auth for non-health API routes when
+- Require bearer-token auth for every browser API route when
   `DOCKERMAP_API_TOKEN` is set.
+- Require a daemon bearer token for every daemon route when
+  `DOCKERMAP_DAEMON_TOKEN` (or its `DOCKERMAP_API_TOKEN` fallback) is set; refuse
+  non-loopback daemon binding without one.
 - Redact or omit secrets from provider output where collectors may encounter
   service files, process args, package config, proxy config, logs, or env values.
 

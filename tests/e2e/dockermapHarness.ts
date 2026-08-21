@@ -15,6 +15,12 @@ export type Stack = {
   stop: () => Promise<void>;
 };
 
+export type AuthenticatedMockDaemon = {
+  url: string;
+  fixtureDir: string;
+  stop: () => Promise<void>;
+};
+
 type ProcessHandle = {
   name: string;
   process: ChildProcessWithoutNullStreams;
@@ -57,6 +63,49 @@ export async function startMockStack(): Promise<Stack> {
     controlContainerName: null,
     stop: async () => {
       await stopProcesses(processes);
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  };
+}
+
+export async function startAuthenticatedMockDaemon(
+  token: string,
+  options?: { apiTokenFallback?: boolean }
+): Promise<AuthenticatedMockDaemon> {
+  const fixtureDir = mkdtempSync(join(tmpdir(), "dockermap-daemon-auth-e2e-"));
+  const port = await freePort();
+  const daemonUrl = `http://127.0.0.1:${port}`;
+  mkdirSync(join(fixtureDir, "data"), { recursive: true });
+  writeFileSync(
+    join(fixtureDir, "compose.yaml"),
+    "services:\n  app:\n    image: alpine:3.20\n    environment:\n      DOCKERMAP_TEST_FAKE_SOL5_VALID_ENV_KEY: safe\n      \"bidi\\u202econtrol\\u001bkey\": safe\n      \"collision\\u200b\": first\n      \"collision\\u202e\": second\n    volumes:\n      - ./data:/data:ro\n"
+  );
+
+  await ensureDaemonBinary();
+  const daemon = startDaemon({
+    port,
+    cwd: fixtureDir,
+    useDockerAccess: false,
+    ...(options?.apiTokenFallback ? { apiToken: token } : { daemonToken: token })
+  });
+  try {
+    await waitForCondition(async () => {
+      const response = await fetch(`${daemonUrl}/daemon/health`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      return response.ok;
+    }, `authenticated daemon health at ${daemonUrl}`);
+  } catch (error) {
+    await stopProcess(daemon);
+    rmSync(fixtureDir, { recursive: true, force: true });
+    throw error;
+  }
+
+  return {
+    url: daemonUrl,
+    fixtureDir,
+    stop: async () => {
+      await stopProcess(daemon);
       rmSync(fixtureDir, { recursive: true, force: true });
     }
   };
@@ -158,11 +207,16 @@ function startDaemon(options: {
   docker?: string[];
   dockerLabelFilter?: string;
   pathPrefix?: string;
+  daemonToken?: string;
+  apiToken?: string;
 }): ProcessHandle {
+  const { DOCKERMAP_API_TOKEN: _apiToken, DOCKERMAP_DAEMON_TOKEN: _daemonToken, ...baseEnv } = process.env;
   const env = {
-    ...process.env,
+    ...baseEnv,
     DOCKERMAP_DAEMON_HOST: "127.0.0.1",
     DOCKERMAP_DAEMON_PORT: String(options.port),
+    ...(options.daemonToken ? { DOCKERMAP_DAEMON_TOKEN: options.daemonToken } : {}),
+    ...(options.apiToken ? { DOCKERMAP_API_TOKEN: options.apiToken } : {}),
     ...(options.dockerLabelFilter ? { DOCKERMAP_DOCKER_LABEL_FILTER: options.dockerLabelFilter } : {}),
     ...(options.pathPrefix ? { PATH: `${options.pathPrefix}:${process.env.PATH}` } : {}),
     ...(options.useDockerAccess ? {} : { DOCKERMAP_FORCE_MOCK: "true" })

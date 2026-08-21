@@ -14,6 +14,7 @@ type ApiProcess = {
 type DaemonRequest = {
   method: string;
   url: string;
+  authorization: string | undefined;
 };
 
 type StubDaemon = {
@@ -32,7 +33,7 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map(stopServer));
 });
 
-test("health routes stay public while protected routes require a bearer token", async () => {
+test("every browser API route is bearer-gated except CORS preflight", async () => {
   const closedPort = await freePort();
   const api = await startApi({
     DOCKERMAP_ALLOW_MOCK: "true",
@@ -40,9 +41,17 @@ test("health routes stay public while protected routes require a bearer token", 
     DOCKERMAP_API_TOKEN: "test-token"
   });
 
-  const health = await request(api, "/api/health");
-  assert.equal(health.status, 200);
-  assert.equal((await health.json()).daemon.mode, "mock");
+  const browserAliases = ["/health", "/api/health", "/api/v1", "/api/v1/", "/api/v1/health"];
+  for (const path of browserAliases) {
+    const unauthenticated = await request(api, path);
+    assert.equal(unauthenticated.status, 401, path);
+    assert.equal((await unauthenticated.json()).code, "unauthorized", path);
+
+    const authenticated = await request(api, path, {
+      headers: { Authorization: "Bearer test-token" }
+    });
+    assert.equal(authenticated.status, 200, path);
+  }
 
   const unauthenticated = await request(api, "/api/snapshot");
   assert.equal(unauthenticated.status, 401);
@@ -97,6 +106,31 @@ test("CORS only reflects explicitly allowed origins", async () => {
   });
   assert.equal(preflight.status, 204);
   assert.equal(preflight.headers.get("access-control-allow-origin"), "http://127.0.0.1:3233");
+});
+
+test("whoami publishes every forward-auth identity field before responding", async () => {
+  const sentinel = "DOCKERMAP_TEST_FAKE_SOL5_WHOAMI_SECRET";
+  const hostile = (field: string) => `${field}=token=${sentinel}${String.fromCharCode(0x80)}`;
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_API_TOKEN: "test-token",
+    DOCKERMAP_AUTH_REQUIRED: "true"
+  });
+
+  const response = await request(api, "/api/auth/whoami", {
+    headers: {
+      Authorization: "Bearer test-token",
+      "X-Remote-User": hostile("user"),
+      "X-Remote-Name": hostile("name"),
+      "X-Remote-Email": hostile("email"),
+      "X-Remote-Groups": `${hostile("group-one")}, ${hostile("group-two")}`
+    }
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.authenticated, true);
+  assert.equal(body.required, true);
+  assertPublishedPayload(body, sentinel, "whoami identity response");
 });
 
 test("query validation rejects oversized, malformed, and excessive compose requests", async () => {
@@ -502,7 +536,10 @@ test("daemon failures hide details by default and expose details only when expli
   });
   const hiddenResponse = await request(hidden, "/api/snapshot");
   assert.equal(hiddenResponse.status, 502);
-  assert.equal(Object.hasOwn(await hiddenResponse.json(), "details"), false);
+  const hiddenBody = await hiddenResponse.json();
+  assert.equal(hiddenBody.message, "Unable to reach DockerMap daemon");
+  assert.equal(Object.hasOwn(hiddenBody, "details"), false);
+  assert.doesNotMatch(JSON.stringify(hiddenBody), new RegExp(String(closedPort)));
 
   await stopApi(hidden);
   processes.splice(processes.indexOf(hidden), 1);
@@ -513,7 +550,10 @@ test("daemon failures hide details by default and expose details only when expli
   });
   const exposedResponse = await request(exposed, "/api/snapshot");
   assert.equal(exposedResponse.status, 502);
-  assert.equal(typeof (await exposedResponse.json()).details, "string");
+  const exposedBody = await exposedResponse.json();
+  assert.equal(exposedBody.message, "Unable to reach DockerMap daemon");
+  assert.equal(typeof exposedBody.details, "string");
+  assert.doesNotMatch(JSON.stringify(exposedBody), new RegExp(String(closedPort)));
 });
 
 test("runtime map daemon failures keep error details hidden unless explicitly exposed", async () => {
@@ -529,6 +569,7 @@ test("runtime map daemon failures keep error details hidden unless explicitly ex
   assert.equal(hiddenResponse.status, 502);
   const hiddenBody = await hiddenResponse.json();
   assert.equal(hiddenBody.code, "daemon_unavailable");
+  assert.equal(hiddenBody.message, "Unable to reach DockerMap daemon");
   assert.equal(Object.hasOwn(hiddenBody, "details"), false);
 
   await stopApi(hidden);
@@ -544,7 +585,9 @@ test("runtime map daemon failures keep error details hidden unless explicitly ex
     headers: { Authorization: "Bearer test-token" }
   });
   assert.equal(exposedResponse.status, 502);
-  assert.equal(typeof (await exposedResponse.json()).details, "string");
+  const exposedBody = await exposedResponse.json();
+  assert.equal(exposedBody.message, "Unable to reach DockerMap daemon");
+  assert.equal(typeof exposedBody.details, "string");
 });
 
 test("daemon HTTP errors stay redacted on JSON routes and event streams unless explicitly enabled", async () => {
@@ -646,7 +689,9 @@ test("SSE stream survives a client disconnect mid-emit without crashing the API"
   await delay(2_500);
 
   assert.equal(api.child.exitCode, null, "API must not crash on write-after-end");
-  const health = await request(api, "/api/health");
+  const health = await request(api, "/api/health", {
+    headers: { Authorization: "Bearer test-token" }
+  });
   assert.equal(health.status, 200, "API must keep serving routes after the disconnect");
 });
 
@@ -766,6 +811,67 @@ test("API forwards fixed read-only daemon paths with normalized query encoding",
   assert.ok(
     daemon.requests.some((entry) => entry.method === "GET" && entry.url === "/daemon/containers/api%2Fworker")
   );
+  assert.ok(
+    daemon.requests.every((entry) => entry.authorization === "Bearer test-token"),
+    "every daemon proxy request carries the fallback API token"
+  );
+});
+
+test("API sends the dedicated daemon token before falling back to the API token", async () => {
+  for (const tokenCase of [
+    {
+      name: "dedicated daemon token",
+      env: { DOCKERMAP_API_TOKEN: "browser-token", DOCKERMAP_DAEMON_TOKEN: "daemon-token" },
+      expectedAuthorization: "Bearer daemon-token"
+    },
+    {
+      name: "API token fallback",
+      env: { DOCKERMAP_API_TOKEN: "browser-token" },
+      expectedAuthorization: "Bearer browser-token"
+    }
+  ]) {
+    const daemon = await startStubDaemon((req, res) => {
+      if (req.headers.authorization !== tokenCase.expectedAuthorization) {
+        sendJson(res, 401, { code: "unauthorized", message: "daemon token missing" });
+        return;
+      }
+      if (req.url === "/daemon/health") {
+        sendJson(res, 200, {
+          status: "ok",
+          mode: "mock",
+          dockerReachable: false,
+          lastUpdated: 1,
+          snapshotVersion: "1",
+          message: "stub daemon"
+        });
+        return;
+      }
+      if (req.url === "/daemon/snapshot") {
+        sendJson(res, 200, { containers: [], images: [], networks: [], volumes: [], lastUpdated: 1 });
+        return;
+      }
+      sendJson(res, 404, { code: "not_found", message: "missing" });
+    });
+    const api = await startApi({
+      DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+      ...tokenCase.env
+    });
+    const auth = { Authorization: "Bearer browser-token" };
+
+    const health = await request(api, "/api/health", { headers: auth });
+    assert.equal(health.status, 200, tokenCase.name);
+    const snapshot = await request(api, "/api/snapshot", { headers: auth });
+    assert.equal(snapshot.status, 200, tokenCase.name);
+    assert.ok(
+      daemon.requests.every((entry) => entry.authorization === tokenCase.expectedAuthorization),
+      tokenCase.name
+    );
+
+    await stopApi(api);
+    processes.splice(processes.indexOf(api), 1);
+    await stopServer(daemon.server);
+    servers.splice(servers.indexOf(daemon.server), 1);
+  }
 });
 
 test("API publishes redacted and normalized daemon data on every response route", async () => {
@@ -1023,7 +1129,8 @@ async function startStubDaemon(
   const server = createServer((req, res) => {
     requests.push({
       method: req.method ?? "GET",
-      url: req.url ?? "/"
+      url: req.url ?? "/",
+      authorization: req.headers.authorization
     });
     handler(req, res, requests);
   });
