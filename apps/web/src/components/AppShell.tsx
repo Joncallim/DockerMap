@@ -5,6 +5,7 @@ import { useDaemonHeartbeat } from "../hooks/useDaemonHeartbeat";
 import { useSystemModel } from "../hooks/useSystemModel";
 import { useSettings } from "../hooks/useSettings";
 import { useApiResource } from "../hooks/useApiResource";
+import { apiUrl } from "../utils/api";
 import { summarize } from "../lib/model";
 import { formatClock } from "../lib/format";
 import { AppContext } from "../context";
@@ -74,14 +75,25 @@ function useThemeAndDensity() {
   }, [settings.density]);
 }
 
-function AuthStatus() {
+function AuthStatus({ onBearerSignOut }: { onBearerSignOut: () => void }) {
   const { settings } = useSettings();
   const whoami = useApiResource<AuthWhoamiResponse>("/api/auth/whoami");
   const user = whoami.data?.user;
+  const bearerSession = whoami.data?.authenticated && !whoami.data.required;
+
+  const signOut = async () => {
+    const response = await fetch(apiUrl("/api/auth/session/logout"), { method: "POST", credentials: "include" });
+    if (response.ok) onBearerSignOut();
+  };
 
   return (
     <div className="auth-status">
-      {user ? (
+      {bearerSession && (
+        <button type="button" className="ghost-link bearer-sign-out" onClick={() => void signOut()}>
+          Sign out
+        </button>
+      )}
+      {settings.auth.showStatus && (user ? (
         <>
           <Tag tone="accent" icon="shield">
             {whoami.data?.name ?? user}
@@ -93,17 +105,17 @@ function AuthStatus() {
           )}
         </>
       ) : (
-        settings.auth.loginUrl && (
+        !bearerSession && settings.auth.loginUrl && (
           <a className="ghost-link" href={settings.auth.loginUrl}>
             <Icon name="shield" size={14} /> Sign in
           </a>
         )
-      )}
+      ))}
     </div>
   );
 }
 
-export default function AppShell() {
+export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => void }) {
   const { tick, health } = useDaemonHeartbeat();
   const { model, loading, error } = useSystemModel(tick);
   const { settings } = useSettings();
@@ -203,7 +215,7 @@ export default function AppShell() {
                   {summary.attention > 0 && <span className="sys-attn">{summary.attention} need attention</span>}
                 </div>
               )}
-              {settings.auth.showStatus && !settings.demoMode && <AuthStatus />}
+              {!settings.demoMode && <AuthStatus onBearerSignOut={onBearerSignOut} />}
               <span className="topbar-clock">{formatClock(clock)}</span>
             </div>
           </header>

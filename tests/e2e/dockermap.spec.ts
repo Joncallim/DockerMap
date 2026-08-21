@@ -4,6 +4,7 @@ import {
   startLiveDockerStack,
   startMockStack,
   startProductionImageStack,
+  startTokenConfiguredCompose,
   type Stack
 } from "./dockermapHarness";
 
@@ -237,5 +238,20 @@ test.describe("DockerMap GUI", () => {
       source.addEventListener("error", () => { window.clearTimeout(timer); source.close(); reject(new Error("SSE stream failed")); }, { once: true });
     }));
     expect(receivedSnapshot).toBe(true);
+
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect(page.getByRole("heading", { name: "Enter your API token" })).toBeVisible();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Enter your API token" })).toBeVisible();
+  });
+
+  test("reports a healthy Docker healthcheck for token-configured Compose @production-image", async () => {
+    test.skip(!process.env.DOCKERMAP_E2E_PRODUCTION_IMAGE, "Set DOCKERMAP_E2E_PRODUCTION_IMAGE=1 to build the production image.");
+    const compose = await startTokenConfiguredCompose();
+    try {
+      expect(compose.health).toBe("healthy");
+    } finally {
+      await compose.stop();
+    }
   });
 });

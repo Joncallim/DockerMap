@@ -66,6 +66,11 @@ const maxLogPageSize = 500;
 const sessionTtlMs = 24 * 60 * 60 * 1_000;
 const maxSessions = 1_024;
 const sessions = new Map<string, number>();
+const activeSessionStreams = new Map<string, Set<express.Response>>();
+const sessionAttemptWindowMs = 60_000;
+const maxSessionAttemptsPerWindow = 20;
+const maxSessionAttemptSources = 1_024;
+const sessionAttemptsBySource = new Map<string, number[]>();
 // Base timestamp for the mock log timeline, fixed once per process so a
 // compound "millis:offset" cursor taken from one request still matches
 // entries on the next. A fresh Date.now() per request shifts the whole
@@ -212,6 +217,51 @@ function validSession(session: string) {
   return true;
 }
 
+function closeSessionStreams(session: string) {
+  for (const response of activeSessionStreams.get(session) ?? []) {
+    if (!response.writableEnded && !response.destroyed) response.end();
+  }
+}
+
+function registerSessionStream(session: string, response: express.Response) {
+  if (!session) return;
+  const streams = activeSessionStreams.get(session) ?? new Set<express.Response>();
+  streams.add(response);
+  activeSessionStreams.set(session, streams);
+}
+
+function unregisterSessionStream(session: string, response: express.Response) {
+  const streams = activeSessionStreams.get(session);
+  if (!streams) return;
+  streams.delete(response);
+  if (streams.size === 0) activeSessionStreams.delete(session);
+}
+
+function limitSessionAttempts(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (authMode !== "bearer" || req.method !== "POST" || req.path !== "/api/auth/session") {
+    next();
+    return;
+  }
+
+  const now = Date.now();
+  const source = req.ip ?? req.socket.remoteAddress ?? "unknown";
+  const attempts = (sessionAttemptsBySource.get(source) ?? []).filter((attempt) => attempt > now - sessionAttemptWindowMs);
+  if (attempts.length >= maxSessionAttemptsPerWindow) {
+    const retryAfterSeconds = Math.max(1, Math.ceil(((attempts[0] ?? now) + sessionAttemptWindowMs - now) / 1_000));
+    res.setHeader("Retry-After", String(retryAfterSeconds));
+    res.status(429).json({ code: "rate_limited", message: "Too many session attempts; try again later" } satisfies ApiError);
+    return;
+  }
+
+  attempts.push(now);
+  if (!sessionAttemptsBySource.has(source) && sessionAttemptsBySource.size >= maxSessionAttemptSources) {
+    const oldestSource = sessionAttemptsBySource.keys().next().value;
+    if (oldestSource) sessionAttemptsBySource.delete(oldestSource);
+  }
+  sessionAttemptsBySource.set(source, attempts);
+  next();
+}
+
 function sessionCookieAttributes(req: express.Request, maxAge: number) {
   // Only mark the cookie Secure when the external request was HTTPS. This
   // preserves local loopback HTTP development while protecting forwarded HTTPS.
@@ -275,6 +325,17 @@ app.use(
     optionsSuccessStatus: 204
   }),
 );
+// Record only method, path, and response metadata before authentication or
+// parsing. Deliberately never log headers, cookies, query strings, or bodies.
+app.use((req, res, next) => {
+  const started = process.hrtime.bigint();
+  res.on("finish", () => {
+    const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
+    console.log(`${req.method} ${req.path} ${res.statusCode} ${durationMs.toFixed(1)}ms`);
+  });
+  next();
+});
+app.use(limitSessionAttempts);
 // Auth precedes body parsing so unauthenticated callers cannot observe or
 // consume parser work; OPTIONS remains exempt inside requireAuthentication.
 app.use(requireAuthentication);
@@ -294,21 +355,11 @@ app.post("/api/auth/session", (req, res) => {
 });
 
 app.post("/api/auth/session/logout", (req, res) => {
-  sessions.delete(readCookie(req, authCookieName));
+  const session = readCookie(req, authCookieName);
+  sessions.delete(session);
+  closeSessionStreams(session);
   res.setHeader("Set-Cookie", `${authCookieName}=; ${sessionCookieAttributes(req, 0)}`);
   res.status(204).end();
-});
-
-// Minimal redacted access log: method, pathname (never query strings, which
-// can carry tokens), status, and duration. Logged for every request so
-// auth failures and daemon errors are visible in the API's stderr.
-app.use((req, res, next) => {
-  const started = process.hrtime.bigint();
-  res.on("finish", () => {
-    const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
-    console.log(`${req.method} ${req.path} ${res.statusCode} ${durationMs.toFixed(1)}ms`);
-  });
-  next();
 });
 
 // Versioned alias: /api/v1/* maps to the same read-only /api/* surface so
@@ -1133,10 +1184,13 @@ app.get("/api/compose/edit-plan", async (req, res) => {
 });
 
 app.get("/api/events/stream", async (req, res) => {
+  const requestedSession = readCookie(req, authCookieName);
+  const cookieSession = authMode === "bearer" && validSession(requestedSession) ? requestedSession : "";
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
+  registerSessionStream(cookieSession, res);
 
   // Serialize emits: fetchDaemon can take up to 4s, so without a busy guard
   // a slow daemon stacks overlapping emits. And a client that disconnects
@@ -1149,16 +1203,22 @@ app.get("/api/events/stream", async (req, res) => {
     if (busy || res.writableEnded || res.destroyed) {
       return;
     }
+    if (cookieSession && !validSession(cookieSession)) {
+      res.end();
+      return;
+    }
     busy = true;
     try {
       const health = await fetchDaemon<HealthResponse>("/daemon/health");
-      if (res.writableEnded || res.destroyed) {
+      if (res.writableEnded || res.destroyed || (cookieSession && !validSession(cookieSession))) {
+        if (!res.writableEnded && !res.destroyed) res.end();
         return;
       }
       res.write(`event: snapshot\n`);
       res.write(`data: ${JSON.stringify(publishApiPayload(health))}\n\n`);
     } catch (error) {
-      if (res.writableEnded || res.destroyed) {
+      if (res.writableEnded || res.destroyed || (cookieSession && !validSession(cookieSession))) {
+        if (!res.writableEnded && !res.destroyed) res.end();
         return;
       }
       const payload = publishApiPayload(
@@ -1190,6 +1250,7 @@ app.get("/api/events/stream", async (req, res) => {
   req.on("close", () => {
     clearInterval(timer);
     clearInterval(heartbeat);
+    unregisterSessionStream(cookieSession, res);
     res.end();
   });
 });

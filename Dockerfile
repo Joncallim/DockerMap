@@ -30,7 +30,7 @@ RUN npm run build
 
 # ---- Runtime image ----------------------------------------------------------
 FROM node:22-bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends nginx procps \
+RUN apt-get update && apt-get install -y --no-install-recommends nginx procps curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/dockermap
@@ -49,7 +49,8 @@ COPY --from=rust-builder /src/crates/target/release/dockermap-daemon /usr/local/
 
 COPY deploy/docker/nginx.conf /etc/nginx/sites-enabled/default
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY deploy/docker/healthcheck.sh /usr/local/bin/dockermap-healthcheck
+RUN chmod +x /entrypoint.sh /usr/local/bin/dockermap-healthcheck
 
 ENV NODE_ENV=production \
     PORT=4000 \
@@ -60,5 +61,7 @@ ENV NODE_ENV=production \
     DOCKERMAP_ALLOWED_ORIGINS=http://127.0.0.1:3233,http://localhost:3233
 
 EXPOSE 3233
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["/usr/local/bin/dockermap-healthcheck"]
 
 ENTRYPOINT ["/entrypoint.sh"]
