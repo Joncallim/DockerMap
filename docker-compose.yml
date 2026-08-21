@@ -13,6 +13,8 @@ services:
       # Pass through only when configured by the deployer; the healthcheck
       # script reads it at runtime rather than interpolating it into Docker.
       DOCKERMAP_API_TOKEN:
+      DOCKERMAP_AUTH_REQUIRED:
+      DOCKERMAP_AUTH_USER_HEADER:
       # This container has its own PID namespace; never infer host collectors
       # from incidental markers such as /.dockerenv.
       DOCKERMAP_PID_NAMESPACE: "restricted"

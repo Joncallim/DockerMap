@@ -226,6 +226,60 @@ test("logging out closes cookie-authenticated SSE streams before another event",
   assert.equal(afterLogout.done, true, "logout must end the active SSE stream");
 });
 
+test("SSE stream caps reject excess streams and release capacity on disconnect and logout", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${await freePort()}`,
+    DOCKERMAP_API_TOKEN: "test-token",
+    DOCKERMAP_MAX_SSE_STREAMS_PER_SESSION: "2",
+    DOCKERMAP_MAX_SSE_STREAMS: "3"
+  });
+  const session = await request(api, "/api/auth/session", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: "test-token" })
+  });
+  const cookie = (session.headers.get("set-cookie") ?? "").split(";", 1)[0];
+  const first = await request(api, "/api/events/stream", { headers: { Cookie: cookie } });
+  const second = await request(api, "/api/events/stream", { headers: { Cookie: cookie } });
+  const perSessionLimited = await request(api, "/api/events/stream", { headers: { Cookie: cookie } });
+  assert.equal(perSessionLimited.status, 429);
+  assert.equal((await perSessionLimited.json()).code, "stream_limit_reached");
+  const otherSession = await request(api, "/api/auth/session", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: "test-token" })
+  });
+  const otherCookie = (otherSession.headers.get("set-cookie") ?? "").split(";", 1)[0];
+  const third = await request(api, "/api/events/stream", { headers: { Cookie: otherCookie } });
+  assert.equal(third.status, 200);
+  const processLimited = await request(api, "/api/events/stream", { headers: { Cookie: otherCookie } });
+  assert.equal(processLimited.status, 503);
+
+  await first.body?.cancel();
+  await delay(50);
+  const afterDisconnect = await request(api, "/api/events/stream", { headers: { Cookie: cookie } });
+  assert.equal(afterDisconnect.status, 200);
+
+  const logout = await request(api, "/api/auth/session/logout", { method: "POST", headers: { Cookie: cookie } });
+  assert.equal(logout.status, 204);
+  await Promise.all([second.body?.cancel(), afterDisconnect.body?.cancel()]);
+  const nextSession = await request(api, "/api/auth/session", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: "test-token" })
+  });
+  const nextCookie = (nextSession.headers.get("set-cookie") ?? "").split(";", 1)[0];
+  assert.equal((await request(api, "/api/events/stream", { headers: { Cookie: nextCookie } })).status, 200);
+});
+
+test("access logs use canonical route templates and never retain path or query secrets", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true", DOCKERMAP_API_TOKEN: "test-token" });
+  const secret = "ROUND9_PATH_SECRET";
+  await request(api, `/api/containers/${secret}?token=${secret}`, { headers: { Authorization: "Bearer test-token" } });
+  await request(api, `/api/containers/${encodeURIComponent(`${secret}/encoded`)}`, { headers: { Authorization: "Bearer test-token" } });
+  await request(api, `/unrecognized/${secret}?token=${secret}`, { headers: { Authorization: "Bearer test-token" } });
+  await delay(20);
+  const logs = api.logs.join("");
+  assert.match(logs, /GET \/api\/containers\/:name /);
+  assert.match(logs, /GET \/unknown 404/);
+  assert.doesNotMatch(logs, new RegExp(escapeRegExp(secret)));
+});
+
 test("session cookies are Secure for HTTPS forwarded requests", async () => {
   const api = await startApi({
     DOCKERMAP_ALLOW_MOCK: "true",

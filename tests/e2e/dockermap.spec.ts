@@ -245,13 +245,20 @@ test.describe("DockerMap GUI", () => {
     await expect(page.getByRole("heading", { name: "Enter your API token" })).toBeVisible();
   });
 
-  test("reports a healthy Docker healthcheck for token-configured Compose @production-image", async () => {
+  test("reports a healthy Docker healthcheck in none, bearer, and forward-auth modes @production-image", async () => {
     test.skip(!process.env.DOCKERMAP_E2E_PRODUCTION_IMAGE, "Set DOCKERMAP_E2E_PRODUCTION_IMAGE=1 to build the production image.");
-    const compose = await startTokenConfiguredCompose();
-    try {
-      expect(compose.health).toBe("healthy");
-    } finally {
-      await compose.stop();
+    for (const env of [
+      {},
+      { DOCKERMAP_API_TOKEN: "dockermap-compose-e2e-token" },
+      { DOCKERMAP_AUTH_REQUIRED: "true" },
+      { DOCKERMAP_AUTH_REQUIRED: "true", DOCKERMAP_API_TOKEN: "dockermap-compose-e2e-token", DOCKERMAP_AUTH_USER_HEADER: "x-internal-user" }
+    ]) {
+      const compose = await startTokenConfiguredCompose(env);
+      try {
+        expect(compose.health).toBe("healthy");
+      } finally {
+        await compose.stop();
+      }
     }
   });
 });

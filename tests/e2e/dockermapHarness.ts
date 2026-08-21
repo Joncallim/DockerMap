@@ -205,12 +205,12 @@ export async function startLiveDockerStack(): Promise<Stack> {
   };
 }
 
-export async function startTokenConfiguredCompose(): Promise<{ health: string; stop: () => Promise<void> }> {
+export async function startTokenConfiguredCompose(overrides: NodeJS.ProcessEnv = {}): Promise<{ health: string; stop: () => Promise<void> }> {
   const docker = detectDockerCommand();
   if (!docker) throw new SkipLiveDockerError("Docker is not reachable by the current user or sudo -n docker.");
 
   const projectName = `dockermap-compose-e2e-${Date.now().toString(36)}`;
-  const env = { ...process.env, DOCKERMAP_API_TOKEN: "dockermap-compose-e2e-token" };
+  const env = { ...process.env, ...overrides };
   try {
     runDocker(docker, ["compose", "-p", projectName, "up", "--detach", "--build"], repoRoot, env);
     const container = `${projectName}-dockermap-1`;
