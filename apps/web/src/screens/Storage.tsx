@@ -4,7 +4,7 @@ import { useApp } from "../context";
 import Icon from "../components/Icon";
 import { EmptyState, ErrorState, Loading, Panel, StateDot, Tag } from "../components/primitives";
 import { IdentityRef } from "../components/identity";
-import { COLLISION_HINT, COLLISION_TAG, UNAVAILABLE_CONTAINER } from "../lib/identity";
+import { COLLISION_HINT, COLLISION_TAG, UNAVAILABLE_CONTAINER, UNAVAILABLE_VOLUME } from "../lib/identity";
 
 export default function Storage() {
   const { model, loading, error } = useApp();
@@ -49,7 +49,7 @@ export default function Storage() {
             const collided = vol.name !== "" && model.volumeNameCollisions.has(vol.name);
             const routable = vol.name !== "" && !collided;
             return (
-              <Panel key={`${vol.id}-${index}`} title={routable ? <Link className="entity-detail-link" to={`/volumes/${encodeURIComponent(vol.name)}`}>{vol.name}</Link> : vol.name === "" ? "Unavailable volume name" : <span className="collision-identity" title={COLLISION_HINT}>{vol.name}</span>} icon="storage" actions={routable ? <Link className="ghost-link entity-detail-action" aria-label={`Open ${vol.name} volume detail`} to={`/volumes/${encodeURIComponent(vol.name)}`}>Open detail</Link> : undefined}>
+              <Panel key={`${vol.id}-${index}`} title={routable ? <Link className="entity-detail-link" to={`/volumes/${encodeURIComponent(vol.name)}`}>{vol.name}</Link> : vol.name === "" ? UNAVAILABLE_VOLUME : <span className="collision-identity" title={COLLISION_HINT}>{vol.name}</span>} icon="storage" actions={routable ? <Link className="ghost-link entity-detail-action" aria-label={`Open ${vol.name} volume detail`} to={`/volumes/${encodeURIComponent(vol.name)}`}>Open detail</Link> : undefined}>
                 <div className="tag-wrap">
                   <Tag tone={vol.attachedTo.length ? "accent" : "muted"}>
                     {vol.attachedTo.length ? `${vol.attachedTo.length} consumer${vol.attachedTo.length === 1 ? "" : "s"}` : "idle"}

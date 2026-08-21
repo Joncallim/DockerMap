@@ -9,7 +9,7 @@ import { formatKbps, formatMb, formatPercent, formatRelative } from "../lib/form
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { IdentityRef } from "../components/identity";
-import { identityText, UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_ROLE, UNAVAILABLE_SERVICE_STATUS, UNAVAILABLE_VOLUME } from "../lib/identity";
+import { identityText, UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_PORT, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_ROLE, UNAVAILABLE_SERVICE_STATUS, UNAVAILABLE_VOLUME } from "../lib/identity";
 import { Bar, EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, Sparkline, StatePill, StateDot, Tag } from "../components/primitives";
 
 type Tab = "overview" | "dependencies" | "resources" | "logs" | "config";
@@ -74,7 +74,7 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
           </span>
           <div>
             <div className="eyebrow">{identityText(service.role, UNAVAILABLE_SERVICE_ROLE)}</div>
-            <h1 className="screen-title">{service.name}</h1>
+            <h1 className="screen-title">{identityText(service.name, UNAVAILABLE_SERVICE)}</h1>
           </div>
           <StatePill state={service.state} />
         </div>
@@ -270,7 +270,7 @@ function Config({
           )}
           {service.ports.map((p, index) => (
             <Tag key={`${p}-${index}`} icon="link" tone="accent">
-              {p}
+              {p === "" ? UNAVAILABLE_PORT : p}
             </Tag>
           ))}
         </div>

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import { EmptyState, ErrorState, Loading, Panel, StateDot, Tag } from "../components/primitives";
-import { COLLISION_HINT, COLLISION_TAG, UNAVAILABLE_CONTAINER } from "../lib/identity";
+import { COLLISION_HINT, COLLISION_TAG, UNAVAILABLE_CONTAINER, UNAVAILABLE_IMAGE } from "../lib/identity";
 
 export default function Images() {
   const { model, loading, error } = useApp();
@@ -64,7 +64,7 @@ export default function Images() {
               const collided = img.image !== "" && model.imageRefCollisions.has(img.image);
               return (
                 <li key={`${img.image}-${index}`} className="svc-row image-row">
-                  {img.image ? (collided ? <code className="image-name collision-identity" title={COLLISION_HINT}>{img.image}</code> : <Link className="image-detail-link" to={`/images/${encodeURIComponent(img.image)}`}>{img.image}</Link>) : <code className="image-name">Unavailable image reference</code>}
+                  {img.image ? (collided ? <code className="image-name collision-identity" title={COLLISION_HINT}>{img.image}</code> : <Link className="image-detail-link" to={`/images/${encodeURIComponent(img.image)}`}>{img.image}</Link>) : <code className="image-name">{UNAVAILABLE_IMAGE}</code>}
                   <Tag tone="muted">{img.containers.length} service{img.containers.length === 1 ? "" : "s"}</Tag>
                   {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
                   <div className="tag-wrap">
