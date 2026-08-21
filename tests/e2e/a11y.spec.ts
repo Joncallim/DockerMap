@@ -127,6 +127,12 @@ test.describe("responsive and accessibility matrix", () => {
 
   test("keyboard focus, selections, and aria controls", async ({ browser }) => {
     await withPage(browser, "dark", async (page) => {
+      await openRoute(page, "/copilot", "dark");
+      const askCopilot = page.getByRole("textbox", { name: "Ask Copilot" });
+      await askCopilot.fill("what changed recently?");
+      await askCopilot.press("Enter");
+      await expect(askCopilot).toBeFocused();
+
       await openRoute(page, "/", "dark");
       await page.keyboard.press("Tab");
       await expect(page.getByRole("link", { name: "Skip to main content" })).toBeFocused();

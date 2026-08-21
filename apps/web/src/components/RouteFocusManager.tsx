@@ -11,7 +11,7 @@ export default function RouteFocusManager() {
   const previousLocation = useRef<string | null>(null);
 
   useLayoutEffect(() => {
-    const nextLocation = `${location.pathname}${location.search}`;
+    const nextLocation = location.pathname;
     if (previousLocation.current === null) {
       previousLocation.current = nextLocation;
       return;
@@ -44,7 +44,7 @@ export default function RouteFocusManager() {
       observer.disconnect();
       window.clearTimeout(timeout);
     };
-  }, [location.pathname, location.search]);
+  }, [location.pathname]);
 
   return null;
 }
