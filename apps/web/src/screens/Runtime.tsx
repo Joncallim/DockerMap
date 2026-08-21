@@ -283,8 +283,8 @@ export default function RuntimeScreen() {
                 <div className="inspector-section">
                   <h4>Recent logs</h4>
                   <ul className="runtime-evidence-list">
-                    {selected.service.logs.map((entry) => (
-                      <li key={entry.id}>
+                    {selected.service.logs.map((entry, index) => (
+                      <li key={`${entry.id}-${index}`}>
                         <Tag tone="muted">{identityText(entry.source, UNAVAILABLE_LOG_SOURCE)}</Tag>
                         <span>{entry.level ?? "log reference"}</span>
                       </li>
@@ -297,8 +297,8 @@ export default function RuntimeScreen() {
                 <div className="inspector-section">
                   <h4>Recent events</h4>
                   <ul className="runtime-evidence-list">
-                    {selected.service.events.map((event) => (
-                      <li key={event.id}>
+                    {selected.service.events.map((event, index) => (
+                      <li key={`${event.id}-${index}`}>
                         <Tag tone="muted">{event.kind}</Tag>
                         <span>{event.message ?? "event recorded"}</span>
                         {event.timestamp ? <span className="runtime-evidence-time">{formatRelative(event.timestamp)}</span> : null}

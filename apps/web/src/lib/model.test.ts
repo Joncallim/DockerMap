@@ -162,6 +162,42 @@ describe("buildRelationships (via buildModel)", () => {
     expect(data[0].from).toBe("c_app");
     expect(data[0].to).toBe("c_worker");
   });
+
+  it("never derives data edges from ambiguous, empty, or repeated member refs", () => {
+    // "dup" is a redaction-collided name shared by TWO services: a ref to it
+    // must stay unresolved (VolumeDetail shows the member as unresolved, so a
+    // data edge to the FIRST occurrence would contradict that state).
+    const volumes: VolumeRecord[] = [
+      { id: "vol_ambig", name: "ambig", attachedTo: ["dup", "web"] },
+      { id: "vol_empty", name: "empty", attachedTo: ["", "web"] },
+      // The same unique service referenced twice (once by name, once by id):
+      // dedupes to ONE member, so no self-edge (data:web~web:vol_self) may
+      // derive and no pair may form.
+      { id: "vol_self", name: "self", attachedTo: ["web", "c_web"] },
+      // Positive control: unique refs still link.
+      { id: "vol_ok", name: "ok", attachedTo: ["web", "api"] }
+    ];
+    const model = buildModel(
+      snapshot(
+        [
+          container({ id: "c_web", name: "web" }),
+          container({ id: "c_api", name: "api" }),
+          container({ id: "c_dup1", name: "dup" }),
+          container({ id: "c_dup2", name: "dup" })
+        ],
+        [],
+        volumes
+      ),
+      emptyRuntime
+    );
+    const data = model.relationships.filter((r) => r.kind === "data");
+    expect(data).toHaveLength(1);
+    expect(data[0]).toMatchObject({ from: "c_web", to: "c_api", kind: "data" });
+    // No edge may ever have the same service on both ends (self-edge).
+    for (const edge of model.relationships) {
+      expect(edge.from).not.toBe(edge.to);
+    }
+  });
 });
 
 describe("computeImpact", () => {

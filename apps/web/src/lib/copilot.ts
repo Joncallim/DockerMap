@@ -1,4 +1,5 @@
 import { computeImpact, type Service, type SystemModel } from "./model";
+import { identityText, UNAVAILABLE_SERVICE } from "./identity";
 
 /**
  * The Copilot interprets the topology. It does not control anything and it does
@@ -89,7 +90,7 @@ function unhealthyAnswer(model: SystemModel, q: string): CopilotAnswer {
   return {
     question: q,
     headline: `${trouble.length} service${trouble.length === 1 ? "" : "s"} need attention`,
-    body: trouble.map((s) => `${s.name} — ${s.state} (${s.status})`),
+    body: trouble.map((s) => `${identityText(s.name, UNAVAILABLE_SERVICE)} — ${s.state} (${s.status})`),
     references: trouble.map((s) => s.name)
   };
 }
@@ -148,7 +149,7 @@ function portAnswer(model: SystemModel, q: string, lower: string): CopilotAnswer
     return {
       question: q,
       headline: "Published ports",
-      body: hits.flatMap((s) => s.ports.map((p) => `${s.name} → ${p}`)),
+      body: hits.flatMap((s) => s.ports.map((p) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${p}`)),
       references: hits.map((s) => s.name)
     };
   }
@@ -158,7 +159,7 @@ function portAnswer(model: SystemModel, q: string, lower: string): CopilotAnswer
   return {
     question: q,
     headline: `Port ${port}`,
-    body: hits.map((s) => `${s.name} → ${s.ports.filter((p) => p.includes(port)).join(", ")}`),
+    body: hits.map((s) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${s.ports.filter((p) => p.includes(port)).join(", ")}`),
     references: hits.map((s) => s.name)
   };
 }
@@ -168,7 +169,7 @@ function changeAnswer(model: SystemModel, q: string): CopilotAnswer {
   const body: string[] = [];
   if (updates.length > 0) {
     body.push(`${updates.length} service${updates.length === 1 ? " has" : "s have"} an update available:`);
-    for (const s of updates) body.push(`• ${s.name} (${s.imageRepo}:${s.imageTag})`);
+    for (const s of updates) body.push(`• ${identityText(s.name, UNAVAILABLE_SERVICE)} (${s.imageRepo}:${s.imageTag})`);
   } else {
     body.push("No pending updates detected.");
   }

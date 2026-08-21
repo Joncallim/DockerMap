@@ -220,8 +220,8 @@ function Logs({ name, tick }: { name: string; tick: number }) {
   return (
     <Panel title="Recent output" icon="logs">
       <ul className="log-stream">
-        {entries.map((entry) => (
-          <li key={entry.id} className={`log-line lvl-${entry.level}`}>
+        {entries.map((entry, index) => (
+          <li key={`${entry.id}-${index}`} className={`log-line lvl-${entry.level}`}>
             <span className="log-time">{formatRelative(entry.timestamp)}</span>
             <span className="log-lvl">{entry.level}</span>
             <span className="log-msg">{entry.message}</span>
@@ -268,8 +268,8 @@ function Config({
           {service.networks.map((n, index) =>
             model.networkByName.has(n) ? <Link key={`${n}-${index}`} className="ref-chip" to={`/networks/${encodeURIComponent(n)}`}>{n}</Link> : <Tag key={`${n}-${index}`} icon="network"><IdentityRef name={n} fallback={UNAVAILABLE_NETWORK} /></Tag>
           )}
-          {service.ports.map((p) => (
-            <Tag key={p} icon="link" tone="accent">
+          {service.ports.map((p, index) => (
+            <Tag key={`${p}-${index}`} icon="link" tone="accent">
               {p}
             </Tag>
           ))}

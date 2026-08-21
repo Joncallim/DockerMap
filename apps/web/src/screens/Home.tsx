@@ -51,8 +51,8 @@ export default function Home() {
               <EmptyState icon="check" title="Everything is healthy" body="No services require attention right now." />
             ) : (
               <ul className="svc-list">
-                {attention.map((s) => (
-                  <ServiceRow key={s.id} model={model} service={s} />
+                {attention.map((s, index) => (
+                  <ServiceRow key={`${s.id}-${index}`} model={model} service={s} />
                 ))}
               </ul>
             )}
@@ -119,8 +119,8 @@ export default function Home() {
               <EmptyState icon="history" title="No recent change" body="Deployments and restarts will appear here." />
             ) : (
               <ul className="feed">
-                {changes.map((c) => (
-                  <li key={c.id} className="feed-row">
+                {changes.map((c, index) => (
+                  <li key={`${c.id}-${index}`} className="feed-row">
                     <span className={`feed-kind k-${c.kind}`}>{c.kind.replace("_", " ")}</span>
                     <Link className="feed-text" to={`/services/${encodeURIComponent(c.serviceName)}`}>
                       {c.summary}

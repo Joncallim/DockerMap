@@ -287,7 +287,7 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   const { index: volumeByName, collisions: volumeNameCollisions } = buildIdentityIndex(snapshot.volumes, (volume) => volume.name);
   const { index: imageByRef, collisions: imageRefCollisions } = buildIdentityIndex(snapshot.images, (image) => image.image);
 
-  const relationships = buildRelationships(services, snapshot, byId);
+  const relationships = buildRelationships(services, snapshot, byId, byName);
   const runtime = buildRuntimeModel(runtimeMap);
 
   return {
@@ -380,7 +380,8 @@ function buildAliasIndex<T>(
 function buildRelationships(
   services: Service[],
   snapshot: DockerSnapshot,
-  byId: Map<string, Service>
+  byId: Map<string, Service>,
+  byName: Map<string, Service>
 ): Relationship[] {
   const relationships: Relationship[] = [];
   const seen = new Set<string>();
@@ -412,10 +413,30 @@ function buildRelationships(
   }
 
   // Secondary: shared-volume data relationships (who reads/writes the same state).
+  // Member refs resolve through the SAME collision-safe identity indexes as
+  // detail routing: a ref that is empty, or that collides after redaction
+  // (duplicate names/ids), or that is ambiguous across the name/id maps is
+  // left VISIBLE on the volume record but never becomes a data edge — an
+  // ambiguous ref must not silently attach the first occurrence (a
+  // truthfulness contradiction with the unresolved state VolumeDetail shows).
+  // Repeated refs resolving to the SAME service are deduped so a volume can
+  // never derive a self-edge (data:A~A:V) or inflate computeImpact counts.
+  const resolveServiceRef = (ref: string): Service | undefined => {
+    if (ref === "") return undefined;
+    const byNameHit = byName.get(ref);
+    const byIdHit = byId.get(ref);
+    if (byNameHit && byIdHit && byNameHit !== byIdHit) return undefined;
+    return byNameHit ?? byIdHit;
+  };
   for (const volume of snapshot.volumes) {
-    const attached = volume.attachedTo
-      .map((ref) => services.find((s) => s.name === ref || s.id === ref))
-      .filter((s): s is Service => Boolean(s));
+    const attached = [
+      ...new Map(
+        volume.attachedTo
+          .map(resolveServiceRef)
+          .filter((s): s is Service => Boolean(s))
+          .map((s) => [s.id, s] as const)
+      ).values()
+    ];
     for (let i = 0; i < attached.length; i += 1) {
       for (let j = i + 1; j < attached.length; j += 1) {
         const a = attached[i];

@@ -230,8 +230,8 @@ export default function Logs() {
         ) : (
           <>
             <ul className="log-stream">
-              {visible.map((entry) => (
-                <li key={entry.id} className={`log-line lvl-${entry.level}`}>
+              {visible.map((entry, index) => (
+                <li key={`${entry.id}-${index}`} className={`log-line lvl-${entry.level}`}>
                   <span className="log-time">{formatRelative(entry.timestamp)}</span>
                   <span className="log-svc">{entry.container}</span>
                   <span className="log-lvl">{entry.level}</span>
