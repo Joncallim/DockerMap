@@ -106,3 +106,27 @@ jobs:
       # express. Build the image on every PR so regressions ship nowhere.
       - name: Build image
         run: docker build -t dockermap:ci .
+
+      - name: Smoke-test runtime image
+        run: |
+          set -euo pipefail
+          docker run -d --name dockermap-smoke -p 127.0.0.1:3999:3233 dockermap:ci
+          for attempt in {1..60}; do
+            if curl --fail --silent --show-error http://127.0.0.1:3999/api/health; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker logs dockermap-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent --show-error http://127.0.0.1:3999/api/snapshot
+          if docker logs dockermap-smoke 2>&1 | grep --quiet 'ERR_MODULE_NOT_FOUND'; then
+            docker logs dockermap-smoke
+            exit 1
+          fi
+
+      - name: Remove smoke-test container
+        if: always()
+        run: docker rm -f dockermap-smoke || true

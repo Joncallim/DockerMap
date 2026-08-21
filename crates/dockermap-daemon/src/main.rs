@@ -34,7 +34,7 @@ use std::{
     fs,
     net::{IpAddr, SocketAddr},
     path::{Component, Path as StdPath, PathBuf},
-    process::{Command, Output},
+    process::Command,
     sync::Arc,
     time::Duration,
 };
@@ -913,7 +913,22 @@ const RUNTIME_MAP_COLLECTION_TIMEOUT: Duration = Duration::from_secs(15);
 /// NOTE: the pipes are drained by reader threads WHILE the child runs — a
 /// provider whose output exceeds the pipe buffer (e.g. `ps -eo ...` on a busy
 /// host) would otherwise deadlock the child until the timeout kills it.
-fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<Output, String> {
+struct BoundedRead {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+#[derive(Debug)]
+struct ProviderCommandOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stdout_truncated: bool,
+}
+
+fn run_command_with_timeout(
+    mut command: Command,
+    timeout: Duration,
+) -> Result<ProviderCommandOutput, String> {
     // `Command::spawn` does NOT pipe stdio like `Command::output` does, so
     // the pipes must be requested explicitly to collect provider output.
     let mut child = command
@@ -947,15 +962,15 @@ fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<O
     let stdout = stdout_reader
         .join()
         .map_err(|_| "provider stdout reader panicked".to_string())?;
-    let stderr = stderr_reader
+    let _stderr = stderr_reader
         .join()
         .map_err(|_| "provider stderr reader panicked".to_string())?;
 
     match status {
-        Some(status) => Ok(Output {
+        Some(status) => Ok(ProviderCommandOutput {
             status,
-            stdout,
-            stderr,
+            stdout: stdout.bytes,
+            stdout_truncated: stdout.truncated,
         }),
         None => Err(format!(
             "provider command timed out after {}s",
@@ -964,26 +979,31 @@ fn run_command_with_timeout(mut command: Command, timeout: Duration) -> Result<O
     }
 }
 
-/// Read up to `cap` bytes from a pipe; used to drain provider output
-/// concurrently with the child process so it can never block on a full pipe.
-fn read_bounded(mut reader: impl std::io::Read, cap: usize) -> Vec<u8> {
+/// Keep up to `cap` bytes from a pipe while continuing to drain the remainder,
+/// so a noisy provider can never block on a full pipe. The caller receives a
+/// truncation signal and can discard an incomplete final record safely.
+fn read_bounded(mut reader: impl std::io::Read, cap: usize) -> BoundedRead {
     let mut buffer = Vec::new();
+    let mut truncated = false;
     let mut chunk = [0u8; 8192];
     loop {
         match reader.read(&mut chunk) {
             Ok(0) => break,
             Ok(read) => {
                 let remaining = cap.saturating_sub(buffer.len());
-                if read >= remaining {
-                    buffer.extend_from_slice(&chunk[..remaining]);
-                    break;
+                let kept = read.min(remaining);
+                buffer.extend_from_slice(&chunk[..kept]);
+                if read > remaining {
+                    truncated = true;
                 }
-                buffer.extend_from_slice(&chunk[..read]);
             }
             Err(_) => break,
         }
     }
-    buffer
+    BoundedRead {
+        bytes: buffer,
+        truncated,
+    }
 }
 
 /// Collect the runtime map off the async runtime: the provider commands are
@@ -2115,6 +2135,36 @@ fn parse_ps_table(value: &str) -> Vec<PythonProcessRecord> {
     records
 }
 
+/// `ps` writes newline-delimited records. A bounded pipe read can end in the
+/// middle of one, so keep only complete lines before treating any data as a
+/// process row.
+fn complete_provider_lines(output: &[u8]) -> &[u8] {
+    if output.last() == Some(&b'\n') {
+        return output;
+    }
+    output
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map(|last_newline| &output[..=last_newline])
+        .unwrap_or_default()
+}
+
+fn push_provider_output_truncation(
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+    provider: RuntimeProviderKind,
+) {
+    push_provider_diagnostic(
+        diagnostics,
+        provider,
+        DiagnosticSeverity::Info,
+        format!("Provider output exceeded {MAX_PROVIDER_OUTPUT_BYTES} bytes; truncated"),
+    );
+}
+
+fn contains_control_byte(value: &str) -> bool {
+    value.bytes().any(|byte| byte < 0x20)
+}
+
 /// Python-ownership predicate shared by the python and native providers so
 /// their coverage sets can never diverge (a `pypy3 /srv/x.py` process was
 /// once emitted by BOTH providers as a duplicate node for the same pid).
@@ -2190,15 +2240,14 @@ fn python_entry(args: &str) -> Option<String> {
     while index < fields.len() {
         let field = fields[index];
         if field == "-m" {
-            return fields
-                .get(index + 1)
-                .map(|module| format!("module:{module}"));
+            let module = *fields.get(index + 1)?;
+            return (!contains_control_byte(module)).then(|| format!("module:{module}"));
         }
         if field == "-c" {
             return Some("inline:-c".into());
         }
         if field.ends_with(".py") {
-            return Some(field.to_string());
+            return (!contains_control_byte(field)).then(|| field.to_string());
         }
         let basename = field.rsplit('/').next().unwrap_or(field);
         // Proctitle-rewritten frameworks (e.g. "gunicorn: master [app]")
@@ -2213,20 +2262,21 @@ fn python_entry(args: &str) -> Option<String> {
         }
         if field.contains(':') && !field.starts_with("--") {
             // module:app spec passed to a framework binary.
-            return Some(trimmed.to_string());
+            return (!contains_control_byte(field)).then(|| trimmed.to_string());
         }
         index += 1;
     }
     None
 }
 
-fn python_nodes_from_ps_output(value: &str) -> Vec<RuntimeMapNode> {
-    let mut nodes = Vec::new();
-    for record in parse_ps_table(value)
+fn python_nodes_from_ps_output(value: &str) -> (Vec<RuntimeMapNode>, bool) {
+    let filtered = parse_ps_table(value)
         .into_iter()
         .filter(|record| is_python_process(&record.args))
-        .take(MAX_PYTHON_PROCESSES)
-    {
+        .collect::<Vec<_>>();
+    let capped = filtered.len() > MAX_PYTHON_PROCESSES;
+    let mut nodes = Vec::new();
+    for record in filtered.into_iter().take(MAX_PYTHON_PROCESSES) {
         let entry = python_entry(&record.args)
             .map(|entry| redact_sensitive_text(&entry))
             .unwrap_or_else(|| "python".into());
@@ -2253,7 +2303,29 @@ fn python_nodes_from_ps_output(value: &str) -> Vec<RuntimeMapNode> {
             package: None,
         });
     }
-    nodes
+    (nodes, capped)
+}
+
+fn collect_python_processes_from_output(
+    stdout: &[u8],
+    output_truncated: bool,
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    if output_truncated {
+        push_provider_output_truncation(diagnostics, RuntimeProviderKind::Python);
+    }
+    let stdout = String::from_utf8_lossy(complete_provider_lines(stdout));
+    let (python_nodes, capped) = python_nodes_from_ps_output(&stdout);
+    if capped {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Python,
+            DiagnosticSeverity::Info,
+            format!("Python process discovery capped at {MAX_PYTHON_PROCESSES} processes"),
+        );
+    }
+    nodes.extend(python_nodes);
 }
 
 fn collect_python_processes(
@@ -2284,9 +2356,12 @@ fn collect_python_processes(
         return;
     }
 
-    nodes.extend(python_nodes_from_ps_output(&String::from_utf8_lossy(
+    collect_python_processes_from_output(
         &output.stdout,
-    )));
+        output.stdout_truncated,
+        nodes,
+        diagnostics,
+    );
 }
 
 fn collect_tmux_sessions(
@@ -2369,20 +2444,20 @@ fn collect_native_processes(
     nodes: &mut Vec<RuntimeMapNode>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
-    // In the documented Docker deployment (no `pid: host` in compose) ps runs
-    // inside the container's PID namespace: pid 1 is the entrypoint script
-    // rather than systemd/init, and discovery only ever sees the container's
-    // own processes. Say so — the diagnostic is the honest signal.
-    if let Some(init_comm) = host_init_comm() {
-        if is_container_pid_namespace(&init_comm) {
-            push_provider_diagnostic(
-                diagnostics,
-                RuntimeProviderKind::Process,
-                DiagnosticSeverity::Info,
-                "Running in a container PID namespace: native process discovery only sees the container's processes"
-                    .into(),
-            );
-        }
+    // In the documented Docker deployment (no `pid: host` in compose), ps can
+    // see only the container's PID namespace. pid 1's comm catches the normal
+    // entrypoint case; a non-root own cgroup catches systemd-as-pid-1 images.
+    let has_non_systemd_init = host_init_comm()
+        .as_deref()
+        .is_some_and(is_container_pid_namespace);
+    if has_non_systemd_init || in_container_cgroup() {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Process,
+            DiagnosticSeverity::Info,
+            "Container PID namespace or non-systemd init detected; native process discovery may only see the current namespace's processes"
+                .into(),
+        );
     }
     let output = match run_command_with_timeout(
         {
@@ -2408,10 +2483,27 @@ fn collect_native_processes(
         return;
     }
 
-    let (native_nodes, capped) = native_process_nodes_from_ps_output(
-        &String::from_utf8_lossy(&output.stdout),
+    collect_native_processes_from_output(
+        &output.stdout,
+        output.stdout_truncated,
         std::process::id(),
+        nodes,
+        diagnostics,
     );
+}
+
+fn collect_native_processes_from_output(
+    stdout: &[u8],
+    output_truncated: bool,
+    self_pid: u32,
+    nodes: &mut Vec<RuntimeMapNode>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
+    if output_truncated {
+        push_provider_output_truncation(diagnostics, RuntimeProviderKind::Process);
+    }
+    let stdout = String::from_utf8_lossy(complete_provider_lines(stdout));
+    let (native_nodes, capped) = native_process_nodes_from_ps_output(&stdout, self_pid);
     if capped {
         // ps emits pids in ascending order, so when the cap is hit the first
         // MAX_NATIVE_PROCESSES pids are surfaced and later-started services
@@ -2452,7 +2544,9 @@ fn native_process_nodes_from_ps_output(value: &str, self_pid: u32) -> (Vec<Runti
         // so the fallback can never publish an attacker-rewritten argv[0]
         // (`exec -a hunter2 sleep` still reports comm "sleep"). process_comm
         // applies the same trailing-colon trim to it.
-        let ps_comm = process_comm(&record.comm).unwrap_or_else(|| "unknown".into());
+        let ps_comm = process_comm(&record.comm)
+            .and_then(|comm| safe_kernel_comm(&comm))
+            .unwrap_or_else(|| "unknown".into());
         let comm = real_comm(record.pid, &ps_comm);
         let mut metadata = BTreeMap::new();
         metadata.insert("pid".into(), record.pid.to_string());
@@ -2482,17 +2576,23 @@ fn native_process_nodes_from_ps_output(value: &str, self_pid: u32) -> (Vec<Runti
 /// path exercised by fixture-based tests using fake pids). When both are
 /// empty or unavailable, "unknown" is returned: argv-derived names are never
 /// published as metadata.
+fn safe_kernel_comm(comm: &str) -> Option<String> {
+    let comm = comm.trim();
+    (!comm.is_empty() && !contains_control_byte(comm)).then(|| comm.chars().take(16).collect())
+}
+
 fn real_comm(pid: u32, fallback: &str) -> String {
+    // There is an intentional PID-reuse TOCTOU between the fixed `ps`
+    // snapshot and this /proc read (measured about 79ms on Hearth: ps, parse,
+    // 1,225 cgroup reads, then 1,225 comm reads). A reused pid can receive a
+    // wrong comm, but that is cosmetic: comm is process-controlled either way,
+    // raw args are never published, and the next 2-second refresh replaces it.
     if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
-        let comm = comm.trim();
-        if !comm.is_empty() {
-            return comm.chars().take(16).collect();
+        if let Some(comm) = safe_kernel_comm(&comm) {
+            return comm;
         }
     }
-    if fallback.is_empty() {
-        return "unknown".into();
-    }
-    fallback.to_string()
+    safe_kernel_comm(fallback).unwrap_or_else(|| "unknown".into())
 }
 
 /// Kernel command name of pid 1, read from `/proc/1/comm`. `None` when the
@@ -2513,6 +2613,21 @@ fn is_container_pid_namespace(comm: &str) -> bool {
     !matches!(comm.trim(), "systemd" | "init")
 }
 
+/// The daemon is in a non-root cgroup when its own cgroup path differs from
+/// `/`: cgroup v2 root is `0::/`; cgroup v1 has one or more `...:/` entries.
+/// This supplements the pid-1 comm heuristic for images that run systemd.
+fn in_container_cgroup() -> bool {
+    std::fs::read_to_string("/proc/self/cgroup")
+        .map(|cgroup| cgroup_has_non_root_path(&cgroup))
+        .unwrap_or(false)
+}
+
+fn cgroup_has_non_root_path(cgroup: &str) -> bool {
+    cgroup
+        .lines()
+        .any(|line| line.splitn(3, ':').nth(2).is_some_and(|path| path != "/"))
+}
+
 /// True when a cgroup path places the process inside a container: docker
 /// (cgroup v1 `/docker/<id>` and systemd scope
 /// `/system.slice/docker-<id>.scope/...`), containerd, libpod (podman), or
@@ -2530,6 +2645,9 @@ fn cgroup_implies_container(cgroup: &str) -> bool {
 /// `/proc/<pid>/cgroup` means host assumption (false) — fixture pids beyond
 /// pid_max are therefore kept as host processes.
 fn is_container_owned(pid: u32) -> bool {
+    // This follows the same ~79ms ps-to-/proc PID-reuse window documented in
+    // real_comm. A reused pid can be filtered incorrectly, but only for this
+    // 2-second snapshot; no argv is published and comm is process-controlled.
     std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
         .map(|cgroup| cgroup.lines().any(cgroup_implies_container))
         .unwrap_or(false)
@@ -4710,11 +4828,33 @@ mod tests {
     }
 
     #[test]
+    fn python_entry_rejects_control_bytes_before_label_publication() {
+        for args in [
+            "/usr/bin/python3 /tmp/unsafe\u{1b}.py",
+            "/usr/bin/python3 -m unsafe\u{1b}module",
+            "/usr/bin/python3 unsafe\u{1b}:app",
+        ] {
+            assert_eq!(python_entry(args), None, "{args:?} must be rejected");
+        }
+
+        let table = "  9000200  root  python3  /usr/bin/python3 /tmp/unsafe\u{1b}.py\n";
+        let (nodes, capped) = python_nodes_from_ps_output(table);
+        assert!(!capped);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].label, "python");
+        assert!(nodes[0]
+            .metadata
+            .values()
+            .all(|value| !value.contains('\u{1b}')));
+    }
+
+    #[test]
     fn builds_python_nodes_from_fixture() {
-        let nodes = python_nodes_from_ps_output(include_str!(
+        let (nodes, capped) = python_nodes_from_ps_output(include_str!(
             "../../../tests/fixtures/providers/parser/python-ps-table.txt"
         ));
 
+        assert!(!capped);
         assert_eq!(nodes.len(), 5);
 
         let worker = &nodes[0];
@@ -4747,9 +4887,10 @@ mod tests {
 
     #[test]
     fn redacts_python_process_args_with_tokens() {
-        let mut nodes = python_nodes_from_ps_output(include_str!(
+        let (mut nodes, capped) = python_nodes_from_ps_output(include_str!(
             "../../../tests/fixtures/providers/parser/python-ps-table.txt"
         ));
+        assert!(!capped);
         redact_runtime_nodes(&mut nodes);
 
         // The agent process carries --token=... in its args; raw argv is never
@@ -5179,6 +5320,17 @@ mod tests {
     }
 
     #[test]
+    fn native_comm_control_characters_never_reach_the_label() {
+        // An embedded newline in a kernel comm must never become a second
+        // visual process row through label or comm metadata. The fake pid
+        // forces the ps-comm fallback path used by native node construction.
+        let label = real_comm(9_000_000, "x\n1  root  evil");
+        assert_eq!(label, "unknown");
+        assert!(!label.contains('\n'));
+        assert!(!label.contains("evil"));
+    }
+
+    #[test]
     fn real_comm_prefers_proc_comm_over_rewritten_argv() {
         // The child rewrites argv[0] via `exec -a`, so the argv-derived
         // fallback ("fake-name") differs from the kernel comm ("sleep"); the
@@ -5230,7 +5382,7 @@ mod tests {
     }
 
     #[test]
-    fn container_pid_namespace_predicate() {
+    fn container_pid_namespace_and_cgroup_predicates() {
         // Host inits mean full-host discovery; anything else (entrypoint
         // script, shell, nginx) is a container PID namespace.
         assert!(!is_container_pid_namespace("systemd"));
@@ -5239,6 +5391,16 @@ mod tests {
         assert!(is_container_pid_namespace("sh"));
         assert!(is_container_pid_namespace("bash"));
         assert!(is_container_pid_namespace("nginx"));
+
+        // A root cgroup is the host/root-slice signal on both hierarchy forms;
+        // a changed own path supplements the pid-1 heuristic for systemd PID 1.
+        assert!(!cgroup_has_non_root_path("0::/\n"));
+        assert!(!cgroup_has_non_root_path("11:memory:/\n9:cpu,cpuacct:/\n"));
+        assert!(cgroup_has_non_root_path(
+            "0::/system.slice/dockermap-daemon.service\n"
+        ));
+        assert!(cgroup_has_non_root_path("11:memory:/docker/abc123\n"));
+        assert!(!cgroup_has_non_root_path("malformed"));
     }
 
     #[test]
@@ -5304,6 +5466,69 @@ mod tests {
                 .map(String::as_str),
             Some((9_000_000 + MAX_NATIVE_PROCESSES - 1).to_string().as_str())
         );
+    }
+
+    #[test]
+    fn provider_output_cap_drops_partial_process_row_and_reports_diagnostic() {
+        let complete_line =
+            "  9000000  root  benchmark  /usr/bin/benchmark --arg xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n";
+        let mut source = Vec::new();
+        while source.len() + complete_line.len() <= MAX_PROVIDER_OUTPUT_BYTES - 96 {
+            source.extend_from_slice(complete_line.as_bytes());
+        }
+        source.extend_from_slice(
+            b"  9000999  root  partial  /usr/bin/partial --arg this-tail-must-not-become-a-row",
+        );
+        source.extend_from_slice(&vec![b'x'; 300_000]);
+
+        let read = read_bounded(std::io::Cursor::new(source), MAX_PROVIDER_OUTPUT_BYTES);
+        assert!(read.truncated);
+        assert_eq!(read.bytes.len(), MAX_PROVIDER_OUTPUT_BYTES);
+        let complete = complete_provider_lines(&read.bytes);
+        assert!(complete.len() < read.bytes.len());
+        assert!(parse_ps_table(&String::from_utf8_lossy(complete))
+            .iter()
+            .all(|record| record.pid != 9_000_999));
+
+        let mut nodes = Vec::new();
+        let mut diagnostics = Vec::new();
+        collect_native_processes_from_output(
+            &read.bytes,
+            read.truncated,
+            9_000_500,
+            &mut nodes,
+            &mut diagnostics,
+        );
+        assert!(nodes.iter().all(|node| node.id != "native_process_9000999"));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::Process
+                && diagnostic.message
+                    == format!(
+                        "Provider output exceeded {MAX_PROVIDER_OUTPUT_BYTES} bytes; truncated"
+                    )
+        }));
+    }
+
+    #[test]
+    fn python_process_cap_is_reported_and_bounded() {
+        let mut table = String::new();
+        for pid in 9_000_000..(9_000_000 + MAX_PYTHON_PROCESSES as u32 + 1) {
+            table.push_str(&format!(
+                "{pid:>7}  root  python3  /usr/bin/python3 /srv/app-{pid}.py\n"
+            ));
+        }
+
+        let mut nodes = Vec::new();
+        let mut diagnostics = Vec::new();
+        collect_python_processes_from_output(table.as_bytes(), false, &mut nodes, &mut diagnostics);
+        assert_eq!(nodes.len(), MAX_PYTHON_PROCESSES);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::Python
+                && diagnostic.message
+                    == format!(
+                        "Python process discovery capped at {MAX_PYTHON_PROCESSES} processes"
+                    )
+        }));
     }
 
     #[test]
