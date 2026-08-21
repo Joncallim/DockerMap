@@ -100,6 +100,7 @@ jobs:
         with:
           name: playwright-axe-${{ github.sha }}
           path: |
+            test-artifacts/
             test-results/
             playwright-report/
           if-no-files-found: warn

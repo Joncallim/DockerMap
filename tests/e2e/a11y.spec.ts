@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test, type Browser, type Page, type TestInfo } from "@playwright/test";
 import { AxeBuilder } from "@axe-core/playwright";
 import { startMockStack, type Stack } from "./dockermapHarness";
@@ -26,9 +28,12 @@ const coreRoutes = [
 ] as const;
 
 let stack: Stack;
+const rawAxeDir = join(process.cwd(), "test-artifacts", "axe");
 
 test.describe("responsive and accessibility matrix", () => {
   test.beforeAll(async () => {
+    rmSync(join(process.cwd(), "test-artifacts"), { recursive: true, force: true });
+    mkdirSync(rawAxeDir, { recursive: true });
     stack = await startMockStack();
   });
   test.afterAll(async () => {
@@ -58,7 +63,11 @@ test.describe("responsive and accessibility matrix", () => {
       ...results,
       violations: [...results.violations].sort((left, right) => left.id.localeCompare(right.id))
     };
-    await testInfo.attach(`axe-${target}.json`, { body: JSON.stringify(sorted, null, 2), contentType: "application/json" });
+    const serialized = JSON.stringify(sorted, null, 2);
+    // Keep an exact raw mirror outside Playwright's transient success output so
+    // CI can upload every target's attachment even when the matrix is green.
+    writeFileSync(join(rawAxeDir, `${target}.json`), serialized);
+    await testInfo.attach(`axe-${target}.json`, { body: serialized, contentType: "application/json" });
     const details = sorted.violations
       .flatMap((violation) => violation.nodes.map((node) => `${target} | ${violation.impact ?? "unknown"} | ${violation.id} | ${node.target.join(", ")}`))
       .join("\n");
