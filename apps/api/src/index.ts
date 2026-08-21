@@ -32,9 +32,9 @@ import {
   snapshot as mockSnapshot,
   volumes as mockVolumes
 } from "./mockData.js";
-import { canonicalRoutePath, isRoutePath, routeById, type RouteId } from "./routes.js";
+import { canonicalRoutePath, routeById, routeForRequest, type RegisteredRoute, type RouteId } from "./routes.js";
 
-const app = express();
+export const app = express();
 const port = readPort(process.env.PORT, 4000);
 const daemonBaseUrl = readDaemonBaseUrl(process.env.DOCKERMAP_DAEMON_URL ?? "http://127.0.0.1:4100");
 const apiToken = readApiToken(process.env.DOCKERMAP_API_TOKEN);
@@ -250,7 +250,8 @@ function unregisterSessionStream(session: string, response: express.Response) {
 }
 
 function limitSessionAttempts(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (authMode !== "bearer" || !isRoutePath("auth-session", req.method, req.path)) {
+  const route = routeForRequest(req.method, req.path);
+  if (authMode !== "bearer" || route?.rateLimit !== "session-attempts") {
     next();
     return;
   }
@@ -282,11 +283,12 @@ function sessionCookieAttributes(req: express.Request, maxAge: number) {
 }
 
 function isPublicRoute(req: express.Request) {
-  return req.method === "OPTIONS" || (authMode === "bearer" && isRoutePath("auth-session", req.method, req.path));
+  return authMode === "bearer" && routeForRequest(req.method, req.path)?.auth === "public-in-bearer";
 }
 
 function requireAuthentication(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (isPublicRoute(req) || authMode === "none") {
+  // CORS preflight is global middleware behavior, not an API route policy.
+  if (req.method === "OPTIONS" || isPublicRoute(req) || authMode === "none") {
     next();
     return;
   }
@@ -1278,6 +1280,20 @@ registerRoute("events-stream", async (req, res) => {
     res.end();
   });
 });
+
+export function registeredRoutes(appInstance: express.Express): RegisteredRoute[] {
+  const router = appInstance as express.Express & {
+    _router?: { stack?: Array<{ route?: { path: string; methods: Record<string, boolean> } }> };
+  };
+  const stack: Array<{ route?: { path: string; methods: Record<string, boolean> } }> = router._router?.stack ?? [];
+  return stack.flatMap((layer) => {
+    const route = layer.route;
+    if (!route) return [];
+    return Object.entries(route.methods)
+      .filter(([, registered]) => registered)
+      .map(([method]) => ({ method: method.toUpperCase() as RegisteredRoute["method"], path: route.path }));
+  });
+}
 
 app.use((_req, res) => {
   res.status(404).json({

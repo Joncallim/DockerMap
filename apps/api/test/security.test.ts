@@ -5,7 +5,11 @@ import { gzipSync } from "node:zlib";
 import net from "node:net";
 import { afterEach, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { ROUTE_MANIFEST } from "../src/routes.js";
+import {
+  assertRouteManifestComplete,
+  routePolicyForRequest,
+  ROUTE_MANIFEST
+} from "../src/routes.js";
 
 type ApiProcess = {
   port: number;
@@ -333,6 +337,29 @@ test("the declarative route manifest registers and logs every route and versione
       assert.doesNotMatch(log, /\/unknown /, `${route.method} ${requestPath}`);
     }
   }
+});
+
+test("live router registrations and the flattened manifest are bidirectionally complete", async () => {
+  const result = await inspectLiveRoutes();
+  assert.doesNotThrow(() => assertRouteManifestComplete(result.routes));
+});
+
+test("route manifest completeness rejects a planted direct registration", async () => {
+  const result = await inspectLiveRoutes('app.get("/api/outside-manifest", (_req, res) => res.status(204).end());');
+  assert.match(result.error, /Live routes missing from manifest: GET \/api\/outside-manifest/);
+});
+
+test("every manifest route resolves its declared authentication and rate-limit policy", () => {
+  for (const route of ROUTE_MANIFEST) {
+    for (const routePath of route.paths) {
+      assert.deepEqual(
+        routePolicyForRequest(route.method, routePath.path),
+        { auth: route.auth, rateLimit: route.rateLimit },
+        `${route.method} ${routePath.path}`
+      );
+    }
+  }
+  assert.equal(routePolicyForRequest("OPTIONS", "/api/snapshot"), undefined, "OPTIONS stays outside route policy");
 });
 
 test("session cookies are Secure for HTTPS forwarded requests", async () => {
@@ -1384,6 +1411,31 @@ test("SSE error payloads and invalid log service names cannot reflect hostile in
   assert.match(frame, /event: error/);
   assertPublishedPayload(frame, sentinel, "SSE error");
 });
+
+async function inspectLiveRoutes(mutation = "") {
+  const port = await freePort();
+  const script = `
+    import { app, registeredRoutes } from "./apps/api/src/index.ts";
+    import { assertRouteManifestComplete } from "./apps/api/src/routes.ts";
+    ${mutation}
+    let error = "";
+    try { assertRouteManifestComplete(registeredRoutes(app)); } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+    console.log("ROUTE_CHECK=" + JSON.stringify({ routes: registeredRoutes(app), error }));
+    process.exit(0);
+  `;
+  const child = spawn(process.execPath, ["node_modules/.bin/tsx", "--eval", script], {
+    cwd: repoRoot,
+    env: { ...process.env, PORT: String(port) },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const output: string[] = [];
+  child.stdout.on("data", (chunk) => output.push(chunk.toString()));
+  child.stderr.on("data", (chunk) => output.push(chunk.toString()));
+  assert.equal(await waitForExit(child), 0, output.join(""));
+  const line = output.join("").split("\n").find((entry) => entry.startsWith("ROUTE_CHECK="));
+  assert.ok(line, output.join(""));
+  return JSON.parse(line.slice("ROUTE_CHECK=".length)) as { routes: Array<{ method: "GET" | "POST"; path: string }>; error: string };
+}
 
 async function startApi(env: Record<string, string>): Promise<ApiProcess> {
   const port = await freePort();
