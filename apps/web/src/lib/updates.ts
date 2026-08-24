@@ -1,4 +1,4 @@
-import { evidenceLabel, unavailable, type Claim } from "./evidence";
+import { evidenceLabel, unavailable } from "./evidence";
 
 /**
  * DockerMap has no update-evidence source in ANY mode: live never queries a
@@ -23,7 +23,7 @@ const UPDATE_STATUS_DETAIL = "Update checks not wired — DockerMap does not que
  * Narrowed to the `unavailable` arm so `.detail` is directly accessible;
  * `unavailable()` still validates the detail at construction (fail-closed).
  */
-export const UPDATE_STATUS_CLAIM = unavailable(UPDATE_STATUS_DETAIL) as Extract<Claim<never>, { kind: "unavailable" }>;
+export const UPDATE_STATUS_CLAIM = unavailable(UPDATE_STATUS_DETAIL);
 
 /** ONE derived display value, used at EVERY update surface (G-19, DM-05). */
 export const UPDATE_STATUS_LABEL = evidenceLabel(UPDATE_STATUS_CLAIM.kind).label; // "Not collected"

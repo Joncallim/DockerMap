@@ -104,6 +104,6 @@ export function demoSample<T>(value: T): Claim<T> {
   return { kind: "demo", value };
 }
 
-export function unavailable(detail: string): Claim<never> {
+export function unavailable(detail: string): Extract<Claim<never>, { kind: "unavailable" }> {
   return { kind: "unavailable", value: null, detail: nonEmptyDetail(detail) };
 }
