@@ -68,6 +68,14 @@ export interface ChangeEvent {
   estimated: true;
 }
 
+/**
+ * TOTAL by type (G7/U7): a `Record` over the FULL `ChangeEvent["kind"]`
+ * union, so a generator-less kind is impossible — adding a kind to the union
+ * without a template here is a compile error, and `makeEvent` can never index
+ * an undefined template. (The `deploy`/`config`/`recovery` templates exist
+ * but `changeFeed` deliberately emits only `failure`/`restart` today; #74
+ * owns the feed's emission surface.)
+ */
 const CHANGE_TEMPLATES: Record<
   ChangeEvent["kind"],
   (service: Service) => { summary: string; detail?: string }
