@@ -3,6 +3,13 @@ import { describe, expect, it } from "vitest";
 import { Metric, Panel, Tag } from "../components/primitives";
 import { EVIDENCE_KINDS, evidenceLabel, unavailable } from "./evidence";
 
+/** Strip markup so assertions target VISIBLE TEXT, not serialized HTML:
+ * `toContain(label)` on markup would pass if the label drifted into a `title`
+ * attribute (G-22), which users and screen readers never see. */
+function visibleText(html: string): string {
+  return html.replace(/<[^>]*>/g, " ");
+}
+
 describe("evidence label rendering", () => {
   it("11. renders every kind through Panel.hint, Tag, and Metric", () => {
     for (const kind of EVIDENCE_KINDS) {
@@ -13,13 +20,13 @@ describe("evidence label rendering", () => {
           content
         </Panel>
       );
-      expect(panel, `${kind} panel`).toContain(label);
+      expect(visibleText(panel), `${kind} panel`).toContain(label);
 
       const tag = renderToStaticMarkup(<Tag>{label}</Tag>);
-      expect(tag, `${kind} tag`).toContain(label);
+      expect(visibleText(tag), `${kind} tag`).toContain(label);
 
       const metric = renderToStaticMarkup(<Metric label="Metric" value={label} />);
-      expect(metric, `${kind} metric`).toContain(label);
+      expect(visibleText(metric), `${kind} metric`).toContain(label);
     }
   });
 
@@ -31,7 +38,7 @@ describe("evidence label rendering", () => {
     const { label } = evidenceLabel(claim.kind);
     const html = renderToStaticMarkup(<Metric label="CPU" value={label} />);
 
-    expect(html).toContain(label);
-    expect(html).toContain("Not collected");
+    expect(visibleText(html)).toContain(label);
+    expect(visibleText(html)).toContain("Not collected");
   });
 });

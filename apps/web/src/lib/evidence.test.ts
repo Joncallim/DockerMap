@@ -19,9 +19,10 @@ describe("evidence vocabulary", () => {
   it("1. EVIDENCE_KINDS has exactly the five kinds declared by EvidenceKind", () => {
     const expected: EvidenceKind[] = ["observed", "derived", "inferred", "demo", "unavailable"];
     expect(EVIDENCE_KINDS).toEqual(expected);
-    // Compile-time guard: EVIDENCE_KINDS must satisfy readonly EvidenceKind[].
-    const _typeCheck: readonly EvidenceKind[] = EVIDENCE_KINDS satisfies readonly EvidenceKind[];
-    expect(_typeCheck.length).toBe(5);
+    // Compile-time guard lives on the declaration in evidence.ts:
+    // `as const satisfies readonly EvidenceKind[]` — adding a kind to one side
+    // without the other fails `npm run typecheck`. The old `satisfies` here
+    // merely restated that annotation and could never fail, so it was dropped.
   });
 
   it("2. every label and description is non-empty after trim and every label is short", () => {
@@ -41,6 +42,9 @@ describe("evidence vocabulary", () => {
   });
 
   it("4. evidenceLabel throws on an unknown kind", () => {
+    // Deliberate contract-drift simulation cast: typed callers can never pass
+    // this, so it exercises the runtime backstop for a kind cast from untyped
+    // data (G-01, G-24).
     expect(() => evidenceLabel("nonsense" as EvidenceKind)).toThrow(/Unknown evidence kind/);
   });
 
@@ -56,15 +60,12 @@ describe("evidence vocabulary", () => {
     for (const { input, expected } of cases) {
       expect(resolveEvidenceMode(input)).toBe(expected);
     }
-    // Unrecognized health mode value falls through to null.
+    // Deliberate contract-drift simulation cast: a RuntimeMode value outside the
+    // union must fail closed to null (G-24), never to a guessed mode.
     expect(resolveEvidenceMode({ demoMode: false, healthMode: "other" as RuntimeMode })).toBeNull();
-    // G-15: correct behavior resumes — deterministic per input, no hidden state.
-    expect(resolveEvidenceMode({ demoMode: false, healthMode: "mock" })).toBe(
-      resolveEvidenceMode({ demoMode: false, healthMode: "mock" })
-    );
-    expect(resolveEvidenceMode({ demoMode: false, healthMode: "docker" })).toBe(
-      resolveEvidenceMode({ demoMode: false, healthMode: "docker" })
-    );
+    // G-15 lock is test 7 (live mode still asserts host truth). The f(x) === f(x)
+    // determinism asserts were removed in #71 remediation as vacuous — they pass
+    // for any function; determinism per input is implied by the pure truth table above.
   });
 
   it("6. claimAuthority maps modes to the correct authority", () => {
