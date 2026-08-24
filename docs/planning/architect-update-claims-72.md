@@ -46,6 +46,7 @@ class hook, not a visual change.
 | `apps/web/src/screens/Changes.tsx:11` | `{ id: "image_update", label: "Updates" }` filter chip in `KINDS` |
 | `apps/web/src/screens/Changes.tsx:22` | `events.filter((e) => e.kind === kind)` |
 | `apps/web/src/screens/Changes.tsx:70-85` | `iconForKind` — `case "image_update": return "up";` at `:72-73` |
+| `apps/web/src/styles.css:1750` | `.k-image_update .timeline-marker { color: var(--accent); }` — the kind's only **CSS** consumer; union removal makes it dead **and** V2 forbids residual `image_update` hits under `apps/` |
 
 ### 1.3 Tests that codify the claim
 
@@ -294,6 +295,7 @@ function changeAnswer(q: string): CopilotAnswer {
    exist" — precisely the assertion #72 removes. (The `kind` state at `Changes.tsx:19` starts at `"all"` and can only be set by a chip,
    so removing the chip cannot strand the filter in an unreachable state.)
 5. `Changes.tsx:72-73` — delete `case "image_update": return "up";` (the union removal makes it a type error; `default:` covers the rest).
+6. `styles.css:1750` — delete the `.k-image_update .timeline-marker` rule (dead after the union removal; V2 requires zero `image_update` hits under `apps/`). **[Amended 2026-08-24:** the original §1.2/§6 inventory missed this CSS consumer; the implementer stopped on the gap per the deviations rule — this amendment authorizes the deletion.]
 
 **Slice boundary with #74 (explicit, binding):** #72 does **not** touch `STUB_CHANGES_NOTICE` (`stubs.ts:17`), the `failure`/`restart`
 arms (`stubs.ts:97-101`), `causalChain`, or the feed's provenance tagging. Those remain #74's.
@@ -577,6 +579,7 @@ Smallest reversible commits; **every commit must leave `npm run check` green**. 
    union (`:64`). Remove the now-unused `UNAVAILABLE_IMAGE` import (`:2`); **keep** `identityText` and `UNAVAILABLE_SERVICE`.
    **Do not touch** `:17` `STUB_CHANGES_NOTICE`, `:29-46` `resourceFor`, `:97-101` failure/restart arms, or `causalChain`.
 5. `Changes.tsx` — delete the `{ id: "image_update", label: "Updates" }` chip (`:11`) and `case "image_update":` (`:72-73`).
+5b. `styles.css` — delete the `.k-image_update .timeline-marker` rule (`:1750`). (Amended 2026-08-24 — see Q8 item 6.)
 6. `copilot.ts` — replace `changeAnswer` (`:167-177`) with the §2 Q7 body, drop its `model` parameter, and update the call site
    (`:54`) to `changeAnswer(q)`. Import the constants from `./updates`. **Touch no other answer function.**
 7. `model.test.ts` — delete `:254-256` (comment + both asserts). Leave the rest of the `summarize` test intact.
