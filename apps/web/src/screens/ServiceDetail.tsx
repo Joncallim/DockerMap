@@ -11,6 +11,7 @@ import ServiceMap from "../components/ServiceMap";
 import { IdentityRef } from "../components/identity";
 import { COLLISION_HINT, COLLISION_TAG, identityText, UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_PORT, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_ROLE, UNAVAILABLE_SERVICE_STATUS, UNAVAILABLE_VOLUME } from "../lib/identity";
 import { Bar, EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, Sparkline, StatePill, StateDot, Tag } from "../components/primitives";
+import { UPDATE_STATUS_LABEL } from "../lib/updates";
 
 type Tab = "overview" | "dependencies" | "resources" | "logs" | "config";
 const TABS: { id: Tab; label: string; icon: Parameters<typeof Icon>[0]["name"] }[] = [
@@ -96,9 +97,9 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
           <strong>{service.ports.length}</strong>
           <span>published ports</span>
         </div>
-        <div className="impact-cell">
-          <strong>{service.updateAvailable ? "Yes" : "No"}</strong>
-          <span>update available</span>
+        <div className="impact-cell impact-cell-updates">
+          <strong>{UPDATE_STATUS_LABEL}</strong>
+          <span>update status</span>
         </div>
       </div>
 

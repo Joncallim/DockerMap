@@ -91,8 +91,6 @@ export interface Service {
   dependsOn: string[];
   /** Services that depend on this one (downstream). */
   dependents: string[];
-  /** True when an update is available (stub-derived; see lib/stubs). */
-  updateAvailable: boolean;
 }
 
 export interface SystemModel {
@@ -176,7 +174,6 @@ export interface SystemSummary {
   updating: number;
   unknown: number;
   attention: number;
-  updatesAvailable: number;
 }
 
 export interface ImpactResult {
@@ -318,7 +315,6 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
 
   const services: Service[] = snapshot.containers.map((c) => {
     const { repo, tag } = splitImage(c.image);
-    const updateAvailable = hashString(c.id + "update") > 0.74;
     const semantic = isSemanticSource(c.id);
     // Raw occurrences stay visible as non-routable evidence; resolvedId is
     // collision-safe on BOTH ends — a collided/empty source leaves the target
@@ -343,8 +339,7 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
       mounts: c.mounts,
       dependencyOccurrences: occurrences,
       dependsOn: semantic ? occurrences.filter((o): o is DependencyOccurrence & { resolvedId: string } => o.resolvedId !== null).map((o) => o.resolvedId) : [],
-      dependents: [...(dependents.get(c.id) ?? [])],
-      updateAvailable
+      dependents: [...(dependents.get(c.id) ?? [])]
     };
   });
 
@@ -556,13 +551,11 @@ export function summarize(model: SystemModel): SystemSummary {
     offline: 0,
     updating: 0,
     unknown: 0,
-    attention: 0,
-    updatesAvailable: 0
+    attention: 0
   };
   for (const service of model.services) {
     summary[service.state] += 1;
     if (needsAttention(service.state)) summary.attention += 1;
-    if (service.updateAvailable) summary.updatesAvailable += 1;
   }
   return summary;
 }

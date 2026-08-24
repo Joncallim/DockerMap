@@ -3,11 +3,12 @@ import { useApp } from "../context";
 import { needsAttention, summarize, type Service } from "../lib/model";
 import { changeFeed, causalChain, STUB_CHANGES_NOTICE } from "../lib/stubs";
 import { formatRelative } from "../lib/format";
-import { identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_SERVICE } from "../lib/identity";
+import { identityText, UNAVAILABLE_SERVICE } from "../lib/identity";
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
-import { Bar, EmptyState, ErrorState, Loading, Metric, Panel, StatePill, StateDot, Tag } from "../components/primitives";
+import { Bar, EmptyState, ErrorState, Loading, Metric, Panel, StatePill, Tag } from "../components/primitives";
 import { resourceFor } from "../lib/stubs";
+import { UPDATE_STATUS_DETAIL, UPDATE_STATUS_LABEL } from "../lib/updates";
 
 export default function Home() {
   const { model, loading, error } = useApp();
@@ -18,7 +19,6 @@ export default function Home() {
 
   const summary = summarize(model);
   const attention = model.services.filter((s) => needsAttention(s.state)).sort(byState);
-  const updates = model.services.filter((s) => s.updateAvailable);
   const changes = changeFeed(model).slice(0, 6);
   const chain = causalChain(model);
 
@@ -42,7 +42,7 @@ export default function Home() {
           value={<span className={summary.attention ? "s-warning-text" : ""}>{summary.attention}</span>}
         />
         <Metric label="Offline" value={<span className={summary.offline ? "s-offline-text" : ""}>{summary.offline}</span>} />
-        <Metric label="Updates" value={summary.updatesAvailable} />
+        <Metric className="metric-updates" label="Updates" value={UPDATE_STATUS_LABEL} sub={UPDATE_STATUS_DETAIL} />
       </section>
 
       <div className="grid-2">
@@ -139,23 +139,6 @@ export default function Home() {
             )}
           </Panel>
 
-          {updates.length > 0 && (
-            <Panel title="Updates available" icon="up" hint={`${updates.length}`}>
-              <ul className="svc-list">
-                {updates.map((service, index) => (
-                  <li key={`${service.id}-${index}`} className="svc-row">
-                    <StateDot state={service.state} />
-                    {model.byId.has(service.id) && model.byName.has(service.name) ? <Link className="svc-name" to={`/services/${encodeURIComponent(service.name)}`}>
-                      {identityText(service.name, UNAVAILABLE_SERVICE)}
-                    </Link> : <span className="svc-name">{identityText(service.name, UNAVAILABLE_SERVICE)}</span>}
-                    <Tag tone="accent" icon="image">
-                      {identityText(service.imageRepo, UNAVAILABLE_IMAGE)}:{identityText(service.imageTag, UNAVAILABLE_IMAGE)}
-                    </Tag>
-                  </li>
-                ))}
-              </ul>
-            </Panel>
-          )}
         </div>
       </div>
     </div>

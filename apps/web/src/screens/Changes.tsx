@@ -8,7 +8,6 @@ import { EmptyState, ErrorState, Loading, Panel } from "../components/primitives
 
 const KINDS: { id: ChangeEvent["kind"] | "all"; label: string }[] = [
   { id: "all", label: "All" },
-  { id: "image_update", label: "Updates" },
   { id: "restart", label: "Restarts" },
   { id: "failure", label: "Failures" },
   { id: "recovery", label: "Recoveries" }
@@ -69,8 +68,6 @@ export default function Changes() {
 
 function iconForKind(kind: ChangeEvent["kind"]): Parameters<typeof Icon>[0]["name"] {
   switch (kind) {
-    case "image_update":
-      return "up";
     case "failure":
       return "alert";
     case "recovery":

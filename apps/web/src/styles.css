@@ -1747,7 +1747,6 @@ kbd {
 
 .k-failure .timeline-marker { color: var(--s-offline); border-color: color-mix(in srgb, var(--s-offline) 40%, transparent); }
 .k-recovery .timeline-marker { color: var(--s-healthy); }
-.k-image_update .timeline-marker { color: var(--accent); }
 
 .timeline-body {
   flex: 1;
