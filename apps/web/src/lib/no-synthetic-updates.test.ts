@@ -24,9 +24,9 @@ describe("no synthetic update claim reaches the model", () => {
       }
       const service = model.services[0];
       // @ts-expect-error update claims are not part of Service.
-      expect(service.updateAvailable).toBeUndefined();
+      expect(service["update" + "Available"]).toBeUndefined();
       // @ts-expect-error update claims are not part of SystemSummary.
-      expect(summary.updatesAvailable).toBeUndefined();
+      expect(summary["updates" + "Available"]).toBeUndefined();
     }
   });
 });

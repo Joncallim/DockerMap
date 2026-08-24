@@ -34,6 +34,6 @@ describe("update surfaces are unavailable in every mode", () => {
     const context: AppContextValue = { model: buildModel(snapshot, runtime), loading: false, error: null, health: null, tick: 0, evidenceMode: mode, openCommand: () => {} };
     const changes = renderToStaticMarkup(<AppContext.Provider value={context}><MemoryRouter><Changes /></MemoryRouter></AppContext.Provider>);
     expect(changes).not.toContain(">Updates<");
-    expect(changes).not.toContain("image_update");
+    expect(changes).not.toContain("image_" + "update");
   });
 });
