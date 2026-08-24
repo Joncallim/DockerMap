@@ -43,7 +43,7 @@ describe("update surfaces are unavailable in every mode", () => {
     expect(detail).toContain("update status");
     // U5/V3: the impact band must never carry a synthetic Yes/No availability
     // verdict — only the not-collected label, scoped to the band (the old
-    // cell rendered `service.updateAvailable ? "Yes" : "No"` here).
+    // cell rendered a flat Yes/No verdict here).
     const band = detail.match(/<div class="impact-band wide">([\s\S]*?)<nav class="tabs"/)?.[1] ?? "";
     expect(band).toContain("Not collected");
     expect(band).not.toContain(">Yes<");
