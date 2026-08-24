@@ -46,6 +46,12 @@ describe("evidence vocabulary", () => {
     // this, so it exercises the runtime backstop for a kind cast from untyped
     // data (G-01, G-24).
     expect(() => evidenceLabel("nonsense" as EvidenceKind)).toThrow(/Unknown evidence kind/);
+    // Prototype keys resolve through the prototype chain, so a bare index
+    // lookup would "find" them and fail OPEN; the Object.hasOwn guard must
+    // make each one throw (P3-4).
+    for (const key of ["constructor", "toString", "__proto__"]) {
+      expect(() => evidenceLabel(key as EvidenceKind)).toThrow(/Unknown evidence kind/);
+    }
   });
 
   it("5. resolveEvidenceMode returns the correct mode for every input combination", () => {

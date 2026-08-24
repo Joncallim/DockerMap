@@ -56,11 +56,32 @@ function load(): Settings {
     if ("demoMode" in candidate && typeof candidate.demoMode !== "boolean") {
       return DEFAULT_SETTINGS;
     }
-    return {
+    // Bounded validation (P3-6): the same "field present → must be valid →
+    // else default" gate as demoMode above, but FIELD-SCOPED so an invalid
+    // value never nukes an otherwise-fine partial payload (the bffc6bb
+    // pattern). demoMode stays payload-rejecting because it is load-bearing
+    // for evidence classification; refreshIntervalMs (positive finite number)
+    // and auth (a plain object; anything else — string, null, array — is
+    // invalid for the AuthSettings type) are not, so they fall back to their
+    // default in place.
+    const merged: Settings = {
       ...DEFAULT_SETTINGS,
       ...candidate,
-      auth: { ...DEFAULT_SETTINGS.auth, ...candidate.auth }
+      refreshIntervalMs: DEFAULT_SETTINGS.refreshIntervalMs,
+      auth: DEFAULT_SETTINGS.auth
     };
+    if (
+      "refreshIntervalMs" in candidate &&
+      typeof candidate.refreshIntervalMs === "number" &&
+      Number.isFinite(candidate.refreshIntervalMs) &&
+      candidate.refreshIntervalMs > 0
+    ) {
+      merged.refreshIntervalMs = candidate.refreshIntervalMs;
+    }
+    if ("auth" in candidate && typeof candidate.auth === "object" && candidate.auth !== null && !Array.isArray(candidate.auth)) {
+      merged.auth = { ...DEFAULT_SETTINGS.auth, ...candidate.auth };
+    }
+    return merged;
   } catch {
     return DEFAULT_SETTINGS;
   }

@@ -28,9 +28,14 @@ const EVIDENCE_LABELS: Record<EvidenceKind, EvidenceLabel> = {
 
 /** Return the display label and description for a kind. Throws for unknown kinds. */
 export function evidenceLabel(kind: EvidenceKind): EvidenceLabel {
-  const label = EVIDENCE_LABELS[kind];
-  if (!label) throw new Error(`Unknown evidence kind: ${kind}`);
-  return label;
+  // Object.hasOwn, not `if (!label)`: prototype keys ("constructor",
+  // "toString", "__proto__") resolve through the prototype chain, so a bare
+  // index lookup would "find" them and fail OPEN. hasOwn is the fail-closed
+  // boundary for a kind cast from untyped data (G-01, G-24).
+  if (!Object.hasOwn(EVIDENCE_LABELS, kind)) {
+    throw new Error(`Unknown evidence kind: ${kind}`);
+  }
+  return EVIDENCE_LABELS[kind];
 }
 
 /** Where the bytes came from. Three values, exhaustive. */

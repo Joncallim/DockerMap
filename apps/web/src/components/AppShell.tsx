@@ -225,7 +225,7 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
                 {modeLabel(evidenceMode)} Engine
               </span>
             </div>
-            <p className="conn-msg">{health?.message ?? "Connecting to daemon…"}</p>
+            <p className="conn-msg" role="status">{health?.message ?? "Connecting to daemon…"}</p>
           </div>
         </aside>
 
