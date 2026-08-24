@@ -498,8 +498,10 @@ test.describe("responsive and accessibility matrix", () => {
       await expect(page.getByText("Unavailable service name").first()).toBeVisible();
 
       // Duplicate (redaction-collided) identities stay visible as distinct
-      // non-routable rows in the attention list (the hash-based "Updates
-      // available" panel may also list one of them, so scope to this list).
+      // non-routable rows in the attention list, so scope to this list.
+      await expect(page.locator(".metric-updates")).toContainText("Not collected");
+      await expect(page.locator(".metric-updates")).toContainText("Update checks not wired");
+      await expect(page.getByText("Updates available")).toHaveCount(0);
       const attentionList = page.locator(".svc-list").first();
       await expect(attentionList.locator(".svc-row", { hasText: "dup-svc" })).toHaveCount(2);
 
