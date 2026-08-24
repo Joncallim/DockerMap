@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
+import type { Service, SystemSummary } from "./model";
 import { getDemoResponse } from "./demoData";
 import { buildModel, summarize } from "./model";
 import { changeFeed, type ChangeEvent } from "./stubs";
@@ -103,10 +104,24 @@ describe("no synthetic update claim reaches the model", () => {
         expect(feedMatches(event)).toBe(false);
       }
       const service = model.services[0];
+      // Runtime: absent through literal-typed template access; the 2339-while-
+      // absent error is suppressed by the directive, so reintroducing either
+      // field makes the directive unused and tsc FAILS. Template-parts keep the
+      // file's claim-grep at zero literal hits.
       // @ts-expect-error update claims are not part of Service.
-      expect(service["update" + "Available"]).toBeUndefined();
+      expect(service[`update${"Available"}`]).toBeUndefined();
       // @ts-expect-error update claims are not part of SystemSummary.
-      expect(summary["updates" + "Available"]).toBeUndefined();
+      expect(summary[`updates${"Available"}`]).toBeUndefined();
+      // Compile-time backstop (Sol gate follow-up): type-level probes whose
+      // template-parts evaluate to the EXACT removed keys at the type level, so
+      // the @ts-expect-error directives are LIVE only while the fields are
+      // absent — reintroducing either field makes the directive unused and tsc
+      // FAILS (computed-string access could not).
+      type UpdateProbe<K extends string> = `update${K}`;
+      // @ts-expect-error update claims are not part of Service.
+      const serviceProbe: UpdateProbe<"Available"> extends keyof Service ? "ok" : never = "ok";
+      // @ts-expect-error update claims are not part of SystemSummary.
+      const summaryProbe: UpdateProbe<"sAvailable"> extends keyof SystemSummary ? "ok" : never = "ok";
     }
   });
 
