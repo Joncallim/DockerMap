@@ -8,6 +8,7 @@ import { useApiResource } from "../hooks/useApiResource";
 import { apiUrl } from "../utils/api";
 import { summarize } from "../lib/model";
 import { formatClock } from "../lib/format";
+import { resolveEvidenceMode, type EvidenceMode } from "../lib/evidence";
 import { AppContext } from "../context";
 import Icon, { type IconName } from "./Icon";
 import CommandPalette from "./CommandPalette";
@@ -143,7 +144,11 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
   }, []);
 
   const summary = useMemo(() => (model ? summarize(model) : null), [model]);
-  const mode = settings.demoMode ? "Demo" : health?.mode === "docker" ? "Docker" : "Mock";
+  const evidenceMode: EvidenceMode | null = resolveEvidenceMode({
+    demoMode: settings.demoMode,
+    healthMode: health?.mode ?? null
+  });
+  const mode = evidenceMode === "demo" ? "Demo" : evidenceMode === "live" ? "Docker" : evidenceMode === "mock" ? "Mock" : "Unknown";
   const overall = !summary
     ? "unknown"
     : summary.offline > 0
@@ -158,6 +163,7 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
     error,
     health,
     tick,
+    evidenceMode,
     openCommand: () => setCommandOpen(true)
   };
 

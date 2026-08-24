@@ -1,6 +1,7 @@
 import { createContext, useContext } from "react";
 import type { HealthResponse } from "@dockermap/contracts";
 import type { SystemModel } from "./lib/model";
+import type { EvidenceMode } from "./lib/evidence";
 
 export interface AppContextValue {
   model: SystemModel | null;
@@ -8,6 +9,7 @@ export interface AppContextValue {
   error: string | null;
   health: HealthResponse | null;
   tick: number;
+  evidenceMode: EvidenceMode | null;
   openCommand: () => void;
 }
 
