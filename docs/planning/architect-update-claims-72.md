@@ -2,8 +2,9 @@
 
 **Issue:** #72 (child of epic #61 "Make live-state claims evidence-backed"), one slice per PR.
 **Branch:** `codex/update-claims-issue-72` (from clean `main` @ `1a08498`).
-**Author:** Architect pass 1. **Status:** BINDING on the implementer. Deviating from a decision in
-§2/§4/§6/§7 without a written amendment in this file is a P1 finding.
+**Author:** Architect pass 1. **Status:** IMPLEMENTED — 7 shipping commits to `3661683` (§6) plus the
+review-round remediation commits G2-G9 (§8). Decisions in §2/§4 remain binding on follow-up slices;
+the review-round verdict chain (§8) is the written record of every deviation (G-23).
 **Inputs:** issue #72 body (read from GitHub), the 6-explorer synthesis, `docs/planning/architect-evidence-vocab-71.md`
 (#71, merged), `register-generic.md` + `register-dockermap.md`.
 
@@ -387,265 +388,105 @@ strictly stronger than exercising one transport path. The three legs:
 
 ---
 
-## 5. Arrested lessons (register-generic + register-dockermap)
+## 5. Arrested lessons — register pointers (trimmed in the review round, U9)
 
-**G-01 — spec-conformance is not sufficient / schema-escape hatches.** Arrested by deletion: the field being removed is exactly a
-"schema-valid but semantically empty" value (a boolean whose true/false both lie). The replacement has **no** value domain to abuse —
-`unavailable`'s arm is `{ value: null, detail: string }` and `nonEmptyDetail` (`evidence.ts:83-88`) throws on empty/whitespace, so the
-one remaining input (the detail string) fails at construction, never at render.
+The full lesson-by-lesson analysis for this slice lives in the shared lesson
+registers — `register-generic.md` and `register-dockermap.md` (maintained with
+the slice records, as cited in the Inputs line) — and in
+`architect-evidence-vocab-71.md` for the evidence vocabulary. The per-lesson
+prose previously re-documented here was a second mutable source of truth
+guaranteed to drift from the registers (L8/U9); it is replaced by this pointer
+and the id lists below.
 
-**G-02 — mock masks reality; verify library claims against installed source.** N/A for library behavior (no new dependency, no
-library semantics relied on). The *spirit* is arrested in the test plan: the render fixtures use the **real** `Metric`/`Panel`
-primitives (`evidence-render.test.tsx` precedent), not stand-ins, so `primitives.tsx:63`'s falsy-hint suppression is exercised for real;
-and V6 renders the real `AppShell` + real `Home`, not `modeLabel` in isolation.
+**Arrested by this slice** (each is addressed in §2's decisions; the register
+rows carry the slice-specific detail): G-01, G-02, G-03, G-08, G-09, G-14,
+G-15, G-19, G-22, G-23, G-24, G-26, G-36, DM-01, DM-02, DM-05, DM-06, DM-07,
+DM-08, DM-09, DM-11 (both entries).
 
-**G-03 — mock-path e2e assertions must use real mock output text.** Arrested. The new e2e assertions match on strings this design
-*defines* (`Not collected`, `Updates`) plus the absence of `Updates available`; the implementer must read the rendered mock output
-before asserting and must **not** invent search terms (no "running", no log-line assumptions).
-
-**G-04, G-05, G-07, G-10, G-11, G-13, G-16, G-17, G-18** — **N/A**: no balance/tradeoff model, no score distribution, no round-robin
-allocation, no selector tags, no RNG seeding, no visual matrix cells, no derived-artifact cache key, no pixel-size rendering gate, and no
-acceptance criterion that can be met merely nominally (AC1 is discharged by *absence of a source line*, verified by grep + compile +
-runtime key scan, not by inspection).
-
-**G-06 — cohort-scoped numerators AND denominators.** N/A — no rates or per-cohort telemetry. The one count being removed
-(`updatesAvailable`) is deleted rather than re-scoped.
-
-**G-08 — fix sweeps introduce regressions; verify prior fixes are CORRECT, not just present.** Arrested with named line targets. Every
-file in this diff carries earlier hardening: `Home.tsx:148-150` and `:172-174` (dual `byId`/`byName` link gate), `stubs.ts:93`
-(collision-safe `routeName`), `stubs.ts:111` (`identityText` normalization), `model.ts:345` (occurrence-safe `dependsOn`),
-`Changes.tsx:49-56` (non-routable timeline rows). The implementer must leave all of them untouched, and the guard suites
-(`change-feed-identity`, `collision-identity`, `detail-identity`, `mount-keys`, `duplicate-list-keys`) must stay green **with their
-assertions intact** — a fixture weakened to make a suite pass is a P1.
-
-**G-09 — never trust reported numbers.** Arrested procedurally: §7's verification commands must be **re-run** by the reviewer; citing
-this document or the PR body is not evidence.
-
-**G-12 — a committed visual baseline is not a gate until proven enforced.** N/A — no visual/screenshot baseline is added or regenerated.
-
-**G-14 — resolve open questions before dispatching the implementer.** Arrested: Q1-Q10 all carry explicit decisions, §4 restates them
-as product decisions, and §2 Q6/§4.12 fix the exact strings so no wording is left to judgment. The implementer must **refuse to guess**;
-anything genuinely underspecified is an amendment request against this file, not a judgment call.
-
-**G-15 — regression tests can codify the new bug.** Arrested at three points. (a) `model.test.ts:254-256` is *deleted*, not adapted —
-it is both vacuous and a codification of the lie. (b) Every new test asserts the **correct behavior that resumes** (the "Not collected"
-label and its detail are present, real feed events still render, an untouched Copilot answer path still answers correctly), not merely
-that the old symptom is gone. (c) Every render assertion ships as a **demo/live pair** (V10) so "it disappeared in live" cannot pass while
-demo silently keeps the lie.
-
-**G-19 — falsy/empty values need explicit fallbacks at EVERY render site.** Arrested, and this is the class the old code failed:
-`Home.tsx:45` rendered a bare integer that reads `0` as "no updates". Defences: the count is deleted (no `0` can exist); the rendered
-value is a non-empty constant derived from `evidenceLabel`; `Panel.hint`'s falsy-suppression site (`primitives.tsx:63`) is no longer fed
-by an update count anywhere; both surfaces read the **same** exported constant so they cannot disagree; and V3 asserts the label in
-**visible text** (markup stripped, via the `visibleText()` helper) on both surfaces in both modes.
-
-**G-20 — occurrence-indexed joins.** N/A — no correlation join is added or changed; `model.ts:327-330`'s occurrence discipline is untouched.
-
-**G-21 — collision-proof React keys.** N/A for new code — #72 **removes** a list (`Home.tsx:145`, already `${service.id}-${index}`) and
-adds none. Note for the implementer: do not "tidy" the surviving keys.
-
-**G-22 — accessible names entity-qualified and state-synced.** Arrested by prohibition: no interactive control is added, one is removed
-(the Changes chip), and the evidence label **must not** be placed in a `title`/`aria-label`-only position — it must be visible text in
-both new render sites. V3 asserts on stripped markup precisely so an attribute-only label fails.
-
-**G-23 — docs must not retain superseded rules.** Arrested with a named split: what this PR owns is fixed **in** this PR
-(`a11y.spec.ts:500-502`'s comment; `model.ts:94`'s false "stub-derived" comment vanishes with the field). What belongs to the historical
-#71 record (D10 rows `:271-272`) is **not** silently edited; the supersession is declared in §2 Q1, restated in the PR body, and handed
-to #77 (V11). Reviewers must grep the whole diff for residual "Updates available"/"update available"/"image_update" wording in comments
-as well as code.
-
-**G-24 — derived/destructive operations must fail CLOSED when authoritative state is missing.** Arrested and made total: previously the
-absence of an update collector failed **open** (a hash invented an answer). Now the missing authority produces `unavailable` — the
-fail-closed value — in every mode and in the null-authority window, with no lenient default anywhere on the path.
-
-**G-25 — structural mutations are not idempotent.** N/A — no mutation, no retry, no external write; #72 is a pure read-path removal.
-
-**G-26 — multi-step transactions must pin all derived inputs at start.** Arrested vacuously and permanently: after Q2 there is no
-derived mode input to pin inside `useSystemModel.ts:24-30`, because the model produces no mode-dependent value. The #71 discipline at
-`architect-evidence-vocab-71.md:358` remains binding on whichever future slice first threads a mode into `buildModel` — **not this one**.
-
-**G-27 — async API contracts.** N/A — no async function is added or changed; `changeAnswer` is synchronous and total.
-
-**G-28 (guard-flag ownership), G-29 (foreground flows await freshness), G-30 (blank env values), G-31 (low-entropy secrets),
-G-32 (read paths settle journals), G-33 (write verification enforced), G-34 (retry classification), G-35 (cleanup removes only what it
-recreates)** — **N/A**: no shared mutable flag, no freshness promise, no env parsing, no secret comparison, no transaction journal, no
-write path, no retry policy. On G-35 specifically: this PR removes surfaces (`Home` panel, Changes chip, `image_update` kind) that
-**nothing else recreates**, which is the point — no guard or protection is being removed, only fabricated claims.
-
-**G-36 — new wiring shipped without regression locks survives any number of review passes.** Arrested as a **required commit-level
-obligation**: the new user-visible behavior (the Updates metric, the ServiceDetail cell, the Copilot line) ships **with** V6's
-wiring-level test in the same PR — the real `AppShell` rendering the real `Home`, asserting `.conn-mode` reads `Docker Engine` while
-`.metric-updates` reads `Not collected`. Pure-function unit tests do not discharge this. A review round that finds no wiring test for
-these sites must file it as a P2 minimum.
-
-**DM-01 — AGENTS.md invariants are non-negotiable.** Arrested. The invariant this slice satisfies is **network-quiet by default**: no
-registry/advisory lookup, no new endpoint, no new fetch call — enforced structurally (the diff adds zero network code; V8 greps for it).
-Read-only providers, bounded discovery, redaction, loopback binding are untouched (no daemon/API change). Closure: post a
-`## Resolution Evidence` comment and **recommend** closure — never auto-close.
-
-**DM-02 — e2e harness quirks.** Arrested item-by-item in §7: (a) assert on real mock output text (G-03); (b) `domcontentloaded` +
-explicit waits, **never** `networkidle` (the SSE heartbeat never settles it); (c) unique classes for every assertion target —
-`metric-updates`, `impact-cell-updates` (this is why `Metric` gains `className`); (d) query params handled at the route boundary — N/A,
-no new route/param; (e) re-grep route registrations after patches — N/A, no route file patched.
-
-**DM-03 — live-Docker evidence is the release gate.** N/A for this PR: no daemon/API/contract change, so nothing destined for the
-release gate. `npm run check` + `npm run test:e2e` are the gates here. If the release manager bundles this into a release, the standard
-DM-03 evidence block applies to the release, not to this slice.
-
-**DM-04 — Rust/clippy conventions.** N/A — zero Rust files touched. `npm run check` still runs `check:rust`; if it is run locally, the
-fmt-then-clippy order applies unchanged.
-
-**DM-05 — empty schema-valid identities stay VISIBLE but NON-ROUTABLE.** Arrested twice: (a) the design's core mechanism is DM-05's own
-arrest applied to a *claim* — ONE derived display value (`UPDATE_STATUS_LABEL`) used at ALL locations, with the "unavailable" fallback
-being the only value; (b) the surviving identity handling in the touched files (`identityText`, `UNAVAILABLE_SERVICE`,
-`UNAVAILABLE_IMAGE`, the `byId`/`byName` link gates, `routeName: null`) must be preserved exactly — see G-08. **Review every tab**: the
-ServiceDetail change is in the always-visible impact band, above the tab strip, so Overview *and* Configuration are both affected.
-
-**DM-06 — labels must not claim more than the snapshot proves.** Arrested as the slice's entire purpose. #71 named
-`ServiceDetail.tsx:100`'s flat `"No"` and `Home.tsx:45`'s bare integer as "the two clearest current violations"
-(`architect-evidence-vocab-71.md:338`); both are fixed here, plus three the map did not enumerate: Copilot's
-`"No pending updates detected."` (an asserted negative), the `image_update` feed entries (`"<repo>:<tag> pulled and redeployed"` —
-a fabricated *action*), and the Changes "Updates" filter chip (an implied capability). Every new string in §4.12 was chosen so the data
-supports it literally.
-
-**DM-07 — diff-scoped review must trace the MODEL/HOOK layer, and re-certify after the branch moves.** Arrested. The diff is
-model-layer-first by design, and the review targets are named: `model.ts:95,179,321,347,560,565`, `useSystemModel.ts:23-30`
-(**must be a zero-line diff — verify, do not assume**), `context.tsx:12`, `AppShell.tsx:161-164,177-185`. A no-findings certification is
-valid only for the exact HEAD reviewed; any fix round that moves the branch requires re-certification.
-
-**DM-08 — a fix must close EVERY consumer of the invariant.** Arrested by construction (type removal → compile-enforced completeness)
-**and** by process: the pass-2 greps from #71 (`updateAvailable|updatesAvailable`, `resourceFor`, `changeFeed`, `causalChain`, `STUB_`,
-plus `image_update` and `hashString`) are re-run at final HEAD (V8), and §1.2's consumer table is the checklist. The completeness claim
-is scoped per Q8 — update claims only.
-
-**DM-09 — derived UI state must be re-derived or invalidated on live-data refresh.** Arrested by elimination: the claim is a module-level
-constant with no dependency on model data, mode, or refresh, so there is no derived state to invalidate. `evidenceMode` continues to be
-re-resolved every render at `AppShell.tsx:161-164` (untouched). No `useMemo`/`useState` carries an update claim anywhere after this PR.
-
-**DM-10 — release-artifact CI gap.** N/A — no Dockerfile, build-step, deploy-bundle, or lockfile-layout change. The artifact surface is
-unchanged, so the existing CI image job needs no update.
-
-**DM-11 (first entry — settings-parse gates vs harness payloads).** Arrested as a **prohibition**: #72 must not touch
-`settingsStore.ts`, `useSettings`, or any parse boundary. The `a11y.spec.ts:512` `defaultRoute` initScript remains a hidden dependency of
-that gate; since this PR *does* modify `a11y.spec.ts` (comment + new assertions), the a11y spec must be run before push (V9) and any
-timing/focus failure must be attributed by bisect/isolated run — never by the plausible-pattern jump.
-
-**DM-11 (second entry, duplicate id — mode-dependent data held in COMPONENT STATE survives mode flips).** Arrested by construction: the
-update claim is held in **no** carrier that can survive a mode flip — not component state, not a ref, not a memo, not the model. V6's
-transition test proves it: a model built from demo containers rendered under live authority still shows "Not collected", never a count.
-*(Register hygiene note for the maintainer: two distinct entries share the id `DM-11`; both are addressed above.)*
+**N/A for this slice** (no surface existed; see the original review): G-04,
+G-05, G-06, G-07, G-10, G-11, G-12, G-13, G-16, G-17, G-18, G-20, G-21, G-25,
+G-27, G-28, G-29, G-30, G-31, G-32, G-33, G-34, G-35, DM-03, DM-04, DM-10.
 
 ---
 
-## 6. Ordered implementation checklist
+## 6. Executed history (replaces the ordered implementation checklist)
 
-Smallest reversible commits; **every commit must leave `npm run check` green**. Do not reorder, do not merge steps 2 and 3.
+The slice shipped as 7 commits on `codex/update-claims-issue-72`, **every one
+leaving `npm run check` green** — including the step-2 atomicity contract (U1):
+step 2 shipped as ONE atomic commit (`127f437`) that cannot be split and stay
+green, exactly as the original checklist required.
 
-**Step 1 — the claim constant (additive, green).**
-1. Create `apps/web/src/lib/updates.ts`:
-   ```ts
-   import { evidenceLabel, unavailable } from "./evidence";
+| # | Step | Commit | Title | Contents |
+|---|---|---|---|---|
+| 1 | 1 | `4b13832` | Architect pass 1: remove synthetic update claims design (#72) | this design document |
+| 2 | 1 | `9caf837` | web: add the update-status evidence claim constant (#72) | `lib/updates.ts`, `Metric` className hook |
+| 3 | 2 | `127f437` | web: remove hash-derived update-available claims from every surface (#72) | model, Home, ServiceDetail, stubs, Changes, copilot, model.test — atomic |
+| 4 | 2 | `228ed83` | Document styles.css image_update deletion in #72 architecture (amended checklist) (#72) | `styles.css` `.k-image_update` rule + Q8/§6 amendment |
+| 5 | 3 | `d015c93` | test: lock update claims out of model and user surfaces (#72) | no-synthetic-updates, updates-surface, copilot.test, updates-wiring |
+| 6 | 4 | `d39e394` | e2e: assert the Updates surface reports not-collected (#72) | a11y.spec.ts Home legs (§7 items 1-4) |
+| 7 | 5 | `3661683` | test: keep removal gates outside literal claim greps (#72) | grep-surface hygiene |
 
-   /**
-    * DockerMap has no update-evidence source in ANY mode: live never queries a
-    * registry (the runtime is network-quiet by design), the mock server emits the
-    * same update-free DockerSnapshot, and demo invents containers, not update
-    * state. This is PERMANENT non-collection, so the same claim renders under
-    * every authority level — including the null-authority heartbeat window
-    * (#71 P2-2): the detail below, never the static "does not collect this yet"
-    * description, and never a mode branch.
-    */
-   export const UPDATE_STATUS_DETAIL = "Update checks not wired — DockerMap does not query registries";
-
-   export const UPDATE_STATUS_CLAIM = unavailable(UPDATE_STATUS_DETAIL);
-
-   /** ONE derived display value, used at EVERY update surface (G-19, DM-05). */
-   export const UPDATE_STATUS_LABEL = evidenceLabel(UPDATE_STATUS_CLAIM.kind).label; // "Not collected"
-   ```
-2. `apps/web/src/components/primitives.tsx:82-90` — add `className?: string` to `Metric` and render
-   ``className={className ? `metric ${className}` : "metric"}``. No CSS is added.
-3. Commit: `web: add the update-status evidence claim constant`.
-
-**Step 2 — remove the synthetic claim and close every consumer (one atomic commit; it cannot be split and stay green).**
-1. `model.ts` — delete `:94-95` (doc comment + field), `:179` (`updatesAvailable`), `:321` (hash line), `:347` (assignment),
-   `:560` (zero-init), `:565` (increment). **Do not touch `hashString` (`:241-249`)** — `layout.ts:34` and `stubs.ts` still use it.
-   **Do not change `buildModel`'s signature (`:251`).**
-2. `Home.tsx` — delete `:21` (`updates` const) and `:142-158` (the panel). Replace `:45` with the `Metric` block from §2 Q3.
-   Remove the now-unused imports `StateDot` (`:9`) and `UNAVAILABLE_IMAGE` (`:6`); **keep** `Tag`, `identityText`,
-   `UNAVAILABLE_SERVICE`. Add `import { UPDATE_STATUS_CLAIM, UPDATE_STATUS_LABEL } from "../lib/updates";`.
-3. `ServiceDetail.tsx:99-102` — replace with the impact cell from §2 Q4 (`impact-cell impact-cell-updates`, `UPDATE_STATUS_LABEL`,
-   sub-label `update status`).
-4. `stubs.ts` — delete the `image_update` arm (`:94-96`), the `image_update` template (`:75-78`), and `"image_update"` from the kind
-   union (`:64`). Remove the now-unused `UNAVAILABLE_IMAGE` import (`:2`); **keep** `identityText` and `UNAVAILABLE_SERVICE`.
-   **Do not touch** `:17` `STUB_CHANGES_NOTICE`, `:29-46` `resourceFor`, `:97-101` failure/restart arms, or `causalChain`.
-5. `Changes.tsx` — delete the `{ id: "image_update", label: "Updates" }` chip (`:11`) and `case "image_update":` (`:72-73`).
-5b. `styles.css` — delete the `.k-image_update .timeline-marker` rule (`:1750`). (Amended 2026-08-24 — see Q8 item 6.)
-6. `copilot.ts` — replace `changeAnswer` (`:167-177`) with the §2 Q7 body, drop its `model` parameter, and update the call site
-   (`:54`) to `changeAnswer(q)`. Import the constants from `./updates`. **Touch no other answer function.**
-7. `model.test.ts` — delete `:254-256` (comment + both asserts). Leave the rest of the `summarize` test intact.
-8. Run `npm run check`. Commit: `web: remove hash-derived update-available claims from every surface (#72)`.
-
-**Step 3 — regression locks (G-36; same PR, separate commit).**
-1. Add `apps/web/src/lib/no-synthetic-updates.test.ts` (AC3 legs L1+L2 — §7 V4).
-2. Add `apps/web/src/screens/updates-surface.test.tsx` (demo/live render pairs for Home + ServiceDetail — §7 V3/V10).
-3. Add `apps/web/src/lib/copilot.test.ts` (`changeAnswer` + one untouched answer path — §7 V7).
-4. Add `apps/web/src/screens/updates-wiring.test.tsx` (real `AppShell` + real `Home`, mode-flip — §7 V6).
-5. Run `npm run test:web`. Commit: `web: lock the no-synthetic-update invariant across modes`.
-
-**Step 4 — e2e (same PR, separate commit).**
-1. `tests/e2e/a11y.spec.ts:500-502` — rewrite the comment: the "Updates available" panel no longer exists, so the `.svc-list` scoping is
-   now about the attention list only. Do **not** change the assertion at `:503-504`.
-2. Add the Home update-surface assertions (§7 V3/V6-e2e) using `.metric-updates`, `domcontentloaded`, and explicit waits.
-3. Run `npm run test:e2e` (at minimum `npm run test:e2e:a11y`, plus `dockermap.spec.ts` if the new assertions land there).
-   Commit: `e2e: assert the Updates surface reports not-collected`.
-
-**Step 5 — full gate.** `npm run check` (js + rust) and `npm run test:e2e` from a clean tree. Record versions/output for the PR body.
-
-**Step 6 — PR body (required content).**
-- No public-contract change; web-only; no new endpoint; runtime stays network-quiet.
-- **Supersession notice (G-23/V11):** `architect-evidence-vocab-71.md:271-272` (D10 `model.ts:321` rows, live `unavailable` /
-  demo+mock `demo`) are superseded by §2 Q1 (source removed instead of tagged); `:273-274` (Home/ServiceDetail rows) are honored.
-  Hand the doc reconciliation to **#77**.
-- **Scope statement (Q8):** update claims only. `resourceFor` (#73) and the `restart`/`failure` feed arms (#74) remain synthetic in
-  live and are assigned to their slices. Do **not** claim "no synthetic claims remain in live mode".
-- **Product scope reduction (Q5):** demo mode loses the Updates panel and `image_update` timeline entries.
-- **Known gap (Q7):** Copilot's "what changed recently" answer is deliberately thin until #74.
-- Closing comment uses the `## Resolution Evidence` format from `AGENTS.md:61-71`, lists the exact screens/claims audited and the
-  tested commit SHA, and **recommends** closure — never performs it (DM-01).
+Original checklist steps 5-6 (full gate, PR body, `## Resolution Evidence`
+closure) were discharged by the PR. The hostile-review round that followed is
+recorded in §8.
 
 ---
 
-## 7. Test / e2e plan (V1-V11 → specific files)
+## 7. Test plan — executed (replaces the V1-V11 plan verbosity)
 
-**Harness rules that bind every e2e line here (DM-02/G-03):** assert on real mock output text; `domcontentloaded` + explicit waits,
-never `networkidle`; unique class per assertion target (`.metric-updates`, `.impact-cell-updates`); query params handled at the route
-boundary (N/A here); re-grep route registrations after route-file patches (N/A here).
+Every V-criterion is discharged by a file that now exists; the plan is not
+re-documented here (U9):
 
-| ID | Criterion | Where it is discharged |
-|---|---|---|
-| **V1** | `grep -rn "updateAvailable\|updatesAvailable" apps/web/src` (excluding `dist/`) → **0 hits**, tests included. | Manual gate in §6 step 5; re-run by the reviewer (G-09). Backed at runtime by V4's key scan. |
-| **V2** | `grep -rn 'hashString(c.id + "update")' apps/web/src` → absent; `grep -rn "image_update" apps tests` → **0 hits** outside `dist/`. | Same gate. `hashString` itself must still be present (used by `layout.ts:34`, `stubs.ts`). |
-| **V3** | Surviving live surfaces render the `Not collected` label **in visible text** plus a non-empty detail; never `0`, blank, `-`, or a suppressed hint. | `screens/updates-surface.test.tsx`: `renderToStaticMarkup` + `AppContext.Provider` (pattern from `change-feed-identity.test.tsx:76-86`) + the `visibleText()` markup-stripper (`evidence-render.test.tsx:6-11`). Asserts: Home contains `Not collected` **and** `Update checks not wired — DockerMap does not query registries`; the `.metric-updates` value is not `"0"`; `Updates available` is absent from the markup; ServiceDetail (routed via `MemoryRouter` to `/services/<name>`) contains `Not collected` + `update status` and neither `>Yes<` nor `>No<` in the impact band. Both surfaces asserted to render the **same** label string. |
-| **V4** | Focused AC3 test: synthetic update data cannot reach a live model or live API path; `model.test.ts:254-256` deleted. | `lib/no-synthetic-updates.test.ts` — **L1 (runtime, total):** for a live-shaped snapshot *and* for demo-derived containers, `Object.keys(service)` and `Object.keys(summarize(model))` contain no key matching `/update/i`; `changeFeed(model)` yields no event whose `summary + (detail ?? "") + kind` matches `/updat/i`. **L2 (compile-time):** `@ts-expect-error` gates on `service.updateAvailable` and `summary.updatesAvailable` (technique from `evidence.test.ts` test 9), exercised by `npm run typecheck`. Deletion of `model.test.ts:254-256` is part of step 2. |
-| **V5** | Demo/mock sample tagged `demo` **if kept**. | **N/A by decision Q5 — no sample is kept.** Replaced by the inverse lock: `updates-surface.test.tsx` asserts demo mode renders the *same* `Not collected` claim and contains **no** `image_update`, no per-service update list, and no `demo`-kind update tag. |
-| **V6** | G-36 wiring test: after a demo→live flip, within one render cycle no "Updates available" claim renders under `modeLabel === "Docker"`; a mock-server snapshot with real container ids cannot yield an update claim. | `screens/updates-wiring.test.tsx` — jsdom + `createRoot` + `vi.mock` harness copied from `AppShell.test.tsx:1-133`; renders the **real** `AppShell` with a nested index route rendering the **real** `Home` (`App.tsx:24-30` shape, `AppShell.tsx:257` `<Outlet/>`). Case 1: `demoMode: true` + demo health → `.conn-mode` is `Demo Engine`, `.metric-updates` reads `Not collected`. Case 2 (**the P1-1 lock**): flip `demoMode` to `false` with `health.mode = "docker"` while `useSystemModel` still returns the **demo-built model**, `rerenderAppShell()` → `.conn-mode` is `Docker Engine` **and** `.metric-updates` still reads `Not collected`, and `host.textContent` contains neither `Updates available` nor a digit-only Updates value. e2e leg: the mock-server run in V9 covers "real container ids through a real fetch". |
-| **V7** | `changeFeed` + Copilot degrade gracefully — no `image_update` in live; "update status not collected"-style copy. | `lib/copilot.test.ts` (**new file — none existed**): `answer(model, "what changed recently")` → headline `Recent and pending change`, body is exactly the update-status line containing `Not collected` and the detail, `references` is `[]`, and the body contains neither `have an update available` nor `No pending updates detected`. **G-15 resumption:** the same file asserts one untouched path still answers correctly (`answer(model, "show everything using port 443")` → `portAnswer` output) so a broken dispatch cannot pass. Feed side covered by V4's `/updat/i` scan and by `change-feed-identity.test.tsx` staying green unmodified. |
-| **V8** | #71 pass-2 greps re-run → zero unassigned consumers; no registry/advisory endpoints added. | Reviewer re-runs `updateAvailable`, `updatesAvailable`, `image_update`, `resourceFor`, `changeFeed`, `causalChain`, `STUB_`, `hashString` at final HEAD against §1.2's table. Network-quiet proof: `git diff main -- apps/web/src \| grep -nE "fetch\(\|axios\|registry\|advisory\|https?://"` → no new call site. `packages/contracts`, `crates/`, `apps/api` must show a **zero-line diff**. |
-| **V9** | `npm run check`; affected vitest; `npm run test:e2e` since the Home surface changes. | `npm run check` (includes typecheck/build/`test:js`/rust gates). Affected vitest files: `lib/model.test.ts`, `lib/no-synthetic-updates.test.ts`, `lib/copilot.test.ts`, `lib/evidence.test.ts`, `lib/evidence-render.test.tsx`, `screens/updates-surface.test.tsx`, `screens/updates-wiring.test.tsx`, `screens/change-feed-identity.test.tsx`, `components/AppShell.test.tsx`, `hooks/useSystemModel.test.tsx`. e2e: `npm run test:e2e` full, with `test:e2e:a11y` mandatory before push (DM-11 first entry — `a11y.spec.ts` is modified). |
-| **V10** | G-15 demo/live regression pairs for every claim site. | Pairs, all in `screens/updates-surface.test.tsx` unless noted: **model** — V4's key scan runs over live-shaped *and* demo-derived containers; **Home** — `evidenceMode: "live"` and `"demo"` fixtures; **ServiceDetail** — same two fixtures; **Changes** — both fixtures assert no `Updates` filter chip and no `image_update` timeline row; **Copilot** — `lib/copilot.test.ts` runs `changeAnswer` against a live-shaped and a demo-derived model, asserting identical output. Each pair asserts the **positive** label text, not only the absence of the old symptom. |
-| **V11** | Stale-doc note in the PR body (D10 rows, `a11y.spec.ts:501` comment); #77 reconciles. | §6 step 6. The `a11y.spec.ts` comment is fixed **in this PR** (§6 step 4.1); only the #71 doc rows are deferred to #77. |
+| ID | Discharged at |
+|---|---|
+| V1 | reviewer grep + `lib/no-synthetic-updates.test.ts` key scan |
+| V2 | reviewer grep: `image_update` → 0 hits under `apps/`, `tests/` |
+| V3 | `screens/updates-surface.test.tsx` — visible-text label + detail, non-digit metric value, no `>Yes<`/`>No<` in the impact band |
+| V4 | `lib/no-synthetic-updates.test.ts` — L1 runtime deep scan, L2 `@ts-expect-error` gates |
+| V5 | N/A by Q5 — inverted lock: demo renders the same claim in `updates-surface.test.tsx` |
+| V6 | `screens/updates-wiring.test.tsx` — real AppShell + Home, mode flips (both directions), generation change, digit-only absence |
+| V7 | `lib/copilot.test.ts` |
+| V8 | reviewer greps at final HEAD (V1/V2 commands) |
+| V9 | `npm run check` + `npm run test:e2e:a11y` (a11y.spec.ts modified) |
+| V10 | `updates-surface.test.tsx` live/mock/demo triples |
+| V11 | PR body supersession note; #77 reconciles the #71 doc |
 
-### e2e specifics (new assertions)
+§7 e2e items 1-4 shipped in `d39e394`; items 5-6 (ServiceDetail impact cell +
+`/changes` chip absence) shipped in the review-round commit `7d12559` (G2).
+All run against the mock server — the AC3 "live API path" leg (Q10).
 
-Target file: `tests/e2e/a11y.spec.ts` (the Home surface is already loaded there and the responsive/a11y sweep covers Home), or
-`dockermap.spec.ts` if the implementer prefers to keep a11y-scoped assertions pure — either is acceptable, but **not both**.
+---
 
-1. Load `/` with `waitUntil: "domcontentloaded"` and an explicit wait for the Home `h1` ("Command Center") — never `networkidle`.
-2. `await expect(page.locator(".metric-updates")).toContainText("Not collected");`
-3. `await expect(page.locator(".metric-updates")).toContainText("Update checks not wired");`
-4. `await expect(page.getByText("Updates available")).toHaveCount(0);`
-5. Navigate to a service detail route that the mock server actually serves (read the mock output; do not invent a name) and assert
-   `.impact-cell-updates` contains `Not collected` and does not contain `Yes`/`No`.
-6. `/changes`: assert the filter row has no chip labelled `Updates` — `await expect(page.locator(".filter-chip", { hasText: "Updates" })).toHaveCount(0);`
+## 8. Review round + remediation (U1-U18 verdict chain)
 
-These run against the **mock server** (a real `fetch` through `api.ts`'s non-demo path), which is the AC3 "live API path" leg per §2 Q10.
+After the 7 shipping commits, an 8-reviewer hostile review produced 30 raw
+findings → 18 union findings (U1-U18), consolidated in the convergence record.
+This section is the written verdict chain (G-23): each row records the finding,
+its severity ruling, and the remediation commit that resolved it.
+
+| U | Finding (severity) | Resolution | Commit |
+|---|---|---|---|
+| U1 | Step-2 atomicity violated — non-compiling intermediates (P1) | REBASED: `main..HEAD` folded to ONE atomic step-2 commit; every commit leaves `npm run check` green | `127f437` (history) |
+| U2 | §7 e2e items 5-6 not implemented (P1) | G2: `.impact-cell-updates` contains `Not collected` and no `Yes`/`No`; `/changes` has no "Updates" filter chip | `7d12559` |
+| U3 | Claim API split vs binding rendered shape (P1) | G3: `UPDATE_STATUS_CLAIM` is the single public object (kind/value/detail); `UPDATE_STATUS_DETAIL` internal; consumers read `UPDATE_STATUS_CLAIM.detail` or the derived label — zero external consumers of the standalone constant | `250e06c` |
+| U4 | No-synthetic runtime scan vacuous/weak (P2) | G4: API-shaped live fixture, nested deep-key scan, renamed-claim probes (`imageRefresh`, kind `refresh`, "pulled newer image"), blind spot documented; `@ts-expect-error` gates kept as the real backstop | `e86de9c` |
+| U5 | V3/V6 scoped negatives missing (P2) | G5: `.metric-updates .metric-value` never digit-only; impact band has no `>Yes<`/`>No<`; wiring test V6 digit-only absence | `516525f` |
+| U6 | Copilot user-visible wiring untested (P2) | G6: e2e asserts the rendered answer carries the not-collected copy and renders no references | `ef48422` |
+| U7 | Changes kind handling non-total; `deploy` silently covered (P2; dissent L2 P3 vs L5 P2) | G7: `iconForKind` is an exhaustive switch (explicit `deploy` → `up`, NO default swallow — a new kind is a compile error); `CHANGE_TEMPLATES` totality documented (Record over the full kind union makes generator-less kinds type-impossible) | `f14ffd4` |
+| U8 | Stale docs still promise removed update surfaces (P2) | G8: DESIGN_LANGUAGE, ARCHITECTURE, architect-detail-pages-34 updated to the not-collected reality | `81c5705` |
+| U9 | Arch doc over-engineered; duplicates review machinery (P2) | G9: this file — §5/§7 re-documentation replaced by register pointers + executed-history table + this verdict chain | *(the G9 commit)* |
+| U10 | Shared `visibleText()` bypassed (P3) | INCLUDE: helper moved to `lib/test-utils.ts`; both render tests import it | `516525f` |
+| U11 | Wiring test act() hygiene (P3) | INCLUDE: mode flips wrapped in `act()` | `516525f` |
+| U12 | Wiring transition coverage incomplete (P3) | INCLUDE: live→demo flip + model-generation-change cases added | `516525f` |
+| U13 | `Claim<T>` fields not readonly; singleton unfrozen (P3) | SKIP — theoretical only, zero mutation surface; evidence types owned by #68 | — |
+| U14 | `.metric-updates` CSS orphan (P3) | SKIP — deliberate per §6 step 1.2 "No CSS is added"; the class is a test locator | — |
+| U15 | Copilot change/deploy dispatch thinness (P3) | SKIP — doc-mandated thinness until #74 (Q7) | — |
+| U16 | Pre-existing React 19 `<title>` array-children warning (P3) | SKIP — pre-existing, outside the diff, upstream React | — |
+| U17 | Pure mock-mode render not directly asserted (P3) | INCLUDE: `evidenceMode: "mock"` cases in updates-surface tests | `516525f` |
+| U18 | L5 residual P3 (text lost to truncation) (P3) | SKIP — no actionable target; L2/L3 independently verified the same paths clean | — |
+
+**Completeness claim (Q8) restated after remediation:** the update-claim
+invariant is now enforced at three levels — type removal (compile), the runtime
+tripwire scans (G4), and the e2e/unit render assertions (G2/G5/G6). Other
+synthetic surfaces (`resourceFor` → #73, `restart`/`failure` feed arms → #74)
+remain out of scope by design.
