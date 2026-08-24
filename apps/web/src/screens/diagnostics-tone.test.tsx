@@ -35,6 +35,7 @@ const contextValue: AppContextValue = {
   error: null,
   health: null,
   tick: 0,
+  evidenceMode: "live",
   openCommand: () => {}
 };
 

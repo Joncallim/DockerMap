@@ -8,12 +8,27 @@ import { useApiResource } from "../hooks/useApiResource";
 import { apiUrl } from "../utils/api";
 import { summarize } from "../lib/model";
 import { formatClock } from "../lib/format";
+import { resolveEvidenceMode, type EvidenceMode } from "../lib/evidence";
 import { AppContext } from "../context";
 import Icon, { type IconName } from "./Icon";
 import CommandPalette from "./CommandPalette";
 import RouteFocusManager from "./RouteFocusManager";
 import { StateDot, Tag } from "./primitives";
 import { UNAVAILABLE_USER } from "../lib/identity";
+
+/** Display label for the evidence-mode pill. null (unresolved/unreachable health) is an explicit unknown — never "Mock". */
+export function modeLabel(evidenceMode: EvidenceMode | null): "Demo" | "Docker" | "Mock" | "Unknown" {
+  switch (evidenceMode) {
+    case "demo":
+      return "Demo";
+    case "live":
+      return "Docker";
+    case "mock":
+      return "Mock";
+    default:
+      return "Unknown";
+  }
+}
 
 interface NavItem {
   to: string;
@@ -143,7 +158,10 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
   }, []);
 
   const summary = useMemo(() => (model ? summarize(model) : null), [model]);
-  const mode = settings.demoMode ? "Demo" : health?.mode === "docker" ? "Docker" : "Mock";
+  const evidenceMode: EvidenceMode | null = resolveEvidenceMode({
+    demoMode: settings.demoMode,
+    healthMode: health?.mode ?? null
+  });
   const overall = !summary
     ? "unknown"
     : summary.offline > 0
@@ -152,12 +170,17 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
         ? "warning"
         : "healthy";
 
+  // In demo mode no connection can exist (utils/api.ts:30 short-circuits before
+  // any fetch), so the connection dot is neutral — never a pulsing green "healthy".
+  const connReachable = evidenceMode !== "demo" && Boolean(health?.dockerReachable);
+
   const ctx = {
     model,
     loading,
     error,
     health,
     tick,
+    evidenceMode,
     openCommand: () => setCommandOpen(true)
   };
 
@@ -193,11 +216,16 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
           </nav>
 
           <div className="rail-foot">
-            <div className={`conn conn-${health?.dockerReachable ? "up" : "down"}`}>
-              <StateDot state={health?.dockerReachable ? "healthy" : "offline"} pulse={health?.dockerReachable} />
-              <span className="conn-mode">{mode} Engine</span>
+            <div className={`conn conn-${connReachable ? "up" : "down"}`}>
+              <StateDot
+                state={connReachable ? "healthy" : evidenceMode === "demo" ? "unknown" : "offline"}
+                pulse={connReachable}
+              />
+              <span className="conn-mode" role="status" aria-live="polite">
+                {modeLabel(evidenceMode)} Engine
+              </span>
             </div>
-            <p className="conn-msg">{health?.message ?? "Connecting to daemon…"}</p>
+            <p className="conn-msg" role="status">{health?.message ?? "Connecting to daemon…"}</p>
           </div>
         </aside>
 

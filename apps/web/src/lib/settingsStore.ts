@@ -40,12 +40,48 @@ function load(): Settings {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_SETTINGS;
-    const parsed = JSON.parse(raw) as Partial<Settings>;
-    return {
+    const parsed: unknown = JSON.parse(raw);
+    // demoMode is load-bearing for evidence classification (resolveEvidenceMode
+    // trusts it as a real boolean): reject non-object payloads and any PRESENT
+    // value that is not a boolean — fall back to defaults, never coerce (G-01).
+    // A payload that merely OMITS demoMode (partial/legacy settings) is merged
+    // over the defaults by the spread below — its absence is not a value to
+    // coerce, and rejecting it wholesale would also drop unrelated keys like
+    // defaultRoute (the fresh-boot redirect in a11y.spec.ts:512 persists
+    // { defaultRoute: "/map" } alone and must keep working).
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return DEFAULT_SETTINGS;
+    }
+    const candidate = parsed as Partial<Settings>;
+    if ("demoMode" in candidate && typeof candidate.demoMode !== "boolean") {
+      return DEFAULT_SETTINGS;
+    }
+    // Bounded validation (P3-6): the same "field present → must be valid →
+    // else default" gate as demoMode above, but FIELD-SCOPED so an invalid
+    // value never nukes an otherwise-fine partial payload (the bffc6bb
+    // pattern). demoMode stays payload-rejecting because it is load-bearing
+    // for evidence classification; refreshIntervalMs (positive finite number)
+    // and auth (a plain object; anything else — string, null, array — is
+    // invalid for the AuthSettings type) are not, so they fall back to their
+    // default in place.
+    const merged: Settings = {
       ...DEFAULT_SETTINGS,
-      ...parsed,
-      auth: { ...DEFAULT_SETTINGS.auth, ...parsed.auth }
+      ...candidate,
+      refreshIntervalMs: DEFAULT_SETTINGS.refreshIntervalMs,
+      auth: DEFAULT_SETTINGS.auth
     };
+    if (
+      "refreshIntervalMs" in candidate &&
+      typeof candidate.refreshIntervalMs === "number" &&
+      Number.isFinite(candidate.refreshIntervalMs) &&
+      candidate.refreshIntervalMs > 0
+    ) {
+      merged.refreshIntervalMs = candidate.refreshIntervalMs;
+    }
+    if ("auth" in candidate && typeof candidate.auth === "object" && candidate.auth !== null && !Array.isArray(candidate.auth)) {
+      merged.auth = { ...DEFAULT_SETTINGS.auth, ...candidate.auth };
+    }
+    return merged;
   } catch {
     return DEFAULT_SETTINGS;
   }

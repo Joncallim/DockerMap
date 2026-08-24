@@ -26,7 +26,7 @@ test.describe("DockerMap GUI", () => {
 
     await page.goto(stack.webUrl);
     await expect(page.getByText("DockerMap", { exact: true })).toBeVisible();
-    await expect(page.getByText(/Mock Engine|Docker Engine/)).toBeVisible();
+    await expect(page.getByText(/Mock Engine/)).toBeVisible();
     await expect(page.getByRole("main")).toContainText("Command Center");
 
     const spaces = [

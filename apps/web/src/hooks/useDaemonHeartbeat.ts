@@ -21,6 +21,15 @@ export function useDaemonHeartbeat() {
       return () => window.clearInterval(timer);
     }
 
+    // Fail closed on the demo→live flip: the demo branch leaves a health
+    // object whose mode claims "mock" (demoData.ts:176). Null it BEFORE the
+    // stream opens so stale demo health can never survive into live mode —
+    // AppShell renders Unknown/offline until the first real snapshot lands,
+    // and if the stream is down the error arm's `current ? … : current`
+    // leaves the null alone (no mode becomes claimable). Effect cleanup
+    // order (demo timer cleared, then this effect run) guarantees the null
+    // lands after the last demo tick.
+    setHealth(null);
     const source = new EventSource(apiUrl("/api/events/stream"));
 
     source.addEventListener("snapshot", (event) => {
@@ -37,7 +46,14 @@ export function useDaemonHeartbeat() {
       });
       setHealth((current) =>
         current
-          ? { ...current, status: "degraded", message: "Live stream interrupted" }
+          ? {
+              ...current,
+              status: "degraded",
+              message: "Live stream interrupted",
+              // Conservative: drop dockerReachable so the connection dot turns
+              // offline with the interruption message instead of staying green.
+              dockerReachable: false
+            }
           : current,
       );
     });

@@ -132,6 +132,7 @@ function contextFor(fixture: DockerSnapshot, runtime: RuntimeMap): AppContextVal
     error: null,
     health: null,
     tick: 0,
+    evidenceMode: "live",
     openCommand: () => {}
   };
 }
