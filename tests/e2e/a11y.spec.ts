@@ -511,6 +511,27 @@ test.describe("responsive and accessibility matrix", () => {
     }
   });
 
+  test("service detail and change center surfaces report updates as not collected", async ({ browser }) => {
+    await withPage(browser, "dark", async (page) => {
+      // §7 item 5 (U2/G2): the impact-band cell on a mock-served service
+      // detail renders the claim label, never a synthetic Yes/No. Word
+      // boundaries: "Not collected" contains "No" as a substring but not as a
+      // whole word, so /\bNo\b/ fails on the honest label and only catches a
+      // leaked "No" cell value.
+      await openRoute(page, "/services/postgres", "dark");
+      const impactCell = page.locator(".impact-cell-updates");
+      await expect(impactCell).toContainText("Not collected");
+      const cellText = await impactCell.evaluate((el) => el.textContent ?? "");
+      expect(cellText).not.toMatch(/\bYes\b/);
+      expect(cellText).not.toMatch(/\bNo\b/);
+
+      // §7 item 6 (U2/G2): Q8 removed the "Updates" filter chip — a chip that
+      // filters to a permanently empty list would read as "no updates exist".
+      await openRoute(page, "/changes", "dark");
+      await expect(page.locator(".filter-chip", { hasText: "Updates" })).toHaveCount(0);
+    });
+  });
+
   test("async route heading is promoted without a late focus steal", async ({ browser }) => {
     // Every scanned route mounts its h1 immediately once the model is in
     // memory, so the RouteFocusManager MutationObserver path never runs under
