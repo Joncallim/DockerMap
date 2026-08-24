@@ -4,8 +4,13 @@ import type { RuntimeMode } from "@dockermap/contracts";
 /** What one user-facing claim is worth. Five values, fixed by #71. */
 export type EvidenceKind = "observed" | "derived" | "inferred" | "demo" | "unavailable";
 
-export const EVIDENCE_KINDS: readonly EvidenceKind[] =
-  ["observed", "derived", "inferred", "demo", "unavailable"] as const;
+export const EVIDENCE_KINDS = [
+  "observed",
+  "derived",
+  "inferred",
+  "demo",
+  "unavailable"
+] as const satisfies readonly EvidenceKind[];
 
 export interface EvidenceLabel {
   kind: EvidenceKind;
@@ -46,6 +51,9 @@ export interface EvidenceModeInput {
  * Returns null when the authority has not been established yet.
  */
 export function resolveEvidenceMode(input: EvidenceModeInput): EvidenceMode | null {
+  // demoMode is validated as a real boolean at the settingsStore boundary
+  // (load() rejects non-boolean persisted values, see settingsStore.ts), so no
+  // Boolean() coercion is needed here — the string "false" can never arrive.
   if (input.demoMode) return "demo";
   if (input.healthMode === "docker") return "live";
   if (input.healthMode === "mock") return "mock";

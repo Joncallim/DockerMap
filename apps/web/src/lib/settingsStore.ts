@@ -40,11 +40,21 @@ function load(): Settings {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_SETTINGS;
-    const parsed = JSON.parse(raw) as Partial<Settings>;
+    const parsed: unknown = JSON.parse(raw);
+    // demoMode is load-bearing for evidence classification (resolveEvidenceMode
+    // trusts it as a real boolean): reject non-object payloads and any persisted
+    // value that is not a boolean — fall back to defaults, never coerce (G-01).
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return DEFAULT_SETTINGS;
+    }
+    const candidate = parsed as Partial<Settings>;
+    if (typeof candidate.demoMode !== "boolean") {
+      return DEFAULT_SETTINGS;
+    }
     return {
       ...DEFAULT_SETTINGS,
-      ...parsed,
-      auth: { ...DEFAULT_SETTINGS.auth, ...parsed.auth }
+      ...candidate,
+      auth: { ...DEFAULT_SETTINGS.auth, ...candidate.auth }
     };
   } catch {
     return DEFAULT_SETTINGS;

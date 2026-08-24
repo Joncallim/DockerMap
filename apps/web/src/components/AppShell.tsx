@@ -170,6 +170,10 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
         ? "warning"
         : "healthy";
 
+  // In demo mode no connection can exist (utils/api.ts:30 short-circuits before
+  // any fetch), so the connection dot is neutral — never a pulsing green "healthy".
+  const connReachable = evidenceMode !== "demo" && Boolean(health?.dockerReachable);
+
   const ctx = {
     model,
     loading,
@@ -212,9 +216,14 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
           </nav>
 
           <div className="rail-foot">
-            <div className={`conn conn-${health?.dockerReachable ? "up" : "down"}`}>
-              <StateDot state={health?.dockerReachable ? "healthy" : "offline"} pulse={health?.dockerReachable} />
-              <span className="conn-mode">{modeLabel(evidenceMode)} Engine</span>
+            <div className={`conn conn-${connReachable ? "up" : "down"}`}>
+              <StateDot
+                state={connReachable ? "healthy" : evidenceMode === "demo" ? "unknown" : "offline"}
+                pulse={connReachable}
+              />
+              <span className="conn-mode" role="status" aria-live="polite">
+                {modeLabel(evidenceMode)} Engine
+              </span>
             </div>
             <p className="conn-msg">{health?.message ?? "Connecting to daemon…"}</p>
           </div>

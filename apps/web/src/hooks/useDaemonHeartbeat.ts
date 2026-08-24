@@ -37,7 +37,14 @@ export function useDaemonHeartbeat() {
       });
       setHealth((current) =>
         current
-          ? { ...current, status: "degraded", message: "Live stream interrupted" }
+          ? {
+              ...current,
+              status: "degraded",
+              message: "Live stream interrupted",
+              // Conservative: drop dockerReachable so the connection dot turns
+              // offline with the interruption message instead of staying green.
+              dockerReachable: false
+            }
           : current,
       );
     });
