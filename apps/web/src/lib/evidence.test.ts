@@ -58,6 +58,13 @@ describe("evidence vocabulary", () => {
     }
     // Unrecognized health mode value falls through to null.
     expect(resolveEvidenceMode({ demoMode: false, healthMode: "other" as RuntimeMode })).toBeNull();
+    // G-15: correct behavior resumes — deterministic per input, no hidden state.
+    expect(resolveEvidenceMode({ demoMode: false, healthMode: "mock" })).toBe(
+      resolveEvidenceMode({ demoMode: false, healthMode: "mock" })
+    );
+    expect(resolveEvidenceMode({ demoMode: false, healthMode: "docker" })).toBe(
+      resolveEvidenceMode({ demoMode: false, healthMode: "docker" })
+    );
   });
 
   it("6. claimAuthority maps modes to the correct authority", () => {
@@ -91,17 +98,19 @@ describe("evidence vocabulary", () => {
     });
   });
 
-  it("9. type-level: unavailable cannot be used as a numeric value without narrowing", () => {
+  it("9. type-level: unavailable value is null (compile-time gate via @ts-expect-error)", () => {
     const claim: Claim<number> = unavailable("Not wired");
-    let threw = false;
-    try {
-      // This must be a compile error: value is possibly 'null' on the unavailable arm.
+    // This must be a compile error: value is possibly 'null' on the unavailable arm.
+    if (false) {
       // @ts-expect-error TS18047: 'claim.value' is possibly 'null'.
       claim.value.toFixed(1);
-    } catch {
-      threw = true;
     }
-    expect(threw).toBe(true);
+    // The gate is compile-time: the @ts-expect-error above is self-checking — if
+    // the TS18047 error ever disappears, the now-unused directive itself fails
+    // `npm run typecheck`. The `if (false)` keeps the statement from running at
+    // runtime (vitest strips types but keeps statements), so the null invariant
+    // is asserted directly below instead of via a misleading try/catch wrapper.
+    expect(claim.value).toBeNull();
   });
 
   it("10. constructors produce the expected Claim shapes", () => {
