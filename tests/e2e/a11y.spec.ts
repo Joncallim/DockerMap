@@ -173,6 +173,11 @@ test.describe("responsive and accessibility matrix", () => {
       await askCopilot.fill("what changed recently?");
       await askCopilot.press("Enter");
       await expect(askCopilot).toBeFocused();
+      // U6: the rendered answer must carry the not-collected copy and NO
+      // references — changeAnswer returns references: [] (Q7), so the refs
+      // rail must not render.
+      await expect(page.locator(".copilot-answer")).toContainText("Update status: Not collected — Update checks not wired — DockerMap does not query registries.");
+      await expect(page.locator(".copilot-refs")).toHaveCount(0);
 
       await openRoute(page, "/", "dark");
       await page.keyboard.press("Tab");
