@@ -42,13 +42,18 @@ function load(): Settings {
     if (!raw) return DEFAULT_SETTINGS;
     const parsed: unknown = JSON.parse(raw);
     // demoMode is load-bearing for evidence classification (resolveEvidenceMode
-    // trusts it as a real boolean): reject non-object payloads and any persisted
+    // trusts it as a real boolean): reject non-object payloads and any PRESENT
     // value that is not a boolean — fall back to defaults, never coerce (G-01).
+    // A payload that merely OMITS demoMode (partial/legacy settings) is merged
+    // over the defaults by the spread below — its absence is not a value to
+    // coerce, and rejecting it wholesale would also drop unrelated keys like
+    // defaultRoute (the fresh-boot redirect in a11y.spec.ts:512 persists
+    // { defaultRoute: "/map" } alone and must keep working).
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       return DEFAULT_SETTINGS;
     }
     const candidate = parsed as Partial<Settings>;
-    if (typeof candidate.demoMode !== "boolean") {
+    if ("demoMode" in candidate && typeof candidate.demoMode !== "boolean") {
       return DEFAULT_SETTINGS;
     }
     return {
