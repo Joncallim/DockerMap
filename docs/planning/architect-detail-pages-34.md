@@ -112,7 +112,7 @@ All labels below are from the published snapshot; no values are fabricated.
 - Impact band: `containers.length`, resolved consumers, unresolved consumers, and distinct resolved service states.
 - Overview panel: image reference, the same qualified sample consumer status (an empty `status` renders the `Unavailable image status` fallback), consumer count.
 - Connected containers panel: every `containers` entry linked when resolvable, with service state and role/status already available on the model.
-- Configuration/internals panel: exact image reference and the same sample consumer status value with its unavailable fallback; do not claim digest, local image ID, tag freshness, size, creation date, layers, or update availability. The current service `updateAvailable` value is stub-derived (`model.ts:236-255`) and must not appear as real image metadata.
+- Configuration/internals panel: exact image reference and the same sample consumer status value with its unavailable fallback; do not claim digest, local image ID, tag freshness, size, creation date, layers, or update availability. The former `Service.updateAvailable` field was removed in #72 (update status is not collected in any mode) — do not reintroduce update-availability claims as image metadata.
 - Edges: `derive_images` groups the snapshot containers by exact image string; `ImageRecord.containers` is sufficient for image-to-container usage. No image node exists in `RuntimeMap`, so do not manufacture one.
 
 #### Redaction boundary

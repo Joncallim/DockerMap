@@ -30,7 +30,8 @@ entry. The rail foot shows the engine connection (Docker or Mock) as a state dot
 
 The command center answers *"what needs attention?"* in under five seconds: a compact metric
 strip, an attention list, recent change, a causal chain when something is wrong, a map
-preview, and pending updates.
+preview, and an update-status tile (update checks are not wired, so it reports "Not
+collected" — see #72).
 
 ![Home command center](../screenshots/command-center.png)
 
@@ -54,9 +55,10 @@ inside Configuration.
 
 ## Change Center
 
-Change is a first-class story: a filterable timeline of deploys, image updates, restarts,
+Change is a first-class story: a filterable timeline of deploys, restarts,
 failures, and recoveries. Markers are state-coloured. (Until daemon change collectors land,
-this view is clearly labelled as a sample timeline.)
+this view is clearly labelled as a sample timeline.) Update status is not collected — no
+image-update entries exist on the timeline (#72).
 
 ![Change Center](../screenshots/change-center.png)
 
