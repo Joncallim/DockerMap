@@ -400,3 +400,34 @@ Ordered, smallest reversible commits. Each step should leave `npm run check` gre
 10. That nothing in `packages/contracts/` or `crates/` changed, and that `Claim` gained no field beyond `kind`/`value`/`detail` (R10, epic #68 boundary).
 11. Actual `npm run check` output, re-run by the reviewer — not the PR body's claim (G-09).
 12. Whether the GitHub issue #71 body matches `/tmp/dm61-child-1.md`, which this pass could not confirm (see "Could not verify").
+
+## Architect pass 2
+
+### Re-verification summary
+- AppShell.tsx:146 — CONFIRMED. Note the ternary's structure: `health?.mode === "docker"` is false when `health` is undefined/null, so today **loading/error/unreachable renders "Mock Engine"**. This interpretive fact is load-bearing below.
+- AppShell.tsx:198 — CONFIRMED (badge is the sole render site of `mode`).
+- dockermap.spec.ts:29 (`Mock Engine|Docker Engine`), :507 (`Docker Engine`) — CONFIRMED. Consequence: :29 can pass **vacuously during loading** today, because null already renders "Mock".
+- primitives.tsx:63 `{hint && ...}` — CONFIRMED (falsy-hint pattern exists in the codebase; relevant to any label rendered the same way).
+- api.ts:30 demo short-circuit before fetch — CONFIRMED; consistent with demo-first ordering in resolveEvidenceMode.
+- demoData.ts:176-177 reason string — CONFIRMED; single-sourcing it into EvidenceMode is correct, no duplicate string introduced.
+- model.ts:251 (no mode param), :321 (hash-fabricated `updateAvailable`) — CONFIRMED; this slice classifies nothing in model.ts, which is consistent with vocabulary-only scope (bindings deferred).
+- context.tsx:5-12 — CONFIRMED; `evidenceMode` as a REQUIRED (nullable) field is the right choice — optional would re-introduce silent absence.
+- index.ts:49,447,469 + main.rs:339 — CONFIRMED: mock travels the real HTTP path, so `health.mode === "mock"` is genuinely distinguishable from null. This means pass-1's null->"Mock" mapping is **not** forced by any ambiguity in the data.
+- 7 fixtures constructing AppContextValue — CONFIRMED; "typecheck fails in 8 places — intended" is coherent (7 fixtures + provider site).
+
+### Findings
+1. **P1 — null -> "Mock" display mapping is a silent fallback and re-encodes the exact defect class this slice exists to kill.** Pass-1 maps null -> "Mock" explicitly "to preserve today's rendering." Today's rendering is a mislabel: when health is unresolved (loading), failed, or the daemon is unreachable, the badge says "Mock Engine" although no mock data is being served. The design itself defines the correct tool — the `unavailable` kind / "Not collected" — and then declines to use it at the one site where the mode is genuinely unknown. The citations prove mock is distinguishable from null (real HTTP path, main.rs:339), so there is no ambiguity forcing this. **Amendment (binding):** null maps to an explicit unknown state — e.g. badge "Connecting…" / "Unknown Engine", or route through the unavailable kind — never "Mock". Genuine mock (health.mode === "mock") keeps "Mock". DM-06 label truthfulness is otherwise fine ("Sample data", "Not collected" are honest; the identity-family separation from identity.ts:11-42 is correct and deliberate).
+2. **P2 — G-15 "live-resumes" assertion via renderToStaticMarkup cannot observe a transition.** Static markup is one-shot; rendering twice with different inputs proves purity of resolveEvidenceMode, not resumption of a mounted component. **Amendment:** either (a) derive evidenceMode inline in the AppShell render body (per-render, no memo) and assert purity of resolveEvidenceMode in evidence.test.ts, or (b) use a rerender-capable renderer for the mock->live transition. Option (a) is simpler and preferred.
+3. **P2 — DM-09 re-derivation mechanism is unspecified.** "Populated in AppShell from resolveEvidenceMode(...)" does not pin whether this is inline per-render or memoized. If useMemo, deps MUST be exactly `[settings.demoMode, health?.mode]`; a stale memo re-introduces the stuck-label failure under refresh. Make the choice explicit in the doc (inline derivation recommended; inputs are cheap).
+4. **P2 — G-19 coverage is claimed but only partially closed.** The compile-error arm prevents rendering unavailable **as 0**; it does not prevent rendering unavailable **as nothing**. If any consumer renders `{value && ...}` / `{hint && ...}` (pattern exists, primitives.tsx:63), a null value or empty label vanishes silently. **Amendment (binding):** the unavailable arm MUST render its "Not collected" label in Metric/Panel/Tag, and evidence-render.test.tsx must assert non-empty label text for all five kinds — not merely that renderToStaticMarkup doesn't throw.
+5. **P3 — the compile-error unavailable arm is real, with two contingencies.** The @ts-expect-error test is self-checking (an unused directive is itself a typecheck error), so the invariant holds **provided** (a) apps/web has strictNullChecks on and (b) `tsc --noEmit` covers evidence.test.ts, not only src. Implementer must verify both; if (a) is off, the entire "inexpressible" claim degrades to runtime-null.
+6. **P3 — register honesty spot-checks.** G-03 N/A: honest (no e2e this slice; deferral to #72-#76 carries binding DM-02/G-03 notes). G-01: genuinely covered — closed union, exhaustive Record, throwing lookup, type-only contracts import, zero schema surface. G-19: claimed covered — downgrade to partial per finding 4. No other N/A entries contradict the citations.
+7. **P3 — evidenceLabel() throwing on unknown kind is acceptable defense-in-depth** (unreachable for typed callers given the exhaustive Record). Keep the throw test; no error-boundary requirement for this slice.
+
+### E2E/test-plan amendments
+- Required by finding 1: after the null-display fix, re-verify dockermap.spec.ts:29. It currently passes vacuously during loading; post-fix it will only pass once health actually resolves to mock. Playwright's auto-waiting toBeVisible should absorb this against the mock fixture; if it flakes, the test was vacuous and needs an explicit wait on the resolved badge. :507 unaffected (docker fixture resolves to live).
+- Required by finding 2: add a rerender-based (or purity + inline-derivation) G-15 test; do not ship the static-markup version as the sole live-resumes evidence.
+- Required by finding 4: render test asserts visible "Not collected" text for the unavailable kind across Panel/Tag/Metric.
+
+### Verdict
+sound-with-amendments — the vocabulary core (closed union, no default kind, required context field, compile-error unavailable arm, demo-first resolution) is sound and matches every confirmed citation. The null->"Mock" mapping (finding 1) must be amended pre-merge; findings 2-4 are binding test/mechanism corrections.
