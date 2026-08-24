@@ -1,6 +1,6 @@
 import { computeImpact, type Service, type SystemModel } from "./model";
 import { identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "./identity";
-import { UPDATE_STATUS_DETAIL, UPDATE_STATUS_LABEL } from "./updates";
+import { UPDATE_STATUS_CLAIM, UPDATE_STATUS_LABEL } from "./updates";
 
 /**
  * The Copilot interprets the topology. It does not control anything and it does
@@ -169,7 +169,7 @@ function changeAnswer(q: string): CopilotAnswer {
   return {
     question: q,
     headline: "Recent and pending change",
-    body: [`Update status: ${UPDATE_STATUS_LABEL} — ${UPDATE_STATUS_DETAIL}.`],
+    body: [`Update status: ${UPDATE_STATUS_LABEL} — ${UPDATE_STATUS_CLAIM.detail}.`],
     references: []
   };
 }

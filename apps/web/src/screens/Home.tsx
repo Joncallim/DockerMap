@@ -8,7 +8,7 @@ import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { Bar, EmptyState, ErrorState, Loading, Metric, Panel, StatePill, Tag } from "../components/primitives";
 import { resourceFor } from "../lib/stubs";
-import { UPDATE_STATUS_DETAIL, UPDATE_STATUS_LABEL } from "../lib/updates";
+import { UPDATE_STATUS_CLAIM, UPDATE_STATUS_LABEL } from "../lib/updates";
 
 export default function Home() {
   const { model, loading, error } = useApp();
@@ -42,7 +42,7 @@ export default function Home() {
           value={<span className={summary.attention ? "s-warning-text" : ""}>{summary.attention}</span>}
         />
         <Metric label="Offline" value={<span className={summary.offline ? "s-offline-text" : ""}>{summary.offline}</span>} />
-        <Metric className="metric-updates" label="Updates" value={UPDATE_STATUS_LABEL} sub={UPDATE_STATUS_DETAIL} />
+        <Metric className="metric-updates" label="Updates" value={UPDATE_STATUS_LABEL} sub={UPDATE_STATUS_CLAIM.detail} />
       </section>
 
       <div className="grid-2">
