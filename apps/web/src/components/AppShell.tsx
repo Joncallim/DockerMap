@@ -16,6 +16,20 @@ import RouteFocusManager from "./RouteFocusManager";
 import { StateDot, Tag } from "./primitives";
 import { UNAVAILABLE_USER } from "../lib/identity";
 
+/** Display label for the evidence-mode pill. null (unresolved/unreachable health) is an explicit unknown — never "Mock". */
+export function modeLabel(evidenceMode: EvidenceMode | null): "Demo" | "Docker" | "Mock" | "Unknown" {
+  switch (evidenceMode) {
+    case "demo":
+      return "Demo";
+    case "live":
+      return "Docker";
+    case "mock":
+      return "Mock";
+    default:
+      return "Unknown";
+  }
+}
+
 interface NavItem {
   to: string;
   label: string;
@@ -148,7 +162,6 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
     demoMode: settings.demoMode,
     healthMode: health?.mode ?? null
   });
-  const mode = evidenceMode === "demo" ? "Demo" : evidenceMode === "live" ? "Docker" : evidenceMode === "mock" ? "Mock" : "Unknown";
   const overall = !summary
     ? "unknown"
     : summary.offline > 0
@@ -201,7 +214,7 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
           <div className="rail-foot">
             <div className={`conn conn-${health?.dockerReachable ? "up" : "down"}`}>
               <StateDot state={health?.dockerReachable ? "healthy" : "offline"} pulse={health?.dockerReachable} />
-              <span className="conn-mode">{mode} Engine</span>
+              <span className="conn-mode">{modeLabel(evidenceMode)} Engine</span>
             </div>
             <p className="conn-msg">{health?.message ?? "Connecting to daemon…"}</p>
           </div>
