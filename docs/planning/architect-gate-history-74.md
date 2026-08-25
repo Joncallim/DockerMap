@@ -7,7 +7,7 @@
 
 **This document is BINDING on the implementer.** Any deviation is a P1 finding unless the deviation is first amended *into this file* in the same PR (G-14, G-23).
 
-**Scope guard:** web-only. ZERO changes to `packages/contracts`, `crates/`, `apps/api`. No new endpoints, no network calls — the runtime stays network-quiet (DM-01).
+**Scope guard (post-review amended):** web-only. ZERO changes to `packages/contracts`, `crates/`, `apps/api`. No new endpoints, no network calls — the runtime stays network-quiet (DM-01). The provenance-race remediation may change only the web evidence/hook/context path named in §9: `lib/evidence.ts`, `hooks/useApiResource.ts`, `hooks/useSystemModel.ts`, `context.tsx`, `components/AppShell.tsx`, the two history generators/screens, and their tests/fixtures. `lib/model.ts`, `SystemModel`, and `buildModel` remain unchanged; provenance is a fetch/model-state sidecar, not daemon/domain data.
 
 ---
 
@@ -67,38 +67,57 @@ Exactly five files: `lib/stubs.ts`, `screens/Changes.tsx`, `screens/Home.tsx`, `
 
 ## 2. Decisions — Q1-Q10 resolved, dissents D(a)-D(g) quoted and ruled on
 
-### Q1 / dissent (a) — Gate mechanism: **source-gate inside `changeFeed`/`causalChain`, taking a required `EvidenceMode | null` and returning a `Claim`.**
+### Q1 / dissent (a) — Gate mechanism (post-review amended by §9): **source-gate inside `changeFeed`/`causalChain`, taking required evidence mode plus required model provenance and returning a `Claim`.**
 
 > **L6 (A):** "Source-gate: `changeFeed(model, authority)` returns `Claim<ChangeEvent[]>` — `demoSample(events)` when authority===\"sample\", `unavailable(\"history not collected\")` otherwise. 1 lib change; Changes.tsx:21/Home.tsx:22 narrow on claim.kind. Blast radius: 3 call sites + tests. Real feed later slots into the demo arm — call sites unchanged… (recommendation) A. Single point of truth in changeFeed… ~30 lines vs B's duplicated branches."
 > **L4 (F3):** "Home.tsx has no memo at all — …a gate here is simpler" (render-side).
 > **L3 (F4):** "gating in stubs.ts covers both; gating in screens duplicates."
 > **#71 D10 `:277-279`:** `stubs.ts:86 changeFeed output | demo/mock → demo`; `Changes.tsx:43 timeline, Home.tsx:118 Recent change | live → unavailable — invented timestamps must not reach a live surface`.
 
-**Decision: L6(A) upheld; L4/L3's render-gate rejected as fail-open.** D10 assigns an outcome to the *source* row (`stubs.ts:86`) as well as the two render rows — one gate satisfies all three. The decisive argument is G-24 (fail closed), not line count: a render-gate leaves `changeFeed(model)` callable, unguarded, by any future screen — the unsafe path stays *available* and merely happens to be unused, which is exactly the "fail-open is the path of least code" pattern G-24 arrests. The source-gate makes it **type-impossible** to obtain events without declaring an authority.
+**Decision: L6(A)'s source-gate is upheld, but its authority-only predicate is superseded by the binding Option A provenance ruling in §9.** D10 assigns an outcome to the *source* row (`stubs.ts:86`) as well as the two render rows — one gate satisfies all three. The decisive argument is G-24 (fail closed): a render-gate leaves an unsafe generator callable, while an authority-only source-gate still mistakes retained bytes for newly selected demo bytes. The source gate therefore requires both declared authority and the provenance stamped on the model's resource pair.
 
 Binding signatures (`lib/stubs.ts`):
 
 ```ts
-export function changeFeed(model: SystemModel, mode: EvidenceMode | null): Claim<ChangeEvent[]>;
-export function causalChain(model: SystemModel, mode: EvidenceMode | null): Claim<CausalStep[]>;
+export function changeFeed(
+  model: SystemModel,
+  mode: EvidenceMode | null,
+  modelProvenance: ModelProvenance | null
+): Claim<ChangeEvent[]>;
+export function causalChain(
+  model: SystemModel,
+  mode: EvidenceMode | null,
+  modelProvenance: ModelProvenance | null
+): Claim<CausalStep[]>;
 ```
 
-Binding body shape (both):
+Binding guard (shared private helper in `lib/stubs.ts`; both generators call it before reading `model` or `Date.now()`):
 
 ```ts
-if (claimAuthority(mode) !== "sample") return CHANGE_HISTORY_CLAIM; // or CAUSAL_CHAIN_CLAIM
+function maySynthesizeHistory(
+  mode: EvidenceMode | null,
+  modelProvenance: ModelProvenance | null
+): boolean {
+  if (claimAuthority(mode) !== "sample") return false;
+  return (
+    (mode === "demo" && modelProvenance === "demo") ||
+    (mode === "mock" && modelProvenance === "daemon")
+  );
+}
+
+if (!maySynthesizeHistory(mode, modelProvenance)) return CHANGE_HISTORY_CLAIM; // or CAUSAL_CHAIN_CLAIM
 // …existing synthesis, unchanged…
 return demoSample(events);
 ```
 
 Sub-decisions, all binding:
 
-1. **The parameter is `EvidenceMode | null`, not `ClaimAuthority`.** `AppContext` carries exactly `EvidenceMode | null`, so the call site is `changeFeed(model, evidenceMode)` with no intermediate transformation — a call site cannot pass a hard-coded `"sample"`. `claimAuthority()` stays the single mode→authority mapping, called *inside* `stubs.ts`.
-2. **The parameter is required. No default, no optional.** An `= "demo"`-shaped default is R4/G-24's naive default and would silently sample-tag a live surface.
-3. **The guard is written as `!== "sample"`, never `=== "live"`.** `"none"` (the null-authority window) must take the unavailable branch. Fail-closed by construction; a future fourth mode inherits the safe arm.
-4. **`causalChain` returns `demoSample([])` instead of `null` when no offline root exists.** A `Claim<CausalStep[]> | null` union would force every call site to handle three states; `[]` carries identical information. The demo render keeps today's behaviour by checking `value.length > 0`.
+1. **Both parameters are required:** `EvidenceMode | null` and `ModelProvenance | null`. No default and no optional parameter. `AppContext` carries both production values. Call sites pass `changeFeed(model, evidenceMode, modelProvenance)` directly; they do not derive, hard-code, or relabel provenance.
+2. **`claimAuthority()` remains the single mode→authority mapping, but authority is necessary, not sufficient.** Demo samples require a demo-fetched model. Mock samples require a daemon-fetched model and the explicit `mode === "mock"` arm. `live`, `null`, unknown provenance, and every mode/provenance mismatch return unavailable.
+3. **The guard is positive allow-listing, never `mode !== "live"`, `provenance !== "daemon"`, or an authority-only check.** A future mode/provenance value inherits the safe unavailable arm. The helper runs before any model iteration or clock read.
+4. **`causalChain` returns `demoSample([])` instead of `null` only in an authorized matching sample arm.** A `Claim<CausalStep[]> | null` union is still rejected; `[]` carries identical information. The sample render keeps today's behaviour by checking `value.length > 0`.
 5. **Do not narrow the return type with `Extract<Claim<T>, { kind: "demo" | "unavailable" }>`.** It silently evaluates to `never` for the non-unavailable arm (whose `kind` is a 4-member union, so it does not extend `{kind:"demo"|"unavailable"}`). Return plain `Claim<T>`; call sites narrow on `kind === "unavailable"` first.
-6. **The synthesis body itself is not otherwise modified** — same emission rules, same `sort`/`slice`, same collision-safe `routeName`. #74 gates the feed; it does not redesign it.
+6. **The synthesis body itself is not otherwise modified** — same emission rules, same `sort`/`slice`, same collision-safe `routeName`. #74 gates the feed; it does not redesign it. A future host collector is a separate host arm and cannot be inserted into this demo/mock synthesis arm (§9.6).
 
 ### Q2 / dissent (b) — Home ownership and the no-overlap call-out
 
@@ -158,10 +177,11 @@ body: [
 > **L5 (#7):** "'mock' mode undefined for the gate — e2e ambiguity."
 > **L6:** "claimAuthority maps demo AND mock → 'sample' (evidence.ts:73-74); e2e + zz-screenshot run the mock stack, so mock must keep the sample timeline — the 'sample vs host' split is exactly the right gate, and claimAuthority(null)='none' fail-closes pre-resolution."
 
-**Decision: L6 upheld, matching D10 `:277` (`demo / mock → demo`) and #71 Q5 (`:309`).** The gate keys on `claimAuthority(mode) === "sample"`, which is true for both `demo` and `mock`. Consequences, all binding:
+**Decision (post-review amended):** mock still samples, but only through the explicit matching pair `mode === "mock" && modelProvenance === "daemon"`; demo samples only through `mode === "demo" && modelProvenance === "demo"`. Authority-only gating is rejected by §9. Consequences, all binding:
 
-- The default e2e stack (mock) shows the **sample timeline tagged "Sample data"** — *not* "Not collected". Any assertion written the other way is wrong (§3 R6).
-- The **null-authority window takes the unavailable arm**. In `mock` this means /changes briefly renders "Not collected" until the first SSE `snapshot` event arrives, then flips to the tagged samples. That is the correct direction (fail-closed → more information, never sample-as-observed) and is asserted by the wiring test's `evidenceMode: null` case. In `demo` there is no such window: `settings.demoMode` is known synchronously (`resolveEvidenceMode` checks it first).
+- The default e2e stack (mock) shows the **sample timeline tagged "Sample data"** after its daemon-fetched model pair lands — *not* "Not collected". Any assertion written the other way for the settled mock state is wrong (§3 R6).
+- **Every unresolved or mismatched window takes the unavailable arm:** `mode === null`; demo authority with retained daemon provenance (live→demo); mock authority with retained demo provenance (demo→mock); or a split snapshot/runtime provenance pair. The screens show "Not collected", zero rows/chips, and no "Sample data" until a matching same-generation pair is published. This is the correct direction (fail-closed → more information, never sample-as-observed) and is asserted by V2/V3.
+- In demo, `settings.demoMode` is known synchronously, but the model provenance is asynchronous. Therefore live→demo now intentionally has a short unavailable window; the earlier statement that demo has no such window is withdrawn.
 - The demo e2e leg must flip `settings.demoMode` to `true` via the `localStorage["dockermap.settings.v1"]` init-script pattern at `a11y.spec.ts:560-562`. Payload: `{"demoMode": true}` **alone** — per DM-11, absent keys merge over defaults and present-but-invalid keys are rejected, so a single-key payload is both valid and the minimal one.
 
 ### Q6 / dissent (f) — Exact strings (binding; no paraphrasing anywhere)
@@ -178,12 +198,13 @@ const CAUSAL_CHAIN_DETAIL   = "Event causality not reconstructed — DockerMap o
 
 export const CHANGE_HISTORY_CLAIM = unavailable(CHANGE_HISTORY_DETAIL);
 export const CAUSAL_CHAIN_CLAIM   = unavailable(CAUSAL_CHAIN_DETAIL);
-export const NOT_COLLECTED_LABEL  = evidenceLabel("unavailable").label; // "Not collected" — for copilot, which holds no claim object at the render site
+export const NOT_COLLECTED_LABEL  = evidenceLabel(CHANGE_HISTORY_CLAIM.kind).label; // "Not collected" — derive from the claim, mirroring updates.ts
 export const SAMPLE_EMPTY_TITLE   = "No sample change";
 export const SAMPLE_EMPTY_BODY    = "The sample topology has no change events right now.";
+export const SAMPLE_FILTERED_EMPTY_BODY = "No sample change events match this filter.";
 ```
 
-Wording rationale (DM-06): each detail states **what is missing** and **why it stays missing**, and claims nothing about whether changes occurred. Both mirror `updates.ts:19`'s house voice and reuse the true half of the `STUB_CHANGES_NOTICE` sentence being deleted. `NOT_COLLECTED_LABEL` and `UPDATE_STATUS_LABEL` are both derived from `EVIDENCE_LABELS` in `evidence.ts` and therefore cannot drift (R1); the two names exist because they belong to two different claims.
+Wording rationale (DM-06/G-23): each unavailable detail states **what is missing** and **why it stays missing**, and claims nothing about whether changes occurred. `SAMPLE_EMPTY_BODY` is the one canonical true-empty body on both Home and Changes. `SAMPLE_FILTERED_EMPTY_BODY` is used only when `events.length > 0 && filtered.length === 0`; it says the filter has no match rather than falsely claiming the sample feed has no events. `NOT_COLLECTED_LABEL` derives from `CHANGE_HISTORY_CLAIM.kind` (not a duplicated `"unavailable"` literal), mirroring `updates.ts`, so the display label and claim cannot drift.
 
 **Deleted copy (must not survive anywhere):** `"Sample timeline — change collectors not yet wired"`, `"No change recorded"`, `"Deployments, restarts and failures will appear here."`, `"No recent change"`, `"Deployments and restarts will appear here."` — every one of them implies that collection is happening.
 
@@ -239,10 +260,10 @@ Wording rationale (DM-06): each detail states **what is missing** and **why it s
 | ① | Gate only `Changes.tsx` → `Home.tsx:22`/`:118` and the causal panel `:62` keep leaking samples in live | Q1's source-gate: there is no un-gated way to obtain events. Q2 assigns both Home panels to #74; V1 asserts both. |
 | ② | `changeFeed` stays synthesized for live consumers; `Date.now()` re-rolls per call → non-deterministic tests | The live arm returns a module-level frozen-shape constant; §1.5.5 shows `stubs.ts:91` becomes unreachable outside sample authority, and V3's clock spy proves it. |
 | ③ | Rows hidden but the `STUB_CHANGES_NOTICE` hint kept → label leak | Q7 deletes the constant outright (compile error if referenced); V1's live arm asserts no `\bSample\b` anywhere on the screen. |
-| ④ | DM-12/R7 model-only memo → stale synthetic rows after a mode flip | Every memo lists `[model, evidenceMode]` (§4.2); V2's bidirectional `act()` flips are the proof. |
+| ④ | DM-12/R7 model-only memo, or authority-only gating, publishes stale identifiers after a mode flip | Every memo lists `[model, evidenceMode, modelProvenance]`; the source gate requires an allow-listed mode/provenance pair. V2 holds model+provenance fixed while flipping only `demoMode` in both directions and proves the retained real sentinel never renders or acquires a Sample label. |
 | ⑤ | Filter chips filtering to a permanently empty list ("no restarts exist") | Q8 hides the row under non-sample authority; e2e asserts zero `.filter-chip` in the live leg. |
 | ⑥ | ~~Copilot invented counts~~ | **INVALID post-#72** — `changeAnswer` is claim-based and does not call `changeFeed`. Q4 addresses the residual omission instead. |
-| ⑦ | Mock mode undefined for the gate | Q5 pins it: `mock` → sample → tagged timeline; `null` → unavailable. |
+| ⑦ | Mock mode undefined for the gate | Q5 pins the exact allow-list: `mock` + `daemon` provenance → tagged sample; all other mock provenance and `null` → unavailable. |
 
 ### 3.2 Further risks specific to this design
 
@@ -251,7 +272,7 @@ Wording rationale (DM-06): each detail states **what is missing** and **why it s
 | R1 | **Hook-order violation on Home.** `Home.tsx:16-18` early-returns *before* line 22. Adding `useMemo` at the current derivation site makes it a conditional hook — a runtime crash on the first `loading` render, and an ESLint `rules-of-hooks` error. | The two `useMemo`s are hoisted to **immediately after `useApp()` at `:14`**, above every early return, with `model ? … : CHANGE_HISTORY_CLAIM` inside. §4.2 specifies the exact placement. |
 | R2 | **`Extract<Claim<T>, …>` evaluates to `never`** for the value arm (4-member `kind` union), producing a return type that accepts only the unavailable arm and failing the demo path with a confusing error. | Q1.5: return plain `Claim<T>`; narrow with `kind === "unavailable"`. |
 | R3 | **Compile break in `no-synthetic-updates.test.ts:103`** (one-arg `changeFeed`) is easy to "fix" by deleting the loop, silently dropping the update-vocabulary tripwire. | Q10 requires the loop to survive with `changeFeed(model, "demo")` unwrapped, plus a comment; V6 requires the #72 suites green *and unweakened*. |
-| R4 | **Demo `Date.now()` re-roll per render** → `makeEvent` ids change every render → new React keys → the whole list remounts (and any e2e/unit assertion on a stable row is flaky). Today `Home.tsx:22` already does this. | The Home memo (R1) makes the demo feed stable per `[model, evidenceMode]`, matching Changes. The demo arm deliberately keeps `Date.now()` (a fixed base would make "3d ago" drift meaningless); stability comes from memoisation, not from freezing the clock. |
+| R4 | **Demo `Date.now()` re-roll per render** → `makeEvent` ids change every render → new React keys → the whole list remounts. | The Home memo makes the demo feed stable per `[model, evidenceMode, modelProvenance]` **within one model generation**. A successful refresh publishes a new model object and intentionally re-rolls the sample feed; this pre-existing generation-to-generation behaviour is accepted for #74. |
 | R5 | **Two adjacent "Not collected" panels on live Home** (Recent change + What happened) read as boilerplate. | Accepted, deliberate: they carry **different details** (no recorded events vs. no causality reconstruction), which is precisely why Q6 defines two strings. Flagged for the #67 restyle, not solved here. |
 | R6 | **Mock-vs-live e2e trap.** Writing the "live" leg against `startMockStack()` and asserting "Not collected" fails: the mock stack resolves to `mock` → sample authority (§1.5.1). Conversely, asserting samples in the *demo* leg without the init-script flip tests nothing new. | §7 V4/V5 give the exact mechanism per leg (SSE interception for live; `localStorage` init-script for demo) and a named fallback if the intercept is unstable. |
 | R7 | **Screenshot churn.** `DESIGN_LANGUAGE.md:63` embeds `change-center.png`, whose panel hint text changes. **No screenshot harness exists in the tree** (§1.4). | Q: **do not rebuild the harness and do not regenerate the image in #74.** The prose at `:56-61` is updated to the gated reality; the PR body records "the change-center image predates the #74 hint copy"; regeneration is assigned to #76. Rebuilding an uncommitted Playwright harness is a slice of its own and is out of #74's scope. |
@@ -266,11 +287,11 @@ Wording rationale (DM-06): each detail states **what is missing** and **why it s
 ### 4.1 `screens/Changes.tsx`
 
 ```tsx
-const { model, loading, error, evidenceMode } = useApp();
+const { model, modelProvenance, loading, error, evidenceMode } = useApp();
 const [kind, setKind] = useState<ChangeEvent["kind"] | "all">("all");
 const history = useMemo(
-  () => (model ? changeFeed(model, evidenceMode) : CHANGE_HISTORY_CLAIM),
-  [model, evidenceMode]
+  () => (model ? changeFeed(model, evidenceMode, modelProvenance) : CHANGE_HISTORY_CLAIM),
+  [model, evidenceMode, modelProvenance]
 );
 const events = history.kind === "unavailable" ? [] : history.value;
 const filtered = kind === "all" ? events : events.filter((e) => e.kind === kind);
@@ -282,28 +303,32 @@ const filtered = kind === "all" ? events : events.filter((e) => e.kind === kind)
   {history.kind === "unavailable" ? (
     <EmptyState icon="history" title={evidenceLabel(history.kind).label} body={history.detail} />
   ) : filtered.length === 0 ? (
-    <EmptyState icon="history" title={SAMPLE_EMPTY_TITLE} body={SAMPLE_EMPTY_BODY} />
+    <EmptyState
+      icon="history"
+      title={SAMPLE_EMPTY_TITLE}
+      body={events.length === 0 ? SAMPLE_EMPTY_BODY : SAMPLE_FILTERED_EMPTY_BODY}
+    />
   ) : (
     <ol className="timeline">…rows unchanged…</ol>
   )}
 </Panel>
 ```
 
-`iconForKind` `:69-86` is **unchanged** (still exhaustive, still no default arm).
+`iconForKind` retains its exhaustive switch and **must be restored to readable multi-line form**. Immediately above the switch, restore the exact rationale comment `// No default swallow — a kind added to the union is a compile error.`; there is no `default` arm.
 
 ### 4.2 `screens/Home.tsx`
 
 ```tsx
-const { model, loading, error, evidenceMode } = useApp();
+const { model, modelProvenance, loading, error, evidenceMode } = useApp();
 // Hoisted ABOVE the early returns at :16-18 — a useMemo after a conditional
 // return is a rules-of-hooks violation (R1).
 const history = useMemo(
-  () => (model ? changeFeed(model, evidenceMode) : CHANGE_HISTORY_CLAIM),
-  [model, evidenceMode]
+  () => (model ? changeFeed(model, evidenceMode, modelProvenance) : CHANGE_HISTORY_CLAIM),
+  [model, evidenceMode, modelProvenance]
 );
 const chain = useMemo(
-  () => (model ? causalChain(model, evidenceMode) : CAUSAL_CHAIN_CLAIM),
-  [model, evidenceMode]
+  () => (model ? causalChain(model, evidenceMode, modelProvenance) : CAUSAL_CHAIN_CLAIM),
+  [model, evidenceMode, modelProvenance]
 );
 // …early returns…
 const changes = history.kind === "unavailable" ? [] : history.value.slice(0, 6);
@@ -323,7 +348,9 @@ const changes = history.kind === "unavailable" ? [] : history.value.slice(0, 6);
 ) : null}
 ```
 
-"Recent change" (replaces `:118-140`): same three-branch shape as §4.1, `className="panel-recent-change"`, demo-empty copy `SAMPLE_EMPTY_TITLE` / `"The sample topology has no recent change events."`, and `{c.kind}` replacing the dead `c.kind.replace("_", " ")` at `:125`.
+"Recent change" (replaces the old panel): same three-branch shape as §4.1, `className="panel-recent-change"`, true-empty copy `SAMPLE_EMPTY_TITLE` / `SAMPLE_EMPTY_BODY` (no inline body variant), and `{c.kind}` replacing the dead `c.kind.replace("_", " ")`.
+
+**G3 readability remediation is binding, not cosmetic:** restore `Home`'s outer return to a parenthesized multi-line JSX tree; put the header, each grid/stack, each `Panel`, each ternary arm, and each mapped row on separate indented blocks. Restore `ServiceRow` to a parenthesized multi-line `<li>` and `byState` to a multi-line function with the `order` declaration and `return` on separate lines. In `Changes`, restore the mapped `<li>`, route-title ternary, and `iconForKind` cases to multi-line blocks plus the exact exhaustive-switch comment in §4.1. Do not change behaviour while formatting; the purpose is to keep #75/#76-owned neighbors reviewable.
 
 **`className` on the three panels is required, not cosmetic (DM-02c):** Playwright strict mode breaks on shared selectors, and both `Home` and `Changes` will carry more than one `.panel-hint`. **No CSS rule is added** for these classes — they are test locators, exactly like `.metric-updates` (#72 Q3).
 
@@ -345,7 +372,7 @@ const changes = history.kind === "unavailable" ? [] : history.value.slice(0, 6);
 12. **Is `estimated: true` gone from `ChangeEvent`?** Yes, and locked by a type probe. `ResourceSample.estimated` stays for #73.
 13. **Is the change-center screenshot regenerated?** No — no harness exists; prose updated, staleness recorded in the PR body, regeneration assigned to #76.
 14. **Any contract/daemon/API change?** None. Web-only.
-15. **Exact user-visible strings (binding, no paraphrasing):** hints `Sample data` / `Not collected` (both from `evidenceLabel`, never hard-coded at a call site); details as in Q6; demo-empty copy `No sample change` + the two bodies in §4; Change Center `h1` `Change Center`; Home panel titles `Recent change`, `What happened` (unchanged).
+15. **Exact user-visible strings (binding, no paraphrasing):** hints `Sample data` / `Not collected` (both from `evidenceLabel`, never hard-coded at a call site); details as in Q6; sample true-empty copy `No sample change` + `The sample topology has no change events right now.` on both Home and Changes; filtered-empty body `No sample change events match this filter.` on Changes only; Change Center `h1` `Change Center`; Home panel titles `Recent change`, `What happened` (unchanged).
 
 ---
 
@@ -354,9 +381,9 @@ const changes = history.kind === "unavailable" ? [] : history.value.slice(0, 6);
 Per-lesson prose is deliberately **not** re-documented here — the registers are the single source of truth (#72 U9). Each id below names where this slice discharges it.
 
 **Arrested by this slice:**
-G-01 (schema-escape: every `EvidenceMode` value incl. `null` has a defined arm, `!== "sample"` not `=== "live"`) · G-03 (e2e asserts real mock output — §1.5.1 pins that mock shows *samples*) · G-08 (#72's `updates.ts`/`iconForKind`/chip-removal fixes are verified present at their anchored lines in §1, not assumed) · G-12 (screenshot: R7 rules no baseline is regenerated, so no un-enforced baseline is created) · G-14 (§2 + §5 — zero open questions) · G-15 (every live-arm negative is paired with a demo-arm resumption assertion; V3's clock spy asserts the demo path *does* call `Date.now()`) · G-19 (`Panel.hint` is always a non-empty label; no falsy suppression path) · G-22 (labels are visible text, never `title` attributes) · G-23 (`STUB_CHANGES_NOTICE`, the `stubs.ts:71-78` hand-off comment, and `DESIGN_LANGUAGE.md:56-61` all corrected in the same PR; §7 V6 includes a residual-copy grep) · G-24 (fail-closed: `none` authority → unavailable; required parameter; no defaults) · G-36 (§7 V2 — the wiring test ships in the same commit as the behaviour) · G-37 (§7 V3 — literal-preserving template-literal probes + a fire-test) · DM-01 (network-quiet: no collector, no endpoint, no fetch added) · DM-02 (a/c/e: assertions on real mock text; unique `panel-*` classes for every new locator; no `networkidle`) · DM-05 (identity fallbacks preserved — the demo-arm identity tests are moved, never dropped) · DM-06 (the whole slice; incl. the Q3 ruling that "*went offline*" is a transition claim) · DM-08 (the fix closes every consumer: both Home panels, Changes, copilot, and the source itself) · DM-09/DM-12 (`[model, evidenceMode]` deps + bidirectional flip tests) · DM-11 (the demo e2e leg uses a single-key `{"demoMode": true}` settings payload and runs the a11y spec before push).
+G-01 (schema-escape: every mode/provenance pair incl. `null` has an allow-listed or unavailable outcome) · G-03 (e2e asserts real mock output — settled mock + daemon provenance shows samples) · G-08 (#72 fixes and every remediation are re-read, not assumed) · G-12 (screenshot deferral remains R7) · G-14 (§2, §5, §9 — zero implementer choices) · G-15 (negative leak assertions pair with sample resumption and exact filtered-empty truth) · G-19 (non-empty labels/copy at every render) · G-22 (visible labels) · G-23 (all superseded authority-only rules and empty-copy variants are amended in this file; V6 residual greps) · G-24 (unknown/missing/mismatched provenance blocks synthesis) · G-36 (V2 holds the carrier fixed while mode alone changes) · G-37 (literal-preserving probes + fire-test) · DM-01 (network-quiet) · DM-02 (real mock semantics, unique locators, no `networkidle`) · DM-05 (identity fallbacks preserved and a real-name sentinel proves no leak) · DM-06 (no real identifier is ever Sample-labelled during live→demo) · DM-07 (the post-review defect was found by tracing `useApiResource`/`useSystemModel`; §9 now explicitly changes and tests that layer) · DM-08 (both source generators and all consumers close together) · DM-09/DM-12 (provenance is retained with the model; `[model, evidenceMode, modelProvenance]`; model-fixed transitions) · DM-11 (single-key demo settings payload).
 
-**N/A for this slice (no surface exists):** G-02 (no library-behaviour claim; React/Playwright behaviour is unchanged) · G-04, G-05, G-06, G-07, G-09, G-10, G-11, G-13, G-16, G-17, G-18 (no balance/telemetry/render-size/cache/visual-matrix surface) · G-20, G-21 (join/key semantics unchanged — the existing occurrence-qualified keys are preserved verbatim) · G-25, G-26, G-27, G-28, G-29, G-30, G-31, G-32, G-33, G-34, G-35 (no async/transaction/secret/env/queue/cleanup surface) · DM-03 (no daemon/API change → no live-Docker release gate; noted in the PR body) · DM-04 (no Rust) · DM-07 (no model/hook-layer change — `buildModel`, `useSystemModel`, `useApiResource` are untouched) · DM-10 (no release-artifact change).
+**N/A for this slice (no surface exists):** G-02 (no library-behaviour claim; React/Playwright behaviour is unchanged) · G-04, G-05, G-06, G-07, G-09, G-10, G-11, G-13, G-16, G-17, G-18 (no balance/telemetry/render-size/cache/visual-matrix surface) · G-20, G-21 (join/key semantics unchanged — the existing occurrence-qualified keys are preserved verbatim) · G-25, G-26, G-27, G-28, G-29, G-30, G-31, G-32, G-33, G-34, G-35 (no async/transaction/secret/env/queue/cleanup surface) · DM-03 (no daemon/API change → no live-Docker release gate; noted in the PR body) · DM-04 (no Rust) · DM-10 (no release-artifact change).
 
 ---
 
@@ -373,6 +400,10 @@ Smallest reversible commits; **every commit leaves `npm run check` green**. One 
 | 5 | `web: answer change questions with the history claim (#74)` | `copilot.ts:172` (Q4) + `copilot.test.ts` assertion in the same commit (G-36) | additive |
 | 6 | `e2e: assert change history is sample-tagged in demo and not collected in live (#74)` | `tests/e2e/a11y.spec.ts` legs (V4/V5) | additive |
 | 7 | `docs: describe the gated change history in the design language (#74)` | `DESIGN_LANGUAGE.md:56-61` prose (G-23) | docs only |
+| 8 | **`web: bind sample history to model provenance (#74)` — ATOMIC, DO NOT SPLIT** | `lib/evidence.ts`; `hooks/useApiResource.ts`; `hooks/useSystemModel.ts`; `context.tsx`; `components/AppShell.tsx`; `lib/stubs.ts`; `screens/Home.tsx`; `screens/Changes.tsx`; provenance/mismatch tests and all required typed fixtures listed in §9.4 | The type/signature/context change crosses the whole path. It lands with the V2/V3 regressions; no intermediate commit may compile with authority-only gating or relabel retained data. |
+| 9 | `web: reconcile change-history empty states and readability (#74)` | G1: `lib/history.ts`, `Home.tsx`, `Changes.tsx`, exact true/filtered-empty tests; G3: restore multi-line `Home.tsx`/`Changes.tsx` and exhaustive-switch comment | Behaviour and copy remain locked by tests; formatting changes no semantics. |
+
+Rows 8-9 are the post-review remediation sequence. Implement them in that order; do not fold provenance into `SystemModel`/`buildModel`, do not choose B/C, and do not substitute different copy.
 
 PR body must carry: the §2 Q2 ownership table verbatim (the issue's no-overlap requirement), the accepted scope statements (live loses the causal narrative and the filter chips; demo/mock keep everything, tagged), the stale-screenshot note (R7), and the DM-03 statement that no live-Docker gate is required. Closure: a `## Resolution Evidence` comment (What changed / Why this resolves / How I checked / Remaining risk) — **never self-close** (DM-01).
 
@@ -382,9 +413,9 @@ PR body must carry: the §2 Q2 ownership table verbatim (the issue's no-overlap 
 
 | ID | Criterion | Discharged by |
 |---|---|---|
-| **V1** | **G-15 demo/live pairs per surface** | **new `screens/history-surface.test.tsx`** — `renderToStaticMarkup` + `visibleText` (`lib/test-utils.ts`, U10), `it.each` over `["live", liveSnapshot] / ["mock", liveSnapshot] / ["demo", demoSnapshot] / [null, liveSnapshot]` for **Changes**, **Home**. Live+null arms: `visibleText` contains "Not collected" and both Q6 details; zero `.timeline-row`, zero `.feed-row`, zero `.filter-chip`; **no `/\d+[smhd] ago/` match anywhere** (the direct proof that `formatRelative` was never fed an invented `at`); no `\bSample\b`; `h1` "Change Center" present. Demo+mock arms: rows present, `.panel-hint` reads "Sample data", the causal chain renders its steps, `.filter-chip` count 4. Scoped via the `panel-change-timeline` / `panel-recent-change` / `panel-causal-chain` classes (never an unscoped page scan — #72 U5). |
-| **V2** | **G-36 bidirectional wiring + DM-12/R7 staleness** | **new `screens/history-wiring.test.tsx`**, mirroring `updates-wiring.test.tsx:1-84` (hoisted mutable `state`, mocked `useSettings`/`useDaemonHeartbeat`/`useSystemModel`/`useApiResource`, real `AppShell`): (a) demo→live inside `act()` → `.feed-row` 6→0, "Not collected" appears, `.conn-mode` "Docker Engine"; (b) live→demo → rows return (the resumption assertion G-15 demands); (c) model-generation change under live → still no rows; (d) `health: null` + `demoMode: false` (null authority) → not-collected. A second mount routes `/changes` through `AppShell`'s `Outlet` for the same flips. |
-| **V3** | **G-37 no-synthetic-HISTORY analog** | **new `lib/no-synthetic-history.test.ts`**: (1) authority matrix — for `"live"`, `"mock"`, `"demo"`, `null`, assert `changeFeed`/`causalChain` return `kind === (claimAuthority(mode) === "sample" ? "demo" : "unavailable")` and that the unavailable arm's `value` is `null` and `detail` is the Q6 string; (2) **clock-reachability spy** — `vi.spyOn(Date, "now")`: not called for `"live"`/`null`, **called** for `"demo"` (both directions, G-15); (3) literal-preserving type probes under `@ts-expect-error`: `type EstProbe<K extends string> = \`estimate${K}\`; const p: EstProbe<"d"> extends keyof ChangeEvent ? "ok" : never = "ok";` and `const bypass: ChangeEvent[] = changeFeed(model, "demo");` — each directive is live only while the field/array-return is absent, so reintroduction makes it unused → TS2578; (4) **fire-test the gate once manually** (swap the probe to an existing key such as `at`, confirm `npm run typecheck` fails with TS2578, revert) and record it in the PR body — G-37 requires proof the gate fires, not just that it compiles; (5) a documented blind-spot note mirroring `no-synthetic-updates.test.ts:156-163`. |
+| **V1** | **G-15 sample/non-sample pairs per surface** | **`screens/history-surface.test.tsx`** — `renderToStaticMarkup` + `visibleText`, with explicit tuples `["live", liveSnapshot, "daemon"]`, `[null, liveSnapshot, "daemon"]`, `["demo", sampleSnapshot, "demo"]`, `["mock", sampleSnapshot, "daemon"]`. `sampleSnapshot` (offline container) is deliberately used for both sample arms because it deterministically emits feed + causal rows; this is stronger than the earlier `demoSnapshot`/`liveSnapshot` proposal. Live+null: "Not collected", both details, zero timeline/feed/filter rows, no relative time, no `Sample`; heading survives. Matching demo+mock: rows/steps present, hint "Sample data", four chips. Add mismatch tuples `["demo", liveSnapshot, "daemon"]` and `["mock", sampleSnapshot, "demo"]`: unavailable, zero rows, no sample label. Assert canonical true-empty copy with an eventless matching sample model. |
+| **V2** | **G-36 model-fixed bidirectional wiring + DM-12 provenance race** | **`screens/history-wiring.test.tsx`**, real `AppShell` with hoisted `state = { demoMode, health, model, modelProvenance }`; mocked `useSystemModel` returns both model fields. Use an offline live fixture named exactly `prod-secret-host` so authority-only gating would deterministically fabricate a leaking failure row. (a) **live→demo mismatch, model held fixed:** start `demoMode=false`, fixed docker health, `model=liveModel`, `modelProvenance="daemon"`; assert no rows. Inside one `act()`, change **only** `demoMode=true` and rerender; do not change health/model/provenance. Assert Home and Changes each have zero feed/timeline rows, zero sample chips where applicable, no `Sample data`, and no `prod-secret-host`; assert "Not collected". Then, in a separate `act()`, publish `demoModel` + `modelProvenance="demo"` without changing mode; assert tagged rows resume. (b) **demo→live mismatch, model held fixed:** start `demoMode=true`, fixed docker health, `demoModel` + `"demo"`; assert rows. Flip **only** `demoMode=false`; keep model/provenance fixed; assert rows/chips/Sample label disappear and "Not collected" appears. (c) null authority and same-mode generation changes remain unavailable as before. Run both `/` and `/changes`; no `Outlet` import (AppShell owns it). This test is invalid if model or provenance changes in the same `act()` as either mode flip. Add a client interaction selecting Recoveries under matching sample state and assert the exact filtered-empty body `No sample change events match this filter.` while the unfiltered feed has events. |
+| **V3** | **G-37 + provenance gate unit matrix** | **`lib/no-synthetic-history.test.ts`**: hard-code (do not re-derive through `claimAuthority`) the expected kinds for `[live,daemon]→unavailable`, `[live,demo]→unavailable`, `[null,daemon]→unavailable`, `[null,demo]→unavailable`, `[demo,demo]→demo`, `[demo,daemon]→unavailable`, `[mock,daemon]→demo`, `[mock,demo]→unavailable`; run both generators and pin unavailable singleton/details. Clock spy is restored in `afterEach`/`try-finally`; `Date.now()` is called only for authorized `changeFeed` pairs (`demo/demo`, `mock/daemon`) and not for any mismatch. Do not include the vacuous `causalChain(model, null)` clock leg or the tautological blind-spot assertion. Update literal type probes and every direct call to the required third argument, e.g. `changeFeed(model, "demo", "demo")`; retain the manual TS2578 fire-test record. |
 | **V4** | **Live e2e leg** | `a11y.spec.ts`, new test *"change history reports not collected under live authority"*: intercept `**/api/events/stream*` and fulfil a `text/event-stream` body carrying one `event: snapshot` frame with `{"status":"ok","mode":"docker","dockerReachable":true,…}` so `resolveEvidenceMode` returns `"live"`; wait for `.conn-mode` = "Docker Engine"; then on `/changes`: `.panel-change-timeline .panel-hint` = "Not collected", `.timeline-row` count 0, `.filter-chip` count 0, `h1` "Change Center" visible, page text has no `Sample data`; on `/`: `.panel-recent-change` and `.panel-causal-chain` both contain "Not collected". Use `domcontentloaded` + explicit waits, never `networkidle` (DM-02b). **Named fallback (not implementer judgment):** if the intercepted stream does not yield "Docker Engine" within one debugging iteration, drop this leg, keep V5, and record in the PR body that live authority is covered by V2 (real `AppShell` + real `resolveEvidenceMode` + `health.mode: "docker"`) and V1's live arm. |
 | **V5** | **Demo e2e leg** | `a11y.spec.ts`, new test *"change history renders tagged samples in demo mode"*: `context.addInitScript` setting `localStorage["dockermap.settings.v1"] = JSON.stringify({"demoMode": true})` (pattern at `:560-562`; DM-11 single-key payload); assert `.conn-mode` "Demo Engine", `/changes` shows `.timeline-row` ≥ 1 with `.panel-hint` "Sample data", `.filter-chip` count 4, and no "Not collected" inside `.panel-change-timeline`. The **default mock-stack legs** (existing `coreRoutes` a11y scans) keep passing unchanged and prove the mock arm still shows samples (§1.5.1). |
 | **V6** | **Regression hygiene** | `npm run check` green (`check:js` = **audit + typecheck + build + test:js** — there is no lint step; plus `check:rust`, untouched); `npm run test:e2e` for the modified specs; `updates-surface`/`updates-wiring`/`copilot`/`evidence`/`evidence-render` suites green **and unweakened** (diff-read them, G-08); reviewer greps at final HEAD: `STUB_CHANGES_NOTICE` → 0 hits; `estimated` → hits only in the `ResourceSample` lines (`stubs.ts:27,44`) and #73-owned code; `"Sample timeline"`, `"will appear here"`, `"No change recorded"` → 0 hits; `"Sample data"`/`"Not collected"` string literals outside `evidence.ts` → 0 hits (R1); `changeFeed(`/`causalChain(` with a literal mode argument outside `*.test.*` → 0 hits (R10). |
