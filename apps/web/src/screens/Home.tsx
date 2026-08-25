@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import { needsAttention, summarize, type Service } from "../lib/model";
 import { changeFeed, causalChain } from "../lib/stubs";
-import { formatRelative } from "../lib/format";
+import { formatPercent, formatRelative } from "../lib/format";
 import { evidenceLabel } from "../lib/evidence";
 import {
   CAUSAL_CHAIN_CLAIM,
@@ -65,7 +65,7 @@ export default function Home() {
             ) : (
               <ul className="svc-list">
                 {attention.map((service, index) => (
-                  <ServiceRow key={`${service.id}-${index}`} model={model} service={service} />
+                  <ServiceRow key={`${service.id}-${index}`} model={model} service={service} evidenceMode={evidenceMode} modelProvenance={modelProvenance} />
                 ))}
               </ul>
             )}
@@ -140,9 +140,10 @@ export default function Home() {
   );
 }
 
-function ServiceRow({ model, service }: { model: ReturnType<typeof useApp>["model"]; service: Service }) {
+function ServiceRow({ model, service, evidenceMode, modelProvenance }: { model: ReturnType<typeof useApp>["model"]; service: Service; evidenceMode: ReturnType<typeof useApp>["evidenceMode"]; modelProvenance: ReturnType<typeof useApp>["modelProvenance"] }) {
   if (!model) return null;
-  const res = resourceFor(service);
+  const resources = resourceFor(service, evidenceMode, modelProvenance);
+  const resourceLabel = evidenceLabel(resources.kind).label;
   const dependents = service.dependents.length;
   return (
     <li className="svc-row">
@@ -156,7 +157,16 @@ function ServiceRow({ model, service }: { model: ReturnType<typeof useApp>["mode
       )}
       <StatePill state={service.state} />
       <span className="svc-meta">{dependents > 0 ? `${dependents} dependent${dependents === 1 ? "" : "s"}` : "no dependents"}</span>
-      <span className="svc-res"><Bar value={res.cpuPercent} state={service.state} /></span>
+      <span className="svc-res">
+        {resources.kind === "unavailable" ? (
+          <span className="svc-res-claim">{`CPU ${resourceLabel.toLowerCase()}`}</span>
+        ) : (
+          <>
+            <Bar value={resources.value.cpuPercent} state={service.state} label={`CPU ${formatPercent(resources.value.cpuPercent)} — ${resourceLabel}`} />
+            <span className="svc-res-claim">{resourceLabel}</span>
+          </>
+        )}
+      </span>
     </li>
   );
 }

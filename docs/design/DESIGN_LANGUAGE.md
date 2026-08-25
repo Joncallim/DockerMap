@@ -31,9 +31,12 @@ entry. The rail foot shows the engine connection (Docker or Mock) as a state dot
 The command center answers *"what needs attention?"* in under five seconds: a compact metric
 strip, an attention list, recent change, a causal chain when something is wrong, a map
 preview, and an update-status tile (update checks are not wired, so it reports "Not
-collected" — see #72).
+collected" — see #72). Resource usage is sample-only in explicit demo mode; live and mock
+attention rows say `CPU not collected`.
 
 ![Home command center](../screenshots/command-center.png)
+
+Screenshot status — stale resource cell: captured before #73. Any CPU bar shown here is demo-only after #73; live and mock show `CPU not collected`. Do not use this image as current resource-claim evidence.
 
 ## Layer 2 — Relationships (Service Map)
 
@@ -50,8 +53,12 @@ Everything about one service, organised as contextual tabs (Overview, Dependenci
 Resources, Logs, Configuration) rather than separate pages. An impact band sits at the top;
 Docker internals (container ID, raw image ref, port bindings) live behind a Layer-4 toggle
 inside Configuration.
+Resource samples appear only for exact `(demo,demo)` with a "Sample data" label; live and
+mock Resources tabs show "Not collected" with the non-collection reason.
 
 ![Service detail](../screenshots/service-detail.png)
+
+Screenshot status — stale Resources panel: captured before #73. Any CPU, memory, or network values shown here are demo-only after #73; live and mock show `Not collected` with the non-collection reason. Do not use this image as current resource-claim evidence.
 
 ## Change Center
 
@@ -110,13 +117,14 @@ timestamp, and an optional detail line.
 Empty states teach the next action (no mascots, no marketing). Loading uses a single spinner
 with honest copy. Errors use the alert glyph and say what failed.
 
-## Estimated Data
+## Sample Data
 
-Resource samples and edge health are derived deterministically from the real topology and
-**labelled as estimates** (`Estimated — live resource collectors not yet wired`) until matching
-read-only collectors exist in the daemon. Change history follows a stricter rule: demo/mock may
-show visibly tagged samples, while live mode reports that history is not collected. Labels are
-part of the design: we never present an estimate or sample as live telemetry.
+Resource samples render only under exact `(demo,demo)` and are labelled "Sample data". Mock,
+live, unresolved, and mismatched mode/provenance states do not collect resource usage: Home
+shows `CPU not collected`, while Service Detail shows "Not collected" with the reason that
+DockerMap does not measure container CPU, memory, or network. Change history has its separate
+demo/mock sample rule; its mock policy does not authorize resource samples. Edge health is
+derived from observed container state, not sample data; its evidence tagging belongs to #75/#76.
 
 ## Regenerating Screenshots
 

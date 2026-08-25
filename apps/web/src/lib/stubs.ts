@@ -2,20 +2,19 @@ import { hashString, needsAttention, type Service, type SystemModel } from "./mo
 import { identityText, UNAVAILABLE_SERVICE } from "./identity";
 import { claimAuthority, demoSample, type Claim, type EvidenceMode, type ModelProvenance } from "./evidence";
 import { CAUSAL_CHAIN_CLAIM, CHANGE_HISTORY_CLAIM } from "./history";
+import { RESOURCE_STATS_CLAIM } from "./resources";
 
 /**
  * ──────────────────────────────────────────────────────────────────────────
- * STUBBED DATA — clearly labelled.
+ * RESOURCE SAMPLE DATA — available only under the exact `(demo,demo)`
+ * mode/provenance pair, and always returned as a tagged `Claim`.
  *
- * The DockerMap daemon does not yet expose per-service resource samples or a
- * change/event history. The product design needs them, so we derive stable,
- * plausible values from the real topology. Every surface that renders this
- * data marks it as estimated (see the `STUB_NOTICE` copy) so it is never
- * mistaken for live telemetry. Replace these with real collectors later.
+ * The daemon exposes no per-service resource usage. Explicit demo mode may
+ * derive stable samples from its fabricated topology. Mock, live, mismatched,
+ * and unresolved pairs take the unavailable arm; history retains its separate
+ * #74 policy unchanged. See `maySynthesizeResourceSample`.
  * ──────────────────────────────────────────────────────────────────────────
  */
-
-export const STUB_NOTICE = "Estimated — live resource collectors not yet wired";
 
 export interface ResourceSample {
   cpuPercent: number;
@@ -24,26 +23,45 @@ export interface ResourceSample {
   networkKbps: number;
   /** Short pseudo-history for sparklines (0..1 normalised). */
   cpuSeries: number[];
-  estimated: true;
 }
 
-export function resourceFor(service: Service): ResourceSample {
-  const base = hashString(service.id);
+type ResourceHasher = (input: string) => number;
+
+function maySynthesizeResourceSample(mode: EvidenceMode | null, modelProvenance: ModelProvenance | null): boolean {
+  return mode === "demo" && modelProvenance === "demo";
+}
+
+function resourceForWithHasher(
+  service: Service,
+  mode: EvidenceMode | null,
+  modelProvenance: ModelProvenance | null,
+  hash: ResourceHasher
+): Claim<ResourceSample> {
+  if (!maySynthesizeResourceSample(mode, modelProvenance)) return RESOURCE_STATS_CLAIM;
+  const base = hash(service.id);
   const load = service.state === "offline" ? 0 : 0.12 + base * 0.7;
-  const memSeed = hashString(service.id + "mem");
+  const memSeed = hash(service.id + "mem");
   const memoryMb = Math.round(48 + memSeed * (service.kind === "database" ? 900 : 360));
   const series = Array.from({ length: 24 }, (_, i) => {
-    const wobble = hashString(`${service.id}:${i}`);
+    const wobble = hash(`${service.id}:${i}`);
     return service.state === "offline" ? 0 : Math.max(0, Math.min(1, load * 0.7 + wobble * 0.5 - 0.1));
   });
-  return {
+  return demoSample({
     cpuPercent: Math.round(load * 100),
     memoryPercent: Math.round((20 + memSeed * 70) * (service.state === "offline" ? 0 : 1)),
     memoryMb,
-    networkKbps: Math.round((service.state === "offline" ? 0 : 1) * (10 + hashString(service.id + "net") * 4000)),
-    cpuSeries: series,
-    estimated: true
-  };
+    networkKbps: Math.round((service.state === "offline" ? 0 : 1) * (10 + hash(service.id + "net") * 4000)),
+    cpuSeries: series
+  });
+}
+
+export function resourceFor(service: Service, mode: EvidenceMode | null, modelProvenance: ModelProvenance | null): Claim<ResourceSample> {
+  return resourceForWithHasher(service, mode, modelProvenance, hashString);
+}
+
+/** @internal Test-only guard-dominance seam; never import from app code. */
+export function resourceForWithHasherForTest(service: Service, mode: EvidenceMode | null, modelProvenance: ModelProvenance | null, hash: ResourceHasher): Claim<ResourceSample> {
+  return resourceForWithHasher(service, mode, modelProvenance, hash);
 }
 
 export interface ChangeEvent {

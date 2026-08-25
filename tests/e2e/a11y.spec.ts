@@ -584,6 +584,49 @@ test.describe("responsive and accessibility matrix", () => {
     }
   });
 
+  test("resources report non-collection under intercepted live authority", async ({ browser }, testInfo) => {
+    const context = await browser.newContext({ colorScheme: "dark" });
+    const page = await context.newPage();
+    try {
+      await page.route("**/api/events/stream*", (route) => route.fulfill({ contentType: "text/event-stream", body: "event: snapshot\ndata: {\"status\":\"ok\",\"mode\":\"docker\",\"dockerReachable\":true,\"message\":\"Docker daemon connected\",\"lastUpdated\":0,\"snapshotVersion\":\"e2e-live\"}\n\n" }));
+      await page.goto(`${stack.webUrl}/services/postgres`, { waitUntil: "domcontentloaded" });
+      await expect(page.locator(".conn-mode")).toHaveText("Docker Engine");
+      await page.getByRole("tab", { name: "Resources" }).click();
+      const panel = page.locator(".panel-resources");
+      await expect(panel).toContainText("Not collected");
+      await expect(panel).toContainText("Resource collectors not wired — DockerMap does not measure container CPU, memory or network");
+      await expect(panel.locator(".metric, .bar, .spark")).toHaveCount(0);
+      await attachAxe(page, testInfo, "dark-live-resources");
+    } finally { await context.close(); }
+  });
+
+  test("resources remain unavailable in the default mock stack", async ({ browser }) => {
+    await withPage(browser, "dark", async (page) => {
+      await openRoute(page, "/services/postgres", "dark");
+      await expect(page.locator(".conn-mode")).toHaveText("Mock Engine");
+      await page.getByRole("tab", { name: "Resources" }).click();
+      const panel = page.locator(".panel-resources");
+      await expect(panel).toContainText("Not collected");
+      await expect(panel.locator(".metric, .bar, .spark")).toHaveCount(0);
+    });
+  });
+
+  test("resources render tagged samples only in explicit demo mode", async ({ browser }) => {
+    const context = await browser.newContext({ colorScheme: "dark" });
+    await context.addInitScript((settings) => window.localStorage.setItem("dockermap.settings.v1", settings), JSON.stringify({ demoMode: true }));
+    const page = await context.newPage();
+    try {
+      await page.goto(`${stack.webUrl}/services/postgres`, { waitUntil: "domcontentloaded" });
+      await expect(page.locator(".conn-mode")).toHaveText("Demo Engine");
+      await page.getByRole("tab", { name: "Resources" }).click();
+      const panel = page.locator(".panel-resources");
+      await expect(panel.locator(".panel-hint")).toHaveText("Sample data");
+      await expect(panel.locator(".res-cell")).toHaveCount(3);
+      await expect(panel.locator(".spark")).toHaveCount(1);
+      await expect(panel.locator(".bar[aria-label^=\"Memory\"]")).toHaveCount(1);
+    } finally { await context.close(); }
+  });
+
   test("async route heading is promoted without a late focus steal", async ({ browser }) => {
     // Every scanned route mounts its h1 immediately once the model is in
     // memory, so the RouteFocusManager MutationObserver path never runs under

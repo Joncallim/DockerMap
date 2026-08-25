@@ -779,8 +779,19 @@ kbd {
 }
 
 .svc-res {
-  width: 90px;
+  width: 96px;
   flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.svc-res-claim {
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--muted-deep);
+  text-align: right;
+  white-space: nowrap;
 }
 
 .image-row {
