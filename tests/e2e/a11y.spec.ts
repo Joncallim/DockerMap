@@ -537,6 +537,53 @@ test.describe("responsive and accessibility matrix", () => {
     });
   });
 
+  test("change history reports not collected under live authority", async ({ browser }) => {
+    const context = await browser.newContext({ colorScheme: "dark" });
+    const page = await context.newPage();
+    try {
+      await page.route("**/api/events/stream*", (route) => route.fulfill({
+        contentType: "text/event-stream",
+        body: "event: snapshot\ndata: {\"status\":\"ok\",\"mode\":\"docker\",\"dockerReachable\":true,\"message\":\"Docker daemon connected\",\"lastUpdated\":0,\"snapshotVersion\":\"e2e-live\"}\n\n"
+      }));
+      await page.goto(`${stack.webUrl}/changes`, { waitUntil: "domcontentloaded" });
+      await expect(page.locator(".conn-mode")).toHaveText("Docker Engine");
+      const timeline = page.locator(".panel-change-timeline");
+      await expect(timeline.locator(".panel-hint")).toHaveText("Not collected");
+      await expect(page.locator(".timeline-row")).toHaveCount(0);
+      await expect(page.locator(".filter-chip")).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: "Change Center" })).toBeVisible();
+      await expect(page.getByText("Sample data", { exact: true })).toHaveCount(0);
+
+      await page.goto(`${stack.webUrl}/`, { waitUntil: "domcontentloaded" });
+      await expect(page.locator(".conn-mode")).toHaveText("Docker Engine");
+      await expect(page.locator(".panel-recent-change")).toContainText("Not collected");
+      await expect(page.locator(".panel-causal-chain")).toContainText("Not collected");
+      await page.unroute("**/api/events/stream*");
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("change history renders tagged samples in demo mode", async ({ browser }) => {
+    const context = await browser.newContext({ colorScheme: "dark" });
+    await context.addInitScript((settings) => {
+      window.localStorage.setItem("dockermap.settings.v1", settings);
+    }, JSON.stringify({ demoMode: true }));
+    const page = await context.newPage();
+    try {
+      await page.goto(`${stack.webUrl}/changes`, { waitUntil: "domcontentloaded" });
+      await expect(page.locator(".conn-mode")).toHaveText("Demo Engine");
+      const timeline = page.locator(".panel-change-timeline");
+      await expect(timeline.locator(".timeline-row").first()).toBeVisible();
+      expect(await timeline.locator(".timeline-row").count()).toBeGreaterThanOrEqual(1);
+      await expect(timeline.locator(".panel-hint")).toHaveText("Sample data");
+      await expect(page.locator(".filter-chip")).toHaveCount(4);
+      await expect(timeline.getByText("Not collected", { exact: true })).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
   test("async route heading is promoted without a late focus steal", async ({ browser }) => {
     // Every scanned route mounts its h1 immediately once the model is in
     // memory, so the RouteFocusManager MutationObserver path never runs under

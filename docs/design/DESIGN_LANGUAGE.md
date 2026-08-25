@@ -56,9 +56,10 @@ inside Configuration.
 ## Change Center
 
 Change is a first-class story: a filterable timeline of deploys, restarts,
-failures, and recoveries. Markers are state-coloured. (Until daemon change collectors land,
-this view is clearly labelled as a sample timeline.) Update status is not collected — no
-image-update entries exist on the timeline (#72).
+failures, and recoveries in demo and mock mode, visibly marked as sample data. In live mode,
+the Change Center reports that history is not collected: DockerMap does not record deploy,
+restart, or failure events. Update status is not collected — no image-update entries exist on
+the timeline (#72).
 
 ![Change Center](../screenshots/change-center.png)
 
@@ -111,10 +112,11 @@ with honest copy. Errors use the alert glyph and say what failed.
 
 ## Estimated Data
 
-Resource samples, change history, and edge health are derived deterministically from the real
-topology and **labelled as estimates** (`Estimated — live resource collectors not yet wired`)
-until matching read-only collectors exist in the daemon. The label is part of the design: we
-never present an estimate as live telemetry.
+Resource samples and edge health are derived deterministically from the real topology and
+**labelled as estimates** (`Estimated — live resource collectors not yet wired`) until matching
+read-only collectors exist in the daemon. Change history follows a stricter rule: demo/mock may
+show visibly tagged samples, while live mode reports that history is not collected. Labels are
+part of the design: we never present an estimate or sample as live telemetry.
 
 ## Regenerating Screenshots
 

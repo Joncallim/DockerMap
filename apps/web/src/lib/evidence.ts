@@ -41,6 +41,22 @@ export function evidenceLabel(kind: EvidenceKind): EvidenceLabel {
 /** Where the bytes came from. Three values, exhaustive. */
 export type EvidenceMode = "live" | "mock" | "demo";
 
+/**
+ * Where a fetched model's bytes came from: the demo payload, daemon mock,
+ * or daemon live-Docker path. Travels ALONGSIDE the model/resource pair (never on SystemModel
+ * itself) so a retained model can never be relabelled as freshly selected
+ * bytes after a mode flip (§9 Option A).
+ */
+export type ModelProvenance = "demo" | "mock" | "live";
+
+/** Source stamp required for a model fetched under the resolved mode. */
+export function modelProvenanceForMode(mode: EvidenceMode | null): ModelProvenance | null {
+  if (mode === "demo") return "demo";
+  if (mode === "mock") return "mock";
+  if (mode === "live") return "live";
+  return null;
+}
+
 export interface EvidenceModeInput {
   /** settings.demoMode — the client short-circuit at utils/api.ts:30. */
   demoMode: boolean;

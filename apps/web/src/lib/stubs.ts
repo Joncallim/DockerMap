@@ -1,5 +1,7 @@
 import { hashString, needsAttention, type Service, type SystemModel } from "./model";
 import { identityText, UNAVAILABLE_SERVICE } from "./identity";
+import { claimAuthority, demoSample, type Claim, type EvidenceMode, type ModelProvenance } from "./evidence";
+import { CAUSAL_CHAIN_CLAIM, CHANGE_HISTORY_CLAIM } from "./history";
 
 /**
  * ──────────────────────────────────────────────────────────────────────────
@@ -14,7 +16,6 @@ import { identityText, UNAVAILABLE_SERVICE } from "./identity";
  */
 
 export const STUB_NOTICE = "Estimated — live resource collectors not yet wired";
-export const STUB_CHANGES_NOTICE = "Sample timeline — change collectors not yet wired";
 
 export interface ResourceSample {
   cpuPercent: number;
@@ -65,7 +66,6 @@ export interface ChangeEvent {
   summary: string;
   detail?: string;
   at: number;
-  estimated: true;
 }
 
 /**
@@ -73,8 +73,9 @@ export interface ChangeEvent {
  * union, so a generator-less kind is impossible — adding a kind to the union
  * without a template here is a compile error, and `makeEvent` can never index
  * an undefined template. (The `deploy`/`config`/`recovery` templates exist
- * but `changeFeed` deliberately emits only `failure`/`restart` today; #74
- * owns the feed's emission surface.)
+ * but `changeFeed` deliberately emits only `failure`/`restart` today. The
+ * synthetic feed is available only under an allow-listed sample
+ * mode/provenance pair — see `maySynthesizeHistory`.)
  */
 const CHANGE_TEMPLATES: Record<
   ChangeEvent["kind"],
@@ -87,7 +88,29 @@ const CHANGE_TEMPLATES: Record<
   recovery: (s) => ({ summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} recovered`, detail: `Health checks passing again` })
 };
 
-export function changeFeed(model: SystemModel): ChangeEvent[] {
+/**
+ * §9 Option A gate — positive allow-listing, shared by both generators and
+ * run BEFORE any model iteration or clock read. Authority is necessary but
+ * not sufficient: a sample tag requires the model's bytes to actually match
+ * the declared mode (demo bytes under demo mode; daemon bytes under mock
+ * mode). Every mismatch, unknown value, and null takes the unavailable arm —
+ * a retained live model under demo authority must never be relabelled as a
+ * freshly selected demo sample (DM-06/G-24).
+ */
+function maySynthesizeHistory(mode: EvidenceMode | null, modelProvenance: ModelProvenance | null): boolean {
+  if (claimAuthority(mode) !== "sample") return false;
+  return (
+    (mode === "demo" && modelProvenance === "demo") ||
+    (mode === "mock" && modelProvenance === "mock")
+  );
+}
+
+export function changeFeed(
+  model: SystemModel,
+  mode: EvidenceMode | null,
+  modelProvenance: ModelProvenance | null
+): Claim<ChangeEvent[]> {
+  if (!maySynthesizeHistory(mode, modelProvenance)) return CHANGE_HISTORY_CLAIM;
   const now = Date.now();
   const events: ChangeEvent[] = [];
   for (const service of model.services) {
@@ -101,7 +124,7 @@ export function changeFeed(model: SystemModel): ChangeEvent[] {
       events.push(makeEvent(service, "restart", now - Math.round(seed * 1000 * 60 * 60 * 6), routeName));
     }
   }
-  return events.sort((a, b) => b.at - a.at).slice(0, 24);
+  return demoSample(events.sort((a, b) => b.at - a.at).slice(0, 24));
 }
 
 function makeEvent(service: Service, kind: ChangeEvent["kind"], at: number, routeName: string | null): ChangeEvent {
@@ -114,8 +137,7 @@ function makeEvent(service: Service, kind: ChangeEvent["kind"], at: number, rout
     kind,
     summary: tpl.summary,
     detail: tpl.detail,
-    at,
-    estimated: true
+    at
   };
 }
 
@@ -129,9 +151,14 @@ export interface CausalStep {
   tone: "fail" | "neutral" | "ok";
 }
 
-export function causalChain(model: SystemModel): CausalStep[] | null {
+export function causalChain(
+  model: SystemModel,
+  mode: EvidenceMode | null,
+  modelProvenance: ModelProvenance | null
+): Claim<CausalStep[]> {
+  if (!maySynthesizeHistory(mode, modelProvenance)) return CAUSAL_CHAIN_CLAIM;
   const root = model.services.find((s) => s.state === "offline");
-  if (!root) return null;
+  if (!root) return demoSample([]);
   const affected = model.services.filter((s) => s.dependsOn.includes(root.id));
   const rootName = identityText(root.name, UNAVAILABLE_SERVICE);
   const steps: CausalStep[] = [
@@ -145,5 +172,5 @@ export function causalChain(model: SystemModel): CausalStep[] | null {
       tone: "neutral"
     });
   }
-  return steps;
+  return demoSample(steps);
 }

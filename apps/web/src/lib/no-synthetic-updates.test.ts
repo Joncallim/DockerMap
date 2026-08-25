@@ -100,7 +100,12 @@ describe("no synthetic update claim reaches the model", () => {
       // summary must be free of update-shaped keys, top level AND nested.
       const keys = deepKeys([model.services, summary]);
       expect(keys.some((key) => /update|refresh/i.test(key))).toBe(false);
-      for (const event of changeFeed(model)) {
+      // Scan the sample arm: the live arm deliberately has no events, so
+      // scanning it would make this update-vocabulary tripwire vacuous.
+      // demo + demo provenance is the authorized matching sample pair.
+      const feed = changeFeed(model, "demo", "demo");
+      if (feed.kind === "unavailable") throw new Error("demo history must remain sample-tagged");
+      for (const event of feed.value) {
         expect(feedMatches(event)).toBe(false);
       }
       const service = model.services[0];

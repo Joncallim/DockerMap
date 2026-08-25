@@ -12,7 +12,10 @@ describe("Copilot update-status responses", () => {
     for (const snapshot of [liveSnapshot, getDemoResponse<DockerSnapshot>("/api/snapshot")]) {
       const response = answer(buildModel(snapshot, runtime), "what changed recently");
       expect(response.headline).toBe("Recent and pending change");
-      expect(response.body).toEqual(["Update status: Not collected — Update checks not wired — DockerMap does not query registries."]);
+      expect(response.body).toEqual([
+        "Update status: Not collected — Update checks not wired — DockerMap does not query registries.",
+        "Change history: Not collected — Change collectors not wired — DockerMap does not record deploy, restart or failure events."
+      ]);
       expect(response.references).toEqual([]);
     }
   });

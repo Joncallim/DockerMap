@@ -1,10 +1,12 @@
 import { createContext, useContext } from "react";
 import type { HealthResponse } from "@dockermap/contracts";
 import type { SystemModel } from "./lib/model";
-import type { EvidenceMode } from "./lib/evidence";
+import type { EvidenceMode, ModelProvenance } from "./lib/evidence";
 
 export interface AppContextValue {
   model: SystemModel | null;
+  /** Where the current model's bytes came from — travels WITH the model (§9). */
+  modelProvenance: ModelProvenance | null;
   loading: boolean;
   error: string | null;
   health: HealthResponse | null;
