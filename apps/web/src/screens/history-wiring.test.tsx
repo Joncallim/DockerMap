@@ -94,6 +94,24 @@ describe("history wiring — model/provenance held fixed while ONLY the mode fli
     expect(target.textContent).toContain("Not collected");
   });
 
+  it("distinguishes a filtered-empty sample feed from a truly empty sample feed", () => {
+    state.demoMode = true;
+    state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "demo" };
+    state.model = demoModel;
+    state.modelProvenance = "demo";
+    const target = render("/changes");
+    expect(target.querySelectorAll(".timeline-row").length).toBeGreaterThan(0);
+
+    const recoveries = Array.from(target.querySelectorAll<HTMLButtonElement>(".filter-chip"))
+      .find((button) => button.textContent === "Recoveries");
+    expect(recoveries).toBeDefined();
+    act(() => recoveries!.click());
+
+    expect(target.querySelectorAll(".timeline-row").length).toBe(0);
+    expect(target.textContent).toContain("No sample change events match this filter.");
+    expect(target.textContent).not.toContain("The sample topology has no change events right now.");
+  });
+
   it("null authority and same-mode generation changes remain unavailable", () => {
     state.demoMode = false; state.health = null; state.model = liveModel; state.modelProvenance = "daemon";
     const target = render("/changes");

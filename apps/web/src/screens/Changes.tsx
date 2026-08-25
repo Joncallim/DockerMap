@@ -4,7 +4,12 @@ import { useApp } from "../context";
 import { changeFeed, type ChangeEvent } from "../lib/stubs";
 import { formatRelative } from "../lib/format";
 import { evidenceLabel } from "../lib/evidence";
-import { CHANGE_HISTORY_CLAIM, SAMPLE_EMPTY_BODY, SAMPLE_EMPTY_TITLE } from "../lib/history";
+import {
+  CHANGE_HISTORY_CLAIM,
+  SAMPLE_EMPTY_BODY,
+  SAMPLE_EMPTY_TITLE,
+  SAMPLE_FILTERED_EMPTY_BODY
+} from "../lib/history";
 import Icon from "../components/Icon";
 import { EmptyState, ErrorState, Loading, Panel } from "../components/primitives";
 
@@ -38,7 +43,13 @@ export default function Changes() {
         {history.kind !== "unavailable" && (
           <div className="filter-row">
             {KINDS.map((filterKind) => (
-              <button key={filterKind.id} type="button" aria-pressed={kind === filterKind.id} className={`filter-chip${kind === filterKind.id ? " is-on" : ""}`} onClick={() => setKind(filterKind.id)}>
+              <button
+                key={filterKind.id}
+                type="button"
+                aria-pressed={kind === filterKind.id}
+                className={`filter-chip${kind === filterKind.id ? " is-on" : ""}`}
+                onClick={() => setKind(filterKind.id)}
+              >
                 {filterKind.label}
               </button>
             ))}
@@ -50,23 +61,35 @@ export default function Changes() {
         {history.kind === "unavailable" ? (
           <EmptyState icon="history" title={evidenceLabel(history.kind).label} body={history.detail} />
         ) : filtered.length === 0 ? (
-          <EmptyState icon="history" title={SAMPLE_EMPTY_TITLE} body={SAMPLE_EMPTY_BODY} />
+          <EmptyState
+            icon="history"
+            title={SAMPLE_EMPTY_TITLE}
+            body={events.length === 0 ? SAMPLE_EMPTY_BODY : SAMPLE_FILTERED_EMPTY_BODY}
+          />
         ) : (
           <ol className="timeline">
             {filtered.map((event, index) => {
               const routable = event.routeName !== null;
-              return <li key={`${event.id}-${index}`} className={`timeline-row k-${event.kind}`}>
-                <span className="timeline-marker" aria-hidden="true">
-                  <Icon name={iconForKind(event.kind)} size={13} />
-                </span>
-                <div className="timeline-body">
-                  <div className="timeline-top">
-                    {routable ? <Link className="timeline-title" to={`/services/${encodeURIComponent(event.routeName!)}`}>{event.summary}</Link> : <span className="timeline-title">{event.summary}</span>}
-                    <span className="timeline-time">{formatRelative(event.at)}</span>
+              return (
+                <li key={`${event.id}-${index}`} className={`timeline-row k-${event.kind}`}>
+                  <span className="timeline-marker" aria-hidden="true">
+                    <Icon name={iconForKind(event.kind)} size={13} />
+                  </span>
+                  <div className="timeline-body">
+                    <div className="timeline-top">
+                      {routable ? (
+                        <Link className="timeline-title" to={`/services/${encodeURIComponent(event.routeName!)}`}>
+                          {event.summary}
+                        </Link>
+                      ) : (
+                        <span className="timeline-title">{event.summary}</span>
+                      )}
+                      <span className="timeline-time">{formatRelative(event.at)}</span>
+                    </div>
+                    {event.detail && <p className="timeline-detail">{event.detail}</p>}
                   </div>
-                  {event.detail && <p className="timeline-detail">{event.detail}</p>}
-                </div>
-              </li>;
+                </li>
+              );
             })}
           </ol>
         )}
@@ -76,11 +99,18 @@ export default function Changes() {
 }
 
 function iconForKind(kind: ChangeEvent["kind"]): Parameters<typeof Icon>[0]["name"] {
+  // Exhaustive by design: no default swallow. Adding a new kind to the union
+  // must be a compile error here until its visual language is chosen.
   switch (kind) {
-    case "failure": return "alert";
-    case "recovery": return "check";
-    case "restart": return "refresh";
-    case "config": return "layers";
-    case "deploy": return "up";
+    case "failure":
+      return "alert";
+    case "recovery":
+      return "check";
+    case "restart":
+      return "refresh";
+    case "config":
+      return "layers";
+    case "deploy":
+      return "up";
   }
 }

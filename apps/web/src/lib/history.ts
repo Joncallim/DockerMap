@@ -14,7 +14,8 @@ export const CHANGE_HISTORY_CLAIM = unavailable(CHANGE_HISTORY_DETAIL);
 export const CAUSAL_CHAIN_CLAIM = unavailable(CAUSAL_CHAIN_DETAIL);
 
 /** Derived evidence label for copilot's mode-independent history claim. */
-export const NOT_COLLECTED_LABEL = evidenceLabel("unavailable").label;
+export const NOT_COLLECTED_LABEL = evidenceLabel(CHANGE_HISTORY_CLAIM.kind).label;
 
 export const SAMPLE_EMPTY_TITLE = "No sample change";
 export const SAMPLE_EMPTY_BODY = "The sample topology has no change events right now.";
+export const SAMPLE_FILTERED_EMPTY_BODY = "No sample change events match this filter.";
