@@ -112,10 +112,11 @@ with honest copy. Errors use the alert glyph and say what failed.
 
 ## Estimated Data
 
-Resource samples, change history, and edge health are derived deterministically from the real
-topology and **labelled as estimates** (`Estimated — live resource collectors not yet wired`)
-until matching read-only collectors exist in the daemon. The label is part of the design: we
-never present an estimate as live telemetry.
+Resource samples and edge health are derived deterministically from the real topology and
+**labelled as estimates** (`Estimated — live resource collectors not yet wired`) until matching
+read-only collectors exist in the daemon. Change history follows a stricter rule: demo/mock may
+show visibly tagged samples, while live mode reports that history is not collected. Labels are
+part of the design: we never present an estimate or sample as live telemetry.
 
 ## Regenerating Screenshots
 

@@ -150,8 +150,8 @@ describe("useSystemModel retains the last model across refresh failures", () => 
     expect(hook.result.current.error).toBeNull();
   });
 
-  it("still shows the error state when the FIRST load fails (no prior model to retain)", async () => {
-    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
+  it("still shows the error state when the FIRST load fails with unresolved source (no prior model to retain)", async () => {
+    const hook = renderHook((tick: number) => useSystemModel(tick, null), 0 as number);
     await hook.mount();
     const [snapshotReq, runtimeReq] = pending.splice(0);
     snapshotReq.resolve(jsonResponse(snapV1));
