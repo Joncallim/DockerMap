@@ -33,18 +33,47 @@ describe("resource wiring holds model provenance through mode flips", () => {
     const target = render("/");
     expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected");
     expect(target.querySelectorAll(".svc-res .bar")).toHaveLength(0);
+    // live→demo flip, pair held
     act(() => { state.demoMode = true; root!.render(shell("/")); });
     expect(target.querySelector(".conn-mode")!.textContent).toBe("Demo Engine");
     expect(target.querySelectorAll(".svc-res .bar")).toHaveLength(0);
     expect(target.textContent).not.toContain("Sample data");
+    expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected"); // G-15: unavailable persists
+    // separate act: publish demo pair — resumption
     act(() => { state.model = demoModel; state.modelProvenance = "demo"; root!.render(shell("/")); });
     expect(target.querySelectorAll(".svc-res .bar").length).toBeGreaterThan(0);
     expect(target.textContent).toContain("Sample data");
+    // demo→live: bar/caption gone, unavailable back
     act(() => { state.demoMode = false; root!.render(shell("/")); });
     expect(target.querySelectorAll(".svc-res .bar")).toHaveLength(0);
-    state.health = { status: "ok", mode: "mock", dockerReachable: false, lastUpdated: 2, snapshotVersion: "mock" }; state.modelProvenance = "mock"; rerender("/");
+    expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected"); // G-15
+  });
+
+  it("rejects mock bytes under any authority, including dynamic docker→mock fallback", () => {
+    // retained live pair, health alone flips docker→mock (G-38 scenario)
+    state.demoMode = false; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "live" }; state.model = liveModel; state.modelProvenance = "live";
+    const target = render("/");
+    expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected");
+    act(() => { state.health = { status: "ok", mode: "mock", dockerReachable: false, lastUpdated: 2, snapshotVersion: "mock" }; root!.render(shell("/")); });
     expect(target.querySelector(".conn-mode")!.textContent).toBe("Mock Engine");
     expect(target.querySelectorAll(".svc-res .bar")).toHaveLength(0);
+    expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected"); // G-15: unavailable persists
+    // publish matching (mock,mock) — still unavailable per explicit-demo-only policy
+    act(() => { state.modelProvenance = "mock"; state.model = liveModel; root!.render(shell("/")); });
+    expect(target.querySelectorAll(".svc-res .bar")).toHaveLength(0);
+    expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected");
+    expect(target.querySelector(".svc-res")!.textContent).not.toContain("Sample data");
+  });
+
+  it("renders unavailable while authority is null and recovers", () => {
+    state.demoMode = false; state.health = null; state.model = liveModel; state.modelProvenance = null;
+    const target = render("/");
+    expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected");
+    expect(target.querySelectorAll(".svc-res .bar")).toHaveLength(0);
+    // authority arrives — stays unavailable because mock
+    act(() => { state.health = { status: "ok", mode: "mock", dockerReachable: false, lastUpdated: 2, snapshotVersion: "mock" }; state.modelProvenance = "mock"; root!.render(shell("/")); });
+    expect(target.querySelectorAll(".svc-res .bar")).toHaveLength(0);
+    expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected");
   });
 
   it("opens the Resources tab by interaction and renders non-collection", () => {
