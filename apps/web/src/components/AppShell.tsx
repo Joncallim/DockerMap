@@ -134,7 +134,7 @@ function AuthStatus({ onBearerSignOut }: { onBearerSignOut: () => void }) {
 
 export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => void }) {
   const { tick, health } = useDaemonHeartbeat();
-  const { model, loading, error } = useSystemModel(tick);
+  const { model, modelProvenance, loading, error } = useSystemModel(tick);
   const { settings } = useSettings();
   const [commandOpen, setCommandOpen] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
@@ -176,6 +176,7 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
 
   const ctx = {
     model,
+    modelProvenance,
     loading,
     error,
     health,

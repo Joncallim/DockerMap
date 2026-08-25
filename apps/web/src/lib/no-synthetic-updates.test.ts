@@ -102,7 +102,8 @@ describe("no synthetic update claim reaches the model", () => {
       expect(keys.some((key) => /update|refresh/i.test(key))).toBe(false);
       // Scan the sample arm: the live arm deliberately has no events, so
       // scanning it would make this update-vocabulary tripwire vacuous.
-      const feed = changeFeed(model, "demo");
+      // demo + demo provenance is the authorized matching sample pair.
+      const feed = changeFeed(model, "demo", "demo");
       if (feed.kind === "unavailable") throw new Error("demo history must remain sample-tagged");
       for (const event of feed.value) {
         expect(feedMatches(event)).toBe(false);

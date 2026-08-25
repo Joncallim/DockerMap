@@ -48,8 +48,8 @@ const mocks = vi.hoisted(() => {
     baseSettings,
     settings: { demoMode: false },
     heartbeat: { health: null as HealthResponse | null, tick: 0 },
-    model: { model: null, loading: false, error: null },
-    api: { data: null, error: null, loading: false, generation: 0 }
+    model: { model: null, modelProvenance: null, loading: false, error: null },
+    api: { data: null, error: null, loading: false, generation: 0, provenance: null }
   };
 });
 

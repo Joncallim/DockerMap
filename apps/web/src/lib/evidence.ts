@@ -41,6 +41,14 @@ export function evidenceLabel(kind: EvidenceKind): EvidenceLabel {
 /** Where the bytes came from. Three values, exhaustive. */
 export type EvidenceMode = "live" | "mock" | "demo";
 
+/**
+ * Where a fetched model's bytes came from: the demo payload service or the
+ * daemon. Travels ALONGSIDE the model/resource pair (never on SystemModel
+ * itself) so a retained model can never be relabelled as freshly selected
+ * bytes after a mode flip (§9 Option A).
+ */
+export type ModelProvenance = "demo" | "daemon";
+
 export interface EvidenceModeInput {
   /** settings.demoMode — the client short-circuit at utils/api.ts:30. */
   demoMode: boolean;

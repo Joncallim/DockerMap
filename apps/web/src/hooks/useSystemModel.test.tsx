@@ -3,7 +3,19 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
+import type { Settings } from "../lib/settingsStore";
 import { useSystemModel } from "./useSystemModel";
+
+// Settings demoMode is hoisted so a test can flip the transport mid-run and
+// prove that a split snapshot/runtime provenance pair publishes NO model pair.
+const settings = vi.hoisted(() => ({ demoMode: false }));
+vi.mock("./useSettings", () => ({
+  useSettings: () => ({
+    settings: { theme: "system", density: "comfortable", refreshIntervalMs: 2000, defaultRoute: "/", demoMode: settings.demoMode, auth: { showStatus: false, provider: "authelia", loginUrl: "", logoutUrl: "" } } satisfies Settings,
+    updateSettings: () => {},
+    resetSettings: () => {}
+  })
+}));
 
 /**
  * Hook-level regression tests for the atomic-refresh contract:
@@ -84,6 +96,7 @@ async function flush() {
 
 beforeEach(() => {
   pending.length = 0;
+  settings.demoMode = false;
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {

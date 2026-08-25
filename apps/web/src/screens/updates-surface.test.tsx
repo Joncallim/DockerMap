@@ -14,7 +14,7 @@ import ServiceDetail from "./ServiceDetail";
 const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
 const liveSnapshot: DockerSnapshot = { containers: [{ id: "live-api", name: "api", image: "nginx:1", status: "running", role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], lastUpdated: 0 };
 function render(mode: AppContextValue["evidenceMode"], snapshot: DockerSnapshot, path: string, screen: ReactElement) {
-  const context: AppContextValue = { model: buildModel(snapshot, runtime), loading: false, error: null, health: null, tick: 0, evidenceMode: mode, openCommand: () => {} };
+  const context: AppContextValue = { model: buildModel(snapshot, runtime), modelProvenance: mode === "demo" ? "demo" : "daemon", loading: false, error: null, health: null, tick: 0, evidenceMode: mode, openCommand: () => {} };
   return renderToStaticMarkup(<AppContext.Provider value={context}><MemoryRouter initialEntries={[path]}><Routes><Route path={path === "/" ? "/" : "/services/:name"} element={screen} /></Routes></MemoryRouter></AppContext.Provider>);
 }
 
@@ -48,7 +48,7 @@ describe("update surfaces are unavailable in every mode", () => {
     expect(band).toContain("Not collected");
     expect(band).not.toContain(">Yes<");
     expect(band).not.toContain(">No<");
-    const context: AppContextValue = { model: buildModel(snapshot, runtime), loading: false, error: null, health: null, tick: 0, evidenceMode: mode, openCommand: () => {} };
+    const context: AppContextValue = { model: buildModel(snapshot, runtime), modelProvenance: mode === "demo" ? "demo" : "daemon", loading: false, error: null, health: null, tick: 0, evidenceMode: mode, openCommand: () => {} };
     const changes = renderToStaticMarkup(<AppContext.Provider value={context}><MemoryRouter><Changes /></MemoryRouter></AppContext.Provider>);
     expect(changes).not.toContain(">Updates<");
     expect(changes).not.toContain("image_" + "update");

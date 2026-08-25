@@ -7,6 +7,7 @@ import type { DockerSnapshot, HealthResponse, RuntimeMap } from "@dockermap/cont
 import AppShell from "../components/AppShell";
 import { getDemoResponse } from "../lib/demoData";
 import { buildModel, type SystemModel } from "../lib/model";
+import type { ModelProvenance } from "../lib/evidence";
 import type { Settings } from "../lib/settingsStore";
 import Home from "./Home";
 
@@ -18,11 +19,13 @@ const liveModel = buildModel(liveSnapshot, runtime);
 // U12: useSystemModel is generation-guarded in production (a new snapshot
 // yields a NEW model object); the mock reads a mutable model so the tests can
 // swap generations instead of returning one static const.
-const state = vi.hoisted(() => ({ demoMode: true, health: null as HealthResponse | null, model: null as SystemModel | null }));
+const state = vi.hoisted(() => ({ demoMode: true, health: null as HealthResponse | null, model: null as SystemModel | null, modelProvenance: null as ModelProvenance | null }));
 vi.mock("../hooks/useSettings", () => ({ useSettings: () => ({ settings: { theme: "system", density: "comfortable", refreshIntervalMs: 2000, defaultRoute: "/", demoMode: state.demoMode, auth: { showStatus: false, provider: "authelia", loginUrl: "", logoutUrl: "" } } satisfies Settings, updateSettings: () => {}, resetSettings: () => {} }) }));
 vi.mock("../hooks/useDaemonHeartbeat", () => ({ useDaemonHeartbeat: () => ({ tick: 0, health: state.health }) }));
-vi.mock("../hooks/useSystemModel", () => ({ useSystemModel: () => ({ model: state.model, loading: false, error: null }) }));
-vi.mock("../hooks/useApiResource", () => ({ useApiResource: () => ({ data: null, loading: false, error: null, generation: 0 }) }));
+// The mocked useSystemModel publishes BOTH model fields: provenance travels
+// WITH the model, so the pair is driven explicitly alongside each model swap.
+vi.mock("../hooks/useSystemModel", () => ({ useSystemModel: () => ({ model: state.model, modelProvenance: state.modelProvenance, loading: false, error: null }) }));
+vi.mock("../hooks/useApiResource", () => ({ useApiResource: () => ({ data: null, loading: false, error: null, generation: 0, provenance: null }) }));
 let root: Root | null = null; let host: HTMLDivElement | null = null;
 beforeEach(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,7 +34,7 @@ beforeEach(() => {
 function shell() {
   return <MemoryRouter><Routes><Route element={<AppShell onBearerSignOut={() => {}} />}><Route index element={<Home />} /></Route></Routes></MemoryRouter>;
 }
-function render() { state.model = demoModel; host = document.createElement("div"); document.body.append(host); root = createRoot(host); act(() => root!.render(shell())); return host; }
+function render() { state.model = demoModel; state.modelProvenance = "demo"; host = document.createElement("div"); document.body.append(host); root = createRoot(host); act(() => root!.render(shell())); return host; }
 afterEach(() => { root?.unmount(); host?.remove(); root = null; host = null; });
 function updatesValue(target: HTMLElement): string {
   const value = target.querySelector(".metric-updates .metric-value");
@@ -75,7 +78,7 @@ describe("Updates wiring", () => {
     state.demoMode = true; state.health = { status: "ok", mode: "mock", dockerReachable: true, lastUpdated: 1, snapshotVersion: "demo" };
     const target = render();
     expect(target.querySelector(".metric-updates")!.textContent).toContain("Not collected");
-    act(() => { state.demoMode = false; state.model = liveModel; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 2, snapshotVersion: "live" }; root!.render(shell()); });
+    act(() => { state.demoMode = false; state.model = liveModel; state.modelProvenance = "daemon"; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 2, snapshotVersion: "live" }; root!.render(shell()); });
     expect(target.querySelector(".conn-mode")!.textContent).toBe("Docker Engine");
     expect(target.querySelector(".metric-updates")!.textContent).toContain("Not collected");
     expect(updatesValue(target)).not.toMatch(/^\d+$/);

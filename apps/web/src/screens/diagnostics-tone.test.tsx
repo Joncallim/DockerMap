@@ -31,6 +31,7 @@ vi.mock("../hooks/useApiResource", () => ({
 
 const contextValue: AppContextValue = {
   model: null,
+  modelProvenance: null,
   loading: false,
   error: null,
   health: null,

@@ -77,6 +77,7 @@ const model = buildModel(fixture, emptyRuntime);
 
 const contextValue: AppContextValue = {
   model,
+  modelProvenance: "daemon",
   loading: false,
   error: null,
   health: null,

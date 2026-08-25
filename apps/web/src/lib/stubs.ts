@@ -1,6 +1,6 @@
 import { hashString, needsAttention, type Service, type SystemModel } from "./model";
 import { identityText, UNAVAILABLE_SERVICE } from "./identity";
-import { claimAuthority, demoSample, type Claim, type EvidenceMode } from "./evidence";
+import { claimAuthority, demoSample, type Claim, type EvidenceMode, type ModelProvenance } from "./evidence";
 import { CAUSAL_CHAIN_CLAIM, CHANGE_HISTORY_CLAIM } from "./history";
 
 /**
@@ -74,7 +74,8 @@ export interface ChangeEvent {
  * without a template here is a compile error, and `makeEvent` can never index
  * an undefined template. (The `deploy`/`config`/`recovery` templates exist
  * but `changeFeed` deliberately emits only `failure`/`restart` today. The
- * synthetic feed is available only under sample authority.)
+ * synthetic feed is available only under an allow-listed sample
+ * mode/provenance pair — see `maySynthesizeHistory`.)
  */
 const CHANGE_TEMPLATES: Record<
   ChangeEvent["kind"],
@@ -87,8 +88,29 @@ const CHANGE_TEMPLATES: Record<
   recovery: (s) => ({ summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} recovered`, detail: `Health checks passing again` })
 };
 
-export function changeFeed(model: SystemModel, mode: EvidenceMode | null): Claim<ChangeEvent[]> {
-  if (claimAuthority(mode) !== "sample") return CHANGE_HISTORY_CLAIM;
+/**
+ * §9 Option A gate — positive allow-listing, shared by both generators and
+ * run BEFORE any model iteration or clock read. Authority is necessary but
+ * not sufficient: a sample tag requires the model's bytes to actually match
+ * the declared mode (demo bytes under demo mode; daemon bytes under mock
+ * mode). Every mismatch, unknown value, and null takes the unavailable arm —
+ * a retained live model under demo authority must never be relabelled as a
+ * freshly selected demo sample (DM-06/G-24).
+ */
+function maySynthesizeHistory(mode: EvidenceMode | null, modelProvenance: ModelProvenance | null): boolean {
+  if (claimAuthority(mode) !== "sample") return false;
+  return (
+    (mode === "demo" && modelProvenance === "demo") ||
+    (mode === "mock" && modelProvenance === "daemon")
+  );
+}
+
+export function changeFeed(
+  model: SystemModel,
+  mode: EvidenceMode | null,
+  modelProvenance: ModelProvenance | null
+): Claim<ChangeEvent[]> {
+  if (!maySynthesizeHistory(mode, modelProvenance)) return CHANGE_HISTORY_CLAIM;
   const now = Date.now();
   const events: ChangeEvent[] = [];
   for (const service of model.services) {
@@ -129,8 +151,12 @@ export interface CausalStep {
   tone: "fail" | "neutral" | "ok";
 }
 
-export function causalChain(model: SystemModel, mode: EvidenceMode | null): Claim<CausalStep[]> {
-  if (claimAuthority(mode) !== "sample") return CAUSAL_CHAIN_CLAIM;
+export function causalChain(
+  model: SystemModel,
+  mode: EvidenceMode | null,
+  modelProvenance: ModelProvenance | null
+): Claim<CausalStep[]> {
+  if (!maySynthesizeHistory(mode, modelProvenance)) return CAUSAL_CHAIN_CLAIM;
   const root = model.services.find((s) => s.state === "offline");
   if (!root) return demoSample([]);
   const affected = model.services.filter((s) => s.dependsOn.includes(root.id));

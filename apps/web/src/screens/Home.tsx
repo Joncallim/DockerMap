@@ -14,9 +14,15 @@ import { resourceFor } from "../lib/stubs";
 import { UPDATE_STATUS_CLAIM, UPDATE_STATUS_LABEL } from "../lib/updates";
 
 export default function Home() {
-  const { model, loading, error, evidenceMode } = useApp();
-  const history = useMemo(() => (model ? changeFeed(model, evidenceMode) : CHANGE_HISTORY_CLAIM), [model, evidenceMode]);
-  const chain = useMemo(() => (model ? causalChain(model, evidenceMode) : CAUSAL_CHAIN_CLAIM), [model, evidenceMode]);
+  const { model, modelProvenance, loading, error, evidenceMode } = useApp();
+  const history = useMemo(
+    () => (model ? changeFeed(model, evidenceMode, modelProvenance) : CHANGE_HISTORY_CLAIM),
+    [model, evidenceMode, modelProvenance]
+  );
+  const chain = useMemo(
+    () => (model ? causalChain(model, evidenceMode, modelProvenance) : CAUSAL_CHAIN_CLAIM),
+    [model, evidenceMode, modelProvenance]
+  );
 
   if (loading && !model) return <Loading label="Building your system story…" />;
   if (error && !model) return <ErrorState title="System unavailable" body={error} />;

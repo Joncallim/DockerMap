@@ -16,9 +16,12 @@ const KINDS: { id: ChangeEvent["kind"] | "all"; label: string }[] = [
 ];
 
 export default function Changes() {
-  const { model, loading, error, evidenceMode } = useApp();
+  const { model, modelProvenance, loading, error, evidenceMode } = useApp();
   const [kind, setKind] = useState<ChangeEvent["kind"] | "all">("all");
-  const history = useMemo(() => (model ? changeFeed(model, evidenceMode) : CHANGE_HISTORY_CLAIM), [model, evidenceMode]);
+  const history = useMemo(
+    () => (model ? changeFeed(model, evidenceMode, modelProvenance) : CHANGE_HISTORY_CLAIM),
+    [model, evidenceMode, modelProvenance]
+  );
   const events = history.kind === "unavailable" ? [] : history.value;
   const filtered = kind === "all" ? events : events.filter((event) => event.kind === kind);
 
