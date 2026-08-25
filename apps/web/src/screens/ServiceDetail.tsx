@@ -4,7 +4,8 @@ import type { LogsResponse } from "@dockermap/contracts";
 import { useApp } from "../context";
 import { useApiResource } from "../hooks/useApiResource";
 import { computeImpact, type DependencyOccurrence, type Service, type SystemModel } from "../lib/model";
-import { resourceFor, STUB_NOTICE } from "../lib/stubs";
+import { resourceFor } from "../lib/stubs";
+import { evidenceLabel, type EvidenceMode, type ModelProvenance } from "../lib/evidence";
 import { formatKbps, formatMb, formatPercent, formatRelative } from "../lib/format";
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
@@ -24,7 +25,7 @@ const TABS: { id: Tab; label: string; icon: Parameters<typeof Icon>[0]["name"] }
 
 export default function ServiceDetail({ defaultTab = "overview", defaultOpen = false }: { defaultTab?: Tab; defaultOpen?: boolean }) {
   const { name = "" } = useParams();
-  const { model, loading, error, tick } = useApp();
+  const { model, modelProvenance, loading, error, tick, evidenceMode } = useApp();
   const [tab, setTab] = useState<Tab>(defaultTab);
   const [focusedTab, setFocusedTab] = useState<Tab>(defaultTab);
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
@@ -127,7 +128,7 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
       <div id="service-tabpanel" role="tabpanel" aria-labelledby={`service-tab-${tab}`}>
         {tab === "overview" && <Overview service={service} model={model} />}
         {tab === "dependencies" && <Dependencies service={service} model={model} />}
-        {tab === "resources" && <Resources service={service} />}
+        {tab === "resources" && <Resources service={service} evidenceMode={evidenceMode} modelProvenance={modelProvenance} />}
         {tab === "logs" && <Logs name={service.name} tick={tick} />}
         {tab === "config" && (
           <Config service={service} model={model} showInternals={showInternals} onToggleInternals={() => setShowInternals((v) => !v)} />
@@ -207,24 +208,26 @@ function RelList({ model, occurrences, empty }: { model: SystemModel; occurrence
   );
 }
 
-function Resources({ service }: { service: Service }) {
-  const res = resourceFor(service);
+function Resources({ service, evidenceMode, modelProvenance }: { service: Service; evidenceMode: EvidenceMode | null; modelProvenance: ModelProvenance | null }) {
+  const resources = resourceFor(service, evidenceMode, modelProvenance);
   return (
-    <Panel title="Resources" icon="cpu" hint={STUB_NOTICE}>
-      <div className="res-grid">
+    <Panel className="panel-resources" title="Resources" icon="cpu" hint={evidenceLabel(resources.kind).label}>
+      {resources.kind === "unavailable" ? (
+        <EmptyState icon="cpu" title={evidenceLabel(resources.kind).label} body={resources.detail} />
+      ) : <div className="res-grid">
         <div className="res-cell">
-          <Metric label="CPU" value={formatPercent(res.cpuPercent)} />
-          <Sparkline data={res.cpuSeries} state={service.state} />
+          <Metric label="CPU" value={formatPercent(resources.value.cpuPercent)} />
+          <Sparkline data={resources.value.cpuSeries} state={service.state} />
         </div>
         <div className="res-cell">
-          <Metric label="Memory" value={formatMb(res.memoryMb)} sub={formatPercent(res.memoryPercent)} />
-          <Bar value={res.memoryPercent} state={service.state} />
+          <Metric label="Memory" value={formatMb(resources.value.memoryMb)} sub={formatPercent(resources.value.memoryPercent)} />
+          <Bar value={resources.value.memoryPercent} state={service.state} label={`Memory ${formatPercent(resources.value.memoryPercent)} — ${evidenceLabel(resources.kind).label}`} />
         </div>
         <div className="res-cell">
-          <Metric label="Network" value={formatKbps(res.networkKbps)} />
+          <Metric label="Network" value={formatKbps(resources.value.networkKbps)} />
           <Icon name="network" size={18} />
         </div>
-      </div>
+      </div>}
     </Panel>
   );
 }

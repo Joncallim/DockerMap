@@ -102,9 +102,9 @@ export function Sparkline({ data, state = "healthy" }: { data: number[]; state?:
   );
 }
 
-export function Bar({ value, state = "healthy" }: { value: number; state?: ServiceState }) {
+export function Bar({ value, state = "healthy", label }: { value: number; state?: ServiceState; label: string }) {
   return (
-    <span className="bar" role="img" aria-label={`${Math.round(value)} percent`}>
+    <span className="bar" role="img" aria-label={label}>
       <span className={`bar-fill s-${state}`} style={{ width: `${Math.max(2, Math.min(100, value))}%` }} />
     </span>
   );

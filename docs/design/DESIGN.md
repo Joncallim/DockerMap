@@ -114,8 +114,9 @@ layer. Today it reasons locally and deterministically over the live model.
 - Risk and state are expressed in text *and* colour *and* shape — never colour alone.
 - Hovering a service highlights its relationships; selecting it reveals its impact radius.
 - Empty states teach the next action; they never market, decorate, or celebrate.
-- Estimated data (resource samples, change history) is always labelled as estimated until
-  real read-only collectors back it.
+- Resource usage samples are shown only in explicit demo mode and labelled "Sample data";
+  mock and live mode report non-collection rather than showing a number. Change history
+  retains its separately documented demo/mock policy.
 
 ## Accessibility Baseline
 
