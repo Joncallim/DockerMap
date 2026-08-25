@@ -79,9 +79,9 @@ export function KeyValue({ label, value, mono }: { label: string; value: ReactNo
   );
 }
 
-export function Metric({ label, value, sub }: { label: string; value: ReactNode; sub?: ReactNode }) {
+export function Metric({ label, value, sub, className }: { label: string; value: ReactNode; sub?: ReactNode; className?: string }) {
   return (
-    <div className="metric">
+    <div className={className ? `metric ${className}` : "metric"}>
       <span className="metric-label">{label}</span>
       <strong className="metric-value">{value}</strong>
       {sub && <span className="metric-sub">{sub}</span>}

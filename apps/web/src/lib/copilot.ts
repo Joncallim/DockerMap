@@ -1,5 +1,6 @@
 import { computeImpact, type Service, type SystemModel } from "./model";
 import { identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "./identity";
+import { UPDATE_STATUS_CLAIM, UPDATE_STATUS_LABEL } from "./updates";
 
 /**
  * The Copilot interprets the topology. It does not control anything and it does
@@ -51,7 +52,7 @@ export function answer(model: SystemModel, raw: string): CopilotAnswer {
     return portAnswer(model, q, lower);
   }
   if (/chang|recent|deploy|updat/.test(lower)) {
-    return changeAnswer(model, q);
+    return changeAnswer(q);
   }
   if (named) {
     return serviceOverviewAnswer(model, named, q);
@@ -164,16 +165,13 @@ function portAnswer(model: SystemModel, q: string, lower: string): CopilotAnswer
   };
 }
 
-function changeAnswer(model: SystemModel, q: string): CopilotAnswer {
-  const updates = model.services.filter((s) => s.updateAvailable);
-  const body: string[] = [];
-  if (updates.length > 0) {
-    body.push(`${updates.length} service${updates.length === 1 ? " has" : "s have"} an update available:`);
-    for (const s of updates) body.push(`• ${identityText(s.name, UNAVAILABLE_SERVICE)} (${identityText(s.imageRepo, UNAVAILABLE_IMAGE)}:${identityText(s.imageTag, UNAVAILABLE_IMAGE)})`);
-  } else {
-    body.push("No pending updates detected.");
-  }
-  return { question: q, headline: "Recent and pending change", body, references: updates.map((s) => s.name) };
+function changeAnswer(q: string): CopilotAnswer {
+  return {
+    question: q,
+    headline: "Recent and pending change",
+    body: [`Update status: ${UPDATE_STATUS_LABEL} — ${UPDATE_STATUS_CLAIM.detail}.`],
+    references: []
+  };
 }
 
 function serviceOverviewAnswer(model: SystemModel, service: Service, q: string): CopilotAnswer {

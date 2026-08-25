@@ -8,7 +8,6 @@ import { EmptyState, ErrorState, Loading, Panel } from "../components/primitives
 
 const KINDS: { id: ChangeEvent["kind"] | "all"; label: string }[] = [
   { id: "all", label: "All" },
-  { id: "image_update", label: "Updates" },
   { id: "restart", label: "Restarts" },
   { id: "failure", label: "Failures" },
   { id: "recovery", label: "Recoveries" }
@@ -68,9 +67,11 @@ export default function Changes() {
 }
 
 function iconForKind(kind: ChangeEvent["kind"]): Parameters<typeof Icon>[0]["name"] {
+  // Exhaustive (G7/U7): every kind gets an explicit icon and there is NO
+  // default swallow — a kind added to the union is a compile error here
+  // ("not all code paths return a value") instead of silently rendering the
+  // generic "history" marker.
   switch (kind) {
-    case "image_update":
-      return "up";
     case "failure":
       return "alert";
     case "recovery":
@@ -79,7 +80,7 @@ function iconForKind(kind: ChangeEvent["kind"]): Parameters<typeof Icon>[0]["nam
       return "refresh";
     case "config":
       return "layers";
-    default:
-      return "history";
+    case "deploy":
+      return "up";
   }
 }

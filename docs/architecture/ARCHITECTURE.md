@@ -71,8 +71,8 @@ The map is read-only and currently contains:
 - npm projects discovered from `package.json` and lockfiles under the configured project
   root, with scripts, framework hints, and dependency nodes. The contracts can represent
   package-update/advisory metadata, but no runtime registry or advisory lookup is enabled
-  today. UI update labels are derived from local model/demo data unless a future opt-in
-  advisory provider is implemented.
+  today. No UI update label is derived from local model or demo data: update status is
+  reported as "Not collected" until a future opt-in advisory provider lands (#72).
 - scheduled jobs from `/etc/crontab`, `/etc/cron.d/*`, and the current user's `crontab -l` when readable.
 - PM2 apps from `pm2 jlist` when PM2 is installed.
 - tmux sessions from `tmux list-sessions` when tmux is installed and reachable.

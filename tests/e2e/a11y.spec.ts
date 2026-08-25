@@ -173,6 +173,11 @@ test.describe("responsive and accessibility matrix", () => {
       await askCopilot.fill("what changed recently?");
       await askCopilot.press("Enter");
       await expect(askCopilot).toBeFocused();
+      // U6: the rendered answer must carry the not-collected copy and NO
+      // references — changeAnswer returns references: [] (Q7), so the refs
+      // rail must not render.
+      await expect(page.locator(".copilot-answer")).toContainText("Update status: Not collected — Update checks not wired — DockerMap does not query registries.");
+      await expect(page.locator(".copilot-refs")).toHaveCount(0);
 
       await openRoute(page, "/", "dark");
       await page.keyboard.press("Tab");
@@ -498,8 +503,10 @@ test.describe("responsive and accessibility matrix", () => {
       await expect(page.getByText("Unavailable service name").first()).toBeVisible();
 
       // Duplicate (redaction-collided) identities stay visible as distinct
-      // non-routable rows in the attention list (the hash-based "Updates
-      // available" panel may also list one of them, so scope to this list).
+      // non-routable rows in the attention list, so scope to this list.
+      await expect(page.locator(".metric-updates")).toContainText("Not collected");
+      await expect(page.locator(".metric-updates")).toContainText("Update checks not wired");
+      await expect(page.getByText("Updates available")).toHaveCount(0);
       const attentionList = page.locator(".svc-list").first();
       await expect(attentionList.locator(".svc-row", { hasText: "dup-svc" })).toHaveCount(2);
 
@@ -507,6 +514,27 @@ test.describe("responsive and accessibility matrix", () => {
     } finally {
       await context.close();
     }
+  });
+
+  test("service detail and change center surfaces report updates as not collected", async ({ browser }) => {
+    await withPage(browser, "dark", async (page) => {
+      // §7 item 5 (U2/G2): the impact-band cell on a mock-served service
+      // detail renders the claim label, never a synthetic Yes/No. Word
+      // boundaries: "Not collected" contains "No" as a substring but not as a
+      // whole word, so /\bNo\b/ fails on the honest label and only catches a
+      // leaked "No" cell value.
+      await openRoute(page, "/services/postgres", "dark");
+      const impactCell = page.locator(".impact-cell-updates");
+      await expect(impactCell).toContainText("Not collected");
+      const cellText = await impactCell.evaluate((el) => el.textContent ?? "");
+      expect(cellText).not.toMatch(/\bYes\b/);
+      expect(cellText).not.toMatch(/\bNo\b/);
+
+      // §7 item 6 (U2/G2): Q8 removed the "Updates" filter chip — a chip that
+      // filters to a permanently empty list would read as "no updates exist".
+      await openRoute(page, "/changes", "dark");
+      await expect(page.locator(".filter-chip", { hasText: "Updates" })).toHaveCount(0);
+    });
   });
 
   test("async route heading is promoted without a late focus steal", async ({ browser }) => {

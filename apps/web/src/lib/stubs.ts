@@ -1,5 +1,5 @@
 import { hashString, needsAttention, type Service, type SystemModel } from "./model";
-import { identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_SERVICE } from "./identity";
+import { identityText, UNAVAILABLE_SERVICE } from "./identity";
 
 /**
  * ──────────────────────────────────────────────────────────────────────────
@@ -61,21 +61,25 @@ export interface ChangeEvent {
    * non-routable text and never emit a /services/ link in that case.
    */
   routeName: string | null;
-  kind: "deploy" | "image_update" | "restart" | "config" | "failure" | "recovery";
+  kind: "deploy" | "restart" | "config" | "failure" | "recovery";
   summary: string;
   detail?: string;
   at: number;
   estimated: true;
 }
 
+/**
+ * TOTAL by type (G7/U7): a `Record` over the FULL `ChangeEvent["kind"]`
+ * union, so a generator-less kind is impossible — adding a kind to the union
+ * without a template here is a compile error, and `makeEvent` can never index
+ * an undefined template. (The `deploy`/`config`/`recovery` templates exist
+ * but `changeFeed` deliberately emits only `failure`/`restart` today; #74
+ * owns the feed's emission surface.)
+ */
 const CHANGE_TEMPLATES: Record<
   ChangeEvent["kind"],
   (service: Service) => { summary: string; detail?: string }
 > = {
-  image_update: (s) => ({
-    summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} image updated`,
-    detail: `${identityText(s.imageRepo, UNAVAILABLE_IMAGE)}:${identityText(s.imageTag, UNAVAILABLE_IMAGE)} pulled and redeployed`
-  }),
   deploy: (s) => ({ summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} redeployed`, detail: `Recreated from compose definition` }),
   restart: (s) => ({ summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} restarted`, detail: `Process exited and was restarted` }),
   config: (s) => ({ summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} configuration changed`, detail: `Environment or mount updated` }),
@@ -91,9 +95,6 @@ export function changeFeed(model: SystemModel): ChangeEvent[] {
     // Collision-safe route target: only a non-empty name that resolves
     // uniquely through byName may become a /services/ link.
     const routeName = model.byName.has(service.name) ? service.name : null;
-    if (service.updateAvailable) {
-      events.push(makeEvent(service, "image_update", now - Math.round(seed * 1000 * 60 * 90), routeName));
-    }
     if (needsAttention(service.state)) {
       events.push(makeEvent(service, "failure", now - Math.round(seed * 1000 * 60 * 25), routeName));
     } else if (seed > 0.6) {

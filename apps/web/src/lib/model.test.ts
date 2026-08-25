@@ -251,9 +251,6 @@ describe("summarize", () => {
     expect(summary.warning).toBe(1);
     expect(summary.offline).toBe(1);
     expect(summary.attention).toBe(3);
-    // updateAvailable is hash-derived per container; assert the range, not exact counts.
-    expect(summary.updatesAvailable).toBeGreaterThanOrEqual(0);
-    expect(summary.updatesAvailable).toBeLessThanOrEqual(summary.total);
   });
 });
 

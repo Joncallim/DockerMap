@@ -2,13 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Metric, Panel, Tag } from "../components/primitives";
 import { EVIDENCE_KINDS, evidenceLabel, unavailable } from "./evidence";
-
-/** Strip markup so assertions target VISIBLE TEXT, not serialized HTML:
- * `toContain(label)` on markup would pass if the label drifted into a `title`
- * attribute (G-22), which users and screen readers never see. */
-function visibleText(html: string): string {
-  return html.replace(/<[^>]*>/g, " ");
-}
+import { visibleText } from "./test-utils";
 
 describe("evidence label rendering", () => {
   it("11. renders every kind through Panel.hint, Tag, and Metric", () => {
