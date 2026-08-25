@@ -40,7 +40,7 @@ describe("history wiring — model/provenance held fixed while ONLY the mode fli
     state.demoMode = false;
     state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "live" };
     state.model = liveModel;
-    state.modelProvenance = "daemon";
+    state.modelProvenance = "live";
     const target = render(path);
     expect(target.querySelectorAll(".feed-row, .timeline-row").length).toBe(0);
     expect(target.textContent).toContain("Not collected");
@@ -94,6 +94,36 @@ describe("history wiring — model/provenance held fixed while ONLY the mode fli
     expect(target.textContent).toContain("Not collected");
   });
 
+  it.each([["/"], ["/changes"]] as const)("docker→mock fallback keeps retained live identifiers unavailable until mock bytes land (%s)", (path) => {
+    state.demoMode = false;
+    state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "live" };
+    state.model = liveModel;
+    state.modelProvenance = "live";
+    const target = render(path);
+    expect(target.textContent).toContain("Not collected");
+
+    // Health changes first in production; retain the live model/source stamp.
+    state.health = { status: "ok", mode: "mock", dockerReachable: false, lastUpdated: 2, snapshotVersion: "fallback" };
+    rerender(path);
+    expect(target.querySelector(".conn-mode")!.textContent).toBe("Mock Engine");
+    expect(target.querySelectorAll(".feed-row, .timeline-row").length).toBe(0);
+    expect(target.querySelectorAll(".filter-chip").length).toBe(0);
+    expect(target.textContent).not.toContain("Sample data");
+    if (path === "/") {
+      expect(target.querySelector(".panel-recent-change")!.textContent).not.toContain("prod-secret-host");
+      expect(target.querySelector(".panel-causal-chain")!.textContent).not.toContain("prod-secret-host");
+    } else {
+      expect(target.textContent).not.toContain("prod-secret-host");
+    }
+
+    // Only a newly published mock pair may resume tagged sample rows.
+    state.model = demoModel;
+    state.modelProvenance = "mock";
+    rerender(path);
+    expect(target.querySelectorAll(".feed-row, .timeline-row").length).toBeGreaterThan(0);
+    expect(target.textContent).toContain("Sample data");
+  });
+
   it("distinguishes a filtered-empty sample feed from a truly empty sample feed", () => {
     state.demoMode = true;
     state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "demo" };
@@ -113,7 +143,7 @@ describe("history wiring — model/provenance held fixed while ONLY the mode fli
   });
 
   it("null authority and same-mode generation changes remain unavailable", () => {
-    state.demoMode = false; state.health = null; state.model = liveModel; state.modelProvenance = "daemon";
+    state.demoMode = false; state.health = null; state.model = liveModel; state.modelProvenance = "live";
     const target = render("/changes");
     expect(target.textContent).toContain("Not collected");
     expect(target.querySelectorAll(".timeline-row").length).toBe(0);

@@ -114,7 +114,7 @@ afterEach(() => {
 
 describe("useSystemModel retains the last model across refresh failures", () => {
   it("keeps model + prior data and sets the error when a REFRESH fails after an initial success", async () => {
-    const hook = renderHook((tick: number) => useSystemModel(tick), 0 as number);
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
     await hook.mount();
     expect(pending).toHaveLength(2);
     const [snapshotReq, runtimeReq] = pending.splice(0);
@@ -151,7 +151,7 @@ describe("useSystemModel retains the last model across refresh failures", () => 
   });
 
   it("still shows the error state when the FIRST load fails (no prior model to retain)", async () => {
-    const hook = renderHook((tick: number) => useSystemModel(tick), 0 as number);
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
     await hook.mount();
     const [snapshotReq, runtimeReq] = pending.splice(0);
     snapshotReq.resolve(jsonResponse(snapV1));
@@ -166,7 +166,7 @@ describe("useSystemModel retains the last model across refresh failures", () => 
 
 describe("useSystemModel rebuilds only from a same-generation pair", () => {
   it("keeps the previous model while one resource settles ahead of the other", async () => {
-    const hook = renderHook((tick: number) => useSystemModel(tick), 0 as number);
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
     await hook.mount();
     const [s1, r1] = pending.splice(0);
     s1.resolve(jsonResponse(snapV1));
@@ -191,8 +191,38 @@ describe("useSystemModel rebuilds only from a same-generation pair", () => {
     expect(hook.result.current.model?.services[0].name).toBe("web-v2");
   });
 
+  it("retains the live model/source stamp until a complete mock pair settles", async () => {
+    type Props = { tick: number; mode: "live" | "mock" };
+    const hook = renderHook(({ tick, mode }: Props) => useSystemModel(tick, mode), { tick: 0, mode: "live" });
+    await hook.mount();
+    const [s1, r1] = pending.splice(0);
+    s1.resolve(jsonResponse(snapV1));
+    r1.resolve(jsonResponse(runtimeV1));
+    await flush();
+    expect(hook.result.current.model?.services[0].name).toBe("web");
+    expect(hook.result.current.modelProvenance).toBe("live");
+
+    // Health/mode changes first: requests restart for mock, while the retained
+    // real model remains stamped live and therefore fails the sample gate.
+    await hook.rerender({ tick: 0, mode: "mock" });
+    expect(pending).toHaveLength(2);
+    expect(hook.result.current.model?.services[0].name).toBe("web");
+    expect(hook.result.current.modelProvenance).toBe("live");
+
+    const [s2, r2] = pending.splice(0);
+    s2.resolve(jsonResponse(snapV2));
+    await flush();
+    expect(hook.result.current.model?.services[0].name).toBe("web");
+    expect(hook.result.current.modelProvenance).toBe("live");
+
+    r2.resolve(jsonResponse(runtimeV2));
+    await flush();
+    expect(hook.result.current.model?.services[0].name).toBe("web-v2");
+    expect(hook.result.current.modelProvenance).toBe("mock");
+  });
+
   it("never pairs a failed resource's stale data with a fresh peer", async () => {
-    const hook = renderHook((tick: number) => useSystemModel(tick), 0 as number);
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
     await hook.mount();
     const [s1, r1] = pending.splice(0);
     s1.resolve(jsonResponse(snapV1));

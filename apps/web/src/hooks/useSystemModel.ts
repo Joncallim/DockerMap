@@ -1,7 +1,8 @@
 import { useMemo, useRef } from "react";
 import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
 import { buildModel, type SystemModel } from "../lib/model";
-import type { ModelProvenance } from "../lib/evidence";
+import type { EvidenceMode, ModelProvenance } from "../lib/evidence";
+import { modelProvenanceForMode } from "../lib/evidence";
 import { useApiResource } from "./useApiResource";
 
 export interface SystemModelState {
@@ -18,9 +19,10 @@ export interface SystemModelState {
 }
 
 /** Fetches the Docker snapshot + runtime map and composes them into the domain model. */
-export function useSystemModel(refreshTick = 0): SystemModelState {
-  const snapshot = useApiResource<DockerSnapshot>("/api/snapshot", refreshTick);
-  const runtimeMap = useApiResource<RuntimeMap>("/api/runtime/map", refreshTick);
+export function useSystemModel(refreshTick: number, evidenceMode: EvidenceMode | null): SystemModelState {
+  const requestedProvenance = modelProvenanceForMode(evidenceMode);
+  const snapshot = useApiResource<DockerSnapshot>("/api/snapshot", refreshTick, requestedProvenance);
+  const runtimeMap = useApiResource<RuntimeMap>("/api/runtime/map", refreshTick, requestedProvenance);
 
   // The two requests settle independently each refresh, so one can land while
   // the other still carries the previous generation. buildModel must only run

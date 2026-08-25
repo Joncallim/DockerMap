@@ -200,7 +200,7 @@ describe("collidable list keys are occurrence-qualified (client reconciler)", ()
       vi.fn(async () => ({ ok: true, status: 200, json: async () => duplicateLogs }))
     );
     const { hostEl, sameKeyErrors } = mountCollectingKeys(
-      <AppContext.Provider value={contextFor(homeFixture, emptyRuntime, "live", "daemon")}>
+      <AppContext.Provider value={contextFor(homeFixture, emptyRuntime, "live", "live")}>
         <MemoryRouter initialEntries={["/logs"]}>
           <Routes>
             <Route path="/logs" element={<Logs />} />
@@ -220,7 +220,7 @@ describe("collidable list keys are occurrence-qualified (client reconciler)", ()
       vi.fn(async () => ({ ok: true, status: 200, json: async () => duplicateLogs }))
     );
     const { hostEl, sameKeyErrors } = mountCollectingKeys(
-      <AppContext.Provider value={contextFor(detailFixture, emptyRuntime, "live", "daemon")}>
+      <AppContext.Provider value={contextFor(detailFixture, emptyRuntime, "live", "live")}>
         <MemoryRouter initialEntries={["/services/web"]}>
           <Routes>
             <Route path="/services/:name" element={<ServiceDetail defaultTab="logs" />} />
@@ -234,7 +234,7 @@ describe("collidable list keys are occurrence-qualified (client reconciler)", ()
 
   it("ServiceDetail Configuration renders repeated port strings as distinct tags without a same-key warning", () => {
     const { hostEl, sameKeyErrors } = mountCollectingKeys(
-      <AppContext.Provider value={contextFor(detailFixture, emptyRuntime, "live", "daemon")}>
+      <AppContext.Provider value={contextFor(detailFixture, emptyRuntime, "live", "live")}>
         <MemoryRouter initialEntries={["/services/web"]}>
           <Routes>
             <Route path="/services/:name" element={<ServiceDetail defaultTab="config" />} />
@@ -250,7 +250,7 @@ describe("collidable list keys are occurrence-qualified (client reconciler)", ()
 
   it("Runtime inspector renders duplicate log and event ref ids as distinct rows without a same-key warning", () => {
     const { hostEl, sameKeyErrors } = mountCollectingKeys(
-      <AppContext.Provider value={contextFor({ containers: [], images: [], networks: [], volumes: [], lastUpdated: 0 }, runtimeFixture, "live", "daemon")}>
+      <AppContext.Provider value={contextFor({ containers: [], images: [], networks: [], volumes: [], lastUpdated: 0 }, runtimeFixture, "live", "live")}>
         <MemoryRouter initialEntries={["/runtime"]}>
           <Routes>
             <Route path="/runtime" element={<RuntimeScreen />} />

@@ -438,9 +438,10 @@ Eight hostile review angles produced 34 raw findings, converged to 19 unique fin
 | Screenshot pixels still contain the old sample notice | accepted deferral to #76 per R7; PR body records the debt |
 | Demo feed may re-roll across successful generations; future host collector needs a new observed arm | accepted design notes (R4/Q1), not defects in #74 |
 | Duplicate Not-collected title+hint and authority trust roots | accepted; #67/rest-of-epic ownership unchanged |
+| Final Sol gate: daemon dynamically changes Docker→mock before the replacement pair settles; two-state `demo|daemon` could not distinguish retained live bytes | **Option A+ remediation:** `ModelProvenance = demo | mock | live`; provenance is stamped from resolved mode at fetch start; sample allow-list is only `demo+demo` or `mock+mock`; hook and UI tests hold a live model/source fixed while health alone flips to mock, then prove samples resume only after a mock pair publishes (final remediation commit) |
 
 V1 deliberately uses `sampleSnapshot` for both sample arms because it deterministically emits feed and causal rows; this is stronger than the earlier seed-dependent fixture proposal. V6 grep scope is `apps/` + `tests/`; historical planning documents and deliberate G-37 probe text are not runtime residuals.
 
 ---
 
-*Status: IMPLEMENTED + REMEDIATED — all ten questions, seven dissent items, and the post-review arbitration are resolved. Remaining accepted follow-ups are recorded above; anything further under-specified requires another same-PR amendment, not implementer judgment.*
+*Status: IMPLEMENTED + REMEDIATED AFTER FINAL-GATE REJECTION — all ten questions, seven dissent items, post-review arbitration, and the Docker→mock dynamic-fallback state are resolved. The final source vocabulary is `demo | mock | live`; earlier two-state `demo | daemon` prose is superseded by the Option A+ outcome row above. Remaining accepted follow-ups are recorded above.*

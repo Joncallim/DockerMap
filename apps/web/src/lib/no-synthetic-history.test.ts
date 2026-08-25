@@ -20,14 +20,19 @@ afterEach(() => {
  * is independently pinned by evidence.test.ts and the V1 render pairs.
  */
 const PROVENANCE_MATRIX: [EvidenceMode | null, ModelProvenance | null, "demo" | "unavailable"][] = [
-  ["live", "daemon", "unavailable"],
+  ["live", "live", "unavailable"],
+  ["live", "mock", "unavailable"],
   ["live", "demo", "unavailable"],
-  [null, "daemon", "unavailable"],
-  [null, "demo", "unavailable"],
+  ["mock", "live", "unavailable"],
+  ["mock", "mock", "demo"],
+  ["mock", "demo", "unavailable"],
+  ["demo", "live", "unavailable"],
+  ["demo", "mock", "unavailable"],
   ["demo", "demo", "demo"],
-  ["demo", "daemon", "unavailable"],
-  ["mock", "daemon", "demo"],
-  ["mock", "demo", "unavailable"]
+  [null, "live", "unavailable"],
+  [null, "mock", "unavailable"],
+  [null, "demo", "unavailable"],
+  [null, null, "unavailable"]
 ];
 
 describe("synthetic history is unavailable outside the allow-listed mode/provenance pair", () => {
@@ -62,14 +67,14 @@ describe("synthetic history is unavailable outside the allow-listed mode/provena
     try {
       // Authorized pairs may roll the clock once per emitted event.
       changeFeed(model, "demo", "demo");
-      changeFeed(model, "mock", "daemon");
+      changeFeed(model, "mock", "mock");
       const authorizedCalls = now.mock.calls.length;
       expect(authorizedCalls).toBeGreaterThan(0);
       // Every mismatch and every causalChain call must be clock-free: the
       // guard runs before the generator body, so no pair may reach Date.now().
       for (const [mode, provenance] of PROVENANCE_MATRIX) {
         if (mode === "demo" && provenance === "demo") continue;
-        if (mode === "mock" && provenance === "daemon") continue;
+        if (mode === "mock" && provenance === "mock") continue;
         changeFeed(model, mode, provenance);
         causalChain(model, mode, provenance);
       }

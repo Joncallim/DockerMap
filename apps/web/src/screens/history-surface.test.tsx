@@ -31,7 +31,7 @@ function renderScreen(path: "/" | "/changes", snapshot: DockerSnapshot, evidence
 describe("history surfaces distinguish sample and non-sample authority", () => {
   // Live+null pairs AND every mode/provenance mismatch: unavailable, zero
   // rows, no sample label, no invented relative time, heading survives.
-  it.each([["live", liveSnapshot, "daemon"], [null, liveSnapshot, "daemon"], ["demo", liveSnapshot, "daemon"], ["mock", sampleSnapshot, "demo"]] as const)("renders no synthetic history for pair (%s, %s, %s)", (mode, snapshot, provenance) => {
+  it.each([["live", liveSnapshot, "live"], [null, liveSnapshot, "live"], ["demo", liveSnapshot, "live"], ["mock", sampleSnapshot, "demo"]] as const)("renders no synthetic history for pair (%s, %s, %s)", (mode, snapshot, provenance) => {
     const changes = renderScreen("/changes", snapshot, mode, provenance);
     const home = renderScreen("/", snapshot, mode, provenance);
     for (const html of [changes, home]) {
@@ -48,7 +48,7 @@ describe("history surfaces distinguish sample and non-sample authority", () => {
     expect(visibleText(home)).toContain("Event causality not reconstructed — DockerMap observes current state, not transitions");
   });
 
-  it.each([["demo", sampleSnapshot, "demo"], ["mock", sampleSnapshot, "daemon"]] as const)("renders tagged samples for the matching pair (%s, %s, %s)", (mode, snapshot, provenance) => {
+  it.each([["demo", sampleSnapshot, "demo"], ["mock", sampleSnapshot, "mock"]] as const)("renders tagged samples for the matching pair (%s, %s, %s)", (mode, snapshot, provenance) => {
     const changes = renderScreen("/changes", snapshot, mode, provenance);
     const home = renderScreen("/", snapshot, mode, provenance);
     expect(changes).toContain("timeline-row");

@@ -101,7 +101,7 @@ function maySynthesizeHistory(mode: EvidenceMode | null, modelProvenance: ModelP
   if (claimAuthority(mode) !== "sample") return false;
   return (
     (mode === "demo" && modelProvenance === "demo") ||
-    (mode === "mock" && modelProvenance === "daemon")
+    (mode === "mock" && modelProvenance === "mock")
   );
 }
 

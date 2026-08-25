@@ -134,8 +134,12 @@ function AuthStatus({ onBearerSignOut }: { onBearerSignOut: () => void }) {
 
 export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => void }) {
   const { tick, health } = useDaemonHeartbeat();
-  const { model, modelProvenance, loading, error } = useSystemModel(tick);
   const { settings } = useSettings();
+  const evidenceMode: EvidenceMode | null = resolveEvidenceMode({
+    demoMode: settings.demoMode,
+    healthMode: health?.mode ?? null
+  });
+  const { model, modelProvenance, loading, error } = useSystemModel(tick, evidenceMode);
   const [commandOpen, setCommandOpen] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
 
@@ -158,10 +162,6 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
   }, []);
 
   const summary = useMemo(() => (model ? summarize(model) : null), [model]);
-  const evidenceMode: EvidenceMode | null = resolveEvidenceMode({
-    demoMode: settings.demoMode,
-    healthMode: health?.mode ?? null
-  });
   const overall = !summary
     ? "unknown"
     : summary.offline > 0

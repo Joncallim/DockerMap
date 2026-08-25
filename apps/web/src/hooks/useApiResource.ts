@@ -30,7 +30,11 @@ export type ResourceState<T> = {
  * FIRST load failure (no prior data) clears `data` and surfaces the error
  * state. Data carries the generation of the fetch attempt that produced it.
  */
-export function useApiResource<T>(path: string, refreshTick = 0): ResourceState<T> {
+export function useApiResource<T>(
+  path: string,
+  refreshTick = 0,
+  requestedProvenance?: ModelProvenance | null
+): ResourceState<T> {
   const { settings } = useSettings();
   const [state, setState] = useState<ResourceState<T>>({
     data: null,
@@ -46,6 +50,18 @@ export function useApiResource<T>(path: string, refreshTick = 0): ResourceState<
   const attemptRef = useRef(0);
 
   useEffect(() => {
+    const provenance = requestedProvenance === undefined
+      ? (settings.demoMode ? "demo" : "live")
+      : requestedProvenance;
+
+    // Model resources wait until heartbeat/settings establish their actual
+    // source. Retained bytes keep their prior stamp; no speculative fetch may
+    // label them live or mock before authority is known.
+    if (provenance === null) {
+      setState((current) => ({ ...current, loading: true, error: null }));
+      return;
+    }
+
     // Abort on unmount/path change: a slow response can never clobber newer
     // state, and the underlying fetch is actually cancelled instead of just
     // having its result discarded.
@@ -53,9 +69,8 @@ export function useApiResource<T>(path: string, refreshTick = 0): ResourceState<
     attemptRef.current += 1;
     const attempt = attemptRef.current;
     // Stamped at FETCH time: the demo short-circuit at utils/api.ts:30 keys
-    // off settings.demoMode, so the provenance records which transport these
-    // bytes actually came from — never re-derived after the fact.
-    const provenance: ModelProvenance = settings.demoMode ? "demo" : "daemon";
+    // off settings.demoMode, while live/mock are distinguished by the heartbeat
+    // mode passed by useSystemModel. Never re-derived after the fact.
     setState((current) => ({ ...current, loading: true, error: null }));
 
     fetchJson<T>(path, { signal: controller.signal })
@@ -79,7 +94,7 @@ export function useApiResource<T>(path: string, refreshTick = 0): ResourceState<
       });
 
     return () => controller.abort();
-  }, [path, refreshTick, settings.demoMode]);
+  }, [path, refreshTick, settings.demoMode, requestedProvenance]);
 
   return state;
 }

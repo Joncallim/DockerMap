@@ -78,7 +78,7 @@ describe("Updates wiring", () => {
     state.demoMode = true; state.health = { status: "ok", mode: "mock", dockerReachable: true, lastUpdated: 1, snapshotVersion: "demo" };
     const target = render();
     expect(target.querySelector(".metric-updates")!.textContent).toContain("Not collected");
-    act(() => { state.demoMode = false; state.model = liveModel; state.modelProvenance = "daemon"; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 2, snapshotVersion: "live" }; root!.render(shell()); });
+    act(() => { state.demoMode = false; state.model = liveModel; state.modelProvenance = "live"; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 2, snapshotVersion: "live" }; root!.render(shell()); });
     expect(target.querySelector(".conn-mode")!.textContent).toBe("Docker Engine");
     expect(target.querySelector(".metric-updates")!.textContent).toContain("Not collected");
     expect(updatesValue(target)).not.toMatch(/^\d+$/);
