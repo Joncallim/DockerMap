@@ -543,7 +543,7 @@ test.describe("responsive and accessibility matrix", () => {
     try {
       await page.route("**/api/events/stream*", (route) => route.fulfill({
         contentType: "text/event-stream",
-        body: "event: snapshot\ndata: {\"status\":\"ok\",\"mode\":\"docker\",\"dockerReachable\":true,\"lastUpdated\":0,\"snapshotVersion\":\"e2e-live\"}\n\n"
+        body: "event: snapshot\ndata: {\"status\":\"ok\",\"mode\":\"docker\",\"dockerReachable\":true,\"message\":\"Docker daemon connected\",\"lastUpdated\":0,\"snapshotVersion\":\"e2e-live\"}\n\n"
       }));
       await page.goto(`${stack.webUrl}/changes`, { waitUntil: "domcontentloaded" });
       await expect(page.locator(".conn-mode")).toHaveText("Docker Engine");
@@ -558,6 +558,7 @@ test.describe("responsive and accessibility matrix", () => {
       await expect(page.locator(".conn-mode")).toHaveText("Docker Engine");
       await expect(page.locator(".panel-recent-change")).toContainText("Not collected");
       await expect(page.locator(".panel-causal-chain")).toContainText("Not collected");
+      await page.unroute("**/api/events/stream*");
     } finally {
       await context.close();
     }

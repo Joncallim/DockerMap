@@ -424,4 +424,23 @@ PR body must carry: the §2 Q2 ownership table verbatim (the issue's no-overlap 
 
 ---
 
-*Status: COMPLETE — all ten questions and all seven dissent items are ruled on. Anything an implementer finds under-specified is an amendment to this file, made in the same PR, not a judgment call.*
+## 9. Review round and remediation outcome (2026-08-25)
+
+Eight hostile review angles produced 34 raw findings, converged to 19 unique findings (`/tmp/dm74-convergence.md`): P0=0, P1=3, P2=2, P3=14. The provenance P1 required frontier arbitration because it crossed the original hook-layer scope guard. Sol selected **Option A**; options B (clear model on flip) and C (derive authority from provenance) were rejected as documented above.
+
+| Resolution | Commit / disposition |
+|---|---|
+| Option-A provenance stamped alongside the resource/model pair; positive allow-list; model-fixed mismatch matrix and G-36 transitions | `3107783` — `web: bind sample history to model provenance (#74)` |
+| Canonical true-empty copy, truthful filtered-empty copy, shared label derivation, readable Home/Changes JSX, exhaustive-switch rationale | `2f83001` — `web: reconcile change-history empty states and readability (#74)` |
+| Clock spy cleanup, hard-coded V3 matrix, vacuity removal | included in `3107783` |
+| Claim singleton mutation risk | localized `Object.freeze` on the two history claim exports (cleanup commit) |
+| V4 finite-stream hygiene | representative health `message` added and route explicitly removed after assertions (cleanup commit) |
+| Screenshot pixels still contain the old sample notice | accepted deferral to #76 per R7; PR body records the debt |
+| Demo feed may re-roll across successful generations; future host collector needs a new observed arm | accepted design notes (R4/Q1), not defects in #74 |
+| Duplicate Not-collected title+hint and authority trust roots | accepted; #67/rest-of-epic ownership unchanged |
+
+V1 deliberately uses `sampleSnapshot` for both sample arms because it deterministically emits feed and causal rows; this is stronger than the earlier seed-dependent fixture proposal. V6 grep scope is `apps/` + `tests/`; historical planning documents and deliberate G-37 probe text are not runtime residuals.
+
+---
+
+*Status: IMPLEMENTED + REMEDIATED — all ten questions, seven dissent items, and the post-review arbitration are resolved. Remaining accepted follow-ups are recorded above; anything further under-specified requires another same-PR amendment, not implementer judgment.*
