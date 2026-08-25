@@ -56,9 +56,10 @@ inside Configuration.
 ## Change Center
 
 Change is a first-class story: a filterable timeline of deploys, restarts,
-failures, and recoveries. Markers are state-coloured. (Until daemon change collectors land,
-this view is clearly labelled as a sample timeline.) Update status is not collected — no
-image-update entries exist on the timeline (#72).
+failures, and recoveries in demo and mock mode, visibly marked as sample data. In live mode,
+the Change Center reports that history is not collected: DockerMap does not record deploy,
+restart, or failure events. Update status is not collected — no image-update entries exist on
+the timeline (#72).
 
 ![Change Center](../screenshots/change-center.png)
 
