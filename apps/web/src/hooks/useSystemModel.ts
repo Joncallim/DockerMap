@@ -8,8 +8,8 @@ import { useApiResource } from "./useApiResource";
 export interface SystemModelState {
   model: SystemModel | null;
   /**
-   * Where the currently held model's bytes came from: the demo payload
-   * service or the daemon. Published ALONGSIDE the model — a split
+   * Where the currently held model's bytes came from: demo payload, daemon
+   * mock, or daemon live-Docker. Published ALONGSIDE the model — a split
    * snapshot/runtime provenance or generation pair publishes NEITHER, and a
    * retained model keeps the provenance it was actually fetched with (§9).
    */

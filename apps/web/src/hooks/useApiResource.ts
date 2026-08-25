@@ -15,8 +15,8 @@ export type ResourceState<T> = {
    */
   generation: number;
   /**
-   * Where the retained bytes came from, stamped at fetch time: the demo
-   * payload service or the daemon. Retained data keeps its ORIGINAL
+   * Actual source of retained bytes: demo payload, daemon mock, daemon live,
+   * or null while heartbeat authority is unresolved. Retained data keeps its ORIGINAL
    * provenance, so after a demoMode flip the still-live bytes are never
    * relabelled as demo bytes until a demo fetch actually lands (§9).
    */
@@ -54,13 +54,10 @@ export function useApiResource<T>(
       ? (settings.demoMode ? "demo" : "live")
       : requestedProvenance;
 
-    // Model resources wait until heartbeat/settings establish their actual
-    // source. Retained bytes keep their prior stamp; no speculative fetch may
-    // label them live or mock before authority is known.
-    if (provenance === null) {
-      setState((current) => ({ ...current, loading: true, error: null }));
-      return;
-    }
+    // Before heartbeat establishes live vs mock, fetch may proceed with a null
+    // source stamp. That preserves the existing API error/first-load behavior,
+    // while every evidence-gated sample surface remains fail-closed. Once mode
+    // resolves, the dependency change starts an accurately stamped refetch.
 
     // Abort on unmount/path change: a slow response can never clobber newer
     // state, and the underlying fetch is actually cancelled instead of just

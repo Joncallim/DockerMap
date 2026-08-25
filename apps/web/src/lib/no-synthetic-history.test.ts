@@ -62,7 +62,7 @@ describe("synthetic history is unavailable outside the allow-listed mode/provena
     }
   });
 
-  it("reads the clock ONLY for authorized changeFeed pairs (demo/demo, mock/daemon)", () => {
+  it("reads the clock ONLY for authorized changeFeed pairs (demo/demo, mock/mock)", () => {
     const now = vi.spyOn(Date, "now");
     try {
       // Authorized pairs may roll the clock once per emitted event.
