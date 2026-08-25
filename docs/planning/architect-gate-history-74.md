@@ -366,7 +366,7 @@ Smallest reversible commits; **every commit leaves `npm run check` green**. One 
 
 | # | Commit message (exact) | Contents | Green because |
 |---|---|---|---|
-| 1 | `docs: architecture for gating synthetic change history to demo mode (#74)` | this file | docs only |
+| 1 | `Architect pass 1: gate change history design (#74)` — **landed as `865e2a7`** (this file only; the checklist's originally proposed title was superseded by the push title — amendment 2026-08-25) | this file | docs only |
 | 2 | `web: add the change-history evidence claims (#74)` | `apps/web/src/lib/history.ts` (Q6) | new module, no consumers yet; `unavailable()` validates both details at import time |
 | 3 | **`web: gate synthetic change history behind sample authority (#74)`** — **ATOMIC, DO NOT SPLIT** | `stubs.ts` (signatures + claim returns + delete `STUB_CHANGES_NOTICE` + delete `ChangeEvent.estimated` + comment refresh); `Changes.tsx` (§4.1); `Home.tsx` (§4.2); `change-feed-identity.test.tsx` + `duplicate-list-keys.test.tsx` + `no-synthetic-updates.test.ts` mode split (Q10); **new `screens/history-surface.test.tsx` (V1) and `screens/history-wiring.test.tsx` (V2)** | the signature change breaks every consumer at once; G-36 requires the behaviour locks in the same commit |
 | 4 | `test: lock synthetic history out of every non-sample authority (#74)` | new `lib/no-synthetic-history.test.ts` (V3: authority matrix, clock spy, type probes) | additive |
