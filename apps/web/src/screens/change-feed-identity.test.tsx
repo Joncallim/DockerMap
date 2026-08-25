@@ -6,6 +6,7 @@ import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
 import { AppContext, type AppContextValue } from "../context";
 import { buildModel } from "../lib/model";
 import { changeFeed, causalChain } from "../lib/stubs";
+import type { EvidenceMode } from "../lib/evidence";
 import Changes from "./Changes";
 import Home from "./Home";
 
@@ -61,21 +62,21 @@ const collidedNameSnapshot: DockerSnapshot = {
   lastUpdated: 0
 };
 
-function contextFor(snapshot: DockerSnapshot): AppContextValue {
+function contextFor(snapshot: DockerSnapshot, mode: EvidenceMode): AppContextValue {
   return {
     model: buildModel(snapshot, emptyRuntime),
     loading: false,
     error: null,
     health: null,
     tick: 0,
-    evidenceMode: "live",
+    evidenceMode: mode,
     openCommand: () => {}
   };
 }
 
-function renderScreen(initialPath: string, route: string, element: ReactElement, snapshot: DockerSnapshot) {
+function renderScreen(initialPath: string, route: string, element: ReactElement, snapshot: DockerSnapshot, mode: EvidenceMode) {
   return renderToStaticMarkup(
-    <AppContext.Provider value={contextFor(snapshot)}>
+    <AppContext.Provider value={contextFor(snapshot, mode)}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route path={route} element={element} />
@@ -88,7 +89,9 @@ function renderScreen(initialPath: string, route: string, element: ReactElement,
 describe("change-feed and causal-chain identities fail closed", () => {
   it("changeFeed normalizes empty names and carries a null route target", () => {
     const model = buildModel(emptyNameSnapshot, emptyRuntime);
-    const events = changeFeed(model);
+    const history = changeFeed(model, "demo");
+    expect(history.kind).toBe("demo");
+    const events = history.kind === "unavailable" ? [] : history.value;
     // The offline empty-name service ALWAYS produces a failure event.
     const failure = events.find((event) => event.kind === "failure" && event.serviceId === "c_empty");
     expect(failure).toBeDefined();
@@ -100,26 +103,29 @@ describe("change-feed and causal-chain identities fail closed", () => {
   it("changeFeed keeps collided names visible with a null route target", () => {
     const model = buildModel(collidedNameSnapshot, emptyRuntime);
     expect(model.serviceNameCollisions.has("dup")).toBe(true);
-    const failure = changeFeed(model).find((event) => event.kind === "failure" && event.serviceId === "c_dup1");
+    const history = changeFeed(model, "demo");
+    const failure = history.kind === "unavailable" ? undefined : history.value.find((event) => event.kind === "failure" && event.serviceId === "c_dup1");
     expect(failure).toBeDefined();
     expect(failure!.serviceName).toBe("dup");
     expect(failure!.routeName).toBeNull();
     expect(failure!.summary).toBe("dup became unavailable");
     // Unique identities still route.
-    const apiEvent = changeFeed(model).find((event) => event.serviceId === "c_api");
+    const apiEvent = history.kind === "unavailable" ? undefined : history.value.find((event) => event.serviceId === "c_api");
     if (apiEvent) expect(apiEvent.routeName).toBe("api");
   });
 
   it("causalChain uses the explicit fallback for an empty root name", () => {
     const model = buildModel(emptyNameSnapshot, emptyRuntime);
-    const chain = causalChain(model);
-    expect(chain).not.toBeNull();
-    expect(chain![0].serviceName).toBe("Unavailable service name");
-    expect(chain![0].text).toBe("Unavailable service name went offline");
+    const chain = causalChain(model, "demo");
+    expect(chain.kind).toBe("demo");
+    if (chain.kind !== "unavailable") {
+      expect(chain.value[0].serviceName).toBe("Unavailable service name");
+      expect(chain.value[0].text).toBe("Unavailable service name went offline");
+    }
   });
 
   it("Home renders empty-name events as visible non-routable plain text", () => {
-    const html = renderScreen("/", "/", <Home />, emptyNameSnapshot);
+    const html = renderScreen("/", "/", <Home />, emptyNameSnapshot, "demo");
     // The malformed empty interpolation is gone (old bug: the summary began
     // with a leading space, e.g. " became unavailable"); the fallback summary
     // is visible instead…
@@ -132,7 +138,7 @@ describe("change-feed and causal-chain identities fail closed", () => {
   });
 
   it("Home renders collided-name events as visible non-routable plain text", () => {
-    const html = renderScreen("/", "/", <Home />, collidedNameSnapshot);
+    const html = renderScreen("/", "/", <Home />, collidedNameSnapshot, "demo");
     expect(html).toContain("dup became unavailable");
     expect(html).toContain("dup went offline");
     // The collided identity never becomes a /services/dup link.
@@ -140,11 +146,11 @@ describe("change-feed and causal-chain identities fail closed", () => {
   });
 
   it("Changes renders empty and collided events as plain timeline rows without routes", () => {
-    const emptyHtml = renderScreen("/changes", "/changes", <Changes />, emptyNameSnapshot);
+    const emptyHtml = renderScreen("/changes", "/changes", <Changes />, emptyNameSnapshot, "demo");
     expect(emptyHtml).toContain("Unavailable service name became unavailable");
     expect(emptyHtml).not.toContain('href="/services/"');
 
-    const collidedHtml = renderScreen("/changes", "/changes", <Changes />, collidedNameSnapshot);
+    const collidedHtml = renderScreen("/changes", "/changes", <Changes />, collidedNameSnapshot, "demo");
     expect(collidedHtml).toContain("dup became unavailable");
     expect(collidedHtml).not.toContain('href="/services/dup"');
   });

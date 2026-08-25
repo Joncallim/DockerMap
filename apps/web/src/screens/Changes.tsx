@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../context";
-import { changeFeed, type ChangeEvent, STUB_CHANGES_NOTICE } from "../lib/stubs";
+import { changeFeed, type ChangeEvent } from "../lib/stubs";
 import { formatRelative } from "../lib/format";
+import { evidenceLabel } from "../lib/evidence";
+import { CHANGE_HISTORY_CLAIM, SAMPLE_EMPTY_BODY, SAMPLE_EMPTY_TITLE } from "../lib/history";
 import Icon from "../components/Icon";
 import { EmptyState, ErrorState, Loading, Panel } from "../components/primitives";
 
@@ -14,11 +16,11 @@ const KINDS: { id: ChangeEvent["kind"] | "all"; label: string }[] = [
 ];
 
 export default function Changes() {
-  const { model, loading, error } = useApp();
+  const { model, loading, error, evidenceMode } = useApp();
   const [kind, setKind] = useState<ChangeEvent["kind"] | "all">("all");
-
-  const events = useMemo(() => (model ? changeFeed(model) : []), [model]);
-  const filtered = kind === "all" ? events : events.filter((e) => e.kind === kind);
+  const history = useMemo(() => (model ? changeFeed(model, evidenceMode) : CHANGE_HISTORY_CLAIM), [model, evidenceMode]);
+  const events = history.kind === "unavailable" ? [] : history.value;
+  const filtered = kind === "all" ? events : events.filter((event) => event.kind === kind);
 
   if (loading && !model) return <Loading label="Reconstructing change history…" />;
   if (error && !model) return <ErrorState title="Changes unavailable" body={error} />;
@@ -30,18 +32,22 @@ export default function Changes() {
           <div className="eyebrow">Causality</div>
           <h1 className="screen-title">Change Center</h1>
         </div>
-        <div className="filter-row">
-          {KINDS.map((k) => (
-            <button key={k.id} type="button" aria-pressed={kind === k.id} className={`filter-chip${kind === k.id ? " is-on" : ""}`} onClick={() => setKind(k.id)}>
-              {k.label}
-            </button>
-          ))}
-        </div>
+        {history.kind !== "unavailable" && (
+          <div className="filter-row">
+            {KINDS.map((filterKind) => (
+              <button key={filterKind.id} type="button" aria-pressed={kind === filterKind.id} className={`filter-chip${kind === filterKind.id ? " is-on" : ""}`} onClick={() => setKind(filterKind.id)}>
+                {filterKind.label}
+              </button>
+            ))}
+          </div>
+        )}
       </header>
 
-      <Panel title="Timeline" icon="history" hint={STUB_CHANGES_NOTICE}>
-        {filtered.length === 0 ? (
-          <EmptyState icon="history" title="No change recorded" body="Deployments, restarts and failures will appear here." />
+      <Panel className="panel-change-timeline" title="Timeline" icon="history" hint={evidenceLabel(history.kind).label}>
+        {history.kind === "unavailable" ? (
+          <EmptyState icon="history" title={evidenceLabel(history.kind).label} body={history.detail} />
+        ) : filtered.length === 0 ? (
+          <EmptyState icon="history" title={SAMPLE_EMPTY_TITLE} body={SAMPLE_EMPTY_BODY} />
         ) : (
           <ol className="timeline">
             {filtered.map((event, index) => {
@@ -67,20 +73,11 @@ export default function Changes() {
 }
 
 function iconForKind(kind: ChangeEvent["kind"]): Parameters<typeof Icon>[0]["name"] {
-  // Exhaustive (G7/U7): every kind gets an explicit icon and there is NO
-  // default swallow — a kind added to the union is a compile error here
-  // ("not all code paths return a value") instead of silently rendering the
-  // generic "history" marker.
   switch (kind) {
-    case "failure":
-      return "alert";
-    case "recovery":
-      return "check";
-    case "restart":
-      return "refresh";
-    case "config":
-      return "layers";
-    case "deploy":
-      return "up";
+    case "failure": return "alert";
+    case "recovery": return "check";
+    case "restart": return "refresh";
+    case "config": return "layers";
+    case "deploy": return "up";
   }
 }

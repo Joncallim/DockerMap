@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DockerSnapshot, LogsResponse, RuntimeMap, RuntimeMapNode } from "@dockermap/contracts";
 import { AppContext, type AppContextValue } from "../context";
 import { buildModel } from "../lib/model";
+import type { EvidenceMode } from "../lib/evidence";
 import Home from "./Home";
 import Logs from "./Logs";
 import RuntimeScreen from "./Runtime";
@@ -124,7 +125,7 @@ const runtimeFixture: RuntimeMap = {
   lastUpdated: 0
 };
 
-function contextFor(fixture: DockerSnapshot, runtime: RuntimeMap): AppContextValue {
+function contextFor(fixture: DockerSnapshot, runtime: RuntimeMap, mode: EvidenceMode): AppContextValue {
   const model = buildModel(fixture, runtime);
   return {
     model,
@@ -132,7 +133,7 @@ function contextFor(fixture: DockerSnapshot, runtime: RuntimeMap): AppContextVal
     error: null,
     health: null,
     tick: 0,
-    evidenceMode: "live",
+    evidenceMode: mode,
     openCommand: () => {}
   };
 }
@@ -177,7 +178,7 @@ function mountCollectingKeys(element: React.ReactElement): { hostEl: HTMLDivElem
 describe("collidable list keys are occurrence-qualified (client reconciler)", () => {
   it("Home renders every attention row and feed row with duplicate ids without a same-key warning", () => {
     const { hostEl, sameKeyErrors } = mountCollectingKeys(
-      <AppContext.Provider value={contextFor(homeFixture, emptyRuntime)}>
+      <AppContext.Provider value={contextFor(homeFixture, emptyRuntime, "demo")}>
         <MemoryRouter initialEntries={["/"]}>
           <Routes>
             <Route path="/" element={<Home />} />
@@ -198,7 +199,7 @@ describe("collidable list keys are occurrence-qualified (client reconciler)", ()
       vi.fn(async () => ({ ok: true, status: 200, json: async () => duplicateLogs }))
     );
     const { hostEl, sameKeyErrors } = mountCollectingKeys(
-      <AppContext.Provider value={contextFor(homeFixture, emptyRuntime)}>
+      <AppContext.Provider value={contextFor(homeFixture, emptyRuntime, "live")}>
         <MemoryRouter initialEntries={["/logs"]}>
           <Routes>
             <Route path="/logs" element={<Logs />} />
@@ -218,7 +219,7 @@ describe("collidable list keys are occurrence-qualified (client reconciler)", ()
       vi.fn(async () => ({ ok: true, status: 200, json: async () => duplicateLogs }))
     );
     const { hostEl, sameKeyErrors } = mountCollectingKeys(
-      <AppContext.Provider value={contextFor(detailFixture, emptyRuntime)}>
+      <AppContext.Provider value={contextFor(detailFixture, emptyRuntime, "live")}>
         <MemoryRouter initialEntries={["/services/web"]}>
           <Routes>
             <Route path="/services/:name" element={<ServiceDetail defaultTab="logs" />} />
@@ -232,7 +233,7 @@ describe("collidable list keys are occurrence-qualified (client reconciler)", ()
 
   it("ServiceDetail Configuration renders repeated port strings as distinct tags without a same-key warning", () => {
     const { hostEl, sameKeyErrors } = mountCollectingKeys(
-      <AppContext.Provider value={contextFor(detailFixture, emptyRuntime)}>
+      <AppContext.Provider value={contextFor(detailFixture, emptyRuntime, "live")}>
         <MemoryRouter initialEntries={["/services/web"]}>
           <Routes>
             <Route path="/services/:name" element={<ServiceDetail defaultTab="config" />} />
@@ -248,7 +249,7 @@ describe("collidable list keys are occurrence-qualified (client reconciler)", ()
 
   it("Runtime inspector renders duplicate log and event ref ids as distinct rows without a same-key warning", () => {
     const { hostEl, sameKeyErrors } = mountCollectingKeys(
-      <AppContext.Provider value={contextFor({ containers: [], images: [], networks: [], volumes: [], lastUpdated: 0 }, runtimeFixture)}>
+      <AppContext.Provider value={contextFor({ containers: [], images: [], networks: [], volumes: [], lastUpdated: 0 }, runtimeFixture, "live")}>
         <MemoryRouter initialEntries={["/runtime"]}>
           <Routes>
             <Route path="/runtime" element={<RuntimeScreen />} />
