@@ -692,7 +692,7 @@ test.describe("responsive and accessibility matrix", () => {
     }
   });
 
-  test("non-text contrast keeps state dots, focus rings, and map tracks at 3:1", async ({ browser }) => {
+  test("non-text contrast keeps state dots and focus rings at 3:1 without a network overlay", async ({ browser }) => {
     for (const theme of themes) {
       await withPage(browser, theme, async (page) => {
         await openRoute(page, "/map", theme);
@@ -713,30 +713,19 @@ test.describe("responsive and accessibility matrix", () => {
             const [light, dark] = [luminance(foreground), luminance(background)].sort((left, right) => right - left);
             return (light + 0.05) / (dark + 0.05);
           };
-          const blend = (foreground: number[], background: number[], alpha: number) => foreground.map((channel, index) => channel * alpha + background[index] * (1 - alpha));
           const root = getComputedStyle(document.documentElement);
           const surface = rgb(root.getPropertyValue("--surface"));
           const focus = rgb(root.getPropertyValue("--focus-ring"));
           const healthy = rgb(root.getPropertyValue("--s-healthy"));
-          const track = document.querySelector<SVGLineElement>(".network-edge");
-          const trackStyle = track ? getComputedStyle(track) : null;
-          // Read the .map canvas background instead of hardcoding it: the
-          // track is blended over the map's own gradient, so the assertion
-          // must track the computed base color or it silently drifts.
-          const mapElement = document.querySelector<HTMLElement>(".map");
-          const mapBackground = mapElement ? getComputedStyle(mapElement).backgroundImage : "";
-          const gradientStops = mapBackground.match(/rgba?\([^)]*\)/g) ?? [];
-          const mapBase = gradientStops.length > 0 ? rgb(gradientStops[gradientStops.length - 1]) : [17, 21, 27];
-          const trackColor = trackStyle ? rgb(trackStyle.stroke) : mapBase;
           return {
             focus: contrast(focus, surface),
             state: contrast(healthy, surface),
-            track: contrast(blend(trackColor, mapBase, Number(trackStyle?.opacity ?? 1)), mapBase)
+            networkOverlays: document.querySelectorAll(".network-edge").length
           };
         });
         expect(ratios.focus, `${theme} focus ring`).toBeGreaterThanOrEqual(3);
         expect(ratios.state, `${theme} state dot`).toBeGreaterThanOrEqual(3);
-        expect(ratios.track, `${theme} map track`).toBeGreaterThanOrEqual(3);
+        expect(ratios.networkOverlays, `${theme} network overlays`).toBe(0);
       });
     }
   });

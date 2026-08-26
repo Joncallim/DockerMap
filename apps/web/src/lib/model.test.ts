@@ -130,7 +130,7 @@ describe("buildModel depends_on resolution", () => {
       ]),
       emptyRuntime
     );
-    expect(model.byName.get("app")!.dependsOn).toEqual(["container_redis", "container_db"]);
+    expect(model.byName.get("app")!.dependsOn).toEqual(["container_db", "container_redis"]);
   });
 });
 
@@ -147,7 +147,7 @@ describe("buildRelationships (via buildModel)", () => {
     expect(model.relationships[0]).toMatchObject({ from: "c_app", to: "c_db", kind: "depends_on", health: "failing" });
   });
 
-  it("links services sharing a volume with data relationships", () => {
+  it("keeps shared volume records as storage context, not directional service relationships", () => {
     const volumes: VolumeRecord[] = [{ id: "vol_shared", name: "shared", attachedTo: ["app", "worker"] }];
     const model = buildModel(
       snapshot(
@@ -157,46 +157,22 @@ describe("buildRelationships (via buildModel)", () => {
       ),
       emptyRuntime
     );
-    const data = model.relationships.filter((r) => r.kind === "data");
-    expect(data).toHaveLength(1);
-    expect(data[0].from).toBe("c_app");
-    expect(data[0].to).toBe("c_worker");
+    expect(model.volumes).toEqual(volumes);
+    expect(model.relationships).toEqual([]);
   });
 
-  it("never derives data edges from ambiguous, empty, or repeated member refs", () => {
-    // "dup" is a redaction-collided name shared by TWO services: a ref to it
-    // must stay unresolved (VolumeDetail shows the member as unresolved, so a
-    // data edge to the FIRST occurrence would contradict that state).
-    const volumes: VolumeRecord[] = [
-      { id: "vol_ambig", name: "ambig", attachedTo: ["dup", "web"] },
-      { id: "vol_empty", name: "empty", attachedTo: ["", "web"] },
-      // The same unique service referenced twice (once by name, once by id):
-      // dedupes to ONE member, so no self-edge (data:web~web:vol_self) may
-      // derive and no pair may form.
-      { id: "vol_self", name: "self", attachedTo: ["web", "c_web"] },
-      // Positive control: unique refs still link.
-      { id: "vol_ok", name: "ok", attachedTo: ["web", "api"] }
+  it("orders equivalent container snapshots and their service relationships identically", () => {
+    const containers = [
+      container({ id: "c_worker", name: "worker", dependsOn: ["c_api"], networks: ["z", "a"], ports: ["9000", "8000"] }),
+      container({ id: "c_db", name: "db" }),
+      container({ id: "c_api", name: "api", dependsOn: ["c_db"] })
     ];
-    const model = buildModel(
-      snapshot(
-        [
-          container({ id: "c_web", name: "web" }),
-          container({ id: "c_api", name: "api" }),
-          container({ id: "c_dup1", name: "dup" }),
-          container({ id: "c_dup2", name: "dup" })
-        ],
-        [],
-        volumes
-      ),
-      emptyRuntime
-    );
-    const data = model.relationships.filter((r) => r.kind === "data");
-    expect(data).toHaveLength(1);
-    expect(data[0]).toMatchObject({ from: "c_web", to: "c_api", kind: "data" });
-    // No edge may ever have the same service on both ends (self-edge).
-    for (const edge of model.relationships) {
-      expect(edge.from).not.toBe(edge.to);
-    }
+    const first = buildModel(snapshot(containers), emptyRuntime);
+    const second = buildModel(snapshot([...containers].reverse()), emptyRuntime);
+    expect(second.services.map((service) => service.id)).toEqual(first.services.map((service) => service.id));
+    expect(second.relationships).toEqual(first.relationships);
+    expect(first.byId.get("c_worker")?.networks).toEqual(["a", "z"]);
+    expect(first.byId.get("c_worker")?.ports).toEqual(["8000", "9000"]);
   });
 });
 
@@ -318,11 +294,11 @@ describe("service and runtime identity indexes", () => {
     expect(model.byName.has("[redacted]")).toBe(false);
     expect(model.byId.has("")).toBe(false);
     // Ambiguous/empty refs never enter the SEMANTIC dependsOn list…
-    expect(model.services[2].dependsOn).toEqual([]);
+    expect(model.services.find((service) => service.id === "")!.dependsOn).toEqual([]);
     // …but every RAW occurrence stays visible for non-routable rendering:
     // "[redacted]" is a redaction-collided alias and "api" an ambiguous role
     // alias — neither may silently disappear from the relationship list.
-    expect(model.services[2].dependencyOccurrences).toEqual([
+    expect(model.services.find((service) => service.id === "")!.dependencyOccurrences).toEqual([
       { ref: "[redacted]", resolvedId: null },
       { ref: "api", resolvedId: null }
     ]);

@@ -259,13 +259,52 @@ function compareVolumes(left: VolumeRecord, right: VolumeRecord): number {
     || left.attachedTo.join("\u0000").localeCompare(right.attachedTo.join("\u0000"));
 }
 
+function compareMounts(left: ContainerRecord["mounts"][number], right: ContainerRecord["mounts"][number]): number {
+  return left.id.localeCompare(right.id)
+    || left.kind.localeCompare(right.kind)
+    || (left.source ?? "").localeCompare(right.source ?? "")
+    || left.target.localeCompare(right.target)
+    || Number(left.readOnly) - Number(right.readOnly);
+}
+
+function compareMountLists(left: ContainerRecord["mounts"], right: ContainerRecord["mounts"]): number {
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    const comparison = compareMounts(left[index], right[index]);
+    if (comparison !== 0) return comparison;
+  }
+  return left.length - right.length;
+}
+
+function canonicalContainer(container: ContainerRecord): ContainerRecord {
+  return {
+    ...container,
+    networks: [...container.networks].sort(),
+    ports: [...container.ports].sort(),
+    mounts: [...container.mounts].sort(compareMounts),
+    dependsOn: [...container.dependsOn].sort()
+  };
+}
+
+function compareContainers(left: ContainerRecord, right: ContainerRecord): number {
+  return left.id.localeCompare(right.id)
+    || left.name.localeCompare(right.name)
+    || left.role.localeCompare(right.role)
+    || left.image.localeCompare(right.image)
+    || left.status.localeCompare(right.status)
+    || left.networks.join("\u0000").localeCompare(right.networks.join("\u0000"))
+    || left.ports.join("\u0000").localeCompare(right.ports.join("\u0000"))
+    || compareMountLists(left.mounts, right.mounts)
+    || left.dependsOn.join("\u0000").localeCompare(right.dependsOn.join("\u0000"));
+}
+
 export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): SystemModel {
-  // Docker's list endpoints do not promise a presentation order. Canonicalize
-  // inventory records before both routing and rendering so an equivalent later
-  // snapshot cannot move cards or change their React reconciliation keys.
+  // Docker list endpoints do not promise presentation order. Canonicalize every
+  // Docker collection used by routing or layout so equivalent refreshes cannot
+  // move cards, selection targets, or force-layout seeds.
+  const containers = snapshot.containers.map(canonicalContainer).sort(compareContainers);
   const networks = [...snapshot.networks].sort(compareNetworks);
   const volumes = [...snapshot.volumes].sort(compareVolumes);
-  const canonicalSnapshot = { ...snapshot, networks, volumes };
+  const canonicalSnapshot = { ...snapshot, containers, networks, volumes };
 
   // Network ids are engine-unique, so this plain id→name map is unambiguous:
   // a duplicate id resolves to the FIRST record's name so Service.networks
@@ -287,7 +326,7 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   // canonical id collides are invalidated too — resolving to either occurrence
   // would be ambiguous even when the alias string itself is unique.
   const { index: idByAlias, collisions: serviceAliasCollisions } = buildAliasIndex(
-    snapshot.containers,
+    canonicalSnapshot.containers,
     (container) => [container.id, container.name, container.id.replace(/^container_/, ""), container.role],
     (container) => container.id
   );
@@ -309,7 +348,7 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   // arbitrary one (the layout springs to the FIRST occurrence) and inflate
   // dependents/impact with the wrong identity.
   const sourceIdCounts = new Map<string, number>();
-  for (const c of snapshot.containers) {
+  for (const c of canonicalSnapshot.containers) {
     if (c.id === "") continue;
     sourceIdCounts.set(c.id, (sourceIdCounts.get(c.id) ?? 0) + 1);
   }
@@ -320,7 +359,7 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   const isSemanticSource = (id: string) => id !== "" && !collidedSourceIds.has(id);
 
   const dependents = new Map<string, Set<string>>();
-  for (const c of snapshot.containers) {
+  for (const c of canonicalSnapshot.containers) {
     // Only resolved ids feed the semantic dependents sets; raw occurrences
     // (empty, collided, or unknown refs) are preserved per service below.
     // A collided/empty SOURCE cannot be attributed to one occurrence, so it
@@ -334,7 +373,7 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
     }
   }
 
-  const services: Service[] = snapshot.containers.map((c) => {
+  const services: Service[] = canonicalSnapshot.containers.map((c) => {
     const { repo, tag } = splitImage(c.image);
     const semantic = isSemanticSource(c.id);
     // Raw occurrences stay visible as non-routable evidence; resolvedId is
@@ -370,7 +409,7 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   const { index: volumeByName, collisions: volumeNameCollisions } = buildIdentityIndex(volumes, (volume) => volume.name);
   const { index: imageByRef, collisions: imageRefCollisions } = buildIdentityIndex(snapshot.images, (image) => image.image);
 
-  const relationships = buildRelationships(services, canonicalSnapshot, byId, byName);
+  const relationships = buildRelationships(services, byId);
   const runtime = buildRuntimeModel(runtimeMap);
 
   return {
@@ -486,9 +525,7 @@ function buildAliasIndex<T>(
 
 function buildRelationships(
   services: Service[],
-  snapshot: DockerSnapshot,
-  byId: Map<string, Service>,
-  byName: Map<string, Service>
+  byId: Map<string, Service>
 ): Relationship[] {
   const relationships: Relationship[] = [];
   const seen = new Set<string>();
@@ -523,44 +560,7 @@ function buildRelationships(
     }
   }
 
-  // Secondary: shared-volume data relationships (who reads/writes the same state).
-  // Member refs resolve through the SAME collision-safe identity indexes as
-  // detail routing: a ref that is empty, or that collides after redaction
-  // (duplicate names/ids), or that is ambiguous across the name/id maps is
-  // left VISIBLE on the volume record but never becomes a data edge — an
-  // ambiguous ref must not silently attach the first occurrence (a
-  // truthfulness contradiction with the unresolved state VolumeDetail shows).
-  // Repeated refs resolving to the SAME service are deduped so a volume can
-  // never derive a self-edge (data:A~A:V) or inflate computeImpact counts.
-  const resolveServiceRef = (ref: string): Service | undefined => {
-    if (ref === "") return undefined;
-    const byNameHit = byName.get(ref);
-    const byIdHit = byId.get(ref);
-    if (byNameHit && byIdHit && byNameHit !== byIdHit) return undefined;
-    return byNameHit ?? byIdHit;
-  };
-  for (const volume of snapshot.volumes) {
-    const attached = [
-      ...new Map(
-        volume.attachedTo
-          .map(resolveServiceRef)
-          .filter((s): s is Service => Boolean(s))
-          .map((s) => [s.id, s] as const)
-      ).values()
-    ];
-    for (let i = 0; i < attached.length; i += 1) {
-      for (let j = i + 1; j < attached.length; j += 1) {
-        const a = attached[i];
-        const b = attached[j];
-        const id = `data:${[a.id, b.id].sort().join("~")}:${volume.id}`;
-        if (seen.has(id)) continue;
-        seen.add(id);
-        relationships.push({ id, from: a.id, to: b.id, kind: "data", health: "healthy" });
-      }
-    }
-  }
-
-  return relationships;
+  return relationships.sort((left, right) => left.id.localeCompare(right.id));
 }
 
 export function summarize(model: SystemModel): SystemSummary {
