@@ -36,14 +36,22 @@ describe("high-density Service Map", () => {
   it("keeps the default graph to recorded topology while retaining every observed service in the directory", () => {
     const html = renderMap(snapshot());
     expect(html).toContain("Observed services</span><strong class=\"metric-value\">32");
-    expect(html).toContain("Recorded start-order links</span><strong class=\"metric-value\">2");
-    expect(html).toContain("No recorded start order</span><strong class=\"metric-value\">29");
+    expect(html).toContain("Resolved start-order links</span><strong class=\"metric-value\">2");
+    expect(html).toContain("No recorded declaration</span><strong class=\"metric-value\">29");
     // The graph has only the three evidence-connected services, not 32 labels.
     expect(html.split('<g class="node').length - 1).toBe(3);
     // The directory keeps every service reachable, including the 29 isolates.
     expect(html.split('class="runtime-node-btn').length - 1).toBe(32);
     expect(html).toContain("Shared networks and storage are context, not proof of communication or causality.");
     expect(html).not.toContain("via main");
+  });
+
+  it("distinguishes a raw unresolved declaration from a resolved graph link", () => {
+    const source = snapshot([{ ...containers[0], id: "ghost-client", name: "ghost-client", dependsOn: ["ghost"] }]);
+    const html = renderMap(source);
+    expect(html).toContain("Resolved start-order links</span><strong class=\"metric-value\">0");
+    expect(html).toContain("Services with recorded declarations</span><strong class=\"metric-value\">1");
+    expect(html).toContain("No recorded declaration</span><strong class=\"metric-value\">0");
   });
 
   it("renders identically after an equivalent container reorder", () => {

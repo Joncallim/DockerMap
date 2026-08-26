@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import { computeImpact, needsAttention, SERVICE_STATES, type DependencyOccurrence, type Service, type ServiceState } from "../lib/model";
@@ -12,7 +12,9 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
   const { model, loading, error } = useApp();
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
   const [focusRequest, setFocusRequest] = useState<{ id: string; token: number } | null>(null);
+  const [returnFocusId, setReturnFocusId] = useState<string | null>(null);
   const focusTokenRef = useRef(0);
+  const directoryRefs = useRef(new Map<string, HTMLButtonElement>());
   const [stateFilter, setStateFilter] = useState<ServiceState | "attention" | null>(null);
 
   const filter = useMemo(() => {
@@ -27,6 +29,14 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
     if (!visibleServices.some((service) => service.id === selectedId && model.byId.has(service.id))) setSelectedId(null);
   }, [model, selectedId, visibleServices]);
 
+  useLayoutEffect(() => {
+    if (!returnFocusId || selectedId) return;
+    const button = directoryRefs.current.get(returnFocusId);
+    if (!button) return;
+    button.focus();
+    setReturnFocusId(null);
+  }, [returnFocusId, selectedId, visibleServices]);
+
   if (loading && !model) return <Loading label="Resolving the service map…" />;
   if (error && !model) return <ErrorState title="Map unavailable" body={error} />;
   if (!model) return <EmptyState icon="map" title="Nothing to map" body="Connect a Docker host to build the service map." />;
@@ -34,16 +44,17 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
   const selected = selectedId ? model.byId.get(selectedId) ?? null : null;
   const impact = selected ? computeImpact(model, selected.id) : null;
   const presentStates = new Set(model.services.map((s) => s.state));
-  const recordedIds = new Set(model.relationships.flatMap((relationship) => [relationship.from, relationship.to]));
+  const resolvedTopologyIds = new Set(model.relationships.flatMap((relationship) => [relationship.from, relationship.to]));
+  const servicesWithRecordedDeclarations = new Set(model.services.filter((service) => service.dependencyOccurrences.length > 0 || service.dependents.length > 0).map((service) => service.id));
   const selectedContextIds = selected && impact ? new Set([selected.id, ...impact.upstream, ...impact.downstream]) : null;
   const graphFilter = (service: Service) => {
     if (filter && !filter(service)) return false;
-    return selectedContextIds ? selectedContextIds.has(service.id) : recordedIds.has(service.id);
+    return selectedContextIds ? selectedContextIds.has(service.id) : resolvedTopologyIds.has(service.id);
   };
   const graphEmptyMessage = stateFilter
     ? "No services match the current filter. Clear the filter to widen the view."
     : selected
-      ? "DockerMap has no recorded Compose start-order relationship for this service. Its observed ports, networks, and storage remain in the inspector."
+      ? "DockerMap has no resolved Compose start-order relationship for this service. Any recorded unresolved declarations remain in the inspector alongside its observed ports, networks, and storage."
       : "DockerMap has no recorded Compose start-order declarations in this snapshot. The service directory still lists every observed service.";
   const selectService = (id: string | null) => {
     setSelectedId(id);
@@ -71,9 +82,9 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
 
       <section className="story map-coverage" aria-label="Service map coverage">
         <Metric label="Observed services" value={model.services.length} />
-        <Metric label="Recorded start-order links" value={model.relationships.length} />
-        <Metric label="Services in recorded topology" value={recordedIds.size} />
-        <Metric label="No recorded start order" value={model.services.length - recordedIds.size} />
+        <Metric label="Resolved start-order links" value={model.relationships.length} />
+        <Metric label="Services with recorded declarations" value={servicesWithRecordedDeclarations.size} />
+        <Metric label="No recorded declaration" value={model.services.length - servicesWithRecordedDeclarations.size} />
       </section>
 
       <div className="map-layout">
@@ -92,13 +103,13 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
             <div className="inspector-body">
               <h2>Select a service to inspect</h2>
               <p className="muted-line">The directory contains every observed service. Select one to see declared start order, derived reachability, and observed network and storage context.</p>
-              <ServiceDirectory model={model} services={visibleServices} selectedId={selectedId} onSelect={selectService} />
+              <ServiceDirectory model={model} services={visibleServices} selectedId={selectedId} onSelect={selectService} buttonRefs={directoryRefs} />
             </div>
           ) : (
             <div className="inspector-body">
               <div className="inspector-head">
                 <span className="inspector-kind"><Icon name={KIND_ICON[selected.kind]} size={15} /> {selected.kind}</span>
-                <button type="button" className="icon-btn" onClick={() => { focusTokenRef.current += 1; setFocusRequest({ id: selected.id, token: focusTokenRef.current }); setSelectedId(null); }} aria-label={`Clear ${identityText(selected.name, UNAVAILABLE_SERVICE)} service selection`}><Icon name="close" size={15} /></button>
+                <button type="button" className="icon-btn" onClick={() => { setReturnFocusId(selected.id); setSelectedId(null); }} aria-label={`Clear ${identityText(selected.name, UNAVAILABLE_SERVICE)} service selection`}><Icon name="close" size={15} /></button>
               </div>
               <h2 className="inspector-title">{identityText(selected.name, UNAVAILABLE_SERVICE)}</h2>
               <StatePill state={selected.state} />
@@ -122,13 +133,13 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
   );
 }
 
-function ServiceDirectory({ model, services, selectedId, onSelect }: { model: ReturnType<typeof useApp>["model"]; services: Service[]; selectedId: string | null; onSelect: (id: string | null) => void }) {
+function ServiceDirectory({ model, services, selectedId, onSelect, buttonRefs }: { model: ReturnType<typeof useApp>["model"]; services: Service[]; selectedId: string | null; onSelect: (id: string | null) => void; buttonRefs: MutableRefObject<Map<string, HTMLButtonElement>> }) {
   if (!model) return null;
   return <div className="inspector-section"><h3>Service directory ({services.length})</h3>{services.length === 0 ? <EmptyState icon="search" title="No matching services" body="Clear a filter to see every observed service." /> : <ul className="runtime-node-list service-directory">{services.map((service, index) => {
     const collided = model.serviceIdCollisions.has(service.id) || model.serviceNameCollisions.has(service.name);
     const selectable = !collided && model.byId.has(service.id);
     const content = <><span className="runtime-node-main"><Icon name={KIND_ICON[service.kind]} size={15} /><span className="runtime-node-copy"><span className={`runtime-node-label${collided ? " collision-identity" : ""}`} title={collided ? COLLISION_HINT : undefined}>{identityText(service.name, UNAVAILABLE_SERVICE)}</span><span className="runtime-node-meta">{service.kind}{service.dependsOn.length || service.dependents.length ? " · recorded start order" : " · no recorded start order"}</span></span></span><StatePill state={service.state} />{collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}</>;
-    return <li key={`${service.id}-${index}`}>{selectable ? <button type="button" className={`runtime-node-btn${selectedId === service.id ? " is-active" : ""}`} aria-pressed={selectedId === service.id} onClick={() => onSelect(service.id)}>{content}</button> : <div className="runtime-node-btn runtime-node-unresolved" aria-label={`${identityText(service.name, UNAVAILABLE_SERVICE)} is unavailable for selection${collided ? ` (${COLLISION_HINT})` : ""}`}>{content}</div>}</li>;
+    return <li key={`${service.id}-${index}`}>{selectable ? <button type="button" ref={(element) => { if (element) buttonRefs.current.set(service.id, element); else buttonRefs.current.delete(service.id); }} className={`runtime-node-btn${selectedId === service.id ? " is-active" : ""}`} aria-pressed={selectedId === service.id} onClick={() => onSelect(service.id)}>{content}</button> : <div className="runtime-node-btn runtime-node-unresolved" aria-label={`${identityText(service.name, UNAVAILABLE_SERVICE)} is unavailable for selection${collided ? ` (${COLLISION_HINT})` : ""}`}>{content}</div>}</li>;
   })}</ul>}</div>;
 }
 
