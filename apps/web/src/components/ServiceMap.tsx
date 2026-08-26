@@ -196,6 +196,14 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
     if (focusNodeId) nodeRefs.current.get(focusNodeId)?.focus();
   }, [focusNodeId, focusToken]);
 
+  // A directory selection can replace a dense default topology with a wholly
+  // different focused context. Preserve pan/zoom while exploring one graph,
+  // but reset it when that context changes so the selected node cannot remain
+  // off-canvas behind a stale transform.
+  useEffect(() => {
+    setTransform({ k: 1, x: 0, y: 0 });
+  }, [selectedKey]);
+
   const edgePoints = (from: { x: number; y: number }, to: { x: number; y: number }) => {
     const dx = to.x - from.x;
     const dy = to.y - from.y;

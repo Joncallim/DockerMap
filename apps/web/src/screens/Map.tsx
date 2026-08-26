@@ -45,6 +45,13 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
     : selected
       ? "DockerMap has no recorded Compose start-order relationship for this service. Its observed ports, networks, and storage remain in the inspector."
       : "DockerMap has no recorded Compose start-order declarations in this snapshot. The service directory still lists every observed service.";
+  const selectService = (id: string | null) => {
+    setSelectedId(id);
+    if (id) {
+      focusTokenRef.current += 1;
+      setFocusRequest({ id, token: focusTokenRef.current });
+    }
+  };
 
   return (
     <div className="screen map-screen">
@@ -76,7 +83,7 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
             <span>The graph shows Compose start-order declarations DockerMap observed. Shared networks and storage are context, not proof of communication or causality.</span>
           </section>
           <div className="map-stage">
-            <ServiceMap model={model} selectedId={selectedId} onSelect={setSelectedId} filter={graphFilter} focusNodeId={focusRequest?.id ?? null} focusToken={focusRequest?.token} emptyMessage={graphEmptyMessage} />
+            <ServiceMap model={model} selectedId={selectedId} onSelect={selectService} filter={graphFilter} focusNodeId={focusRequest?.id ?? null} focusToken={focusRequest?.token} emptyMessage={graphEmptyMessage} />
           </div>
         </div>
 
@@ -85,7 +92,7 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
             <div className="inspector-body">
               <h2>Select a service to inspect</h2>
               <p className="muted-line">The directory contains every observed service. Select one to see declared start order, derived reachability, and observed network and storage context.</p>
-              <ServiceDirectory model={model} services={visibleServices} selectedId={selectedId} onSelect={setSelectedId} />
+              <ServiceDirectory model={model} services={visibleServices} selectedId={selectedId} onSelect={selectService} />
             </div>
           ) : (
             <div className="inspector-body">
