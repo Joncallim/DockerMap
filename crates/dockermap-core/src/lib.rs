@@ -1250,6 +1250,26 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
     GraphResponse { nodes, edges }
 }
 
+fn duplicate_runtime_node_ids(nodes: &[RuntimeMapNode]) -> BTreeSet<String> {
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for node in nodes {
+        *counts.entry(&node.id).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(id, _)| id.to_string())
+        .collect()
+}
+
+fn runtime_node_sort_key(node: &RuntimeMapNode) -> String {
+    serde_json::to_string(node).expect("runtime nodes must serialize")
+}
+
+fn runtime_edge_sort_key(edge: &RuntimeMapEdge) -> String {
+    serde_json::to_string(edge).expect("runtime edges must serialize")
+}
+
 pub fn derive_runtime_map(
     snapshot: &DockerSnapshot,
     mut nodes: Vec<RuntimeMapNode>,
@@ -1302,8 +1322,13 @@ pub fn derive_runtime_map(
         }
 
         for port in &container.ports {
+            // A published/private port string is only an attribute of a
+            // listener. It is not its identity: two distinct containers may
+            // legitimately expose the same port. Include the owning container
+            // identity so each recorded runtime entity has a stable ID.
             let listener_id = format!(
-                "network_listener_{}",
+                "network_listener_{}_{}",
+                collision_resistant_id_component(&container.id),
                 collision_resistant_id_component(port)
             );
             let mut metadata = BTreeMap::new();
@@ -1394,32 +1419,19 @@ pub fn derive_runtime_map(
         }
     }
 
-    let mut duplicate_node_ids = BTreeSet::new();
-    nodes.sort_by(|left, right| left.id.cmp(&right.id));
-    nodes.dedup_by(|left, right| {
-        let duplicate = left.id == right.id;
-        if duplicate {
-            duplicate_node_ids.insert(left.id.clone());
-        }
-        duplicate
-    });
+    let duplicate_node_ids = duplicate_runtime_node_ids(&nodes);
+    nodes.sort_by_key(runtime_node_sort_key);
     for _ in duplicate_node_ids {
         diagnostics.push(RuntimeMapDiagnostic {
             provider: RuntimeProviderKind::Other,
             severity: DiagnosticSeverity::Warning,
-            message: "Duplicate generated runtime topology ID; retaining one node".into(),
+            message:
+                "Duplicate generated runtime topology ID; records remain visible and non-routable"
+                    .into(),
         });
     }
-    edges.sort_by(|left, right| {
-        left.source
-            .cmp(&right.source)
-            .then(left.target.cmp(&right.target))
-    });
-    edges.dedup_by(|left, right| {
-        left.source == right.source
-            && left.target == right.target
-            && left.relationship == right.relationship
-    });
+    edges.sort_by_key(runtime_edge_sort_key);
+    edges.dedup();
 
     RuntimeMap {
         nodes,
@@ -3139,6 +3151,101 @@ mod tests {
                 .len(),
             identities.len()
         );
+    }
+
+    #[test]
+    fn container_listener_ids_include_the_container_identity() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers = snapshot.containers[..2].to_vec();
+        for (container, (id, name)) in snapshot
+            .containers
+            .iter_mut()
+            .zip([("container_one", "one"), ("container_two", "two")])
+        {
+            container.id = id.into();
+            container.name = name.into();
+            container.ports = vec!["8080/tcp".into()];
+        }
+        snapshot.networks.clear();
+        snapshot.volumes.clear();
+
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let listeners = runtime_map
+            .nodes
+            .iter()
+            .filter(|node| node.kind == RuntimeNodeKind::NetworkListener)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            listeners.len(),
+            2,
+            "each container port is a distinct runtime entity"
+        );
+        assert_eq!(
+            listeners
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            2,
+            "equivalent port text must not collapse listeners belonging to distinct containers"
+        );
+        assert!(runtime_map.diagnostics.iter().all(|diagnostic| {
+            !diagnostic
+                .message
+                .contains("Duplicate generated runtime topology ID")
+        }));
+    }
+
+    #[test]
+    fn equivalent_reordered_snapshots_produce_the_same_runtime_topology() {
+        let first = mock_snapshot();
+        let mut reordered = first.clone();
+        reordered.containers.reverse();
+        reordered.networks.reverse();
+        reordered.volumes.reverse();
+
+        let first_map = derive_runtime_map(&first, Vec::new(), Vec::new(), Vec::new());
+        let reordered_map = derive_runtime_map(&reordered, Vec::new(), Vec::new(), Vec::new());
+
+        assert_eq!(reordered_map.nodes, first_map.nodes);
+        assert_eq!(reordered_map.edges, first_map.edges);
+        assert_eq!(reordered_map.diagnostics, first_map.diagnostics);
+    }
+
+    #[test]
+    fn malformed_duplicate_runtime_ids_remain_visible_and_diagnostic() {
+        let mut snapshot = mock_snapshot();
+        snapshot.volumes = vec![
+            VolumeRecord {
+                id: "duplicate-volume".into(),
+                name: "first".into(),
+                attached_to: Vec::new(),
+            },
+            VolumeRecord {
+                id: "duplicate-volume".into(),
+                name: "second".into(),
+                attached_to: Vec::new(),
+            },
+        ];
+
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let duplicated = runtime_map
+            .nodes
+            .iter()
+            .filter(|node| node.kind == RuntimeNodeKind::DockerVolume)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            duplicated.len(),
+            2,
+            "malformed records must remain visible instead of being discarded"
+        );
+        assert!(runtime_map.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("remain visible and non-routable")
+        }));
     }
 
     #[test]

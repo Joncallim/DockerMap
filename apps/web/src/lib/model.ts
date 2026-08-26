@@ -245,7 +245,28 @@ export function hashString(value: string): number {
   return (h >>> 0) / 4294967295;
 }
 
+function compareNetworks(left: NetworkRecord, right: NetworkRecord): number {
+  return left.id.localeCompare(right.id)
+    || left.name.localeCompare(right.name)
+    || left.driver.localeCompare(right.driver)
+    || Number(left.internal) - Number(right.internal)
+    || left.members.join("\u0000").localeCompare(right.members.join("\u0000"));
+}
+
+function compareVolumes(left: VolumeRecord, right: VolumeRecord): number {
+  return left.id.localeCompare(right.id)
+    || left.name.localeCompare(right.name)
+    || left.attachedTo.join("\u0000").localeCompare(right.attachedTo.join("\u0000"));
+}
+
 export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): SystemModel {
+  // Docker's list endpoints do not promise a presentation order. Canonicalize
+  // inventory records before both routing and rendering so an equivalent later
+  // snapshot cannot move cards or change their React reconciliation keys.
+  const networks = [...snapshot.networks].sort(compareNetworks);
+  const volumes = [...snapshot.volumes].sort(compareVolumes);
+  const canonicalSnapshot = { ...snapshot, networks, volumes };
+
   // Network ids are engine-unique, so this plain id→name map is unambiguous:
   // a duplicate id resolves to the FIRST record's name so Service.networks
   // stays consistent with the name indexes (a last-wins `new Map(...)` would
@@ -253,7 +274,7 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
   // this id map, the NAME routing indexes below (networkByName,
   // volumeByName, imageByRef) are collision-safe — see buildIdentityIndex.
   const networkNameById = new Map<string, string>();
-  for (const n of snapshot.networks) {
+  for (const n of networks) {
     if (n.id !== "" && !networkNameById.has(n.id)) networkNameById.set(n.id, n.name);
   }
 
@@ -345,18 +366,18 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
 
   const { index: byId, collisions: serviceIdCollisions } = buildIdentityIndex(services, (service) => service.id);
   const { index: byName, collisions: serviceNameCollisions } = buildIdentityIndex(services, (service) => service.name);
-  const { index: networkByName, collisions: networkNameCollisions } = buildIdentityIndex(snapshot.networks, (network) => network.name);
-  const { index: volumeByName, collisions: volumeNameCollisions } = buildIdentityIndex(snapshot.volumes, (volume) => volume.name);
+  const { index: networkByName, collisions: networkNameCollisions } = buildIdentityIndex(networks, (network) => network.name);
+  const { index: volumeByName, collisions: volumeNameCollisions } = buildIdentityIndex(volumes, (volume) => volume.name);
   const { index: imageByRef, collisions: imageRefCollisions } = buildIdentityIndex(snapshot.images, (image) => image.image);
 
-  const relationships = buildRelationships(services, snapshot, byId, byName);
+  const relationships = buildRelationships(services, canonicalSnapshot, byId, byName);
   const runtime = buildRuntimeModel(runtimeMap);
 
   return {
     services,
     relationships,
-    networks: snapshot.networks,
-    volumes: snapshot.volumes,
+    networks,
+    volumes,
     images: snapshot.images,
     runtime,
     byId,

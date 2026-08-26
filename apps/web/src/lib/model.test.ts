@@ -281,6 +281,26 @@ describe("empty schema-valid identities stay visible and non-routable", () => {
   });
 });
 
+describe("inventory presentation ordering", () => {
+  it("canonicalizes equivalent reordered network and volume input before presentation", () => {
+    const networks: NetworkRecord[] = [
+      { id: "network_b", name: "beta", driver: "bridge", internal: false, members: [] },
+      { id: "network_a", name: "alpha", driver: "bridge", internal: false, members: [] }
+    ];
+    const volumes: VolumeRecord[] = [
+      { id: "volume_b", name: "beta", attachedTo: [] },
+      { id: "volume_a", name: "alpha", attachedTo: [] }
+    ];
+    const first = buildModel(snapshot([], networks, volumes), emptyRuntime);
+    const second = buildModel(snapshot([], [...networks].reverse(), [...volumes].reverse()), emptyRuntime);
+
+    expect(first.networks.map((network) => network.id)).toEqual(["network_a", "network_b"]);
+    expect(second.networks.map((network) => network.id)).toEqual(first.networks.map((network) => network.id));
+    expect(first.volumes.map((volume) => volume.id)).toEqual(["volume_a", "volume_b"]);
+    expect(second.volumes.map((volume) => volume.id)).toEqual(first.volumes.map((volume) => volume.id));
+  });
+});
+
 describe("service and runtime identity indexes", () => {
   it("keeps duplicate and empty service evidence while excluding ambiguous semantic lookups", () => {
     const model = buildModel(
