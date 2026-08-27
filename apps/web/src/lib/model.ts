@@ -713,7 +713,7 @@ function runtimeStateForNode(node: RuntimeMapNode): ServiceState {
     [/\b(degraded|failed|error)\b/, "degraded"],
     [/\b(offline|stopped|dead|down|exited|missing|unhealthy|unavailable|inactive|disconnected|not)\b/, "offline"],
     [/\b(warning|paused)\b/, "warning"],
-    [/\b(starting|restarting|pending|loading)\b/, "updating"]
+    [/\b(starting|restarting|reloading|pending|loading)\b/, "updating"]
   ];
   const positive = /\b(healthy|running|active|online|available|attached|ready|connected)\b/;
 

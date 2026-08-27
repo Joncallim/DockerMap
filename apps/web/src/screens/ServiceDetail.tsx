@@ -234,15 +234,13 @@ function Resources({ service, evidenceMode, modelProvenance }: { service: Servic
 
 function Logs({ name, tick, evidenceMode, modelProvenance }: { name: string; tick: number; evidenceMode: ReturnType<typeof useApp>["evidenceMode"]; modelProvenance: ReturnType<typeof useApp>["modelProvenance"] }) {
   const logs = useApiResource<LogsResponse>(`/api/logs?service=${encodeURIComponent(name)}`, tick);
-  const sampleLogs =
-    (evidenceMode === "demo" && modelProvenance === "demo") ||
-    (evidenceMode === "mock" && modelProvenance === "mock");
+  const sampleLogs = evidenceMode === "demo" || (evidenceMode === "mock" && modelProvenance === "mock");
   if (logs.loading && !logs.data) return <Loading label="Loading logs…" />;
   if (logs.error) return <ErrorState title="Logs unavailable" body={logs.error} />;
   const entries = logs.data?.entries ?? [];
   if (entries.length === 0) return <EmptyState icon="logs" title="No logs" body="No recent log output for this service." />;
   return (
-    <Panel title="Recent output" icon="logs" hint={sampleLogs ? "Sample data — not from a host" : undefined}>
+    <Panel title="Recent output" icon="logs">
       {sampleLogs && <Tag tone="warn" title="These log lines are fabricated sample data, not real host activity.">Sample data — not from a host</Tag>}
       <ul className="log-stream">
         {entries.map((entry, index) => (

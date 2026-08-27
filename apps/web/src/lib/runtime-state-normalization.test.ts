@@ -61,6 +61,7 @@ describe("#76 runtime state normalization must be negative-safe", () => {
     expect(runtimeStateFor([node("e", "warning")], "e")).toBe("warning");
     expect(runtimeStateFor([node("f", "restarting")], "f")).toBe("updating");
     expect(runtimeStateFor([node("g", "starting")], "g")).toBe("updating");
+    expect(runtimeStateFor([node("h", "reloading")], "h")).toBe("updating");
   });
 
   it("unknown status stays unknown", () => {

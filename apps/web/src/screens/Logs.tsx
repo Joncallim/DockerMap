@@ -21,12 +21,12 @@ export default function Logs() {
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Log bytes are only sample data under the exact (demo,demo)/(mock,mock)
-  // authority pair — never relabel a live stream as sample, and never let
-  // fabricated log activity look like real host activity (#76).
-  const sampleLogs =
-    (evidenceMode === "demo" && modelProvenance === "demo") ||
-    (evidenceMode === "mock" && modelProvenance === "mock");
+  // Log bytes are sample data when the authority is exactly (demo,demo) or
+  // (mock,mock) — AND in demo mode generally, because fetchJson short-circuits
+  // before any fetch there, so demo-mode log bytes are always fabricated
+  // regardless of the provenance field's transient state. Never tag real
+  // (live) streams (#76).
+  const sampleLogs = evidenceMode === "demo" || (evidenceMode === "mock" && modelProvenance === "mock");
 
   const path = service ? `/api/logs?service=${encodeURIComponent(service)}` : "/api/logs";
 
