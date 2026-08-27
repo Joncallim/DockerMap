@@ -187,20 +187,23 @@ test.describe("responsive and accessibility matrix", () => {
 
       await page.getByRole("link", { name: "Service Map", exact: true }).click();
       await expect(page.getByRole("heading", { name: "Service Map" })).toBeFocused();
-      await page.getByRole("button", { name: "postgres, healthy" }).focus();
+      // Focus the directory entry (not the graph node — under the focused
+      // topology contract the selected service leaves the graph on clear).
+      const directoryPostgres = page.locator(".service-directory").getByRole("button", { name: /postgres, healthy/ });
+      await directoryPostgres.focus();
       await page.keyboard.press("Space");
       const clear = page.getByRole("button", { name: /Clear postgres service selection/ });
       await expect(clear).toBeVisible();
       await clear.click();
-      await expect(page.getByRole("button", { name: "postgres, healthy" })).toBeFocused();
+      await expect(directoryPostgres).toBeFocused();
       // Regression: clearing the SAME node twice must restore focus BOTH
       // times (the first clear left focusNodeId = postgres; a second
       // select+clear must re-trigger the focus effect via the monotonic
       // focus-request token, not silently keep focus on BODY).
-      await page.getByRole("button", { name: "postgres, healthy" }).click();
+      await directoryPostgres.click();
       await expect(clear).toBeVisible();
       await clear.click();
-      await expect(page.getByRole("button", { name: "postgres, healthy" })).toBeFocused();
+      await expect(directoryPostgres).toBeFocused();
       await page.getByRole("button", { name: "Attention" }).click();
       await expect(page.getByRole("button", { name: /Clear postgres service selection/ })).toBeHidden();
       await page.getByRole("button", { name: "All", exact: true }).click();
@@ -401,9 +404,11 @@ test.describe("responsive and accessibility matrix", () => {
         await page.keyboard.press("Escape");
         await expect(paletteDialog).toBeHidden();
 
-        // Map selected state at width.
+        // Map selected state at width. The graph node and the directory
+        // button share the "postgres, healthy" accessible name, so target
+        // the graph node explicitly (it is in the recorded topology).
         await openRoute(page, "/map", "light");
-        await page.getByRole("button", { name: "postgres, healthy" }).click();
+        await page.getByRole("group", { name: "Service dependency map" }).getByLabel("postgres, healthy").click();
         await assertUsableAtWidth(page, "map selected state", width);
         await page.getByRole("button", { name: /Clear postgres service selection/ }).click();
 
