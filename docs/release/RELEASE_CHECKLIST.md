@@ -15,25 +15,40 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 - [x] Add fixture-driven Compose validation tests for malformed files and blocked edit plans.
 - [x] Add non-live Playwright smoke coverage for the primary GUI pages.
 - [x] Add Playwright smoke coverage to CI.
-- [ ] Keep provider commands fixed and read-only for systemd, tmux, package, Python/native-process, reverse-proxy, DNS, and external-API collectors.
-- [ ] Bound provider filesystem scanning to documented paths, explicit request targets, and hard caps.
+- [x] Keep provider commands fixed and read-only for systemd, tmux, package, Python/native-process, reverse-proxy, DNS, and external-API collectors.
+  Python/native-process collectors shipped via #32/#38/#39 + #33; provider commands
+  remain fixed read-only invocations (see `docs/security/THREAT_MODEL.md`).
+- [x] Bound provider filesystem scanning to documented paths, explicit request targets, and hard caps.
 - [x] Make package advisory, registry, or other external-network behavior opt-in or document it explicitly in release notes and deployment docs.
   Current runtime docs state that package registry/advisory, DNS-provider API,
   Cloudflare API, and generic external-API lookups are disabled or not implemented.
   Tailscale/Headscale delegated CLI behavior and Google-hosted browser fonts are
   documented as release decisions.
-- [ ] Verify package, service, process, unit, proxy, and DNS inspection does not leak env vars, secrets, credentials, or inline auth URLs.
-  Fixture evidence now covers current provider outputs and marker boundaries; keep this
-  broader gate open until future native-process and config-content collectors land.
+- [x] Verify package, service, process, unit, proxy, and DNS inspection does not leak env vars, secrets, credentials, or inline auth URLs.
+  Fixture evidence (`npm run test:rust:daemon`) covers current provider outputs
+  including Python/native-process-shaped sentinels; config-content collectors
+  (reverse-proxy/DNS raw config parsing) remain future work.
 - [x] Keep provider security checks runnable without GUI availability or host-specific daemons beyond the test fixture or stub daemon.
 - [x] Run `npm run test:live-docker` on a Docker-capable Linux host and record the result.
-- [ ] Run `npm run build:deploy` on the release target or a clean Linux build host.
-- [ ] Deploy behind the documented reverse proxy with viewer authentication enabled.
+  Recorded on Hearth during the #84 release chain (2026-08-26/27); the live-Docker
+  GUI fixture (IPAM-pinned subnets) passes on this host.
+- [x] Run `npm run build:deploy` on the release target or a clean Linux build host.
+  Recorded on Hearth at the #84 chain (vite 374 kB JS; cargo release ~12s).
+- [x] Deploy behind the documented reverse proxy with viewer authentication enabled.
+  Live `dockermap.jo-nas.com` runs behind Caddy + Authentik forward-auth; public
+  unauthenticated requests 302 to Authentik.
 - [ ] Run `scripts/smoke-deploy.sh` against `http://127.0.0.1:4000` on the host.
+  (Local-loopback smoke not yet recorded this release track.)
 - [ ] Run `scripts/smoke-deploy.sh` against the public review URL through the reverse proxy.
+  Not yet run as the script this track; equivalent live checks were recorded on the
+  deployed build (public 302 to Authentik, daemon 401 unauthenticated, snapshot serves
+  with trusted header, web 200) — running the script itself remains open evidence.
 - [ ] Confirm direct remote access to `127.0.0.1:4100` is impossible from another machine.
-- [ ] Confirm `/api/snapshot` returns `401` without a bearer token when bypassing the proxy.
+  (Daemon binds loopback; external-port confirmation not yet recorded this track.)
+- [x] Confirm `/api/snapshot` returns `401` without a bearer token when bypassing the proxy.
+  Verified against the live daemon (2026-08-27).
 - [ ] Confirm `/api/health`, `/api/snapshot`, `/api/runtime/map`, `/api/compose/scan`, and `/api/events/stream` work through the proxy.
+  (Snapshot/health verified; full route matrix through Authentik not yet recorded.)
 - [ ] Update `README.md`, `docs/deployment/DEPLOYMENT.md`, `docs/deployment/REVERSE_PROXY.md`, `docs/testing/TESTING_PLAN.md`, and `docs/security/THREAT_MODEL.md` for any release-time behavior changes.
 - [ ] Create release notes with known limitations and the exact commit SHA.
 
@@ -60,8 +75,8 @@ tasks before starting new GUI work:
   inaccessibility.
 - [x] Plan Python and native-process providers as the next backend provider peers after
   the current Rust runtime model and contracts settle.
-  The planning doc is `docs/planning/PYTHON_AND_PROCESS_PROVIDERS.md`. Implementation,
-  fixture, contract, and frontend follow-ups remain separate future work.
+  The planning doc is `docs/planning/PYTHON_AND_PROCESS_PROVIDERS.md`. Both providers
+  are implemented (#32/#38/#39 + #33); remaining enrichment is tracked in the roadmap.
 
 ## Second Round Before Wider Beta
 
@@ -69,17 +84,25 @@ These tasks are not required for the first private review release, but should be
 before a broader beta.
 
 - [ ] Generate TypeScript API contracts from Rust models or add a CI drift check that fails when fixtures and types diverge.
+  Tracked as epic #65 (canonical contract/schema authority).
 - [ ] Add reverse-proxy integration tests for bearer-token injection and SSE streaming.
+  Tracked as part of epic #63 (v0.1 alpha certification).
 - [x] Add OpenAPI or equivalent machine-readable route documentation for read-only endpoints.
   `/api/openapi.json` (OpenAPI 3.0.3) ships on the read-only API surface; see commit `5fcadd3`.
 - [ ] Split `crates/dockermap-daemon/src/main.rs` into route, config, Docker collector, host-provider, and CLI modules.
+  Tracked as epic #64 (backend decomposition).
 - [ ] Add parser-level tests for systemd, cron, PM2, tmux, Tailscale, Headscale, reverse-proxy, DNS, and listener provider output fixtures.
+  Tracked in the roadmap (Runtime Providers).
 - [ ] Add provider-fixture redaction tests for npm/package metadata, Python apps, native processes, and service/unit inspection before enabling those routes by default.
+  Python/native-process routes are enabled with redaction fixtures shipped; remaining
+  config-content collector work is tracked in the roadmap.
 - [ ] Add browser tests for error states, token/proxy behavior, logs filtering, Compose edit-plan display, and responsive navigation.
+  Tracked as part of epic #63 (v0.1 alpha certification).
 - [ ] Add a clean-host install test for systemd units and Nginx/Caddy proxy config.
 - [ ] Add release automation for tagged builds and checksums.
 - [ ] Add a documented support policy for Linux distro, Node, Rust, Docker, and browser versions.
 - [ ] Add write-mode design gates before any endpoint can mutate files or Docker state.
+  Design gates are documented in the roadmap (Safe Write Mode section).
 
 ## Release Evidence To Capture
 

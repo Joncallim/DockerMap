@@ -6,9 +6,11 @@ self-hosted environment: Docker resources, systemd units, tmux-managed agents, p
 ecosystems, native processes, reverse proxies, databases, DNS, storage, network edges,
 external APIs, and AI workloads.
 
-For the first full alpha, backend topology and security hardening take priority over new
-GUI work. The UI should consume the stable runtime map and contracts that come out of
-this pass, but visual redesign is intentionally deferred.
+For the first full alpha, backend topology and security hardening remain the
+priority, but substantial UI work has shipped alongside it: detail pages (#34),
+responsive and accessibility coverage (#35), and the evidence-backed live-state
+vocabulary (#61 epic). Future UI work is sequenced through the filed roadmap
+epics rather than being deferred wholesale.
 
 ## Active Components
 
@@ -71,8 +73,8 @@ The map is read-only and currently contains:
 - npm projects discovered from `package.json` and lockfiles under the configured project
   root, with scripts, framework hints, and dependency nodes. The contracts can represent
   package-update/advisory metadata, but no runtime registry or advisory lookup is enabled
-  today. No UI update label is derived from local model or demo data: update status is
-  reported as "Not collected" until a future opt-in advisory provider lands (#72).
+  today. Update status is reported as "Not collected" until an opt-in advisory provider
+  lands (#66/#70 territory).
 - scheduled jobs from `/etc/crontab`, `/etc/cron.d/*`, and the current user's `crontab -l` when readable.
 - PM2 apps from `pm2 jlist` when PM2 is installed.
 - tmux sessions from `tmux list-sessions` when tmux is installed and reachable.
@@ -87,10 +89,13 @@ Provider commands are fixed read-only invocations, not user-supplied shell comma
 Filesystem discovery must stay bounded by configured roots, skip dependency/build
 directories, and avoid reading secrets such as `.env` values.
 
-Planned Python application and native-process providers should plug into this same map as
-later read-only peers. The implementation plan in
+Python application and native-process providers plug into this same map as
+read-only peers. The implementation plan in
 [`docs/planning/PYTHON_AND_PROCESS_PROVIDERS.md`](../planning/PYTHON_AND_PROCESS_PROVIDERS.md)
-defines safe sources, discovery bounds, omitted data, diagnostics, and follow-up slices.
+defines safe sources, discovery bounds, omitted data, diagnostics, and follow-up
+slices; the providers themselves shipped via #32/#38/#39 + #33. Remaining
+enrichment (richer Python metadata, parser-level fixtures) is tracked in the
+roadmap.
 
 Kubernetes and other orchestrators should plug into this same model as additional providers, not replace the local Docker/host model. Kubernetes support should be opt-in because it needs kubeconfig or in-cluster credentials, namespace scoping, and RBAC permissions. A safe first Kubernetes provider should read namespaces, pods, services, deployments, ingress objects, persistent volume claims, and selected labels/owner references, then map them to `orchestrator_workload` nodes and edges.
 

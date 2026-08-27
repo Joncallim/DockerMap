@@ -5,8 +5,9 @@ self-hosted machine.
 
 It shows Docker containers, Compose files, host services, ports, volumes, logs,
 and related runtime signals in one place. The goal is simple: when something is
-running on your server, DockerMap should help you answer what it is, what it
-depends on, where its data lives, and what might break if you change it.
+running on your server, DockerMap should help you answer what it is, what its
+recorded Compose start order declares, where its data lives, and what would
+change if you edited a Compose mount or routing rule.
 
 DockerMap is read-only today. It inspects your machine, but it does not restart
 services, change containers, edit Compose files, or delete data.
@@ -79,7 +80,11 @@ This starts:
 - Use the Runtime Map workspace to inspect provider nodes, diagnostics, and
   cross-provider edges in one read-only view.
 - Compare what Compose says should exist with what Docker is actually running.
-- Use mock fallback data when Docker is not available.
+- Use mock fallback data when Docker is not available. When the daemon is
+  unreachable, the Node API answers with `mode: mock` responses; separately, the
+  browser can enter Demo Mode, which serves fabricated sample data entirely
+  inside the web app (no API calls) so the UI can be inspected without any
+  backend.
 
 DockerMap is for understanding a host, not controlling it. Write actions are
 planned only after diff previews, backups, confirmations, and rollback behavior
@@ -122,7 +127,7 @@ rather than the main UI. It is also available at the versioned alias
 {
   "service": "dockermap",
   "status": "ok",
-  "mode": "live",
+  "mode": "docker",
   "dockerReachable": true,
   "containers": 12,
   "containersRunning": 11,
@@ -140,7 +145,10 @@ Field meanings:
 
 - `status` — `ok`, `degraded`, or `offline` (derived from Docker reachability
   and container state).
-- `mode` — `live` (real Docker data) or `mock` (fallback demo data).
+- `mode` — `docker` (real Docker data) or `mock` (the Node API's fallback
+  response when the daemon is unreachable). This is distinct from the browser's
+  Demo Mode, which serves fabricated sample data entirely inside the web app
+  without any API calls; a demo-mode browser never shows `mode: mock`.
 - `healthy` / `attention` / `offline` — container counts by state, where
   `containers = healthy + attention + offline`.
 
