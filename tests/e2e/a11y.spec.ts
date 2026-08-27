@@ -197,9 +197,9 @@ test.describe("responsive and accessibility matrix", () => {
       await clear.click();
       await expect(directoryPostgres).toBeFocused();
       // Regression: clearing the SAME node twice must restore focus BOTH
-      // times (the first clear left focusNodeId = postgres; a second
-      // select+clear must re-trigger the focus effect via the monotonic
-      // focus-request token, not silently keep focus on BODY).
+      // times (the first clear left returnFocusId = postgres; a second
+      // select+clear must re-trigger the focus-return layout effect, not
+      // silently keep focus on BODY).
       await directoryPostgres.click();
       await expect(clear).toBeVisible();
       await clear.click();
