@@ -178,7 +178,7 @@ describe("collided redacted identities stay visible and never route", () => {
     // …the collided named-volume MOUNT stays visible too: the section renders
     // with the collision hint and tag (pre-fix the mount was filtered out and
     // the whole section disappeared)…
-    expect(mapHtml).toContain("Named volumes");
+    expect(mapHtml).toContain("Observed named volumes");
     expect(mapHtml).toContain("identity collision");
     expect(mapHtml).toContain(COLLISION_HINT);
     // …and none of them emit a detail link (map lookups fail closed).

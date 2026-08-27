@@ -866,7 +866,7 @@ fn build_snapshot(
         });
     }
 
-    let network_records = networks
+    let mut network_records = networks
         .into_iter()
         .map(|network| {
             let id = network.id.unwrap_or_else(|| "unknown-network".into());
@@ -883,8 +883,16 @@ fn build_snapshot(
             }
         })
         .collect::<Vec<_>>();
+    network_records.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then(left.name.cmp(&right.name))
+            .then(left.driver.cmp(&right.driver))
+            .then(left.internal.cmp(&right.internal))
+            .then(left.members.cmp(&right.members))
+    });
 
-    let volume_records = volume_response
+    let mut volume_records = volume_response
         .volumes
         .unwrap_or_default()
         .into_iter()
@@ -901,6 +909,12 @@ fn build_snapshot(
             }
         })
         .collect::<Vec<_>>();
+    volume_records.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then(left.name.cmp(&right.name))
+            .then(left.attached_to.cmp(&right.attached_to))
+    });
 
     DockerSnapshot {
         // Images are derived once by the caller (`collect_snapshot`) after
@@ -3807,27 +3821,17 @@ fn redact_runtime_map(runtime_map: &mut RuntimeMap) {
 }
 
 /// Identifier normalization can collapse distinct hostile strings to the same
-/// replacement form. Reapply graph invariants after that boundary so clients
-/// never receive dangling endpoints or duplicate IDs/edges.
+/// replacement form. Preserve every observed node and make collision ownership
+/// explicit: the web model removes collided IDs from its selection index, so
+/// no client can route an ambiguous ID to an arbitrary record.
 fn normalize_runtime_map_topology(runtime_map: &mut RuntimeMap) {
-    let mut duplicate_node_ids = BTreeSet::new();
-    runtime_map
-        .nodes
-        .sort_by(|left, right| left.id.cmp(&right.id));
-    runtime_map.nodes.dedup_by(|left, right| {
-        let duplicate = left.id == right.id;
-        if duplicate {
-            duplicate_node_ids.insert(left.id.clone());
-        }
-        duplicate
-    });
+    let duplicate_node_ids = duplicate_runtime_node_ids(&runtime_map.nodes);
+    runtime_map.nodes.sort_by_key(runtime_node_sort_key);
     for _ in duplicate_node_ids {
         runtime_map.diagnostics.push(RuntimeMapDiagnostic {
             provider: RuntimeProviderKind::Other,
             severity: DiagnosticSeverity::Warning,
-            message:
-                "Duplicate runtime topology ID after publication normalization; retaining one node"
-                    .into(),
+            message: "Duplicate runtime topology ID after publication normalization; records remain visible and non-routable".into(),
         });
     }
 
@@ -3839,16 +3843,28 @@ fn normalize_runtime_map_topology(runtime_map: &mut RuntimeMap) {
     runtime_map.edges.retain(|edge| {
         node_ids.contains(edge.source.as_str()) && node_ids.contains(edge.target.as_str())
     });
-    runtime_map.edges.sort_by(|left, right| {
-        left.source
-            .cmp(&right.source)
-            .then(left.target.cmp(&right.target))
-    });
-    runtime_map.edges.dedup_by(|left, right| {
-        left.source == right.source
-            && left.target == right.target
-            && left.relationship == right.relationship
-    });
+    runtime_map.edges.sort_by_key(runtime_edge_sort_key);
+    runtime_map.edges.dedup();
+}
+
+fn duplicate_runtime_node_ids(nodes: &[RuntimeMapNode]) -> BTreeSet<String> {
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for node in nodes {
+        *counts.entry(&node.id).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(id, _)| id.to_string())
+        .collect()
+}
+
+fn runtime_node_sort_key(node: &RuntimeMapNode) -> String {
+    serde_json::to_string(node).expect("runtime nodes must serialize")
+}
+
+fn runtime_edge_sort_key(edge: &RuntimeMapEdge) -> String {
+    serde_json::to_string(edge).expect("runtime edges must serialize")
 }
 
 fn redact_runtime_nodes(nodes: &mut [RuntimeMapNode]) {
@@ -7971,12 +7987,12 @@ mod tests {
             .iter()
             .map(|node| node.id.as_str())
             .collect::<HashSet<_>>();
-        assert_eq!(map.nodes.len(), 2, "normalized node IDs are deduplicated");
+        assert_eq!(map.nodes.len(), 3, "normalized node IDs remain visible");
         assert!(
             map.diagnostics.iter().any(|diagnostic| diagnostic
                 .message
-                .contains("Duplicate runtime topology ID after publication normalization")),
-            "a publication-time collision must be surfaced instead of silently merging nodes"
+                .contains("records remain visible and non-routable")),
+            "a publication-time collision must be surfaced without discarding either node"
         );
         assert_eq!(
             map.edges.len(),

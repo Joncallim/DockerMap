@@ -187,20 +187,23 @@ test.describe("responsive and accessibility matrix", () => {
 
       await page.getByRole("link", { name: "Service Map", exact: true }).click();
       await expect(page.getByRole("heading", { name: "Service Map" })).toBeFocused();
-      await page.getByRole("button", { name: "postgres, healthy" }).focus();
+      // Focus the directory entry (not the graph node — under the focused
+      // topology contract the selected service leaves the graph on clear).
+      const directoryPostgres = page.locator(".service-directory").getByRole("button", { name: /postgres, healthy/ });
+      await directoryPostgres.focus();
       await page.keyboard.press("Space");
       const clear = page.getByRole("button", { name: /Clear postgres service selection/ });
       await expect(clear).toBeVisible();
       await clear.click();
-      await expect(page.getByRole("button", { name: "postgres, healthy" })).toBeFocused();
+      await expect(directoryPostgres).toBeFocused();
       // Regression: clearing the SAME node twice must restore focus BOTH
       // times (the first clear left focusNodeId = postgres; a second
       // select+clear must re-trigger the focus effect via the monotonic
       // focus-request token, not silently keep focus on BODY).
-      await page.getByRole("button", { name: "postgres, healthy" }).click();
+      await directoryPostgres.click();
       await expect(clear).toBeVisible();
       await clear.click();
-      await expect(page.getByRole("button", { name: "postgres, healthy" })).toBeFocused();
+      await expect(directoryPostgres).toBeFocused();
       await page.getByRole("button", { name: "Attention" }).click();
       await expect(page.getByRole("button", { name: /Clear postgres service selection/ })).toBeHidden();
       await page.getByRole("button", { name: "All", exact: true }).click();
@@ -401,9 +404,11 @@ test.describe("responsive and accessibility matrix", () => {
         await page.keyboard.press("Escape");
         await expect(paletteDialog).toBeHidden();
 
-        // Map selected state at width.
+        // Map selected state at width. The graph node and the directory
+        // button share the "postgres, healthy" accessible name, so target
+        // the graph node explicitly (it is in the recorded topology).
         await openRoute(page, "/map", "light");
-        await page.getByRole("button", { name: "postgres, healthy" }).click();
+        await page.getByRole("group", { name: "Service dependency map" }).getByLabel("postgres, healthy").click();
         await assertUsableAtWidth(page, "map selected state", width);
         await page.getByRole("button", { name: /Clear postgres service selection/ }).click();
 
@@ -692,7 +697,7 @@ test.describe("responsive and accessibility matrix", () => {
     }
   });
 
-  test("non-text contrast keeps state dots, focus rings, and map tracks at 3:1", async ({ browser }) => {
+  test("non-text contrast keeps state dots and focus rings at 3:1 without a network overlay", async ({ browser }) => {
     for (const theme of themes) {
       await withPage(browser, theme, async (page) => {
         await openRoute(page, "/map", theme);
@@ -713,30 +718,19 @@ test.describe("responsive and accessibility matrix", () => {
             const [light, dark] = [luminance(foreground), luminance(background)].sort((left, right) => right - left);
             return (light + 0.05) / (dark + 0.05);
           };
-          const blend = (foreground: number[], background: number[], alpha: number) => foreground.map((channel, index) => channel * alpha + background[index] * (1 - alpha));
           const root = getComputedStyle(document.documentElement);
           const surface = rgb(root.getPropertyValue("--surface"));
           const focus = rgb(root.getPropertyValue("--focus-ring"));
           const healthy = rgb(root.getPropertyValue("--s-healthy"));
-          const track = document.querySelector<SVGLineElement>(".network-edge");
-          const trackStyle = track ? getComputedStyle(track) : null;
-          // Read the .map canvas background instead of hardcoding it: the
-          // track is blended over the map's own gradient, so the assertion
-          // must track the computed base color or it silently drifts.
-          const mapElement = document.querySelector<HTMLElement>(".map");
-          const mapBackground = mapElement ? getComputedStyle(mapElement).backgroundImage : "";
-          const gradientStops = mapBackground.match(/rgba?\([^)]*\)/g) ?? [];
-          const mapBase = gradientStops.length > 0 ? rgb(gradientStops[gradientStops.length - 1]) : [17, 21, 27];
-          const trackColor = trackStyle ? rgb(trackStyle.stroke) : mapBase;
           return {
             focus: contrast(focus, surface),
             state: contrast(healthy, surface),
-            track: contrast(blend(trackColor, mapBase, Number(trackStyle?.opacity ?? 1)), mapBase)
+            networkOverlays: document.querySelectorAll(".network-edge").length
           };
         });
         expect(ratios.focus, `${theme} focus ring`).toBeGreaterThanOrEqual(3);
         expect(ratios.state, `${theme} state dot`).toBeGreaterThanOrEqual(3);
-        expect(ratios.track, `${theme} map track`).toBeGreaterThanOrEqual(3);
+        expect(ratios.networkOverlays, `${theme} network overlays`).toBe(0);
       });
     }
   });

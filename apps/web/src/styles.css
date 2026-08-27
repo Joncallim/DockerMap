@@ -1196,8 +1196,14 @@ kbd {
 }
 
 .node-self .node-halo,
-.node:hover .node-halo {
+.node:hover .node-halo,
+.node-interactive:focus-visible .node-halo {
   opacity: 1;
+}
+
+.node-interactive:focus-visible .node-core {
+  stroke: var(--accent);
+  stroke-width: 2.5;
 }
 
 .node-self .node-core {
@@ -1365,6 +1371,40 @@ kbd {
   min-width: 0;
 }
 
+.map-empty-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--s5);
+  text-align: center;
+  color: var(--map-ink);
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.map-evidence-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.service-directory {
+  max-height: min(48dvh, 520px);
+  overflow-y: auto;
+}
+
+.map-coverage {
+  margin-bottom: var(--s4);
+}
+
 .inspector {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1424,6 +1464,7 @@ kbd {
   margin-top: var(--s4);
 }
 
+.inspector-section h3,
 .inspector-section h4 {
   font-size: 11px;
   text-transform: uppercase;

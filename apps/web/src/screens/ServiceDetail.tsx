@@ -88,11 +88,11 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
       <div className="impact-band wide">
         <div className="impact-cell">
           <strong>{impact.downstream.length}</strong>
-          <span>affected if it fails</span>
+          <span>downstream declarations</span>
         </div>
         <div className="impact-cell">
           <strong>{impact.upstream.length}</strong>
-          <span>dependencies</span>
+          <span>upstream declarations</span>
         </div>
         <div className="impact-cell">
           <strong>{service.ports.length}</strong>
@@ -166,11 +166,11 @@ function Overview({ service, model }: { service: Service; model: NonNullable<Ret
 function Dependencies({ service, model }: { service: Service; model: NonNullable<ReturnType<typeof useApp>["model"]> }) {
   return (
     <div className="grid-2">
-      <Panel title="Depends on" icon="up" hint="Upstream">
-        <RelList model={model} occurrences={service.dependencyOccurrences} empty="This service depends on nothing." />
+      <Panel title="Declares start order after" icon="up" hint="Recorded upstream declaration">
+        <RelList model={model} occurrences={service.dependencyOccurrences} empty="No Compose start-order declaration recorded." />
       </Panel>
-      <Panel title="Used by" icon="down" hint="Downstream">
-        <RelList model={model} occurrences={service.dependents.map((id) => ({ ref: id, resolvedId: id }))} empty="Nothing depends on this service." />
+      <Panel title="Declared after by" icon="down" hint="Recorded downstream declaration">
+        <RelList model={model} occurrences={service.dependents.map((id) => ({ ref: id, resolvedId: id }))} empty="No service declares start order after this one." />
       </Panel>
     </div>
   );

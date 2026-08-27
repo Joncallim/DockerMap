@@ -79,33 +79,33 @@ describe("collision tags on graph nodes and runtime rows", () => {
     expect(model.serviceNameCollisions.has("dup-name")).toBe(true);
 
     const html = renderScreen("/map", "/map", <MapScreen />);
-    // Every collided occurrence carries the visible "identity collision" tag
-    // (4 collided nodes → 4 tag texts)…
+    // Collided records stay visible in the directory as non-routable evidence.
     expect(html.split("identity collision").length - 1).toBeGreaterThanOrEqual(4);
-    // …the accessible explanatory text is present (per-node <title> AND the
-    // relationship text alternative)…
-    expect(html.split(COLLISION_HINT).length - 1).toBeGreaterThanOrEqual(1);
-    expect(html).toContain("Identity collision: first, second, dup-name");
-    // …the dashed-ring collision treatment class is applied to each node…
-    expect(html.split("node-collided").length - 1).toBeGreaterThanOrEqual(4);
-    // …and ONLY the unique service is a selectable graph button.
-    expect(html.split('role="button"').length - 1).toBe(1);
-    expect(html).toContain('aria-label="unique, healthy"');
-    // Collided labels render as plain text, not buttons.
-    expect(html).not.toContain('aria-label="first, healthy"');
-    expect(html).not.toContain('aria-label="dup-name, healthy"');
-    // The SECOND duplicate-id record depends on the UNIQUE `c_ok`, but its
-    // SOURCE id is ambiguous: no semantic edge may render (no spring, no
-    // relationship summary entry, no edge group at all).
+    expect(html).toContain(COLLISION_HINT);
+    // The graph's text alternative is scoped to graph-visible records; the
+    // directory carries the collision names and individual explanatory hints.
+    expect(html).not.toContain("Identity collision: first, second, dup-name");
+    // ONLY the unique service is a selectable directory button.
+    expect(html.match(/<button[^>]*class="runtime-node-btn/g) ?? []).toHaveLength(1);
+    expect(html).toContain(">unique</span>");
+    // Collided labels render as plain non-buttons.
+    expect(html).not.toMatch(/<button[^>]*aria-label="(?:first|dup-name)/);
+    // The default topology graph contains no semantic edge for this fixture.
     expect(html.split('class="edge-group"').length - 1).toBe(0);
-    expect(html).toContain("No service relationships are recorded.");
+    expect(html).toContain("No Compose start-order declarations are visible in this graph.");
   });
 
   it("ServiceMap gives duplicate-id occurrences DISTINCT in-viewport transforms", () => {
     // The layout is keyed by service OCCURRENCE: two records sharing the
     // canonical id `c_dup` must NOT share one SVG transform (the later node
     // used to paint over the earlier one at the exact same coordinate).
-    const html = renderScreen("/map", "/map", <MapScreen />);
+    // The reusable graph still supports the collision-safe full evidence view
+    // when another screen deliberately asks for it.
+    const html = renderToStaticMarkup(
+      <AppContext.Provider value={contextValue}>
+        <ServiceMap model={model} selectedId={null} onSelect={() => {}} interactive={false} />
+      </AppContext.Provider>
+    );
     const chunks = html.split('<g class="node').slice(1);
     expect(chunks.length).toBe(5);
     const nodes = chunks.map((chunk) => {

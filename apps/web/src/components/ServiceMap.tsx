@@ -4,7 +4,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent
 } from "react";
@@ -17,8 +16,6 @@ import { identityText, COLLISION_HINT, COLLISION_TAG, UNAVAILABLE_NETWORK, UNAVA
 const VIEW = 240;
 const PAD = 26;
 const NODE_EDGE_GAP = 10;
-const NETWORK_TRACK_GAP = 2.8;
-const NETWORK_COLORS = ["#22c55e", "#38bdf8", "#f59e0b", "#f472b6", "#a78bfa", "#14b8a6", "#fb7185", "#84cc16"];
 
 interface Transform {
   k: number;
@@ -51,12 +48,12 @@ export interface ServiceMapProps {
    * not, so the focus call runs again.
    */
   focusToken?: number;
+  /** Visible explanation when this instance has no graph nodes. */
+  emptyMessage?: string;
 }
-
-export default function ServiceMap({ model, selectedId, selectedService, onSelect, interactive = true, filter, height, focusNodeId, focusToken }: ServiceMapProps) {
+export default function ServiceMap({ model, selectedId, selectedService, onSelect, interactive = true, filter, height, focusNodeId, focusToken, emptyMessage = "No services match the current filter. Clear the filter to widen the view." }: ServiceMapProps) {
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [transform, setTransform] = useState<Transform>({ k: 1, x: 0, y: 0 });
-  const [hiddenNetworks, setHiddenNetworks] = useState<Set<string>>(() => new Set());
   const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
   const nodeRefs = useRef(new Map<string, SVGGElement>());
   const descriptionId = useId();
@@ -83,23 +80,6 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
     return map;
   }, [model.services]);
   const servicesById = useMemo(() => new Map(services.filter((service) => model.byId.has(service.id)).map((service) => [service.id, service])), [model.byId, services]);
-  const networks = useMemo(() => {
-    const networkOrder = new Map(model.networks.map((network, index) => [network.name, index]));
-    const names = [...new Set(services.flatMap((service) => service.networks))].sort((a, b) => {
-      const aOrder = networkOrder.get(a) ?? Number.MAX_SAFE_INTEGER;
-      const bOrder = networkOrder.get(b) ?? Number.MAX_SAFE_INTEGER;
-      return aOrder - bOrder || a.localeCompare(b);
-    });
-    return names.map((name, index) => ({
-      name,
-      color: NETWORK_COLORS[index % NETWORK_COLORS.length]
-    }));
-  }, [model.networks, services]);
-  const networkByName = useMemo(() => new Map(networks.map((network) => [network.name, network])), [networks]);
-  const enabledNetworkNames = useMemo(
-    () => new Set(networks.filter((network) => !hiddenNetworks.has(network.name)).map((network) => network.name)),
-    [hiddenNetworks, networks]
-  );
 
   const place = (key: string | undefined) => {
     const p = key ? layout.get(key) : undefined;
@@ -186,19 +166,23 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
   };
 
   const visible = new Set(services.filter((service) => model.byId.has(service.id)).map((service) => service.id));
+  const visibleRelationships = useMemo(
+    () => model.relationships.filter((relationship) => visible.has(relationship.from) && visible.has(relationship.to)),
+    [model.relationships, visible]
+  );
   const relationshipSummary = useMemo(() => {
     const parts: string[] = [];
-    if (model.relationships.length === 0) parts.push("No service relationships are recorded.");
-    else parts.push(model.relationships.map((relationship) => {
+    if (visibleRelationships.length === 0) parts.push("No Compose start-order declarations are visible in this graph.");
+    else parts.push(visibleRelationships.map((relationship) => {
       const from = model.byId.get(relationship.from);
       const to = model.byId.get(relationship.to);
-      return `${identityText(from?.name, UNAVAILABLE_SERVICE)} depends on ${identityText(to?.name, UNAVAILABLE_SERVICE)}.`;
+      return `${identityText(from?.name, UNAVAILABLE_SERVICE)} declares start order after ${identityText(to?.name, UNAVAILABLE_SERVICE)}.`;
     }).join(" "));
     // Collided occurrences (duplicate ids/names after redaction) are visible
     // on the graph but noninteractive; the text alternative names them so
     // screen-reader users get the same "collision" context sighted users see.
     const collidedNames = [...new Set(
-      model.services
+      services
         .filter((service) => model.serviceIdCollisions.has(service.id) || model.serviceNameCollisions.has(service.name))
         .map((service) => identityText(service.name, UNAVAILABLE_SERVICE))
     )];
@@ -206,11 +190,19 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
       parts.push(`Identity collision: ${collidedNames.join(", ")} — multiple records share this identity, so selection and detail routing are unavailable.`);
     }
     return parts.join(" ");
-  }, [model]);
+  }, [model, services, visibleRelationships]);
 
   useEffect(() => {
     if (focusNodeId) nodeRefs.current.get(focusNodeId)?.focus();
   }, [focusNodeId, focusToken]);
+
+  // A directory selection can replace a dense default topology with a wholly
+  // different focused context. Preserve pan/zoom while exploring one graph,
+  // but reset it when that context changes so the selected node cannot remain
+  // off-canvas behind a stale transform.
+  useEffect(() => {
+    setTransform({ k: 1, x: 0, y: 0 });
+  }, [selectedKey]);
 
   const edgePoints = (from: { x: number; y: number }, to: { x: number; y: number }) => {
     const dx = to.x - from.x;
@@ -225,32 +217,6 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
       x2: to.x - ux * (NODE_EDGE_GAP + 1.5),
       y2: to.y - uy * (NODE_EDGE_GAP + 1.5)
     };
-  };
-
-  const offsetPoints = (points: ReturnType<typeof edgePoints>, index: number, total: number) => {
-    if (total <= 1) return points;
-    const dx = points.x2 - points.x1;
-    const dy = points.y2 - points.y1;
-    const len = Math.hypot(dx, dy);
-    if (len === 0) return points;
-    const distance = (index - (total - 1) / 2) * NETWORK_TRACK_GAP;
-    const ox = (-dy / len) * distance;
-    const oy = (dx / len) * distance;
-    return {
-      x1: points.x1 + ox,
-      y1: points.y1 + oy,
-      x2: points.x2 + ox,
-      y2: points.y2 + oy
-    };
-  };
-
-  const toggleNetwork = (name: string) => {
-    setHiddenNetworks((current) => {
-      const next = new Set(current);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
   };
 
   const onWheel = (e: ReactWheelEvent<SVGSVGElement>) => {
@@ -311,29 +277,9 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
               ? (rel.from === activeId || downstream.has(rel.from) || upstream.has(rel.from)) &&
                 (rel.to === activeId || downstream.has(rel.to) || upstream.has(rel.to))
               : false;
-            const toNetworks = new Set(toService.networks);
-            const edgeNetworks = fromService.networks.filter((network) => toNetworks.has(network) && enabledNetworkNames.has(network));
             return (
               <g key={`${rel.id}-${relationshipIndex}`} className="edge-group">
-                <title>
-                  {identityText(fromService.name, UNAVAILABLE_SERVICE)} depends on {identityText(toService.name, UNAVAILABLE_SERVICE)}
-                  {edgeNetworks.length > 0 ? ` via ${edgeNetworks.map((n) => (n === "" ? UNAVAILABLE_NETWORK : n)).join(", ")}` : ""}
-                </title>
-                {edgeNetworks.map((network, index) => {
-                  const networkDef = networkByName.get(network);
-                  const track = offsetPoints(points, index, edgeNetworks.length);
-                  return (
-                    <line
-                      key={`${rel.id}-${relationshipIndex}:${network}-${index}`}
-                      className={`network-edge${activeId && !inImpact ? " is-dim" : ""}`}
-                      style={{ "--network-color": networkDef?.color ?? NETWORK_COLORS[0] } as CSSProperties}
-                      x1={track.x1}
-                      y1={track.y1}
-                      x2={track.x2}
-                      y2={track.y2}
-                    />
-                  );
-                })}
+                <title>{`${identityText(fromService.name, UNAVAILABLE_SERVICE)} declares start order after ${identityText(toService.name, UNAVAILABLE_SERVICE)}`}</title>
                 <line
                   className={`edge edge-${rel.kind} eh-${rel.health}${lit ? " is-lit" : ""}${activeId && !inImpact ? " is-dim" : ""}`}
                   x1={points.x1}
@@ -392,6 +338,12 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
         </g>
       </svg>
 
+      {services.length === 0 && (
+        <div className="map-empty-state" role="status" aria-live="polite">
+          {emptyMessage}
+        </div>
+      )}
+
       {interactive && (
         <div className="map-controls">
           <button type="button" onClick={() => zoom(1)} aria-label="Zoom in">
@@ -406,21 +358,6 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
         </div>
       )}
 
-      {networks.length > 0 && (
-        <div className="map-network-panel" aria-label="Network overlays">
-          <div className="map-network-title">Networks</div>
-          <div className="map-network-list">
-            {networks.map((network, index) => (
-              <label key={`${network.name}-${index}`} className="map-network-option" style={{ "--network-color": network.color } as CSSProperties}>
-                <input type="checkbox" checked={!hiddenNetworks.has(network.name)} onChange={() => toggleNetwork(network.name)} />
-                <span className="network-swatch" aria-hidden="true" />
-                <span>{identityText(network.name, UNAVAILABLE_NETWORK)}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-      )}
-
       <div className="map-legend">
         {(["healthy", "warning", "degraded", "offline"] as const).map((s) => (
           <span key={s}>
@@ -430,16 +367,16 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
       </div>
 
       {activeId && impact && (
-        <div className="map-impact">
+        <div className="map-impact" aria-live="polite" aria-atomic="true">
           <span className="map-impact-kind">
             <Icon name={KIND_ICON[activeService?.kind ?? "service"]} size={13} />
             {identityText(activeService?.name, UNAVAILABLE_SERVICE)}
           </span>
           <span>
-            <strong>{impact.downstream.length}</strong> affected if it fails
+            <strong>{impact.downstream.length}</strong> downstream declarations
           </span>
           <span>
-            <strong>{impact.upstream.length}</strong> dependencies
+            <strong>{impact.upstream.length}</strong> upstream declarations
           </span>
         </div>
       )}

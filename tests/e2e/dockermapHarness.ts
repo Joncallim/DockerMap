@@ -648,10 +648,16 @@ function liveComposeYaml(projectName: string) {
 
 networks:
   front:
+    ipam:
+      config:
+        - subnet: 10.254.240.0/24
     labels:
       com.dockermap.fixture: "${projectName}"
   back:
     internal: true
+    ipam:
+      config:
+        - subnet: 10.254.241.0/24
     labels:
       com.dockermap.fixture: "${projectName}"
 
