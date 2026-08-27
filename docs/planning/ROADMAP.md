@@ -24,17 +24,22 @@ Working:
 - Docker inventory for containers, images, networks, volumes, mounts, and logs.
 - Compose scan, graph, and dry-run edit-plan endpoints.
 - Runtime map for Docker plus optional host signals such as systemd, cron, PM2,
-  tmux, listening sockets, Tailscale, Headscale, reverse-proxy markers, and
-  local DNS markers.
-- Shared Rust and TypeScript contract fixtures.
-- API security tests, Rust tests, TypeScript checks, and Playwright smoke tests.
+  tmux, listening sockets, Tailscale, Headscale, reverse-proxy markers, local
+  DNS markers, Python applications, and native processes.
+- Shared Rust and TypeScript contract fixtures, including an OpenAPI route
+  document (`/api/openapi.json`).
+- API security tests, Rust tests, TypeScript checks, Playwright smoke tests,
+  and a live-Docker GUI fixture suite.
+- Evidence-backed live-state vocabulary across the UI (#61 epic): every claim
+  carries an observed/derived/inferred/demo/unavailable kind, with exact
+  mode/provenance authority gating.
 - Live-Docker test evidence has been recorded for the current release track.
 
 Not finished:
 
 - Richer metadata for systemd and npm/package providers.
-- ~~Python and native-process provider implementation~~ (done: #32/#38/#39 + #33).
 - Safe write mode.
+- The filed roadmap epics below.
 
 ## Guiding Rules
 
@@ -48,34 +53,28 @@ Not finished:
 - Keep the daemon private by default.
 - Make every insight available through API contracts, not only the UI.
 
-## Now: Private Alpha Hardening
+## Now: Roadmap Epics #61-#70
 
-This is the active priority.
+The active roadmap is filed as GitHub issues #61-#70 (each `epic`+`enhancement`),
+sequenced in each epic body. They are the source of truth for what comes next;
+this document stays a summary, not a second roadmap.
 
-1. Add provider redaction fixtures.
-
-   Cover systemd, tmux, npm/package metadata, native-process inspection,
-   reverse-proxy config, DNS config, and any external API/provider output that
-   could contain secrets.
-
-2. Document package and advisory network behavior.
-
-   Any registry, advisory, or external-network lookup must be disabled by
-   default, opt-in, or explicitly documented in release notes and deployment
-   docs.
-
-3. Capture release-host evidence.
-
-   Keep the release checklist current with `npm run check`, `npm run
-   build:deploy`, `npm run test:e2e`, `npm run test:live-docker`,
-   reverse-proxy smoke checks, API token behavior, daemon-port inaccessibility,
-   and exact commit SHA.
-
-4. Keep read-only API security tight.
-
-   Continue covering bearer auth, CORS, daemon URL restrictions, query limits,
-   read-only verb enforcement, fallback behavior, and hidden daemon error
-   details.
+- **#61 Evidence-backed live state** — decomposed into child issues #71-#77
+  (`epic:live-truth`). #71-#76 are MERGED (evidence vocabulary, update-claim
+  removal, demo/mock/sample authority, daemon-fallback provenance, Copilot
+  truthfulness, live-truth sweep); #77 reconciles this documentation.
+- **#62 Docker authority isolation** — next major slice; can run alongside #61
+  follow-ups; both must close before #63.
+- **#63 v0.1 alpha certification** — release gate; #15 (live-Docker evidence)
+  and #16 (reverse-proxy/Authentik smoke) are children, not duplicates.
+- **#64 Backend decomposition** — split the daemon's monolithic `main.rs`.
+- **#65 Canonical contract/schema authority** — generate contracts from Rust
+  or add a CI drift check.
+- **#66 Provider scheduler/freshness**.
+- **#67 Hearth Design System**.
+- **#68 Evidence provenance**.
+- **#69 Deterministic Findings**.
+- **#70 Change history/telemetry**.
 
 ## Next: Read-Only Product Completion
 
@@ -102,8 +101,9 @@ These items improve the product without changing host state.
   evidence where safe.
 - Enrich npm provider output with scripts, framework hints, dependency nodes,
   and bounded package metadata.
-- Implement Python and native-process providers from the documented read-only plan in
+- [x] Implement Python and native-process providers from the documented read-only plan in
   [`PYTHON_AND_PROCESS_PROVIDERS.md`](PYTHON_AND_PROCESS_PROVIDERS.md).
+  Shipped via #32/#38/#39 + #33.
 - Add parser-level fixtures for systemd, cron, PM2, tmux, Tailscale, Headscale,
   reverse proxy, DNS, and listener output.
 
@@ -113,10 +113,12 @@ These items improve the product without changing host state.
   Shipped with commit `16c8b80` (list sorting/filters on Images, Runtime, and Storage).
 - [x] Make graph nodes and chips route to the relevant detail pages.
   Shipped with commit `16c8b80` (runtime node detail routing).
-- Improve container, network, volume, and image detail pages.
+- [x] Improve container, network, volume, and image detail pages.
+  Shipped via #34 (detail pages, merged `b62436b`).
 - [x] Add log level filtering, message search, live-tail controls, and pagination.
   Shipped with commit `8321b0c` (Logs screen level filter, search, live tail, load-older).
-- Improve responsive and accessibility coverage for the primary pages.
+- [x] Improve responsive and accessibility coverage for the primary pages.
+  Shipped via #35 (responsive/a11y, merged `e4a4f63`).
 
 ### API And Integrations
 

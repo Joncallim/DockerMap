@@ -44,8 +44,9 @@ npm run test:rust:daemon
 ```
 
 `npm test` is an alias for `npm run test:js`. The contracts package has an active
-compatibility test; the web package is wired for tests and passes when no web tests
-exist yet. The API package has black-box security tests that start the real Express entry point
+compatibility test, and the web package runs a growing vitest suite covering the
+model layer, evidence vocabulary, state normalization, and screen wiring. The API
+package has black-box security tests that start the real Express entry point
 with controlled environment variables.
 
 If your shell finds an older system Cargo first, prefix Rust-backed npm scripts with:
@@ -65,7 +66,9 @@ npm run test:api
 
 The API tests cover:
 
-- `/api/health` staying public while protected routes require a bearer token.
+- `/api/health` requiring a bearer token whenever `DOCKERMAP_API_TOKEN` is set,
+  like every other protected route (the current route manifest marks it
+  authenticated).
 - Rejection of missing and incorrect bearer tokens.
 - Explicit-origin CORS behavior, public preflight handling, and rejected wildcard startup config.
 - Loopback-only daemon URL enforcement unless remote access is explicitly enabled.
@@ -117,17 +120,16 @@ The daemon unit suite includes fake-only provider redaction fixtures for systemd
 npm/package metadata, native-process-shaped command output, reverse-proxy markers, DNS
 markers, provider diagnostics, and provider edge metadata. These fixtures deliberately use
 `DOCKERMAP_TEST_FAKE_*` sentinels and assert the returned runtime/provider JSON omits those
-raw values. The native-process check is an output-boundary regression test until a real
-bounded native-process collector is implemented.
+raw values.
 
-Before Python or native-process collectors are enabled, add fixture-first tests for fake
-`/proc` trees, optional fixed `ps` output, Python manifests, skipped directories, cap
-diagnostics, and redaction sentinels. These tests should prove that env values, raw secret
-arguments, private package-index URLs, cwd paths outside the configured project root, and
-manifest credentials are omitted or redacted. They should also cover process disappearance,
-unreadable proc fields, too many processes, too many Python projects, too many dependencies,
-and oversized manifests without requiring Docker, systemd, tmux, real Python services, or
-external network access.
+Python and native-process collectors are implemented (shipped via #32/#38/#39 + #33) with
+fixture-first tests for fake `/proc` trees, optional fixed `ps` output, Python manifests,
+skipped directories, cap diagnostics, and redaction sentinels. These tests prove that env
+values, raw secret arguments, private package-index URLs, cwd paths outside the configured
+project root, and manifest credentials are omitted or redacted, and cover process
+disappearance, unreadable proc fields, too many processes, too many Python projects, too
+many dependencies, and oversized manifests without requiring Docker, systemd, tmux, real
+Python services, or external network access.
 
 Run the provider redaction fixture checks with:
 
@@ -245,8 +247,11 @@ live `/api/events/stream` snapshot event.
 - Broaden browser end-to-end tests beyond the current smoke flows.
 - Run and record live-Docker integration evidence on the release host.
 - Add reverse-proxy integration tests for bearer-token injection and SSE streaming.
-- Add OpenAPI schema checks once the versioned API spec exists.
-- Add fixture-driven provider redaction tests for any future Python/native-process,
-  reverse-proxy config-content, DNS config-content, package advisory, registry, or
+- [x] Add OpenAPI schema checks once the versioned API spec exists.
+  `/api/openapi.json` (OpenAPI 3.0.3) ships on the read-only API surface (commit
+  `5fcadd3`); schema-validation of the document itself is covered, and the
+  remaining gap is drift-checking the manifest against it.
+- Add fixture-driven provider redaction tests for any future reverse-proxy
+  config-content, DNS config-content, package advisory, registry, or
   external-API collectors.
 - Add write-mode tests only after backup, confirmation, and rollback behavior exists.
