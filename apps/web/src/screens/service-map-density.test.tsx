@@ -54,6 +54,17 @@ describe("high-density Service Map", () => {
     expect(html).toContain("No recorded declaration</span><strong class=\"metric-value\">0");
   });
 
+  it("labels a raw-only service row as having a recorded start order", () => {
+    const source = snapshot([{ ...containers[0], id: "ghost-client", name: "ghost-client", dependsOn: ["ghost"] }]);
+    const html = renderMap(source);
+    // The directory row meta must agree with the coverage metric: a raw
+    // unresolved declaration is still a recorded declaration (P2 follow-up
+    // from the #84 gate — the row previously claimed "no recorded start
+    // order" while the metric and inspector showed the raw declaration).
+    expect(html).toContain("ghost-client</span><span class=\"runtime-node-meta\">database · recorded start order");
+    expect(html).not.toContain("ghost-client</span><span class=\"runtime-node-meta\">database · no recorded start order");
+  });
+
   it("renders identically after an equivalent container reorder", () => {
     expect(renderMap(snapshot([...containers].reverse()))).toBe(renderMap(snapshot()));
   });
