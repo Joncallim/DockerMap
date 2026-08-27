@@ -1,0 +1,171 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
+import { describe, expect, it } from "vitest";
+import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
+import { AppContext, type AppContextValue } from "../context";
+import Copilot from "../screens/Copilot";
+import { answer } from "./copilot";
+import { getDemoResponse } from "./demoData";
+import { buildModel } from "./model";
+
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
+
+function snapshot(containers: DockerSnapshot["containers"]): DockerSnapshot {
+  return { containers, images: [], networks: [], volumes: [], lastUpdated: 0 };
+}
+
+const healthy = (id: string, extra: Partial<DockerSnapshot["containers"][number]> = {}): DockerSnapshot["containers"][number] => ({
+  id, name: id, image: "nginx:1", status: "running", role: "api", networks: [], ports: [], mounts: [], dependsOn: [], ...extra
+});
+
+describe("A. evidence authority must be exact-matched", () => {
+  it("null/null authority produces no substantive answer", () => {
+    const model = buildModel(snapshot([healthy("api")]), runtime);
+    const response = answer(model, "show unhealthy services", null, null);
+    expect(response.evidence).toBe("unavailable");
+    expect(response.body.join(" ")).not.toMatch(/healthy|attention/i);
+  });
+
+  it("mismatched live/demo authority is not labelled sample data", () => {
+    const model = buildModel(snapshot([healthy("api")]), runtime);
+    const response = answer(model, "show unhealthy services", "live", "demo");
+    expect(response.evidence).toBe("unavailable");
+  });
+
+  it("mismatched demo/live authority is not labelled sample data", () => {
+    const model = buildModel(snapshot([healthy("api")]), runtime);
+    const response = answer(model, "show unhealthy services", "demo", "live");
+    expect(response.evidence).toBe("unavailable");
+  });
+
+  it("mock/live mismatched authority is not labelled sample data", () => {
+    const model = buildModel(snapshot([healthy("api")]), runtime);
+    const response = answer(model, "show unhealthy services", "mock", "live");
+    expect(response.evidence).toBe("unavailable");
+  });
+
+  it("exact live/live may answer with a real kind", () => {
+    const model = buildModel(snapshot([healthy("api")]), runtime);
+    expect(answer(model, "show unhealthy services", "live", "live").evidence).not.toBe("unavailable");
+  });
+
+  it("exact demo/demo answers as sample data", () => {
+    const demo = buildModel(getDemoResponse<DockerSnapshot>("/api/snapshot"), runtime);
+    expect(answer(demo, "show unhealthy services", "demo", "demo").evidence).toBe("demo");
+  });
+});
+
+describe("D. 'Everything is healthy' requires established health", () => {
+  const full = (response: { headline: string; body: string[] }) => `${response.headline} ${response.body.join(" ")}`;
+
+  it("does not claim healthy when a service is unknown", () => {
+    const model = buildModel(snapshot([healthy("api", { status: "unknown" })]), runtime);
+    expect(full(answer(model, "show unhealthy services", "live", "live"))).not.toContain("Everything is healthy");
+  });
+
+  it("does not claim healthy when a service is updating", () => {
+    const model = buildModel(snapshot([healthy("api", { status: "restarting" })]), runtime);
+    expect(full(answer(model, "show unhealthy services", "live", "live"))).not.toContain("Everything is healthy");
+  });
+
+  it("claims healthy only when every service is healthy", () => {
+    const model = buildModel(snapshot([healthy("api"), healthy("worker")]), runtime);
+    expect(full(answer(model, "show unhealthy services", "live", "live"))).toContain("Everything is healthy");
+  });
+
+  it("mixed healthy + unknown never claims healthy", () => {
+    const model = buildModel(snapshot([healthy("api"), healthy("worker", { status: "unknown" })]), runtime);
+    expect(full(answer(model, "show unhealthy services", "live", "live"))).not.toContain("Everything is healthy");
+  });
+
+  it("zero services does not claim healthy", () => {
+    const model = buildModel(snapshot([]), runtime);
+    expect(full(answer(model, "show unhealthy services", "live", "live"))).not.toContain("Everything is healthy");
+  });
+});
+
+describe("E. whyOffline must not treat unknown/updating upstreams as unhealthy", () => {
+  it("does not list an unknown upstream as an unhealthy cause", () => {
+    const model = buildModel(snapshot([
+      healthy("web", { status: "Exited (1)", dependsOn: ["db"] }),
+      healthy("db", { status: "unknown" })
+    ]), runtime);
+    const response = answer(model, "why is web offline", "live", "live");
+    expect(response.body.join(" ")).not.toContain("upstream dependency is also unhealthy");
+  });
+
+  it("does not list an updating upstream as an unhealthy cause", () => {
+    const model = buildModel(snapshot([
+      healthy("web", { status: "Exited (1)", dependsOn: ["db"] }),
+      healthy("db", { status: "restarting" })
+    ]), runtime);
+    const response = answer(model, "why is web offline", "live", "live");
+    expect(response.body.join(" ")).not.toContain("upstream dependency is also unhealthy");
+  });
+});
+
+describe("F. port matching must be exact numeric", () => {
+  it("port 80 does not match 8080", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: ["8080/tcp"] })]), runtime);
+    const response = answer(model, "show everything using port 80", "live", "live");
+    expect(response.headline).toBe("No service publishes port 80");
+    expect(response.body.join(" ")).not.toContain("api");
+  });
+
+  it("port 443 does not match 8443", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: ["8443/tcp"] })]), runtime);
+    const response = answer(model, "show everything using port 443", "live", "live");
+    expect(response.headline).toBe("No service publishes port 443");
+  });
+
+  it("exact port match still answers", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: ["8080/tcp"] })]), runtime);
+    const response = answer(model, "show everything using port 8080", "live", "live");
+    expect(response.headline).toBe("Port 8080");
+    expect(response.body.join(" ")).toContain("api");
+  });
+
+  it("uses publication wording, not generic usage", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: [] })]), runtime);
+    const response = answer(model, "show everything using port 9999", "live", "live");
+    expect(response.body.join(" ")).toContain("publishes port 9999");
+  });
+});
+
+describe("G. image identity must be exact", () => {
+  it("preserves a digest reference exactly", () => {
+    const model = buildModel(snapshot([healthy("api", { image: "nginx@sha256:0123456789abcdef" })]), runtime);
+    const response = answer(model, "tell me about api", "live", "live");
+    expect(response.body.join(" ")).toContain("nginx@sha256:0123456789abcdef");
+  });
+
+  it("does not invent a :latest tag for tagless images", () => {
+    const model = buildModel(snapshot([healthy("api", { image: "registry.example/app" })]), runtime);
+    const response = answer(model, "tell me about api", "live", "live");
+    expect(response.body.join(" ")).not.toContain("registry.example/app:latest");
+  });
+});
+
+describe("B. user-facing copy must be source-neutral", () => {
+  it("does not claim 'live map' in demo mode", () => {
+    const demo = buildModel(getDemoResponse<DockerSnapshot>("/api/snapshot"), runtime);
+    const value: AppContextValue = { model: demo, modelProvenance: "demo", loading: false, error: null, health: null, tick: 0, evidenceMode: "demo", openCommand: () => {} };
+    const html = renderToStaticMarkup(<AppContext.Provider value={value}><MemoryRouter><Copilot /></MemoryRouter></AppContext.Provider>);
+    expect(html).not.toContain("Reasons over your live map");
+    expect(html).toContain("Reasons over your service map");
+  });
+});
+
+describe("C. evidence kinds must be accurate", () => {
+  it("an aggregated health conclusion is derived, not observed", () => {
+    const model = buildModel(snapshot([healthy("api")]), runtime);
+    const response = answer(model, "show unhealthy services", "live", "live");
+    expect(response.evidence).toBe("derived");
+  });
+
+  it("a normalized state answer is derived, not observed", () => {
+    const model = buildModel(snapshot([healthy("api", { status: "Exited (1)" })]), runtime);
+    const response = answer(model, "why is api offline", "live", "live");
+    expect(response.evidence).toBe("inferred");
+  });
+});

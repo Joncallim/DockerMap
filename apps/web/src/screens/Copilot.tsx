@@ -41,7 +41,7 @@ export default function Copilot() {
           <div className="eyebrow">Interpreter</div>
           <h1 className="screen-title">Copilot</h1>
         </div>
-        <span className="muted-line">Reasons over your live map — never controls it</span>
+        <span className="muted-line">Reasons over your service map — never controls it</span>
       </header>
 
       <form

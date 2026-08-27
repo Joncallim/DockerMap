@@ -12,7 +12,7 @@ const demoSnapshot = (): DockerSnapshot => getDemoResponse<DockerSnapshot>("/api
 describe("Copilot evidence vocabulary", () => {
   it("labels live answers with the claim's evidence kind", () => {
     const response = answer(buildModel(liveSnapshot, runtime), "show unhealthy services", "live", "live");
-    expect(response.evidence).toBe("observed");
+    expect(response.evidence).toBe("derived");
   });
 
   it("labels sample-model answers as sample data regardless of the claim path", () => {
@@ -21,9 +21,10 @@ describe("Copilot evidence vocabulary", () => {
     expect(answer(demo, "what depends on api", "demo", "demo").evidence).toBe("demo");
   });
 
-  it("fails closed to sample data when provenance is unknown", () => {
+  it("refuses a substantive answer when authority is unresolved", () => {
     const response = answer(buildModel(liveSnapshot, runtime), "show unhealthy services", null, null);
-    expect(response.evidence).toBe("demo");
+    expect(response.evidence).toBe("unavailable");
+    expect(response.headline).toBe("Source not established");
   });
 
   it("never presents mock/demo bytes as observed host state", () => {
