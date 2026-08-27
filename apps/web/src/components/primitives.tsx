@@ -25,9 +25,9 @@ export function StatePill({ state, label }: { state: ServiceState; label?: strin
   );
 }
 
-export function Tag({ children, icon, tone }: { children: ReactNode; icon?: IconName; tone?: "accent" | "warn" | "error" | "muted" }) {
+export function Tag({ children, icon, tone, title }: { children: ReactNode; icon?: IconName; tone?: "accent" | "warn" | "error" | "muted"; title?: string }) {
   return (
-    <span className={`tag${tone ? ` tag-${tone}` : ""}`}>
+    <span className={`tag${tone ? ` tag-${tone}` : ""}`} title={title}>
       {icon && <Icon name={icon} size={12} />}
       {children}
     </span>

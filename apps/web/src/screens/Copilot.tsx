@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useApp } from "../context";
 import { answer, suggestions, type CopilotAnswer } from "../lib/copilot";
+import { evidenceLabel } from "../lib/evidence";
 import Icon from "../components/Icon";
-import { EmptyState, ErrorState, Loading, Panel, StateDot } from "../components/primitives";
+import { EmptyState, ErrorState, Loading, Panel, StateDot, Tag } from "../components/primitives";
 
 export default function Copilot() {
-  const { model, loading, error } = useApp();
+  const { model, loading, error, evidenceMode, modelProvenance } = useApp();
   const [params, setParams] = useSearchParams();
   const initial = params.get("q") ?? "";
   const [query, setQuery] = useState(initial);
@@ -20,8 +21,8 @@ export default function Copilot() {
 
   const result = useMemo<CopilotAnswer | null>(() => {
     if (!model || !submitted.trim()) return null;
-    return answer(model, submitted);
-  }, [model, submitted]);
+    return answer(model, submitted, evidenceMode, modelProvenance);
+  }, [model, submitted, evidenceMode, modelProvenance]);
 
   if (loading && !model) return <Loading label="Reading your topology…" />;
   if (error && !model) return <ErrorState title="Copilot unavailable" body={error} />;
@@ -40,7 +41,7 @@ export default function Copilot() {
           <div className="eyebrow">Interpreter</div>
           <h1 className="screen-title">Copilot</h1>
         </div>
-        <span className="muted-line">Reasons over your live map — never controls it</span>
+        <span className="muted-line">Reasons over your service map — never controls it</span>
       </header>
 
       <form
@@ -90,6 +91,12 @@ export default function Copilot() {
               })}
             </div>
           )}
+          <div className="copilot-evidence">
+            <Tag tone="muted" title={evidenceLabel(result.evidence).description}>
+              {evidenceLabel(result.evidence).label}
+            </Tag>
+            <span className="muted-line">{evidenceLabel(result.evidence).description}</span>
+          </div>
         </Panel>
       )}
     </div>
