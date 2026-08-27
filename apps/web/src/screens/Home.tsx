@@ -61,7 +61,13 @@ export default function Home() {
         <div className="stack">
           <Panel title="Needs attention" icon="alert" hint={`${attention.length} of ${summary.total}`}>
             {attention.length === 0 ? (
-              <EmptyState icon="check" title="Everything is healthy" body="No services require attention right now." />
+              summary.total > 0 && summary.unknown === 0 && summary.updating === 0 ? (
+                <EmptyState icon="check" title="Everything is healthy" body="All observed services are reporting a healthy state." />
+              ) : summary.total === 0 ? (
+                <EmptyState icon="check" title="No services observed" body="No services are present in this snapshot." />
+              ) : (
+                <EmptyState icon="check" title="Nothing currently needs attention" body="No service needs attention right now, but some services are not confirmed healthy." />
+              )
             ) : (
               <ul className="svc-list">
                 {attention.map((service, index) => (
@@ -156,7 +162,7 @@ function ServiceRow({ model, service, evidenceMode, modelProvenance }: { model: 
         <span className="svc-name">{identityText(service.name, UNAVAILABLE_SERVICE)}</span>
       )}
       <StatePill state={service.state} />
-      <span className="svc-meta">{dependents > 0 ? `${dependents} dependent${dependents === 1 ? "" : "s"}` : "no dependents"}</span>
+      <span className="svc-meta">{dependents > 0 ? `${dependents} downstream declaration${dependents === 1 ? "" : "s"}` : "no downstream declarations"}</span>
       <span className="svc-res">
         {resources.kind === "unavailable" ? (
           <span className="svc-res-claim">{`CPU ${resourceLabel.toLowerCase()}`}</span>

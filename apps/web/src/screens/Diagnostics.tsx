@@ -88,7 +88,7 @@ export default function Diagnostics() {
         <EmptyState
           icon="check"
           title="No diagnostics"
-          body="Compose validation and every runtime provider returned cleanly. Re-check after a refresh if you expect findings."
+          body="No diagnostics were recorded in the current report. Re-check after a refresh if you expect findings."
         />
       ) : (
         <Panel title="Findings" icon="alert" hint={`${entries.length}`}>

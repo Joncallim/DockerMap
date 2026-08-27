@@ -1122,9 +1122,6 @@ kbd {
   stroke-dasharray: 3 3;
 }
 
-.eh-failing { stroke: color-mix(in srgb, var(--s-offline) 78%, #fff 8%); }
-.eh-slow { stroke: color-mix(in srgb, var(--s-warning) 76%, #fff 10%); }
-
 .edge.is-lit {
   stroke: var(--accent);
   stroke-width: 2.1;

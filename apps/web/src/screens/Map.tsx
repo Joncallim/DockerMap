@@ -114,7 +114,7 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
           ) : (
             <div className="inspector-body">
               <div className="inspector-head">
-                <span className="inspector-kind"><Icon name={KIND_ICON[selected.kind]} size={15} /> {selected.kind}</span>
+                <span className="inspector-kind"><Icon name={KIND_ICON[selected.kind]} size={15} /> {selected.kind} (inferred)</span>
                 <button type="button" className="icon-btn" onClick={() => { setReturnFocusId(selected.id); setSelectedId(null); }} aria-label={`Clear ${identityText(selected.name, UNAVAILABLE_SERVICE)} service selection`}><Icon name="close" size={15} /></button>
               </div>
               <h2 className="inspector-title">{identityText(selected.name, UNAVAILABLE_SERVICE)}</h2>
@@ -144,7 +144,7 @@ function ServiceDirectory({ model, services, selectedId, onSelect, buttonRefs }:
   return <div className="inspector-section"><h3>Service directory ({services.length})</h3>{services.length === 0 ? <EmptyState icon="search" title="No matching services" body="Clear a filter to see every observed service." /> : <ul className="runtime-node-list service-directory">{services.map((service, index) => {
     const collided = model.serviceIdCollisions.has(service.id) || model.serviceNameCollisions.has(service.name);
     const selectable = !collided && model.byId.has(service.id);
-    const content = <><span className="runtime-node-main"><Icon name={KIND_ICON[service.kind]} size={15} /><span className="runtime-node-copy"><span className={`runtime-node-label${collided ? " collision-identity" : ""}`} title={collided ? COLLISION_HINT : undefined}>{identityText(service.name, UNAVAILABLE_SERVICE)}</span><span className="runtime-node-meta">{service.kind}{service.dependencyOccurrences.length || service.dependents.length ? " · recorded start order" : " · no recorded start order"}</span></span></span><StatePill state={service.state} />{collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}</>;
+    const content = <><span className="runtime-node-main"><Icon name={KIND_ICON[service.kind]} size={15} /><span className="runtime-node-copy"><span className={`runtime-node-label${collided ? " collision-identity" : ""}`} title={collided ? COLLISION_HINT : undefined}>{identityText(service.name, UNAVAILABLE_SERVICE)}</span><span className="runtime-node-meta">{service.kind} · inferred{service.dependencyOccurrences.length || service.dependents.length ? " · recorded start order" : " · no recorded start order"}</span></span></span><StatePill state={service.state} />{collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}</>;
     return <li key={`${service.id}-${index}`}>{selectable ? <button type="button" aria-label={`${identityText(service.name, UNAVAILABLE_SERVICE)}, ${service.state}`} ref={(element) => { if (element) buttonRefs.current.set(service.id, element); else buttonRefs.current.delete(service.id); }} className={`runtime-node-btn${selectedId === service.id ? " is-active" : ""}`} aria-pressed={selectedId === service.id} onClick={() => onSelect(service.id)}>{content}</button> : <div className="runtime-node-btn runtime-node-unresolved" aria-label={`${identityText(service.name, UNAVAILABLE_SERVICE)} is unavailable for selection${collided ? ` (${COLLISION_HINT})` : ""}`}>{content}</div>}</li>;
   })}</ul>}</div>;
 }

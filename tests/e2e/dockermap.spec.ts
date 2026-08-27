@@ -95,7 +95,7 @@ test.describe("DockerMap GUI", () => {
     await expect(page.getByRole("link", { name: "Open volume detail" })).toHaveAttribute("href", "/volumes/postgres_data");
 
     await openSpace(page, "Service Map", "/map");
-    const postgresNode = page.getByRole("group", { name: "Service dependency map" }).getByLabel("postgres, healthy");
+    const postgresNode = page.getByRole("group", { name: "Compose start-order map" }).getByLabel("postgres, healthy");
     await postgresNode.click();
     await page.getByRole("link", { name: "postgres:16-alpine" }).click();
     await expect(page.getByRole("heading", { name: "postgres:16-alpine" })).toBeVisible();

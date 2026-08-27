@@ -530,14 +530,11 @@ function buildRelationships(
   const relationships: Relationship[] = [];
   const seen = new Set<string>();
 
-  const edgeHealth = (targetId: string): RelationshipHealth => {
-    const target = byId.get(targetId);
-    if (!target) return "unknown";
-    if (target.state === "offline") return "failing";
-    if (target.state === "warning" || target.state === "degraded") return "slow";
-    if (target.state === "unknown") return "unknown";
-    return "healthy";
-  };
+  // DockerMap has Compose start-order evidence for these edges, NOT measured
+  // relationship health or latency. Relationship-level health is therefore
+  // always "unknown" — the target service's own state is shown on its node,
+  // and the edge must never imply the RELATIONSHIP is failing/slow based on
+  // the target's state (#76).
 
   // Primary: explicit service-to-service dependencies. BOTH endpoints must
   // resolve uniquely through the collision-safe byId index (which excludes
@@ -555,7 +552,7 @@ function buildRelationships(
         from: service.id,
         to: dep,
         kind: "depends_on",
-        health: edgeHealth(dep)
+        health: "unknown"
       });
     }
   }
@@ -706,34 +703,25 @@ function runtimeStateForNode(node: RuntimeMapNode): ServiceState {
     .map((value) => value?.toLowerCase())
     .filter((value): value is string => Boolean(value));
 
+  // Word-boundary matching only: a negative status ("unhealthy",
+  // "unavailable", "inactive", "disconnected", "not ready") must never
+  // become healthy because it CONTAINS a positive substring ("healthy",
+  // "available", "active", "connected", "ready"). Negative groups are
+  // checked before positive ones so a negated word can never fall through
+  // to the healthy bucket (#76).
+  const negativeGroups: Array<[RegExp, ServiceState]> = [
+    [/\b(degraded|failed|error)\b/, "degraded"],
+    [/\b(offline|stopped|dead|down|exited|missing|unhealthy|unavailable|inactive|disconnected|not)\b/, "offline"],
+    [/\b(warning|paused)\b/, "warning"],
+    [/\b(starting|restarting|pending|loading)\b/, "updating"]
+  ];
+  const positive = /\b(healthy|running|active|online|available|attached|ready|connected)\b/;
+
   for (const value of candidates) {
-    if (value.includes("degraded") || value.includes("failed") || value.includes("error")) return "degraded";
-    if (
-      value.includes("offline") ||
-      value.includes("stopped") ||
-      value.includes("dead") ||
-      value.includes("down") ||
-      value.includes("exited") ||
-      value.includes("missing")
-    ) {
-      return "offline";
+    for (const [pattern, state] of negativeGroups) {
+      if (pattern.test(value)) return state;
     }
-    if (value.includes("warning") || value.includes("paused")) return "warning";
-    if (value.includes("starting") || value.includes("restarting") || value.includes("pending") || value.includes("loading")) {
-      return "updating";
-    }
-    if (
-      value.includes("healthy") ||
-      value.includes("running") ||
-      value.includes("active") ||
-      value.includes("online") ||
-      value.includes("available") ||
-      value.includes("attached") ||
-      value.includes("ready") ||
-      value.includes("connected")
-    ) {
-      return "healthy";
-    }
+    if (positive.test(value)) return "healthy";
   }
 
   return "unknown";
