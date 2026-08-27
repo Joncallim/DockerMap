@@ -408,7 +408,7 @@ test.describe("responsive and accessibility matrix", () => {
         // button share the "postgres, healthy" accessible name, so target
         // the graph node explicitly (it is in the recorded topology).
         await openRoute(page, "/map", "light");
-        await page.getByRole("group", { name: "Service dependency map" }).getByLabel("postgres, healthy").click();
+        await page.getByRole("group", { name: "Compose start-order map" }).getByLabel("postgres, healthy").click();
         await assertUsableAtWidth(page, "map selected state", width);
         await page.getByRole("button", { name: /Clear postgres service selection/ }).click();
 

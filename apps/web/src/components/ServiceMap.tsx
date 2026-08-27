@@ -250,7 +250,7 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
         className={`map-svg${interactive ? " is-interactive" : ""}`}
         viewBox={`0 0 ${VIEW} ${VIEW}`}
         role={interactive ? "group" : "img"}
-        aria-label="Service dependency map"
+        aria-label="Compose start-order map"
         aria-describedby={descriptionId}
         onWheel={onWheel}
         onPointerDown={onPointerDown}

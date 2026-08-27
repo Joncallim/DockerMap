@@ -135,7 +135,7 @@ describe("buildModel depends_on resolution", () => {
 });
 
 describe("buildRelationships (via buildModel)", () => {
-  it("emits depends_on edges with health derived from the target state", () => {
+  it("emits depends_on edges without inventing relationship-level health", () => {
     const model = buildModel(
       snapshot([
         container({ id: "c_app", name: "app", dependsOn: ["c_db"], status: "running" }),
@@ -144,7 +144,11 @@ describe("buildRelationships (via buildModel)", () => {
       emptyRuntime
     );
     expect(model.relationships).toHaveLength(1);
-    expect(model.relationships[0]).toMatchObject({ from: "c_app", to: "c_db", kind: "depends_on", health: "failing" });
+    // DockerMap has Compose start-order evidence here, not measured
+    // relationship health or latency. The edge must not claim the
+    // relationship is failing/slow just because the TARGET service is
+    // offline — the target's own state is shown on its node (#76).
+    expect(model.relationships[0]).toMatchObject({ from: "c_app", to: "c_db", kind: "depends_on", health: "unknown" });
   });
 
   it("keeps shared volume records as storage context, not directional service relationships", () => {

@@ -18,7 +18,10 @@ export default function Compose() {
   const services = data?.services ?? [];
   const correlations = data?.correlations ?? [];
   const diagnostics = data?.diagnostics ?? [];
-  const unavailable = services.length === 0 && correlations.length === 0;
+  // A real scan is evidenced by scanned files; an empty service/correlation
+  // result from a real scan is NOT "no project scanned" (#76).
+  const noSourceScanned = !data || data.files.length === 0;
+  const emptyScan = data && data.files.length > 0 && services.length === 0 && correlations.length === 0;
 
   return (
     <div className="screen">
@@ -46,11 +49,17 @@ export default function Compose() {
         </Panel>
       )}
 
-      {unavailable ? (
+      {noSourceScanned ? (
         <EmptyState
           icon="compose"
           title="No Compose project scanned"
           body="Compose scanning needs the Rust daemon and a Compose file. Connect a Docker host with a project to see declared-vs-running drift."
+        />
+      ) : emptyScan ? (
+        <EmptyState
+          icon="compose"
+          title="No Compose services found"
+          body="The scanned Compose files define no services or correlations to compare against the running host."
         />
       ) : (
         <div className="grid-2">
@@ -61,7 +70,7 @@ export default function Compose() {
                   <Icon name="service" size={15} />
                   <span className="svc-name">{identityText(service.name, UNAVAILABLE_COMPOSE_SERVICE)}</span>
                   {service.image !== null && <Tag tone="muted">{identityText(service.image, UNAVAILABLE_COMPOSE_SOURCE)}</Tag>}
-                  {service.dependsOn.length > 0 && <span className="svc-meta">depends on {service.dependsOn.map((dependency) => identityText(dependency, UNAVAILABLE_COMPOSE_SERVICE)).join(", ")}</span>}
+                  {service.dependsOn.length > 0 && <span className="svc-meta">declares start order after {service.dependsOn.map((dependency) => identityText(dependency, UNAVAILABLE_COMPOSE_SERVICE)).join(", ")}</span>}
                 </li>
               ))}
             </ul>

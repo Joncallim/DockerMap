@@ -61,7 +61,7 @@ describe("high-density Service Map", () => {
     // unresolved declaration is still a recorded declaration (P2 follow-up
     // from the #84 gate — the row previously claimed "no recorded start
     // order" while the metric and inspector showed the raw declaration).
-    expect(html).toContain("ghost-client</span><span class=\"runtime-node-meta\">database · recorded start order");
+    expect(html).toContain("ghost-client</span><span class=\"runtime-node-meta\">database · inferred · recorded start order");
     expect(html).not.toContain("ghost-client</span><span class=\"runtime-node-meta\">database · no recorded start order");
   });
 

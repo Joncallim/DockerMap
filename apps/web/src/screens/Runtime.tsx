@@ -212,7 +212,7 @@ export default function RuntimeScreen() {
 
         <Panel title="Provider diagnostics" icon="alert" hint={runtime.diagnostics.length ? "Soft failures stay visible" : "No provider warnings"}>
           {runtime.diagnostics.length === 0 ? (
-            <EmptyState icon="check" title="No diagnostics" body="Every enabled provider returned cleanly in the current snapshot." />
+            <EmptyState icon="check" title="No diagnostics" body="No diagnostics were recorded in the current snapshot." />
           ) : (
             <ul className="diag-list">
               {runtime.diagnostics.map((diagnostic, index) => (
@@ -336,7 +336,7 @@ export default function RuntimeScreen() {
                   <KeyValue label="Version" value={identityText(selected.package.version, UNAVAILABLE_PACKAGE_VERSION, "—")} mono />
                   <KeyValue
                     label="Advisories"
-                    value={selected.package.update?.advisories.length ? selected.package.update.advisories.length : "none"}
+                    value={selected.package.update === null || selected.package.update === undefined ? "not collected" : selected.package.update.advisories.length}
                   />
                 </div>
               )}

@@ -162,13 +162,22 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
   }, []);
 
   const summary = useMemo(() => (model ? summarize(model) : null), [model]);
+  // System health is only "healthy" when health is actually established —
+  // every service healthy and at least one observed. Unknown/updating
+  // services and an empty model are NOT healthy evidence (#76).
   const overall = !summary
     ? "unknown"
     : summary.offline > 0
       ? "offline"
       : summary.attention > 0
         ? "warning"
-        : "healthy";
+        : summary.unknown > 0
+          ? "unknown"
+          : summary.updating > 0
+            ? "updating"
+            : summary.total > 0
+              ? "healthy"
+              : "unknown";
 
   // In demo mode no connection can exist (utils/api.ts:30 short-circuits before
   // any fetch), so the connection dot is neutral — never a pulsing green "healthy".

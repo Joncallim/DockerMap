@@ -4,14 +4,14 @@ import { useApp } from "../context";
 import { fetchJson } from "../utils/api";
 import { formatRelative } from "../lib/format";
 import { identityText, UNAVAILABLE_CONTAINER } from "../lib/identity";
-import { EmptyState, ErrorState, Loading, Panel } from "../components/primitives";
+import { EmptyState, ErrorState, Loading, Panel, Tag } from "../components/primitives";
 
 type LevelFilter = "all" | "info" | "warn" | "error";
 
 const PAGE_SIZE = 100;
 
 export default function Logs() {
-  const { model } = useApp();
+  const { model, evidenceMode, modelProvenance } = useApp();
   const [service, setService] = useState("");
   const [level, setLevel] = useState<LevelFilter>("all");
   const [search, setSearch] = useState("");
@@ -21,6 +21,12 @@ export default function Logs() {
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Log bytes are sample data when the authority is exactly (demo,demo) or
+  // (mock,mock) — AND in demo mode generally, because fetchJson short-circuits
+  // before any fetch there, so demo-mode log bytes are always fabricated
+  // regardless of the provenance field's transient state. Never tag real
+  // (live) streams (#76).
+  const sampleLogs = evidenceMode === "demo" || (evidenceMode === "mock" && modelProvenance === "mock");
 
   const path = service ? `/api/logs?service=${encodeURIComponent(service)}` : "/api/logs";
 
@@ -219,6 +225,7 @@ export default function Logs() {
           <span>Live tail</span>
         </label>
         <span className="muted-line">{visible.length} shown</span>
+        {sampleLogs && <Tag tone="warn" title="These log lines are fabricated sample data, not real host activity.">Sample data — not from a host</Tag>}
       </div>
 
       <Panel title="Recent output" icon="logs" hint={service || "all services"}>
