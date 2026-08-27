@@ -1906,6 +1906,16 @@ kbd {
   border-top: 1px solid var(--border);
 }
 
+.copilot-evidence {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
 .ref-chip {
   display: inline-flex;
   align-items: center;
