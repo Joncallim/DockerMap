@@ -100,7 +100,7 @@ or proxy configuration committed to source control.
 | `DOCKERMAP_DAEMON_PORT` | Rust daemon | `4100` | Unsigned 16-bit integer (`0`–`65535` accepted by the current parser); use `1`–`65535` for a usable listener. |
 | `DOCKERMAP_PROJECT_ROOT` | Rust daemon | current working directory | Existing canonicalizable directory used as the bounded Compose/project root. |
 | `DOCKERMAP_DOCKER_LABEL_FILTER` | Rust daemon | unset | Empty or one Docker label expression (`key` or `key=value`), at most 256 characters, no NUL or empty key. |
-| `DOCKERMAP_PID_NAMESPACE` | Rust daemon | `auto` | `auto`, `host`, or `restricted`; invalid values fall back to `auto`. Use `restricted` inside the image/container PID namespace. |
+| `DOCKERMAP_PID_NAMESPACE` | Rust daemon | `auto` | `auto`, `host`, or `restricted`; `auto` and invalid values fail closed to restricted host-provider visibility. `host` is an explicit, trusted full-host deployment override. |
 | `DOCKERMAP_FORCE_MOCK` | Rust daemon | `false` | **Test/internal only.** Literal `true` forces mock inventory even if Docker is reachable; never use as a deployment fallback. |
 | `DOCKERMAP_ALLOW_REMOTE_DAEMON` | Node API / Rust daemon | `false` | Literal `true` permits a remote daemon URL/non-loopback daemon bind; use only with a non-empty daemon/API token. |
 | `VITE_API_BASE_URL` | web build time | `http://127.0.0.1:4000` | Empty string for same-origin `/api` paths (production image), or one public API origin. It is browser-visible: no secrets. |
