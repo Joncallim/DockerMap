@@ -1138,6 +1138,25 @@ test("daemon failures hide details by default and expose details only when expli
   assert.doesNotMatch(JSON.stringify(exposedBody), new RegExp(String(closedPort)));
 });
 
+test("daemon transport aborts a stalled read after the bounded timeout", async () => {
+  const daemon = await startStubDaemon((_req, res) => {
+    // Deliberately outlast the client's fixed four-second transport budget.
+    setTimeout(() => sendJson(res, 200, { status: "ok" }), 6_000);
+  });
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  const started = Date.now();
+  const response = await request(api, "/api/snapshot", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  const elapsed = Date.now() - started;
+  assert.equal(response.status, 502);
+  assert.ok(elapsed >= 3_500 && elapsed < 5_500, `expected bounded timeout, got ${elapsed}ms`);
+});
+
 test("runtime map daemon failures keep error details hidden unless explicitly exposed", async () => {
   const closedPort = await freePort();
   const hidden = await startApi({
@@ -1182,7 +1201,7 @@ test("daemon HTTP errors stay redacted on JSON routes and event streams unless e
 
     if (req.url === "/daemon/runtime/map") {
       res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("tmux pane SECRET=alpha-secret");
+      res.end("tmux pane password correct-horse-battery-staple");
       return;
     }
 
@@ -1224,8 +1243,24 @@ test("daemon HTTP errors stay redacted on JSON routes and event streams unless e
   });
   assert.equal(exposedJson.status, 500);
   const exposedBody = await exposedJson.json();
-  assert.equal(exposedBody.details, "[redacted]");
-  assert.doesNotMatch(exposedBody.details, /alpha-secret/);
+  assert.equal(exposedBody.details, "Daemon HTTP error details suppressed");
+  assert.doesNotMatch(exposedBody.details, /correct-horse-battery-staple/);
+});
+
+test("mock fallback never masks a daemon authentication failure", async () => {
+  const daemon = await startStubDaemon((_req, res) => {
+    sendJson(res, 401, { code: "unauthorized", message: "dedicated daemon token rejected" });
+  });
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`
+  });
+
+  const response = await request(api, "/api/snapshot");
+  assert.equal(response.status, 401);
+  const body = await response.json();
+  assert.equal(body.code, "daemon_401");
+  assert.equal(body.source, undefined);
 });
 
 test("SSE stream survives a client disconnect mid-emit without crashing the API", async () => {
