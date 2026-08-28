@@ -23,7 +23,8 @@ import type {
   StatusResponse,
   VolumeRecord
 } from "@dockermap/contracts";
-import { publishApiPayload, publishDisplayText, publishLogsResponse } from "./publication.js";
+import { publishApiPayload, publishLogsResponse } from "./publication.js";
+import { createDaemonClient, HttpError } from "./daemonClient.js";
 import {
   readAllowedOrigins,
   readApiToken,
@@ -322,60 +323,6 @@ registerRoute("api-version", (_req, res) => {
   res.json(VERSION_DESCRIPTOR);
 });
 
-class HttpError extends Error {
-  constructor(
-    readonly status: number,
-    readonly body: ApiError,
-  ) {
-    super(body.message);
-  }
-}
-
-async function fetchDaemon<T>(path: string, init?: RequestInit): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 4_000);
-
-  try {
-    const headers = new Headers(init?.headers);
-    if (daemonToken) {
-      headers.set("authorization", `Bearer ${daemonToken}`);
-    }
-    const response = await fetch(`${daemonBaseUrl}${path}`, {
-      ...init,
-      headers,
-      signal: controller.signal
-    });
-
-    if (!response.ok) {
-      const details = exposeErrorDetails ? (await response.text()).slice(0, 2_000) : undefined;
-      throw new HttpError(response.status, {
-        code: `daemon_${response.status}`,
-        message: `Daemon request failed for ${path}`,
-        ...(details ? { details } : {})
-      });
-    }
-
-    return publishApiPayload((await response.json()) as T);
-  } catch (error) {
-    if (allowMockFallback) {
-      return publishApiPayload(getMockResponse<T>(path));
-    }
-
-    if (error instanceof HttpError) {
-      throw error;
-    }
-
-    console.error(`Unable to reach DockerMap daemon at ${publishDisplayText(daemonBaseUrl)}`);
-    throw new HttpError(502, {
-      code: "daemon_unavailable",
-      message: "Unable to reach DockerMap daemon",
-      ...(exposeErrorDetails ? { details: "Daemon connection failed" } : {})
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 function getMockResponse<T>(path: string): T {
   const health: HealthResponse = {
     status: "degraded",
@@ -576,6 +523,14 @@ function getMockResponse<T>(path: string): T {
     message: `No mock response for ${path}`
   });
 }
+
+const fetchDaemon = createDaemonClient({
+  baseUrl: daemonBaseUrl,
+  token: daemonToken,
+  allowMockFallback,
+  exposeErrorDetails,
+  mockResponse: getMockResponse
+});
 
 function sendError(res: express.Response, error: unknown) {
   if (error instanceof HttpError) {
