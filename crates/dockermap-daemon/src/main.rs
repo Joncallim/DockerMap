@@ -5185,6 +5185,188 @@ mod tests {
         stub.await.expect("Docker stub should finish");
     }
 
+    /// This is the measured Bollard wire contract for the Docker Read Gateway
+    /// planned in #62. It intentionally records the real requests emitted by
+    /// the collector rather than deriving an allowlist from Bollard method
+    /// names. Any client/library upgrade that changes a target, query, method,
+    /// or adds negotiation traffic must make this test fail for review.
+    #[tokio::test]
+    async fn bollard_wire_contract_for_current_docker_reads() {
+        let tempdir = tempfile::tempdir().expect("temporary Docker socket directory");
+        let socket_path = tempdir.path().join("docker.sock");
+        let listener = UnixListener::bind(&socket_path).expect("Docker stub should bind");
+
+        let trace = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..5 {
+                let (mut stream, _) = listener
+                    .accept()
+                    .await
+                    .expect("Bollard request should arrive");
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream
+                        .read(&mut chunk)
+                        .await
+                        .expect("Bollard request should be readable");
+                    assert!(read > 0, "Bollard request must include HTTP headers");
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                let request =
+                    String::from_utf8(request).expect("Bollard request must be UTF-8 HTTP");
+                let target = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .expect("Bollard request line must include a target")
+                    .to_string();
+                let body = if target.contains("/containers/json") || target.contains("/networks") {
+                    "[]"
+                } else if target.contains("/volumes") {
+                    r#"{"Volumes":[],"Warnings":null}"#
+                } else if target.contains("/containers/api/logs") {
+                    ""
+                } else {
+                    panic!("unexpected Bollard target: {target}");
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("Docker stub response should be written");
+                requests.push(
+                    request
+                        .lines()
+                        .next()
+                        .expect("request line recorded")
+                        .to_string(),
+                );
+            }
+            requests
+        });
+
+        let collector = DockerCollector {
+            client: Docker::connect_with_unix(
+                socket_path.to_str().expect("socket path should be UTF-8"),
+                2,
+                bollard::API_DEFAULT_VERSION,
+            )
+            .expect("Bollard should connect to the Unix stub"),
+            label_filter: None,
+        };
+        collector
+            .collect_snapshot()
+            .await
+            .expect("list reads should succeed");
+        collector
+            .collect_logs("api", None, None, 100)
+            .await
+            .expect("bounded log read should succeed");
+        collector
+            .collect_logs(
+                "api",
+                None,
+                Some(LogCursor {
+                    millis: 1_706_000_123_456,
+                    offset: 7,
+                }),
+                100,
+            )
+            .await
+            .expect("bounded historical log read should succeed");
+
+        let requests = trace.await.expect("wire trace should finish");
+        assert_eq!(requests, vec![
+            "GET /containers/json?all=true&size=false HTTP/1.1",
+            "GET /networks? HTTP/1.1",
+            "GET /volumes? HTTP/1.1",
+            "GET /containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096 HTTP/1.1",
+            "GET /containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=1706000124&timestamps=true&tail=4096 HTTP/1.1",
+        ], "Bollard wire contract changed; update the gateway ADR and policy review before permitting a new request shape");
+    }
+
+    /// Docker label filtering is part of the gateway contract, not a collector
+    /// convenience: the proxy must fail closed if the engine-side scope changes.
+    #[tokio::test]
+    async fn bollard_wire_contract_for_label_filtered_inventory() {
+        let tempdir = tempfile::tempdir().expect("temporary Docker socket directory");
+        let socket_path = tempdir.path().join("docker.sock");
+        let listener = UnixListener::bind(&socket_path).expect("Docker stub should bind");
+        let trace = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener
+                    .accept()
+                    .await
+                    .expect("Bollard request should arrive");
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream
+                        .read(&mut chunk)
+                        .await
+                        .expect("Bollard request should be readable");
+                    assert!(read > 0, "Bollard request must include HTTP headers");
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                let request =
+                    String::from_utf8(request).expect("Bollard request must be UTF-8 HTTP");
+                let target = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .expect("Bollard request line must include a target")
+                    .to_string();
+                let body = if target.contains("/containers/json") || target.contains("/networks") {
+                    "[]"
+                } else if target.contains("/volumes") {
+                    r#"{"Volumes":[],"Warnings":null}"#
+                } else {
+                    panic!("unexpected Bollard target: {target}");
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("Docker stub response should be written");
+                requests.push(
+                    request
+                        .lines()
+                        .next()
+                        .expect("request line recorded")
+                        .to_string(),
+                );
+            }
+            requests
+        });
+        let collector = DockerCollector {
+            client: Docker::connect_with_unix(
+                socket_path.to_str().expect("socket path should be UTF-8"),
+                2,
+                bollard::API_DEFAULT_VERSION,
+            )
+            .expect("Bollard should connect to the Unix stub"),
+            label_filter: Some("com.dockermap.fixture=trace-123".into()),
+        };
+        collector
+            .collect_snapshot()
+            .await
+            .expect("filtered list reads should succeed");
+        let requests = trace.await.expect("wire trace should finish");
+        assert_eq!(requests, vec![
+            "GET /containers/json?all=true&size=false&filters=%7B%22label%22%3A%5B%22com.dockermap.fixture%3Dtrace-123%22%5D%7D HTTP/1.1",
+            "GET /networks?filters=%7B%22label%22%3A%5B%22com.dockermap.fixture%3Dtrace-123%22%5D%7D HTTP/1.1",
+            "GET /volumes?filters=%7B%22label%22%3A%5B%22com.dockermap.fixture%3Dtrace-123%22%5D%7D HTTP/1.1",
+        ], "Bollard filtered wire contract changed; update the gateway ADR and policy review before permitting a new request shape");
+    }
+
     #[tokio::test]
     async fn api_error_response_sanitizes_every_message_before_serialization() {
         let hostile = "failure at /srv/private/docker.log from 10.1.2.3:2375 token=DOCKERMAP_TEST_FAKE_SOL6_DOCKER_ERROR_SECRET";
