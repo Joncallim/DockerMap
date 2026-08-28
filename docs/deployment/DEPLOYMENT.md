@@ -25,12 +25,19 @@ the local Node API.
 
 ## Prepare The Host
 
-Create the service user and place the repo where the systemd templates expect it:
+For the explicit full-host profile, create separate service identities. Only
+the gateway account belongs to the host's `docker` group; the collector has no
+raw Docker authority.
 
 ```bash
-sudo useradd --system --home /opt/dockermap --shell /usr/sbin/nologin dockermap
+sudo groupadd --system dockermap-gateway
+sudo useradd --system --gid dockermap-gateway --home /nonexistent --shell /usr/sbin/nologin dockermap-gateway
+sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin dockermap-collector
+sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin dockermap-api
+sudo usermod -aG docker dockermap-gateway
+sudo usermod -aG dockermap-gateway dockermap-collector
 sudo mkdir -p /opt/dockermap
-sudo chown dockermap:dockermap /opt/dockermap
+sudo chown -R root:root /opt/dockermap
 ```
 
 Check out or copy the repo into `/opt/dockermap`, then run the build commands from that
@@ -51,6 +58,7 @@ This builds:
 - `apps/api/dist`
 - `apps/web/dist`
 - `crates/target/release/dockermap-daemon`
+- `crates/target/release/dockermap-docker-gateway`
 
 ## External Network Behavior
 
@@ -71,7 +79,7 @@ Current runtime provider behavior:
 
 | Provider area | Default behavior | Network note |
 | --- | --- | --- |
-| Docker | Reads the local Docker socket. | Local host socket access, not registry access. |
+| Docker | Collector uses the local Docker Read Gateway. Only that gateway opens the raw local Docker socket. | Local host socket access, not registry access. |
 | Compose and npm/package metadata | Reads bounded files under `DOCKERMAP_PROJECT_ROOT`. | No registry, audit, advisory, or `.npmrc` lookup. |
 | systemd, cron, PM2, tmux, listeners | Runs fixed local read-only commands or reads local `/proc`/cron files. | No user-supplied shell and no configured external destination. |
 | reverse-proxy and local DNS markers | Checks fixed local marker paths and Docker image/name signals. | Does not read proxy/DNS config contents or call DNS/proxy provider APIs. |
@@ -91,7 +99,7 @@ sudo chmod 600 /etc/dockermap/dockermap.env
 
 Set at least:
 
-- `DOCKERMAP_API_TOKEN`
+- `DOCKERMAP_DAEMON_TOKEN`
 - `DOCKERMAP_ALLOWED_ORIGINS`
 - `DOCKERMAP_PROJECT_ROOT`
 
@@ -102,22 +110,39 @@ Keep `DOCKERMAP_DAEMON_HOST=127.0.0.1` for draft review deployments.
 Copy the templates:
 
 ```bash
+sudo cp deploy/systemd/dockermap-docker-gateway.service /etc/systemd/system/
 sudo cp deploy/systemd/dockermap-daemon.service /etc/systemd/system/
 sudo cp deploy/systemd/dockermap-api.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now dockermap-daemon dockermap-api
+sudo systemctl enable --now dockermap-docker-gateway dockermap-daemon dockermap-api
 ```
 
 Check status:
 
 ```bash
-systemctl status dockermap-daemon --no-pager
+systemctl status dockermap-docker-gateway dockermap-daemon dockermap-api --no-pager
 systemctl status dockermap-api --no-pager
 ```
 
-If live Docker data is required, make sure the `dockermap` service user can read the
-Docker socket. The provided daemon unit uses `SupplementaryGroups=docker`; the user must
-also be a member of that group on hosts that require it.
+If live Docker data is required, make sure only `dockermap-gateway` can read the
+Docker socket. The gateway owns `/run/dockermap/docker-read.sock` and the collector
+gets only that filtered socket through its `dockermap-gateway` supplemental group.
+Do not add `dockermap-collector` or `dockermap-api` to Docker's group.
+
+## Profiles and full-host trade-offs
+
+| Profile | Docker authority | Host-provider visibility |
+| --- | --- | --- |
+| Demo | None; sample data only. | None. |
+| Docker-only (recommended) | Gateway-only raw socket; collector gets a filtered Unix socket and bounded project mount. | Restricted PID namespace; host providers unavailable. |
+| Full-host (this systemd profile) | Gateway-only raw socket; collector never joins Docker's group. | Intentional access to bounded host providers and fixed read-only commands. |
+
+Full-host inspection is not a claim of perfect sandboxing: it intentionally sees
+host `/proc`, fixed system locations, and selected local commands. Tailscale and
+Headscale remain disabled unless `DOCKERMAP_ENABLE_TAILSCALE=true` or
+`DOCKERMAP_ENABLE_HEADSCALE=true` is explicitly set. DockerMap does not add their
+credentials, control-plane permissions, or new egress; unavailable providers are
+reported as such.
 
 ## Reverse Proxy
 

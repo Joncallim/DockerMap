@@ -1,12 +1,14 @@
 # Running DockerMap In Docker
 
-This is the fastest way to try DockerMap. One image runs all three pieces (Rust daemon,
-Node API, and the built web app behind nginx) and exposes a single port.
+Docker-only is the recommended container profile. Compose runs a frontend
+(nginx plus Node API), a Rust collector, and a Docker Read Gateway. Only the
+gateway receives the raw Docker socket; the collector receives a filtered Unix
+socket and the bounded project mount.
 
 ## Files
 
 - [`Dockerfile`](../../Dockerfile): multi-stage build (Rust daemon, Node/web build, runtime image).
-- [`docker-compose.yml`](../../docker-compose.yml): one-service Compose file for local use.
+- [`docker-compose.yml`](../../docker-compose.yml): split Docker-only deployment.
 - [`deploy/docker/nginx.conf`](../../deploy/docker/nginx.conf): serves the web app and proxies `/api/*`.
 - [`deploy/docker/entrypoint.sh`](../../deploy/docker/entrypoint.sh): starts the daemon, the API, then nginx in the foreground.
 
@@ -16,7 +18,9 @@ Node API, and the built web app behind nginx) and exposes a single port.
 docker compose up --build
 ```
 
-Open `http://127.0.0.1:3233`.
+Before starting Compose, generate a daemon-to-collector token in a protected
+environment file and set `DOCKERMAP_DAEMON_TOKEN`; set `DOCKER_GID` to the
+numeric group owning `/var/run/docker.sock`. Open `http://127.0.0.1:3233`.
 
 ## Run With Plain Docker
 
@@ -33,13 +37,14 @@ set the API is unauthenticated read-only — do not expose it on the LAN. For
 remote access, set `DOCKERMAP_API_TOKEN` (see `.env.example`) and publish the
 port on the interface of your choice, e.g. `-p 3233:3233`.
 
-## What The Mounts Are For
+## Authority and mounts
 
-- `/var/run/docker.sock` (read-only): lets the daemon read real container, network, and
-  volume state from the host's Docker Engine. Omit it and DockerMap falls back to mock
-  data when `DOCKERMAP_ALLOW_MOCK=true`.
-- `/opt/dockermap/project` (read-only): the Compose project directory DockerMap scans.
-  Point this at whichever project you want to inspect.
+- Gateway only: `/var/run/docker.sock` read-only. The gateway independently
+  permits only the reviewed inventory and bounded non-following log reads.
+- Collector only: `/opt/dockermap/project` read-only plus the filtered gateway
+  socket. It cannot mount or fall back to the raw socket.
+- Frontend: neither mount. It is the only DockerMap service that has a
+  listener and it has no gateway network/socket path.
 
 ## Optional Docker Label Filter
 
@@ -58,12 +63,11 @@ unrelated host resources must stay out of the UI.
 
 ## Security Note
 
-Mounting the Docker socket gives the container the same level of access as the Docker
-daemon itself. Only do this on hosts you trust, and keep the read-only (`:ro`) flag.
-See [docs/security/THREAT_MODEL.md](../security/THREAT_MODEL.md) for the full risk
-discussion. This single-container image is meant for local/dev use; for an
-internet-reachable review deployment, follow
-[docs/deployment/REVERSE_PROXY.md](REVERSE_PROXY.md) instead.
+Mounting a Docker socket gives its holder Docker-daemon-level authority; `:ro`
+does not restrict Docker API mutations. DockerMap therefore gives that mount
+only to the fail-closed gateway. See [docs/security/THREAT_MODEL.md](../security/THREAT_MODEL.md).
+The plain `docker run` compatibility image remains a local/dev convenience and
+does not provide this three-service isolation; use Compose for deployments.
 
 ## Environment Variables
 

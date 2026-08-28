@@ -1,0 +1,33 @@
+[Unit]
+Description=DockerMap Docker Read Gateway
+Documentation=https://github.com/Joncallim/DockerMap
+After=docker.service
+Requires=docker.service
+Before=dockermap-daemon.service
+
+[Service]
+Type=simple
+User=dockermap-gateway
+Group=dockermap-gateway
+SupplementaryGroups=docker
+WorkingDirectory=/opt/dockermap
+EnvironmentFile=/etc/dockermap/dockermap.env
+Environment=DOCKERMAP_DOCKER_GATEWAY_SOCKET=/run/dockermap/docker-read.sock
+Environment=DOCKERMAP_RAW_DOCKER_SOCKET=/var/run/docker.sock
+ExecStart=/opt/dockermap/crates/target/release/dockermap-docker-gateway
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=dockermap
+RuntimeDirectoryMode=0755
+NoNewPrivileges=true
+CapabilityBoundingSet=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/var/run/docker.sock /opt/dockermap
+ReadWritePaths=/run/dockermap
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,8 @@
 # Docker authority boundary decision (#62)
 
-Status: accepted; measured contract and gateway implementation complete. Runtime
-split, full-host profile, and deployment rollout remain pending.
+Status: accepted; measured contract, gateway, Docker-only runtime split, and
+native full-host identity separation are implemented. Deployment rollout and
+final certification remain pending.
 
 ## Decision
 
@@ -162,11 +163,13 @@ No Docker socket, gateway, or host providers; only explicit sample data.
 
 ### Full-host inspection
 
-This remains an explicit native/systemd profile. It keeps bounded existing host
-providers but separates frontend/API and collector identities. Docker access
-still goes through the gateway rather than Docker-group membership. Tailscale
-and Headscale are separately opt-in and off by default; #62 adds neither
-credentials nor control-plane permissions.
+This is an explicit native/systemd profile. `dockermap-gateway` alone joins
+Docker's group and owns the filtered socket; `dockermap-collector` receives
+only that socket through the gateway group and never joins Docker's group;
+`dockermap-api` is a third identity. It keeps bounded existing host providers,
+with the documented privacy/trust trade-off. Tailscale and Headscale are
+separately opt-in and off by default; #62 adds neither credentials nor
+control-plane permissions.
 
 ## Read-only Hearth discovery (2026-08-28)
 

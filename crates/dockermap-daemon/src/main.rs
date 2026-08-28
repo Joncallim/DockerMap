@@ -1464,10 +1464,32 @@ fn collect_network_infrastructure(
         return;
     }
 
-    collect_tailscale(nodes, diagnostics);
-    collect_headscale(nodes, diagnostics);
+    if provider_opt_in("DOCKERMAP_ENABLE_TAILSCALE") {
+        collect_tailscale(nodes, diagnostics);
+    } else {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Tailscale,
+            DiagnosticSeverity::Info,
+            "Tailscale discovery disabled; set DOCKERMAP_ENABLE_TAILSCALE=true to opt in".into(),
+        );
+    }
+    if provider_opt_in("DOCKERMAP_ENABLE_HEADSCALE") {
+        collect_headscale(nodes, diagnostics);
+    } else {
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Headscale,
+            DiagnosticSeverity::Info,
+            "Headscale discovery disabled; set DOCKERMAP_ENABLE_HEADSCALE=true to opt in".into(),
+        );
+    }
     collect_network_config_markers(nodes);
     collect_network_containers(snapshot, nodes, edges);
+}
+
+fn provider_opt_in(name: &str) -> bool {
+    std::env::var(name).ok().as_deref() == Some("true")
 }
 
 fn collect_tailscale(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<RuntimeMapDiagnostic>) {
@@ -5539,6 +5561,11 @@ mod tests {
         assert!(parse_docker_label_filter(&oversized).is_err());
         assert!(parse_docker_label_filter("com.dockermap.fixture\0bad").is_err());
         assert!(parse_docker_label_filter("=missing-key").is_err());
+    }
+
+    #[test]
+    fn tailnet_providers_are_opt_in_by_default() {
+        assert!(!provider_opt_in("DOCKERMAP_TEST_TAILNET_PROVIDER_OPT_IN"));
     }
 
     #[test]

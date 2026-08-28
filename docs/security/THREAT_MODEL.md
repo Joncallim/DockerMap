@@ -62,9 +62,15 @@ control the host.
 
 Protections:
 
-- DockerMap only reads Docker state today.
-- DockerMap has no container, image, network, volume, or file write endpoints.
-- Logs are read only for containers in the current snapshot.
+- Only the Docker Read Gateway mounts the raw socket. Frontend/API has neither
+  that mount nor the filtered socket; the collector has only the filtered Unix
+  socket and no raw-socket fallback.
+- The gateway is default-deny and permits only the measured container/network/
+  volume inventory calls and fixed bounded, non-following logs. It rejects
+  mutations, inspect/archive/top/exec/events/stats/images/builds, ambiguous
+  targets, unknown queries, bodies, and upgrades before opening Docker.
+- A read-only socket mount is retained as a filesystem safeguard but is not
+  treated as Docker API authorization.
 
 ### Host Provider Expansion
 

@@ -1,24 +1,29 @@
 [Unit]
-Description=DockerMap Rust daemon
+Description=DockerMap full-host collector
 Documentation=https://github.com/Joncallim/DockerMap
-After=network-online.target docker.service
+After=network-online.target dockermap-docker-gateway.service
 Wants=network-online.target
+Requires=dockermap-docker-gateway.service
 
 [Service]
 Type=simple
-User=dockermap
-Group=dockermap
-SupplementaryGroups=docker
+User=dockermap-collector
+Group=dockermap-collector
+SupplementaryGroups=dockermap-gateway
 WorkingDirectory=/opt/dockermap
 EnvironmentFile=/etc/dockermap/dockermap.env
+Environment=DOCKERMAP_DOCKER_GATEWAY_SOCKET=/run/dockermap/docker-read.sock
 ExecStart=/opt/dockermap/crates/target/release/dockermap-daemon
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
+CapabilityBoundingSet=
 PrivateTmp=true
-ProtectSystem=full
+PrivateDevices=true
+ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/opt/dockermap
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target
