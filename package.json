@@ -12,7 +12,7 @@
     "dev:daemon": "cargo run -p dockermap-daemon --manifest-path crates/Cargo.toml",
     "dev:stack": "./scripts/run-dev-stack.sh",
     "build": "npm run build --workspaces --if-present",
-    "build:deploy": "VITE_API_BASE_URL=\"\" npm run build && cargo build --release -p dockermap-daemon --manifest-path crates/Cargo.toml",
+    "build:deploy": "VITE_API_BASE_URL=\"\" npm run build && cargo build --release -p dockermap-daemon -p dockermap-docker-gateway --manifest-path crates/Cargo.toml",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "audit": "npm audit --omit=dev",
     "check:js": "npm run audit && npm run typecheck && npm run build && npm run test:js",
