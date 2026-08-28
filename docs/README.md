@@ -34,19 +34,20 @@ Working now:
 - Compose scan, graph, and dry-run edit-plan endpoints.
 - Runtime-map providers for systemd, cron, PM2, tmux, listening sockets,
   Tailscale, Headscale, reverse-proxy markers, local DNS markers, and Docker
-  graph nodes when those tools are available.
+  graph nodes when those tools are available, plus bounded Python application
+  and native-process collection.
 - A Runtime Map page in the web app that consumes `/api/runtime/map` and shows
   provider diagnostics, layer filters, and cross-provider relationships.
 - Shared Rust and TypeScript contract fixtures.
-- API security tests and Playwright smoke tests.
+- API security tests, Playwright smoke/accessibility tests, production-image
+  tests, and an isolated live-Docker fixture suite.
+- Versioned API routes and an OpenAPI document at `/api/openapi.json`.
+- Evidence-kind/provenance gating so sample, unavailable, inferred, and observed
+  data cannot be presented as equivalent live host truth.
 
 Still in progress:
 
-- Provider-specific redaction fixtures for future collectors.
 - Richer systemd and package metadata.
-- Python and native-process provider implementations.
-- Better table sorting, filtering, graph navigation, and logs UI.
-- OpenAPI docs and stable versioned API routes.
 - Safe write mode with backups and rollback. This is not enabled today.
 
 ## Roadmap In One Page
@@ -54,8 +55,10 @@ Still in progress:
 Use [planning/ROADMAP.md](planning/ROADMAP.md) for the current short roadmap.
 The practical direction is:
 
-- Now: harden the read-only runtime map and security evidence.
-- Next: improve Compose diagnostics, list filtering, logs, and graph navigation.
+- Now: complete the private-alpha clean-host/recovery evidence and maintainer
+  closure of the completed #61/#62 work.
+- Next: backend decomposition (#64), canonical contracts (#65), provider
+  freshness (#66), and the later provenance/findings/telemetry epics.
 - Later: add safe edit mode only after validation, backups, confirmation, and
   rollback are designed and tested.
 
@@ -87,7 +90,7 @@ daemon, provider, auth, deployment, or write-mode behavior.
 - [architecture/PAGE_LOGIC.md](architecture/PAGE_LOGIC.md): intended UI routes,
   page behavior, and cross-page navigation.
 - [planning/PYTHON_AND_PROCESS_PROVIDERS.md](planning/PYTHON_AND_PROCESS_PROVIDERS.md):
-  read-only provider plan for future Python application and native-process collection.
+  implemented read-only Python application and native-process provider design.
 - [testing/TESTING_PLAN.md](testing/TESTING_PLAN.md): local checks, security
   tests, browser smoke tests, live-Docker tests, and manual release smoke.
 - [testing/SANDBOX_FIXTURE.md](testing/SANDBOX_FIXTURE.md): isolated labeled
