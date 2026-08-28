@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -277,8 +277,13 @@ export async function startTokenConfiguredCompose(overrides: NodeJS.ProcessEnv =
   const projectName = `dockermap-compose-e2e-${Date.now().toString(36)}`;
   const fixtureDir = mkdtempSync(join(tmpdir(), "dockermap-compose-e2e-"));
   const overrideFile = join(fixtureDir, "network-override.yaml");
-  writeFileSync(overrideFile, `networks:\n  default:\n    ipam:\n      config:\n        - subnet: ${unusedFixtureSubnet(docker)}\n`);
-  const env = { ...process.env, ...overrides };
+  writeFileSync(overrideFile, `networks:\n  dockermap-api:\n    ipam:\n      config:\n        - subnet: ${unusedFixtureSubnet(docker)}\n`);
+  const env = {
+    ...process.env,
+    DOCKERMAP_DAEMON_TOKEN: randomBytes(32).toString("hex"),
+    DOCKER_GID: String(statSync("/var/run/docker.sock").gid),
+    ...overrides
+  };
   try {
     runDocker(docker, ["compose", "-p", projectName, "-f", "docker-compose.yml", "-f", overrideFile, "up", "--detach", "--build"], repoRoot, env);
     const container = `${projectName}-dockermap-1`;
