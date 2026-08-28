@@ -97,6 +97,8 @@ daemon, provider, auth, deployment, or write-mode behavior.
   teardown procedure.
 - [release/RELEASE_CHECKLIST.md](release/RELEASE_CHECKLIST.md): private alpha
   release gate and evidence to capture.
+- [release/SUPPORT_POLICY.md](release/SUPPORT_POLICY.md): supported private-alpha
+  host, runtime, browser, and deployment-profile baseline.
 - [design/DESIGN.md](design/DESIGN.md): UI direction.
 - [design/DESIGN_LANGUAGE.md](design/DESIGN_LANGUAGE.md): visual tokens and
   design rules.

@@ -128,7 +128,9 @@ before a broader beta.
   Tracked as part of epic #63 (v0.1 alpha certification).
 - [ ] Add a clean-host install test for systemd units and Nginx/Caddy proxy config.
 - [ ] Add release automation for tagged builds and checksums.
-- [ ] Add a documented support policy for Linux distro, Node, Rust, Docker, and browser versions.
+- [x] Add a documented support policy for Linux distro, Node, Rust, Docker, and browser versions.
+  See [SUPPORT_POLICY.md](SUPPORT_POLICY.md); each release must still rerun the
+  relevant gates against its exact candidate.
 - [ ] Add write-mode design gates before any endpoint can mutate files or Docker state.
   Design gates are documented in the roadmap (Safe Write Mode section).
 
