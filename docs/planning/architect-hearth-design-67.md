@@ -8,10 +8,9 @@ repository content have been imported.
 DockerMap currently has a standalone web token layer in
 `apps/web/src/styles.css`, uses a system-font variable plus technical
 monospace, and has separate light/dark theme selectors. Its public build does
-not declare a private design-system package. The issue text records that the
-current HTML also contains Google font references; that must be rechecked
-against the exact implementation slice before migration rather than assumed
-from this preflight.
+not declare a private design-system package. This preparatory slice removes
+the unused Google Fonts/preconnect links and adds a source regression test, so
+the normal UI now has no font-CDN dependency before any visual token migration.
 
 Existing product-specific behavior that a Hearth alignment must preserve:
 
