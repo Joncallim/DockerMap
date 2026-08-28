@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "dockermap-core",
-  "dockermap-daemon"
+  "dockermap-daemon",
+  "dockermap-docker-gateway"
 ]
 resolver = "2"

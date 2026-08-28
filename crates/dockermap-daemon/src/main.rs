@@ -62,6 +62,7 @@ const MAX_NATIVE_PROCESSES: usize = 256;
 const MAX_PROVIDER_OUTPUT_BYTES: usize = 1 << 20;
 const REDACTED_VALUE: &str = "[redacted]";
 const MAX_DOCKER_LABEL_FILTER_CHARS: usize = 256;
+const DEFAULT_DOCKER_GATEWAY_SOCKET: &str = "/run/dockermap/docker-read.sock";
 
 #[derive(Clone)]
 struct AppState {
@@ -479,8 +480,9 @@ struct DockerCollector {
 impl DockerCollector {
     fn connect() -> Result<Self, String> {
         let label_filter = docker_label_filter_from_env()?;
-        let client = Docker::connect_with_unix_defaults()
-            .map_err(|error| format!("failed to connect to docker socket: {error}"))?;
+        let socket = docker_gateway_socket_from_env()?;
+        let client = Docker::connect_with_unix(&socket, 120, bollard::API_DEFAULT_VERSION)
+            .map_err(|error| format!("failed to connect to Docker Read Gateway: {error}"))?;
         Ok(Self {
             client,
             label_filter,
@@ -609,6 +611,24 @@ impl DockerCollector {
             limit,
         ))
     }
+}
+
+/// The collector has one explicit Docker endpoint: the filtered gateway
+/// socket. It never discovers or retries Docker's raw default socket.
+fn docker_gateway_socket_from_env() -> Result<String, String> {
+    let socket = std::env::var("DOCKERMAP_DOCKER_GATEWAY_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_DOCKER_GATEWAY_SOCKET.into());
+    validate_docker_gateway_socket(socket)
+}
+
+fn validate_docker_gateway_socket(socket: String) -> Result<String, String> {
+    if socket.is_empty() || socket.len() > 512 || socket.contains('\0') {
+        return Err("invalid DOCKERMAP_DOCKER_GATEWAY_SOCKET".into());
+    }
+    if socket == "/var/run/docker.sock" || socket == "/run/docker.sock" {
+        return Err("DOCKERMAP_DOCKER_GATEWAY_SOCKET must not name Docker's raw socket".into());
+    }
+    Ok(socket)
 }
 
 /// Parse one timestamped Docker log line (collected with `--timestamps`) into
@@ -5475,6 +5495,17 @@ mod tests {
             parse_docker_label_filter("   ").expect("empty filter should be disabled"),
             None
         );
+    }
+
+    #[test]
+    fn collector_endpoint_never_accepts_the_raw_docker_socket() {
+        assert_eq!(
+            validate_docker_gateway_socket(DEFAULT_DOCKER_GATEWAY_SOCKET.into()).as_deref(),
+            Ok(DEFAULT_DOCKER_GATEWAY_SOCKET)
+        );
+        for raw_socket in ["/var/run/docker.sock", "/run/docker.sock"] {
+            assert!(validate_docker_gateway_socket(raw_socket.into()).is_err());
+        }
     }
 
     #[test]
