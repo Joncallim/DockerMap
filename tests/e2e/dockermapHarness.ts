@@ -84,6 +84,11 @@ export async function startProductionImageStack(options: { liveDocker?: boolean 
   const image = `dockermap-e2e:${Date.now().toString(36)}`;
   const container = `dockermap-production-e2e-${process.pid}`;
   const network = `${container}-clients`;
+  // Do not rely on Docker's finite default address pools: review hosts often
+  // already have every 172.x default bridge allocated.  This network belongs
+  // solely to the temporary production-image fixture and is removed in its
+  // cleanup path.
+  const clientSubnet = unusedFixtureSubnet(docker);
   const clients = {
     a: `${container}-client-a`,
     b: `${container}-client-b`
@@ -119,7 +124,7 @@ export async function startProductionImageStack(options: { liveDocker?: boolean 
     if (fixture && !productionSocketIsReadOnly(docker, container)) {
       throw new Error("Production image Docker socket mount is not read-only");
     }
-    runDocker(docker, ["network", "create", network], repoRoot);
+    runDocker(docker, ["network", "create", "--subnet", clientSubnet, network], repoRoot);
     runDocker(docker, ["network", "connect", network, container], repoRoot);
     for (const client of Object.values(clients)) {
       runDocker(
@@ -270,9 +275,12 @@ export async function startTokenConfiguredCompose(overrides: NodeJS.ProcessEnv =
   if (!docker) throw new SkipLiveDockerError("Docker is not reachable by the current user or sudo -n docker.");
 
   const projectName = `dockermap-compose-e2e-${Date.now().toString(36)}`;
+  const fixtureDir = mkdtempSync(join(tmpdir(), "dockermap-compose-e2e-"));
+  const overrideFile = join(fixtureDir, "network-override.yaml");
+  writeFileSync(overrideFile, `networks:\n  default:\n    ipam:\n      config:\n        - subnet: ${unusedFixtureSubnet(docker)}\n`);
   const env = { ...process.env, ...overrides };
   try {
-    runDocker(docker, ["compose", "-p", projectName, "up", "--detach", "--build"], repoRoot, env);
+    runDocker(docker, ["compose", "-p", projectName, "-f", "docker-compose.yml", "-f", overrideFile, "up", "--detach", "--build"], repoRoot, env);
     const container = `${projectName}-dockermap-1`;
     let health = "";
     await waitForCondition(async () => {
@@ -282,15 +290,17 @@ export async function startTokenConfiguredCompose(overrides: NodeJS.ProcessEnv =
     return {
       health,
       stop: async () => {
-        runDocker(docker, ["compose", "-p", projectName, "down", "--volumes", "--remove-orphans"], repoRoot, env);
+        runDocker(docker, ["compose", "-p", projectName, "-f", "docker-compose.yml", "-f", overrideFile, "down", "--volumes", "--remove-orphans"], repoRoot, env);
+        rmSync(fixtureDir, { recursive: true, force: true });
       }
     };
   } catch (error) {
     try {
-      runDocker(docker, ["compose", "-p", projectName, "down", "--volumes", "--remove-orphans"], repoRoot, env);
+      runDocker(docker, ["compose", "-p", projectName, "-f", "docker-compose.yml", "-f", overrideFile, "down", "--volumes", "--remove-orphans"], repoRoot, env);
     } catch {
       // Preserve the original failure.
     }
+    rmSync(fixtureDir, { recursive: true, force: true });
     throw error;
   }
 }
@@ -803,6 +813,24 @@ function dockerOutput(docker: string[], args: string[], cwd: string) {
   const result = spawnSync(docker[0], [...docker.slice(1), ...args], { cwd, encoding: "utf8", timeout: 120_000 });
   if (result.status !== 0) throw new Error(`Docker command failed: ${docker.join(" ")} ${args.join(" ")}\n${result.stderr}`);
   return result.stdout;
+}
+
+/** Select an unused /24 from a dedicated private range for an ephemeral E2E network. */
+function unusedFixtureSubnet(docker: string[]): string {
+  const networkIds = dockerOutput(docker, ["network", "ls", "--quiet"], repoRoot)
+    .split(/\s+/)
+    .filter(Boolean);
+  const existing = networkIds.length === 0
+    ? ""
+    : dockerOutput(docker, ["network", "inspect", ...networkIds], repoRoot);
+
+  // 10.254/16 is deliberately outside Docker's default 172.x pools.  Inspect
+  // first so this remains safe on hosts that have chosen this range themselves.
+  for (let third = 1; third < 255; third += 1) {
+    const subnet = `10.254.${third}.0/24`;
+    if (!existing.includes(subnet)) return subnet;
+  }
+  throw new Error("No unused DockerMap E2E client subnet is available in 10.254.0.0/16");
 }
 
 function productionSocketIsReadOnly(docker: string[], container: string) {
