@@ -150,7 +150,8 @@ tests, and review; it must not be enabled by a broad read wildcard.
 - Collector has only a bounded project root mounted read-only, a private
   frontend/collector network, and a separate collector/gateway network.
 - Gateway has no published ports and is attached only to the collector/gateway
-  network.
+  transport. The implementation uses a shared filtered Unix socket, so the
+  gateway has no Docker network at all; that is narrower than a private network.
 - Collector runs in restricted PID mode and host providers are unavailable by
   construction; no host PID, systemd D-Bus, host `/proc`, host home, or broad
   filesystem mounts are present.
