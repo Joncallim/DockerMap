@@ -129,7 +129,7 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
         {tab === "overview" && <Overview service={service} model={model} />}
         {tab === "dependencies" && <Dependencies service={service} model={model} />}
         {tab === "resources" && <Resources service={service} evidenceMode={evidenceMode} modelProvenance={modelProvenance} />}
-        {tab === "logs" && <Logs name={service.name} tick={tick} evidenceMode={evidenceMode} modelProvenance={modelProvenance} />}
+        {tab === "logs" && <Logs name={service.name} tick={tick} evidenceMode={evidenceMode} />}
         {tab === "config" && (
           <Config service={service} model={model} showInternals={showInternals} onToggleInternals={() => setShowInternals((v) => !v)} />
         )}
@@ -232,9 +232,13 @@ function Resources({ service, evidenceMode, modelProvenance }: { service: Servic
   );
 }
 
-function Logs({ name, tick, evidenceMode, modelProvenance }: { name: string; tick: number; evidenceMode: ReturnType<typeof useApp>["evidenceMode"]; modelProvenance: ReturnType<typeof useApp>["modelProvenance"] }) {
+function Logs({ name, tick, evidenceMode }: { name: string; tick: number; evidenceMode: ReturnType<typeof useApp>["evidenceMode"] }) {
   const logs = useApiResource<LogsResponse>(`/api/logs?service=${encodeURIComponent(name)}`, tick);
-  const sampleLogs = evidenceMode === "demo" || (evidenceMode === "mock" && modelProvenance === "mock");
+  // Tag from the LOG RESPONSE's own attested source (#87 E1): /api/logs can
+  // fall back to Node mock independently of the system model, so the model's
+  // provenance must never decide the log tag. Demo mode short-circuits
+  // fetches, so demo log bytes are always fabricated.
+  const sampleLogs = evidenceMode === "demo" || logs.data?.source === "mock";
   if (logs.loading && !logs.data) return <Loading label="Loading logs…" />;
   if (logs.error) return <ErrorState title="Logs unavailable" body={logs.error} />;
   const entries = logs.data?.entries ?? [];

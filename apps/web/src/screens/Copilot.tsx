@@ -92,10 +92,19 @@ export default function Copilot() {
             </div>
           )}
           <div className="copilot-evidence">
-            <Tag tone="muted" title={evidenceLabel(result.evidence).description}>
-              {evidenceLabel(result.evidence).label}
-            </Tag>
-            <span className="muted-line">{evidenceLabel(result.evidence).description}</span>
+            {result.authorityUnresolved ? (
+              <>
+                <Tag tone="warn" title="The model's source authority is not established, so no substantive answer is produced.">Source authority unresolved</Tag>
+                <span className="muted-line">DockerMap cannot verify where these bytes came from; the data may be collected but its source is unverifiable.</span>
+              </>
+            ) : (
+              <>
+                <Tag tone="muted" title={evidenceLabel(result.evidence).description}>
+                  {evidenceLabel(result.evidence).label}
+                </Tag>
+                <span className="muted-line">{evidenceLabel(result.evidence).description}</span>
+              </>
+            )}
           </div>
         </Panel>
       )}

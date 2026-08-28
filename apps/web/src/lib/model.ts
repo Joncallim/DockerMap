@@ -204,7 +204,21 @@ const STATE_BY_STATUS: Record<string, ServiceState> = {
 
 export function stateForStatus(status: string | null | undefined): ServiceState {
   if (!status) return "unknown";
-  const key = status.toLowerCase().split(/\s|\(/)[0];
+  const lower = status.toLowerCase();
+  // Docker's ContainerSummary.status is free-form ("Up 3 hours", "Exited (0)
+  // 2 hours ago"). The parenthesized HEALTH marker, when present, is stronger
+  // evidence than the leading state token: "Up 3 hours (unhealthy)" must be
+  // degraded, never healthy via the "up" token; "(health: starting)" is
+  // transitioning, not healthy (#87 D1).
+  const healthMatch = lower.match(/\((?:health:\s*)?([a-z]+)\)/);
+  if (healthMatch) {
+    const marker = healthMatch[1];
+    if (marker === "unhealthy") return "degraded";
+    if (marker === "degraded") return "degraded";
+    if (marker === "starting" || marker === "started" || marker === "updating") return "updating";
+    if (marker === "healthy") return "healthy";
+  }
+  const key = lower.split(/[\s(]/)[0];
   return STATE_BY_STATUS[key] ?? "unknown";
 }
 
@@ -695,9 +709,13 @@ function runtimeLayerForNode(node: RuntimeMapNode): RuntimeLayerId {
 
 function runtimeStateForNode(node: RuntimeMapNode): ServiceState {
   const healthState = node.service?.health?.state?.toLowerCase();
+  // Explicit health.state is authoritative when present: unhealthy means
+  // running-but-failing a health check (degraded, matching the Docker service
+  // state mapping — NOT offline, which implies stopped/exited), and unknown
+  // must stay unknown even when the raw status token looks positive (#87 D2).
   if (healthState === "healthy") return "healthy";
-  if (healthState === "degraded") return "degraded";
-  if (healthState === "unhealthy") return "offline";
+  if (healthState === "degraded" || healthState === "unhealthy") return "degraded";
+  if (healthState === "unknown") return "unknown";
 
   const candidates = [node.service?.status, node.status]
     .map((value) => value?.toLowerCase())
@@ -708,10 +726,14 @@ function runtimeStateForNode(node: RuntimeMapNode): ServiceState {
   // become healthy because it CONTAINS a positive substring ("healthy",
   // "available", "active", "connected", "ready"). Negative groups are
   // checked before positive ones so a negated word can never fall through
-  // to the healthy bucket (#76).
+  // to the healthy bucket (#76). Bare "not" is NOT an offline signal —
+  // "not configured"/"not applicable"/"not monitored" are absence-of-
+  // feature statements, not stopped states; only narrow negated phrases
+  // qualify (#87 D2).
   const negativeGroups: Array<[RegExp, ServiceState]> = [
     [/\b(degraded|failed|error)\b/, "degraded"],
-    [/\b(offline|stopped|dead|down|exited|missing|unhealthy|unavailable|inactive|disconnected|not)\b/, "offline"],
+    [/\b(offline|stopped|dead|down|exited|missing|unhealthy|unavailable|inactive|disconnected)\b/, "offline"],
+    [/\bnot (ready|running|responding|reachable|started|startable)\b/, "offline"],
     [/\b(warning|paused)\b/, "warning"],
     [/\b(starting|restarting|reloading|pending|loading)\b/, "updating"]
   ];

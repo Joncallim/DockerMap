@@ -60,9 +60,10 @@ sequenced in each epic body. They are the source of truth for what comes next;
 this document stays a summary, not a second roadmap.
 
 - **#61 Evidence-backed live state** — decomposed into child issues #71-#77
-  (`epic:live-truth`). #71-#76 are MERGED (evidence vocabulary, update-claim
-  removal, demo/mock/sample authority, daemon-fallback provenance, Copilot
-  truthfulness, live-truth sweep); #77 reconciles this documentation.
+  (`epic:live-truth`). ALL MERGED (#71 evidence vocabulary, #72 update-claim
+  removal, #73 demo/mock/sample authority, #74 daemon-fallback provenance,
+  #75 Copilot truthfulness, #76 live-truth sweep, #77 docs reconciliation);
+  closure evidence posted 2026-08-27, maintainer close pending on #71-#75/#77.
 - **#62 Docker authority isolation** — next major slice; can run alongside #61
   follow-ups; both must close before #63.
 - **#63 v0.1 alpha certification** — release gate; #15 (live-Docker evidence)

@@ -913,6 +913,120 @@ test("status endpoint classifies free-form docker status texts", async () => {
   assert.equal(body.status, "degraded");
 });
 
+test("/api/status counts a Docker health-suffix container as attention, not healthy", async () => {
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") {
+      sendJson(res, 200, {
+        status: "ok",
+        mode: "docker",
+        dockerReachable: true,
+        lastUpdated: 1,
+        snapshotVersion: "1"
+      });
+      return;
+    }
+    if (req.url === "/daemon/snapshot") {
+      sendJson(res, 200, {
+        containers: [
+          {
+            id: "c1",
+            name: "web",
+            image: "nginx:1.27",
+            status: "Up 3 hours (unhealthy)",
+            role: "web",
+            networks: [],
+            ports: [],
+            mounts: [],
+            dependsOn: []
+          },
+          {
+            id: "c2",
+            name: "db",
+            image: "postgres:16",
+            status: "Up 2 minutes (health: starting)",
+            role: "db",
+            networks: [],
+            ports: [],
+            mounts: [],
+            dependsOn: []
+          },
+          {
+            id: "c3",
+            name: "cache",
+            image: "redis:7",
+            status: "Up 3 hours (healthy)",
+            role: "cache",
+            networks: [],
+            ports: [],
+            mounts: [],
+            dependsOn: []
+          }
+        ],
+        images: [],
+        networks: [],
+        volumes: [],
+        lastUpdated: 1
+      });
+      return;
+    }
+    sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  const response = await request(api, "/api/status", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  // "(unhealthy)" and "(health: starting)" must NOT count as running/healthy
+  // via the "Up" token; only "(healthy)" is running.
+  assert.equal(body.containersRunning, 1, "only the (healthy) container is running");
+  assert.equal(body.attention, 2, "unhealthy and health:starting are attention");
+  assert.equal(body.healthy, 1);
+  assert.equal(body.status, "degraded");
+});
+
+test("/api/status refuses to claim a coherent source when health and snapshot disagree", async () => {
+  // F4 (#88): /daemon/health succeeds from Docker while /daemon/snapshot
+  // falls back to the Node API's route-local mock. The response must NOT say
+  // `mode: docker` next to fabricated container counts — it reports the
+  // actual sources and marks the payload mixed.
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") {
+      sendJson(res, 200, {
+        status: "ok",
+        mode: "docker",
+        dockerReachable: true,
+        lastUpdated: 1,
+        snapshotVersion: "1"
+      });
+      return;
+    }
+    sendJson(res, 500, { code: "daemon_500", message: "snapshot exploded" });
+  });
+
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token",
+    DOCKERMAP_ALLOW_MOCK: "true"
+  });
+
+  const response = await request(api, "/api/status", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.mode, "mixed", "mode must not claim a single coherent source");
+  assert.equal(body.sourceCoherent, false);
+  assert.equal(body.snapshotSource, "mock");
+  assert.equal(body.status, "degraded");
+  assert.ok(body.containers > 0, "mock snapshot still counts");
+});
+
 test("bare /api/v1 answers with a version descriptor instead of 404ing", async () => {
   const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
 

@@ -80,11 +80,15 @@ This starts:
 - Use the Runtime Map workspace to inspect provider nodes, diagnostics, and
   cross-provider edges in one read-only view.
 - Compare what Compose says should exist with what Docker is actually running.
-- Use mock fallback data when Docker is not available. When the daemon is
-  unreachable, the Node API answers with `mode: mock` responses; separately, the
-  browser can enter Demo Mode, which serves fabricated sample data entirely
-  inside the web app (no API calls) so the UI can be inspected without any
-  backend.
+- Use mock fallback data when Docker is not available AND mock fallback is
+  enabled. When the daemon is unreachable, the Node API substitutes
+  route-local mock responses ONLY when `DOCKERMAP_ALLOW_MOCK=true` (the
+  hardened deployment runs with it `false`, so daemon-unreachable routes
+  return errors instead of fabricated data); with it enabled, the responses
+  are stamped `mode: mock` / `source: "mock"` so consumers can tell the bytes
+  are sample data. Separately, the browser can enter Demo Mode, which serves
+  fabricated sample data entirely inside the web app (no API calls) so the UI
+  can be inspected without any backend.
 
 DockerMap is for understanding a host, not controlling it. Write actions are
 planned only after diff previews, backups, confirmations, and rollback behavior
@@ -145,10 +149,16 @@ Field meanings:
 
 - `status` — `ok`, `degraded`, or `offline` (derived from Docker reachability
   and container state).
-- `mode` — `docker` (real Docker data) or `mock` (the Node API's fallback
-  response when the daemon is unreachable). This is distinct from the browser's
-  Demo Mode, which serves fabricated sample data entirely inside the web app
-  without any API calls; a demo-mode browser never shows `mode: mock`.
+- `mode` — `docker` (real Docker data), `mock` (the Node API's fallback
+  response when the daemon is unreachable and `DOCKERMAP_ALLOW_MOCK=true`),
+  or `mixed`. `mixed` means `/daemon/health` and `/daemon/snapshot` resolved
+  from DIFFERENT sources in one response (e.g. health from live Docker while
+  the snapshot fell back to route-local mock): the counts in that payload
+  must not be read as if they share the reported source. `sourceCoherent`
+  and `snapshotSource` expose the split explicitly. This is distinct from
+  the browser's Demo Mode, which serves fabricated sample data entirely
+  inside the web app without any API calls; a demo-mode browser never shows
+  `mode: mock`.
 - `healthy` / `attention` / `offline` — container counts by state, where
   `containers = healthy + attention + offline`.
 

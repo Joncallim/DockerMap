@@ -252,4 +252,30 @@ describe("useSystemModel rebuilds only from a same-generation pair", () => {
     expect(hook.result.current.model?.services[0].name).toBe("web-v2");
     expect(hook.result.current.error).toBeNull();
   });
+
+  it("stamps route-local mock bytes as mock even when live was requested", async () => {
+    // A3 (#85): the Node API can substitute getMockResponse() per route when
+    // DOCKERMAP_ALLOW_MOCK=true. The RESPONSE attests its actual source via
+    // `source: "mock"`; a live-requested fetch that resolves to fabricated
+    // bytes must be stamped mock, never live — otherwise the model would be
+    // mislabelled host data and pass the Copilot host-authority gate.
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
+    await hook.mount();
+    const [s1, r1] = pending.splice(0);
+    s1.resolve(jsonResponse({ ...snapV1, source: "mock" }));
+    r1.resolve(jsonResponse({ ...runtimeV1, source: "mock" }));
+    await flush();
+    expect(hook.result.current.modelProvenance).toBe("mock");
+    expect(hook.result.current.model?.services[0].name).toBe("web");
+  });
+
+  it("keeps live provenance when the response attests docker", async () => {
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
+    await hook.mount();
+    const [s1, r1] = pending.splice(0);
+    s1.resolve(jsonResponse({ ...snapV1, source: "docker" }));
+    r1.resolve(jsonResponse({ ...runtimeV1, source: "docker" }));
+    await flush();
+    expect(hook.result.current.modelProvenance).toBe("live");
+  });
 });

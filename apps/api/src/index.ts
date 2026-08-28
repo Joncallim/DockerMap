@@ -478,7 +478,9 @@ function getMockResponse<T>(path: string): T {
   }
 
   if (path === "/daemon/snapshot") {
-    return mockSnapshot as T;
+    // Actual source stamp: the Node API's route-local fallback fabricated
+    // these bytes, so they must attest "mock" — never "docker" (#85 A3).
+    return { ...mockSnapshot, source: "mock" } as T;
   }
 
   if (path === "/daemon/graph") {
@@ -570,7 +572,8 @@ function getMockResponse<T>(path: string): T {
           message: "Runtime map is using Node mock fallback"
         }
       ],
-      lastUpdated: mockSnapshot.lastUpdated ?? Date.now()
+      lastUpdated: mockSnapshot.lastUpdated ?? Date.now(),
+      source: "mock"
     };
     return runtimeMap as T;
   }
@@ -616,7 +619,7 @@ function getMockResponse<T>(path: string): T {
       level: "info",
       message: `${container.name} running on ${container.image}`
     }));
-    return publishLogsResponse(service, entries, q, cursor, limit) as T;
+    return { ...publishLogsResponse(service, entries, q, cursor, limit), source: "mock" } as T;
   }
 
   if (path.startsWith("/daemon/compose/scan")) {
@@ -885,12 +888,21 @@ registerRoute("api-health", async (_req, res) => {
 
 /**
  * Classify a Docker container status text for /api/status. Docker's
- * ContainerSummary.status is free-form ("Up 3 hours", "Exited (0) ..."),
- * so normalize on the first whitespace/paren-delimited token, mirroring
- * the web model's stateForStatus.
+ * ContainerSummary.status is free-form ("Up 3 hours", "Exited (0) ...").
+ * The parenthesized HEALTH marker, when present, wins over the leading
+ * state token: "Up 3 hours (unhealthy)" must count as attention, never
+ * running/healthy via the "up" token (#87 D1).
  */
 function containerStatusKind(status: string): "running" | "offline" | "attention" {
-  const key = status.toLowerCase().split(/[\s(]/)[0];
+  const lower = status.toLowerCase();
+  const healthMatch = lower.match(/\((?:health:\s*)?([a-z]+)\)/);
+  if (healthMatch) {
+    const marker = healthMatch[1];
+    if (marker === "unhealthy" || marker === "degraded") return "attention";
+    if (marker === "starting" || marker === "started" || marker === "updating") return "attention";
+    if (marker === "healthy") return "running";
+  }
+  const key = lower.split(/[\s(]/)[0];
   if (key === "up" || key === "running") return "running";
   if (key === "exited" || key === "dead") return "offline";
   return "attention";
@@ -902,6 +914,17 @@ registerRoute("status", async (_req, res) => {
       fetchDaemon<HealthResponse>("/daemon/health"),
       fetchDaemon<DockerSnapshot>("/daemon/snapshot")
     ]);
+
+    // Source coherence (#88 F4): /daemon/health and /daemon/snapshot are
+    // fetched independently and EACH may fall back to route-local mock. The
+    // reported `mode` must describe the SAME source as the container counts;
+    // if they disagree (e.g. health succeeded from Docker while the snapshot
+    // fell back to Node mock), the response must not claim a coherent
+    // docker/mock source — it reports the actual sources and marks the
+    // combined payload as mixed so external dashboards cannot read
+    // `mode: docker` next to sample counts.
+    const snapshotSource = snapshot.source ?? health.mode;
+    const coherent = snapshotSource === health.mode;
 
     const containers = snapshot.containers.length;
     const containersRunning = snapshot.containers.filter(
@@ -923,8 +946,12 @@ registerRoute("status", async (_req, res) => {
           : "offline"
         : attention + offline > 0
           ? "degraded"
-          : "ok",
-      mode: health.mode,
+          : coherent
+            ? "ok"
+            : "degraded",
+      mode: coherent ? health.mode : "mixed",
+      sourceCoherent: coherent,
+      snapshotSource,
       dockerReachable: health.dockerReachable,
       containers,
       containersRunning,

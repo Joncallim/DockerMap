@@ -354,6 +354,7 @@ impl DaemonCache {
                 edges: Vec::new(),
                 diagnostics: Vec::new(),
                 last_updated,
+                ..Default::default()
             },
         }
     }
@@ -465,6 +466,7 @@ fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
         edges: Vec::new(),
         diagnostics: Vec::new(),
         last_updated,
+        ..Default::default()
     }
 }
 
@@ -721,6 +723,7 @@ fn publish_log_response(
         service: service.map(redact_runtime_display_text),
         entries,
         next_cursor,
+        ..Default::default()
     }
 }
 
@@ -925,6 +928,7 @@ fn build_snapshot(
         networks: network_records,
         volumes: volume_records,
         last_updated: unix_timestamp_millis(),
+        ..Default::default()
     }
 }
 
@@ -4455,7 +4459,13 @@ async fn get_health(State(state): State<AppState>) -> Json<HealthResponse> {
 
 async fn get_snapshot(State(state): State<AppState>) -> Json<DockerSnapshot> {
     let cache = state.cache.read().await;
-    Json(publish_docker_snapshot(&cache.snapshot))
+    let mut published = publish_docker_snapshot(&cache.snapshot);
+    // Actual source stamp: these bytes came from live Docker collection or
+    // the daemon's mock fallback — attested by the cache's runtime mode so
+    // the browser can never mistake fabricated sample bytes for host data
+    // (#85 A3).
+    published.source = Some(cache.health.mode.clone());
+    Json(published)
 }
 
 async fn get_graph(State(state): State<AppState>) -> Json<GraphResponse> {
@@ -4470,7 +4480,11 @@ async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
     // request, which previously ran ~8 blocking provider subprocesses
     // synchronously on a Tokio worker per call.
     let cache = state.cache.read().await;
-    Json(cache.runtime_map.clone())
+    let mut runtime_map = cache.runtime_map.clone();
+    // Actual source stamp, matching /daemon/snapshot (#85 A3): the runtime
+    // map bytes are live-host or daemon-mock, attested by the cache mode.
+    runtime_map.source = Some(cache.health.mode.clone());
+    Json(runtime_map)
 }
 
 async fn get_containers(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -4564,6 +4578,7 @@ async fn get_logs(
                 service: None,
                 entries: Vec::new(),
                 next_cursor: None,
+                source: Some(cache_mode(&state).await),
             }));
         };
         let collector = docker_collector(&state)
@@ -4583,7 +4598,19 @@ async fn get_logs(
         )
     };
 
-    Ok(Json(response))
+    let mut stamped = response;
+    // Actual source stamp: fabricated mock log lines must never be shown as
+    // live host activity, and live log lines must never be relabelled sample
+    // (#87 E1). The daemon attests the real source of the bytes here.
+    stamped.source = Some(cache_mode(&state).await);
+    Ok(Json(stamped))
+}
+
+/// The cache's actual runtime mode ("docker" when Docker is reachable,
+/// "mock" when the daemon fell back to fabricated data) — the authoritative
+/// source stamp for every model-bearing response the daemon serves.
+async fn cache_mode(state: &AppState) -> RuntimeMode {
+    state.cache.read().await.health.mode.clone()
 }
 
 fn compose_file_unavailable(diagnostic: String) -> ApiError {
@@ -7978,6 +8005,7 @@ mod tests {
             edges: vec![edge.clone(), edge],
             diagnostics: Vec::new(),
             last_updated: 0,
+            ..Default::default()
         };
 
         redact_runtime_map(&mut map);

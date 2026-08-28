@@ -11,7 +11,7 @@ type LevelFilter = "all" | "info" | "warn" | "error";
 const PAGE_SIZE = 100;
 
 export default function Logs() {
-  const { model, evidenceMode, modelProvenance } = useApp();
+  const { model, evidenceMode } = useApp();
   const [service, setService] = useState("");
   const [level, setLevel] = useState<LevelFilter>("all");
   const [search, setSearch] = useState("");
@@ -21,12 +21,16 @@ export default function Logs() {
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Log bytes are sample data when the authority is exactly (demo,demo) or
-  // (mock,mock) — AND in demo mode generally, because fetchJson short-circuits
-  // before any fetch there, so demo-mode log bytes are always fabricated
-  // regardless of the provenance field's transient state. Never tag real
-  // (live) streams (#76).
-  const sampleLogs = evidenceMode === "demo" || (evidenceMode === "mock" && modelProvenance === "mock");
+  // The log RESPONSE's own attested source ("docker" live / "mock" sample),
+  // stamped by the daemon route layer and the Node API mock fallback (#87
+  // E1). The tag MUST come from these bytes' own provenance — never inferred
+  // from the system model's snapshot/runtime provenance, because /api/logs
+  // can fall back to Node mock independently of the snapshot. In demo mode
+  // fetchJson short-circuits before any fetch, so demo log bytes are always
+  // fabricated regardless.
+  const [logSource, setLogSource] = useState<"docker" | "mock" | null>(null);
+  const logSourceRef = useRef<"docker" | "mock" | null>(null);
+  const sampleLogs = evidenceMode === "demo" || logSource === "mock";
 
   const path = service ? `/api/logs?service=${encodeURIComponent(service)}` : "/api/logs";
 
@@ -52,6 +56,12 @@ export default function Logs() {
     setLoading(true);
     try {
       const data = await fetchLogs(path);
+      // Adopt the log response's own attested source alongside its page:
+      // the first page (and every path/service change) replaces the whole
+      // stream, so there is nothing to mislabel across the boundary here —
+      // the reset matters in refreshLive's merge path (#87 E1).
+      logSourceRef.current = data.source ?? null;
+      setLogSource(logSourceRef.current);
       setEntries(data.entries);
       setNextCursor(data.nextCursor);
       // A fresh selection (first load or service/path change) starts from an
@@ -80,6 +90,22 @@ export default function Logs() {
   const refreshLive = useCallback(async () => {
     try {
       const data = await fetchLogs(path);
+      // Source-partition boundary (#87 E1): if the log bytes' attested source
+      // flipped since the last fetch (live → mock or mock → live, e.g. the
+      // daemon fell back or recovered while the screen stayed mounted),
+      // merging would relabel OLD entries with the NEW source. Reset the
+      // stream wholesale at the boundary instead.
+      const nextSource = data.source ?? null;
+      if (logSourceRef.current !== null && nextSource !== null && logSourceRef.current !== nextSource) {
+        logSourceRef.current = nextSource;
+        setLogSource(nextSource);
+        setEntries(data.entries);
+        setNextCursor(data.nextCursor);
+        setError(null);
+        return;
+      }
+      logSourceRef.current = nextSource;
+      setLogSource(nextSource);
       setEntries((current) => {
         if (current.length === 0) {
           // Nothing on screen yet (e.g. a first load that raced the stream):
