@@ -99,6 +99,9 @@ restricted, and only the documented explicit `host` mode enables full-host
 providers. This is a security tightening, not a response or provider contract
 change.
 
+The ledger is cumulative: later #64 slices must add their boundary and
+focused evidence here before the epic's final parity certification.
+
 The intended extraction order is config/auth/publication and daemon transport;
 then Docker/Compose; then individual providers; then core domains and API
 handlers. This order keeps authority-sensitive seams reviewable first without
