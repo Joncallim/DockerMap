@@ -7,9 +7,22 @@ services:
       # unauthenticated read-only, so do not expose it on the LAN. For remote
       # access, set DOCKERMAP_API_TOKEN (see .env.example) and publish on the
       # interface of your choice, e.g. "3233:3233".
-      - "127.0.0.1:3233:3233"
+      - "${DOCKERMAP_BIND_ADDRESS:-127.0.0.1}:${DOCKERMAP_FRONTEND_PORT:-3233}:3233"
+    entrypoint: ["/frontend-entrypoint.sh"]
+    user: "10001:10003"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:mode=1777
+      - /run:mode=1777
+      - /var/cache/nginx:mode=1777
+      - /var/lib/nginx:mode=1777
     environment:
       DOCKERMAP_ALLOW_MOCK: "true"
+      DOCKERMAP_ALLOW_REMOTE_DAEMON: "true"
+      DOCKERMAP_DAEMON_URL: http://collector:4100
+      DOCKERMAP_DAEMON_TOKEN: ${DOCKERMAP_DAEMON_TOKEN:?set a random DockerMap daemon token}
       # Pass through only when configured by the deployer; the healthcheck
       # script reads it at runtime rather than interpolating it into Docker.
       DOCKERMAP_API_TOKEN:
@@ -18,9 +31,58 @@ services:
       # This container has its own PID namespace; never infer host collectors
       # from incidental markers such as /.dockerenv.
       DOCKERMAP_PID_NAMESPACE: "restricted"
-    volumes:
-      # Read-only access to Docker so DockerMap can see real containers.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Mount the Compose project you want DockerMap to scan.
-      - ./:/opt/dockermap/project:ro
+    networks: [dockermap-api]
     restart: unless-stopped
+
+  collector:
+    build: .
+    image: dockermap:local
+    entrypoint: ["/usr/local/bin/dockermap-daemon"]
+    user: "10003:10003"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DOCKERMAP_ALLOW_MOCK: "true"
+      DOCKERMAP_DAEMON_HOST: 0.0.0.0
+      DOCKERMAP_DAEMON_PORT: "4100"
+      DOCKERMAP_ALLOW_REMOTE_DAEMON: "true"
+      DOCKERMAP_DAEMON_TOKEN: ${DOCKERMAP_DAEMON_TOKEN:?set a random DockerMap daemon token}
+      DOCKERMAP_DOCKER_GATEWAY_SOCKET: /run/dockermap/docker-read.sock
+      DOCKERMAP_PID_NAMESPACE: restricted
+    volumes:
+      - ./:/opt/dockermap/project:ro
+      - docker-read-socket:/run/dockermap
+    networks: [dockermap-api]
+    restart: unless-stopped
+
+  docker-read-gateway:
+    build: .
+    image: dockermap:local
+    entrypoint: ["/usr/local/bin/dockermap-docker-gateway"]
+    user: "10002:10003"
+    group_add: ["${DOCKER_GID:-0}"]
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    # The filtered Unix socket is the only collector/gateway transport.  A
+    # gateway network would only enlarge its reachable surface.
+    network_mode: "none"
+    environment:
+      DOCKERMAP_DOCKER_GATEWAY_SOCKET: /run/dockermap/docker-read.sock
+      DOCKERMAP_RAW_DOCKER_SOCKET: /var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - docker-read-socket:/run/dockermap
+    restart: unless-stopped
+
+networks:
+  dockermap-api:
+    internal: true
+    ipam:
+      config:
+        # Explicitly override this with an unused private /24 on crowded hosts.
+        - subnet: ${DOCKERMAP_INTERNAL_SUBNET:-10.254.251.0/24}
+
+volumes:
+  docker-read-socket:

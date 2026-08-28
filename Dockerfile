@@ -34,6 +34,15 @@ FROM node:22-bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends nginx procps curl \
     && rm -rf /var/lib/apt/lists/*
 
+# The split deployment uses one shared non-root group for the filtered Unix
+# socket.  The gateway receives the host Docker-socket GID as a supplemental
+# group at runtime; neither frontend nor collector does.
+RUN groupadd --gid 10003 dockermap && \
+    useradd --uid 10001 --gid 10003 --create-home --home-dir /nonexistent --shell /usr/sbin/nologin dockermap-frontend && \
+    useradd --uid 10002 --gid 10003 --create-home --home-dir /nonexistent --shell /usr/sbin/nologin dockermap-gateway && \
+    useradd --uid 10003 --gid 10003 --create-home --home-dir /nonexistent --shell /usr/sbin/nologin dockermap-collector && \
+    mkdir -p /run/dockermap && chown 10002:10003 /run/dockermap && chmod 0770 /run/dockermap
+
 WORKDIR /opt/dockermap
 
 COPY --from=js-builder /src/node_modules ./node_modules
@@ -50,9 +59,11 @@ COPY --from=rust-builder /src/crates/target/release/dockermap-daemon /usr/local/
 COPY --from=rust-builder /src/crates/target/release/dockermap-docker-gateway /usr/local/bin/dockermap-docker-gateway
 
 COPY deploy/docker/nginx.conf /etc/nginx/sites-enabled/default
+COPY deploy/docker/nginx-main.conf /etc/nginx/nginx.conf
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
+COPY deploy/docker/frontend-entrypoint.sh /frontend-entrypoint.sh
 COPY deploy/docker/healthcheck.sh /usr/local/bin/dockermap-healthcheck
-RUN chmod +x /entrypoint.sh /usr/local/bin/dockermap-healthcheck
+RUN chmod +x /entrypoint.sh /frontend-entrypoint.sh /usr/local/bin/dockermap-healthcheck
 
 ENV NODE_ENV=production \
     PORT=4000 \
