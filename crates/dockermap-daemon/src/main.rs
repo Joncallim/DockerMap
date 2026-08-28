@@ -5014,6 +5014,83 @@ mod tests {
     };
     use tower::util::ServiceExt;
 
+    fn test_daemon_state() -> AppState {
+        AppState {
+            cache: Arc::new(RwLock::new(DaemonCache::mock())),
+            docker: Arc::new(RwLock::new(None)),
+            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_bearer_boundary_allows_only_the_exact_configured_token() {
+        let allowed = daemon_router(test_daemon_state(), DaemonAuthToken(None))
+            .oneshot(
+                Request::builder()
+                    .uri("/daemon/health")
+                    .body(axum::body::Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("daemon router should respond");
+        assert_eq!(allowed.status(), StatusCode::OK);
+
+        for header in [
+            None,
+            Some("Bearer wrong-token"),
+            Some("bearer expected-token"),
+            Some("Bearer expected-token extra"),
+            Some("Basic expected-token"),
+        ] {
+            let mut request = Request::builder().uri("/daemon/health");
+            if let Some(header) = header {
+                request = request.header("Authorization", header);
+            }
+            let response = daemon_router(
+                test_daemon_state(),
+                DaemonAuthToken(Some(Arc::<str>::from("expected-token"))),
+            )
+            .oneshot(
+                request
+                    .body(axum::body::Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("daemon router should respond");
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "header={header:?}"
+            );
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("unauthorized body should be readable");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body)
+                    .expect("unauthorized body should be JSON"),
+                serde_json::json!({
+                    "code": "unauthorized",
+                    "message": "A valid Bearer token is required for this DockerMap daemon route"
+                })
+            );
+        }
+
+        let accepted = daemon_router(
+            test_daemon_state(),
+            DaemonAuthToken(Some(Arc::<str>::from("expected-token"))),
+        )
+        .oneshot(
+            Request::builder()
+                .uri("/daemon/health")
+                .header("Authorization", "Bearer expected-token")
+                .body(axum::body::Body::empty())
+                .expect("request should build"),
+        )
+        .await
+        .expect("daemon router should respond");
+        assert_eq!(accepted.status(), StatusCode::OK);
+    }
+
     #[test]
     fn docker_stub_log_errors_have_a_fixed_location_neutral_client_message() {
         // Mirrors the body returned by a Unix-socket Docker stub during logs
