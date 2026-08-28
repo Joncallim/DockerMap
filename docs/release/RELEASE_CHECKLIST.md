@@ -45,8 +45,14 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
   with trusted header, web 200) — running the script itself remains open evidence.
 - [ ] Confirm direct remote access to `127.0.0.1:4100` is impossible from another machine.
   (Daemon binds loopback; external-port confirmation not yet recorded this track.)
-- [x] Confirm `/api/snapshot` returns `401` without a bearer token when bypassing the proxy.
-  Verified against the live daemon (2026-08-27).
+- [ ] Confirm `/api/snapshot` returns `401` without a bearer token when bypassing the proxy.
+  Re-opened 2026-08-27: the prior check verified the DAEMON endpoint's
+  bearer gate, which is a different auth contract than the Node API's. In
+  forward-auth mode the Node `/api/snapshot` requires the trusted identity
+  header; the daemon `/daemon/snapshot` requires its daemon bearer token.
+  Record evidence against EACH endpoint separately: (a) Node API
+  `/api/snapshot` without the trusted identity header → 401/403, and (b)
+  daemon `/daemon/snapshot` without the daemon bearer token → 401.
 - [ ] Confirm `/api/health`, `/api/snapshot`, `/api/runtime/map`, `/api/compose/scan`, and `/api/events/stream` work through the proxy.
   (Snapshot/health verified; full route matrix through Authentik not yet recorded.)
 - [ ] Update `README.md`, `docs/deployment/DEPLOYMENT.md`, `docs/deployment/REVERSE_PROXY.md`, `docs/testing/TESTING_PLAN.md`, and `docs/security/THREAT_MODEL.md` for any release-time behavior changes.

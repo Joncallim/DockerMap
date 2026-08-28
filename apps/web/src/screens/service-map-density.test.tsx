@@ -35,7 +35,7 @@ function renderMap(source: DockerSnapshot) {
 describe("high-density Service Map", () => {
   it("keeps the default graph to recorded topology while retaining every observed service in the directory", () => {
     const html = renderMap(snapshot());
-    expect(html).toContain("Observed services</span><strong class=\"metric-value\">32");
+    expect(html).toContain("Services in this snapshot</span><strong class=\"metric-value\">32");
     expect(html).toContain("Resolved start-order links</span><strong class=\"metric-value\">2");
     expect(html).toContain("No recorded declaration</span><strong class=\"metric-value\">29");
     // The graph has only the three evidence-connected services, not 32 labels.
@@ -81,5 +81,33 @@ describe("high-density Service Map", () => {
     const html = renderToStaticMarkup(<ServiceMap model={model} selectedId={null} onSelect={() => {}} filter={() => false} emptyMessage="No attention services in this snapshot." />);
     expect(html).toContain("No attention services in this snapshot.");
     expect(html).toContain('role="status"');
+  });
+
+  it("counts collided duplicate occurrences separately in the truth metric", () => {
+    // Two preserved records with the SAME collided id, BOTH carrying raw
+    // declarations: the metric must count 2 occurrences, not collapse them
+    // to a Set of size 1 and falsely report a third service as having none
+    // (#84 B1).
+    const source = snapshot([
+      { ...containers[0], id: "dup", name: "dup-a", dependsOn: ["ghost"] },
+      { ...containers[1], id: "dup", name: "dup-b", dependsOn: ["ghost"] },
+      { ...containers[2], id: "plain", name: "plain", dependsOn: [] }
+    ]);
+    const html = renderMap(source);
+    expect(html).toContain("Services with recorded declarations</span><strong class=\"metric-value\">2");
+    expect(html).toContain("No recorded declaration</span><strong class=\"metric-value\">1");
+  });
+
+  it("never labels snapshot bytes as observed on sample models", () => {
+    const source = snapshot();
+    const value: AppContextValue = { model: buildModel(source, runtime), modelProvenance: "mock", loading: false, error: null, health: null, tick: 0, evidenceMode: "mock", openCommand: () => {} };
+    const html = renderToStaticMarkup(<AppContext.Provider value={value}><MemoryRouter initialEntries={["/map"]}><Routes><Route path="/map" element={<MapScreen />} /></Routes></MemoryRouter></AppContext.Provider>);
+    // "Observed" is reserved for direct host observations; sample bytes must
+    // never be described that way (#84 B2).
+    expect(html).not.toContain("Observed services");
+    expect(html).not.toContain("every observed service");
+    expect(html).not.toContain("Observed ports");
+    expect(html).not.toContain("Observed Docker networks");
+    expect(html).not.toContain("DockerMap observed");
   });
 });

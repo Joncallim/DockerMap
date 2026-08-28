@@ -45,7 +45,12 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
   const impact = selected ? computeImpact(model, selected.id) : null;
   const presentStates = new Set(model.services.map((s) => s.state));
   const resolvedTopologyIds = new Set(model.relationships.flatMap((relationship) => [relationship.from, relationship.to]));
-  const servicesWithRecordedDeclarations = new Set(model.services.filter((service) => service.dependencyOccurrences.length > 0 || service.dependents.length > 0).map((service) => service.id));
+  // Count service OCCURRENCES, not canonical ids: two preserved records with
+  // the same collided id each carry their own declarations, so a Set keyed by
+  // service.id would undercount and then falsely report the remaining
+  // occurrences as "no recorded declaration" (#84 B1).
+  const recordedDeclarationCount = model.services.filter((service) => service.dependencyOccurrences.length > 0 || service.dependents.length > 0).length;
+  const noRecordedDeclarationCount = model.services.length - recordedDeclarationCount;
   const selectedContextIds = selected && impact ? new Set([selected.id, ...impact.upstream, ...impact.downstream]) : null;
   const graphFilter = (service: Service) => {
     if (filter && !filter(service)) return false;
@@ -54,17 +59,17 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
   const graphEmptyMessage = stateFilter
     ? "No services match the current filter. Clear the filter to widen the view."
     : selected
-      ? "DockerMap has no resolved Compose start-order relationship for this service. Any recorded unresolved declarations remain in the inspector alongside its observed ports, networks, and storage."
-      : "DockerMap has no resolved Compose start-order declarations in this snapshot. The service directory still lists every observed service.";
+      ? "DockerMap has no resolved Compose start-order relationship for this service. Any recorded unresolved declarations remain in the inspector alongside its ports, networks, and storage."
+      : "DockerMap has no resolved Compose start-order declarations in this snapshot. The service directory still lists every service.";
   const selectService = (id: string | null) => {
     if (id) {
       setSelectedId(id);
       focusTokenRef.current += 1;
       setFocusRequest({ id, token: focusTokenRef.current });
     } else {
-      // Mouse toggle-off on a selected graph node: restore focus to the
-      // service's directory entry so keyboard navigation is never dropped
-      // on body after the node unmounts (keyboard path can't reach this).
+      // Toggle-off (mouse click or Enter/Space on an already-selected graph
+      // node): restore focus to the service's directory entry so keyboard
+      // navigation is never dropped on body after the node unmounts.
       setReturnFocusId(selectedId);
       setSelectedId(null);
     }
@@ -87,17 +92,17 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
       </header>
 
       <section className="story map-coverage" aria-label="Service map coverage">
-        <Metric label="Observed services" value={model.services.length} />
+        <Metric label="Services in this snapshot" value={model.services.length} />
         <Metric label="Resolved start-order links" value={model.relationships.length} />
-        <Metric label="Services with recorded declarations" value={servicesWithRecordedDeclarations.size} />
-        <Metric label="No recorded declaration" value={model.services.length - servicesWithRecordedDeclarations.size} />
+        <Metric label="Services with recorded declarations" value={recordedDeclarationCount} />
+        <Metric label="No recorded declaration" value={noRecordedDeclarationCount} />
       </section>
 
       <div className="map-layout">
         <div className="stack">
           <section className="map-evidence-note" aria-live="polite">
             <Icon name="layers" size={15} />
-            <span>The graph shows Compose start-order declarations DockerMap observed. Shared networks and storage are context, not proof of communication or causality.</span>
+            <span>The graph shows Compose start-order declarations in the current snapshot. Shared networks and storage are context, not proof of communication or causality.</span>
           </section>
           <div className="map-stage">
             <ServiceMap model={model} selectedId={selectedId} onSelect={selectService} filter={graphFilter} focusNodeId={focusRequest?.id ?? null} focusToken={focusRequest?.token} emptyMessage={graphEmptyMessage} />
@@ -108,7 +113,7 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
           {!selected ? (
             <div className="inspector-body">
               <h2>Select a service to inspect</h2>
-              <p className="muted-line">The directory contains every observed service. Select one to see declared start order, derived reachability, and observed network and storage context.</p>
+              <p className="muted-line">The directory contains every service in this snapshot. Select one to see declared start order, derived reachability, and network and storage context.</p>
               <ServiceDirectory model={model} services={visibleServices} selectedId={selectedId} onSelect={selectService} buttonRefs={directoryRefs} />
             </div>
           ) : (
@@ -126,9 +131,9 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
               <p className="muted-line">Derived from resolved Compose start-order declarations; it does not predict runtime failure impact.</p>
               <Relist title="Declares start order after" model={model} occurrences={selected.dependencyOccurrences} empty="No Compose start-order declaration recorded" />
               <Relist title="Declared after by" model={model} occurrences={selected.dependents.map((id) => ({ ref: id, resolvedId: id }))} empty="No service declares start order after this one" />
-              {selected.ports.length > 0 && <div className="inspector-section"><h4>Observed ports</h4><div className="tag-wrap">{selected.ports.map((p, index) => <Tag key={`${p}-${index}`} icon="link">{p === "" ? UNAVAILABLE_PORT : p}</Tag>)}</div></div>}
+              {selected.ports.length > 0 && <div className="inspector-section"><h4>Ports</h4><div className="tag-wrap">{selected.ports.map((p, index) => <Tag key={`${p}-${index}`} icon="link">{p === "" ? UNAVAILABLE_PORT : p}</Tag>)}</div></div>}
               <KeyValue label="Image" value={<IdentityRef name={selected.image} fallback={UNAVAILABLE_IMAGE} to={model.imageByRef.has(selected.image) ? `/images/${encodeURIComponent(selected.image)}` : undefined} className="entity-detail-link" />} mono />
-              {selected.networks.length > 0 && <div className="inspector-section"><h4>Observed Docker networks</h4><p className="muted-line">Membership can allow communication; it does not prove communication.</p><div className="tag-wrap">{selected.networks.map((network, index) => model.networkByName.has(network) ? <Link key={`${network}-${index}`} className="ref-chip" to={`/networks/${encodeURIComponent(network)}`}>{network}</Link> : <Tag key={`${network}-${index}`} icon="network"><IdentityRef name={network} fallback={UNAVAILABLE_NETWORK} /></Tag>)}</div></div>}
+              {selected.networks.length > 0 && <div className="inspector-section"><h4>Docker networks</h4><p className="muted-line">Membership can allow communication; it does not prove communication.</p><div className="tag-wrap">{selected.networks.map((network, index) => model.networkByName.has(network) ? <Link key={`${network}-${index}`} className="ref-chip" to={`/networks/${encodeURIComponent(network)}`}>{network}</Link> : <Tag key={`${network}-${index}`} icon="network"><IdentityRef name={network} fallback={UNAVAILABLE_NETWORK} /></Tag>)}</div></div>}
               {selected.mounts.some((mount) => mount.kind === "named_volume") && <NamedVolumes model={model} service={selected} />}
               {model.byName.has(selected.name) ? <Link className="primary-link" to={`/services/${encodeURIComponent(selected.name)}`}>Open service detail <Icon name="arrow" size={14} /></Link> : <p className="muted-line">Service detail is unavailable for this ambiguous identity.</p>}
             </div>
@@ -141,7 +146,7 @@ export default function MapScreen({ initialSelectedId = null }: { initialSelecte
 
 function ServiceDirectory({ model, services, selectedId, onSelect, buttonRefs }: { model: ReturnType<typeof useApp>["model"]; services: Service[]; selectedId: string | null; onSelect: (id: string | null) => void; buttonRefs: MutableRefObject<Map<string, HTMLButtonElement>> }) {
   if (!model) return null;
-  return <div className="inspector-section"><h3>Service directory ({services.length})</h3>{services.length === 0 ? <EmptyState icon="search" title="No matching services" body="Clear a filter to see every observed service." /> : <ul className="runtime-node-list service-directory">{services.map((service, index) => {
+  return <div className="inspector-section"><h3>Service directory ({services.length})</h3>{services.length === 0 ? <EmptyState icon="search" title="No matching services" body="Clear a filter to see every service." /> : <ul className="runtime-node-list service-directory">{services.map((service, index) => {
     const collided = model.serviceIdCollisions.has(service.id) || model.serviceNameCollisions.has(service.name);
     const selectable = !collided && model.byId.has(service.id);
     const content = <><span className="runtime-node-main"><Icon name={KIND_ICON[service.kind]} size={15} /><span className="runtime-node-copy"><span className={`runtime-node-label${collided ? " collision-identity" : ""}`} title={collided ? COLLISION_HINT : undefined}>{identityText(service.name, UNAVAILABLE_SERVICE)}</span><span className="runtime-node-meta">{service.kind} · inferred{service.dependencyOccurrences.length || service.dependents.length ? " · recorded start order" : " · no recorded start order"}</span></span></span><StatePill state={service.state} />{collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}</>;

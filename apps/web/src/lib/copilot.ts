@@ -33,6 +33,14 @@ export interface CopilotAnswer {
   references: string[];
   /** The strongest evidence kind the answer can claim (#61 vocabulary). */
   evidence: EvidenceKind;
+  /**
+   * True when the answer was refused because the model's source authority is
+   * unresolved (mode/provenance do not form an exact pair). The UI renders a
+   * DEDICATED source-authority status for this — it must not be presented as
+   * "Not collected" (the collector-unavailable claim kind), because the data
+   * may well be collected; only its source is unverifiable (#85 A7).
+   */
+  authorityUnresolved?: boolean;
 }
 
 export interface CopilotSuggestion {
@@ -79,7 +87,8 @@ export function answer(model: SystemModel, raw: string, mode: EvidenceMode | nul
         "Wait until the live or sample authority is established and ask again."
       ],
       references: [],
-      evidence: "unavailable"
+      evidence: "unavailable",
+      authorityUnresolved: true
     };
   }
 
@@ -88,7 +97,7 @@ export function answer(model: SystemModel, raw: string, mode: EvidenceMode | nul
   if (/unhealthy|broken|down|attention|wrong/.test(lower) && !named) {
     return unhealthyAnswer(model, q, authority);
   }
-  if (/depend|rely|use[ds]?\b|consumer|using/.test(lower) && named) {
+  if (/depend|rely|use[ds]?\b|consumer|using|declares?\s+start\s+order/.test(lower) && named) {
     return dependentsAnswer(model, named, q, authority);
   }
   if (/why|offline|failing|unavailable|broke/.test(lower) && named) {
@@ -172,8 +181,12 @@ function unhealthyAnswer(model: SystemModel, q: string, authority: Authority): C
 }
 
 function dependentsAnswer(model: SystemModel, service: Service, q: string, authority: Authority): CopilotAnswer {
-  const impact = computeImpact(model, service.id);
-  const names = impact.downstream.map((id) => model.byId.get(id)?.name ?? id);
+  // Direct declaration question: only services that DECLARE start order
+  // directly after this one. computeImpact().downstream is TRANSITIVE
+  // reachability (A→B→C makes C downstream of A), so it cannot answer "who
+  // declares start order after X" — a transitive chain is not a direct
+  // declaration (#85 A4).
+  const names = service.dependents.map((id) => model.byId.get(id)?.name ?? id);
   if (names.length === 0) {
     return {
       question: q,
@@ -188,7 +201,7 @@ function dependentsAnswer(model: SystemModel, service: Service, q: string, autho
   }
   return {
     question: q,
-    headline: `${names.length} service${names.length === 1 ? "" : "s"} declare start order after ${identityText(service.name, UNAVAILABLE_SERVICE)}`,
+    headline: `${names.length} service${names.length === 1 ? "" : "s"} ${names.length === 1 ? "declares" : "declare"} start order after ${identityText(service.name, UNAVAILABLE_SERVICE)}`,
     body: [
       `These services declare in their Compose definitions that they start after ${identityText(service.name, UNAVAILABLE_SERVICE)}:`,
       ...names.map((n) => `• ${identityText(n, UNAVAILABLE_SERVICE)}`)
@@ -210,50 +223,132 @@ function whyOfflineAnswer(model: SystemModel, service: Service, q: string, autho
   }
   // Only attention-triggering upstream states (warning/degraded/offline) are
   // "unhealthy". Unknown/updating upstreams are missing/transitioning
-  // evidence, not an observed unhealthy cause (#75 E).
-  const unhealthyUpstreams = service.dependsOn
+  // evidence, not an observed unhealthy cause (#75 E). Even with all healthy
+  // upstreams, Compose start-order is NOT runtime causality evidence, so the
+  // failure cause can never be localized to this service (#85 A5): the honest
+  // statements are "no upstream problem observed" (cause remains unknown) or
+  // "upstream evidence incomplete" (cause not established).
+  const upstreams = service.dependsOn
     .map((id) => model.byId.get(id))
-    .filter((dep): dep is Service => dep !== undefined && needsAttention(dep.state));
+    .filter((dep): dep is Service => dep !== undefined);
+  const unhealthyUpstreams = upstreams.filter((dep) => needsAttention(dep.state));
+  const incompleteUpstreams = upstreams.filter((dep) => dep.state === "unknown" || dep.state === "updating");
   const body = [`${identityText(service.name, UNAVAILABLE_SERVICE)} is currently ${service.state} (${identityText(service.status, UNAVAILABLE_SERVICE_STATUS)}).`];
   if (unhealthyUpstreams.length > 0) {
     body.push("Inferred cause — an upstream dependency is also unhealthy (heuristic, not measured):");
     for (const dep of unhealthyUpstreams) body.push(`• ${identityText(dep.name, UNAVAILABLE_SERVICE)} is ${dep.state}`);
+  } else if (incompleteUpstreams.length > 0) {
+    body.push("Inferred — upstream evidence is incomplete: one or more declared upstreams have unknown or transitioning state, so the cause is not established.");
+    for (const dep of incompleteUpstreams) body.push(`• ${identityText(dep.name, UNAVAILABLE_SERVICE)} is ${dep.state}`);
   } else {
-    body.push("Inferred — none of its declared upstreams are unhealthy, so the cause is likely local to this service (heuristic, not measured).");
+    body.push("Inferred — no declared upstream is currently unhealthy, but the cause is not established: Compose start order is not runtime causality evidence, and this service's failure may be local or may be upstream.");
   }
   return { question: q, headline: `Why ${identityText(service.name, UNAVAILABLE_SERVICE)} is ${service.state}`, body, references: [service.name, ...unhealthyUpstreams.map((d) => d.name)], evidence: evidenceFor("inferred", authority) };
 }
 
-/** Numeric port of a container port string ("8080/tcp", "443:443", "8080"). */
-function portNumber(port: string): number | null {
-  const match = port.match(/^\s*(\d+)/);
-  return match ? Number(match[1]) : null;
+/**
+ * Parsed container port: the daemon serializes Docker ports as
+ * `public:private/proto` when public_port > 0 (published) and as
+ * `private/proto` when the port is only exposed/unpublished (#85 A6).
+ * `published` is the host-facing public side; `exposed` is the container's
+ * private side. A private-only string ("8080/tcp") is EXPOSED, never
+ * published — claiming "publishes port 8080" for it would be a false
+ * host-publication statement.
+ */
+function parsePort(port: string): { published: number | null; exposed: number | null } {
+  const body = port.split("/", 1)[0] ?? port;
+  if (body === "") return { published: null, exposed: null };
+  const parts = body.split(":", 2);
+  if (parts.length === 2 && parts[0] !== "") {
+    const publicSide = Number(parts[0]);
+    const privateSide = Number(parts[1]);
+    return {
+      published: Number.isFinite(publicSide) && publicSide > 0 ? publicSide : null,
+      exposed: Number.isFinite(privateSide) ? privateSide : null
+    };
+  }
+  const privateSide = Number(parts[0]);
+  return { published: null, exposed: Number.isFinite(privateSide) ? privateSide : null };
+}
+
+/**
+ * One shared grammar for dispatch AND extraction (#85 A8): "port 443",
+ * "listening on 443", "exposes 8080", or a bare number in a port context.
+ * Returns the queried port number or null when the query names no port.
+ */
+function extractPortNumber(lower: string): number | null {
+  const matches = [
+    lower.match(/port\s*(\d+)/),
+    lower.match(/listening on\s*(\d+)/),
+    lower.match(/(?:exposes?|exposing)\s*(\d+)/),
+    lower.match(/(?:using|for)\s*port\s*(\d+)/)
+  ];
+  for (const match of matches) {
+    if (match) return Number(match[1]);
+  }
+  return null;
 }
 
 function portAnswer(model: SystemModel, q: string, lower: string, authority: Authority): CopilotAnswer {
-  const match = lower.match(/port\s*(\d+)/);
-  const port = match ? Number(match[1]) : null;
-  const hits = model.services.filter((s) => {
-    const numbers = s.ports.map(portNumber).filter((n): n is number => n !== null);
-    return port === null ? numbers.length > 0 : numbers.includes(port);
-  });
+  const port = extractPortNumber(lower);
+  // A service "publishes" the port only when the host-facing public side
+  // matches; an exposed (private-only) port matches the exposure query but
+  // is never described as published.
+  const publishedHits = model.services.filter((s) =>
+    s.ports.some((p) => parsePort(p).published === port)
+  );
+  const exposedHits = model.services.filter((s) =>
+    s.ports.some((p) => parsePort(p).exposed === port)
+  );
+  // Exposure-oriented wording ("what exposes 80?", "what is listening on
+  // 443?") asks about the CONTAINER-side port. A `80:8080/tcp` service
+  // exposes 8080 — answering an "exposes 80" query with its published side
+  // would be wrong (#89 P2). Restrict such queries to the exposed side.
+  const exposureWording = /expose|exposing|listening on/.test(lower);
   if (port === null) {
     return {
       question: q,
-      headline: "Published ports",
-      body: hits.flatMap((s) => s.ports.filter((p) => p !== "").map((p) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${p}`)),
-      references: hits.map((s) => s.name),
+      headline: "Ports in the snapshot",
+      body: model.services.flatMap((s) => s.ports.filter((p) => p !== "").map((p) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${p}`)),
+      references: model.services.map((s) => s.name),
       evidence: evidenceFor("derived", authority)
     };
   }
-  if (hits.length === 0) {
+  if (exposureWording) {
+    if (exposedHits.length === 0) {
+      return { question: q, headline: `No service exposes port ${port}`, body: [`No service exposes port ${port}.`], references: [], evidence: evidenceFor("derived", authority) };
+    }
+    const lines: string[] = [];
+    for (const s of exposedHits) {
+      const parts = s.ports.filter((p) => parsePort(p).exposed === port);
+      lines.push(`• ${identityText(s.name, UNAVAILABLE_SERVICE)} exposes port ${port} (${parts.join(", ")})`);
+    }
+    return {
+      question: q,
+      headline: `Port ${port}`,
+      body: lines,
+      references: [...new Set(exposedHits.map((s) => s.name))],
+      evidence: evidenceFor("derived", authority)
+    };
+  }
+  if (publishedHits.length === 0 && exposedHits.length === 0) {
     return { question: q, headline: `No service publishes port ${port}`, body: [`No service publishes port ${port}.`], references: [], evidence: evidenceFor("derived", authority) };
+  }
+  const lines: string[] = [];
+  for (const s of publishedHits) {
+    const parts = s.ports.filter((p) => parsePort(p).published === port);
+    lines.push(`• ${identityText(s.name, UNAVAILABLE_SERVICE)} publishes port ${port} (${parts.join(", ")})`);
+  }
+  for (const s of exposedHits) {
+    if (publishedHits.includes(s)) continue;
+    const parts = s.ports.filter((p) => parsePort(p).exposed === port);
+    lines.push(`• ${identityText(s.name, UNAVAILABLE_SERVICE)} exposes port ${port} (${parts.join(", ")})`);
   }
   return {
     question: q,
     headline: `Port ${port}`,
-    body: hits.map((s) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${s.ports.filter((p) => portNumber(p) === port).join(", ")}`),
-    references: hits.map((s) => s.name),
+    body: lines,
+    references: [...new Set([...publishedHits, ...exposedHits].map((s) => s.name))],
     evidence: evidenceFor("derived", authority)
   };
 }
@@ -280,7 +375,7 @@ function serviceOverviewAnswer(model: SystemModel, service: Service, q: string, 
     body: [
       `State: ${service.state} (${identityText(service.status, UNAVAILABLE_SERVICE_STATUS)})`,
       `Image: ${identityText(service.image, UNAVAILABLE_IMAGE)}`,
-      `Declares start order after ${service.dependsOn.length} service${service.dependsOn.length === 1 ? "" : "s"}; ${impact.downstream.length} declare start order after it.`,
+      `Declares start order after ${service.dependsOn.length} service${service.dependsOn.length === 1 ? "" : "s"}; ${service.dependents.length} declare start order after it.`,
       publishedPorts.length ? `Ports: ${publishedPorts.join(", ")}` : "No published ports."
     ],
     references: [service.name],

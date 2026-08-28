@@ -73,7 +73,15 @@ export function useApiResource<T>(
     fetchJson<T>(path, { signal: controller.signal })
       .then((data) => {
         if (!controller.signal.aborted) {
-          setState({ data, error: null, loading: false, generation: attempt, provenance });
+          // ACTUAL source beats the requested one: the API stamps every
+          // model-bearing response with the source of the bytes it served
+          // ("docker" from the daemon route layer, "mock" from its own
+          // route-local fallback). A route-local fallback can therefore never
+          // be mislabelled "live" because the client REQUESTED live (#85 A3).
+          const stamped = (data as { source?: "docker" | "mock" } | null)?.source;
+          const actualProvenance: ModelProvenance | null =
+            stamped === "docker" ? "live" : stamped === "mock" ? "mock" : provenance;
+          setState({ data, error: null, loading: false, generation: attempt, provenance: actualProvenance });
         }
       })
       .catch((error) => {

@@ -91,7 +91,7 @@ pub struct VolumeRecord {
     pub attached_to: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct DockerSnapshot {
     pub containers: Vec<ContainerRecord>,
     pub images: Vec<ImageRecord>,
@@ -99,6 +99,13 @@ pub struct DockerSnapshot {
     pub volumes: Vec<VolumeRecord>,
     #[serde(rename = "lastUpdated")]
     pub last_updated: u64,
+    /// ACTUAL source of these bytes: "docker" (live daemon collection) or
+    /// "mock" (daemon mock fallback). Stamped by the daemon route layer from
+    /// the cache's runtime mode so every model-bearing response attests its
+    /// real source (#85 A3). Optional so existing constructors compile
+    /// untouched; serialized only when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuntimeMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -145,12 +152,17 @@ pub struct LogEntry {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct LogsResponse {
     pub service: Option<String>,
     pub entries: Vec<LogEntry>,
     #[serde(rename = "nextCursor")]
     pub next_cursor: Option<String>,
+    /// ACTUAL source of these bytes: "docker" or "mock" (#85 A3 / #87 E1).
+    /// Stamped by the daemon route layer from the cache's runtime mode so
+    /// fabricated mock log lines can never be shown as live host activity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuntimeMode>,
 }
 
 /// Upper bound for a single log page returned by any provider path.
@@ -939,13 +951,17 @@ pub struct RuntimeMapDiagnostic {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct RuntimeMap {
     pub nodes: Vec<RuntimeMapNode>,
     pub edges: Vec<RuntimeMapEdge>,
     pub diagnostics: Vec<RuntimeMapDiagnostic>,
     #[serde(rename = "lastUpdated")]
     pub last_updated: u64,
+    /// ACTUAL source of these bytes: "docker" or "mock" (#85 A3). Stamped by
+    /// the daemon route layer from the cache's runtime mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuntimeMode>,
 }
 
 pub fn mock_snapshot() -> DockerSnapshot {
@@ -1113,6 +1129,7 @@ pub fn mock_snapshot() -> DockerSnapshot {
             },
         ],
         last_updated: unix_timestamp_millis(),
+        ..Default::default()
     }
 }
 
@@ -1438,6 +1455,7 @@ pub fn derive_runtime_map(
         edges,
         diagnostics,
         last_updated: snapshot.last_updated,
+        ..Default::default()
     }
 }
 
@@ -1519,6 +1537,7 @@ pub fn mock_logs(
         service: service.map(str::to_string),
         entries,
         next_cursor,
+        ..Default::default()
     }
 }
 
@@ -2776,6 +2795,7 @@ mod tests {
             networks: vec![],
             volumes: vec![],
             last_updated: unix_timestamp_millis(),
+            ..Default::default()
         };
 
         let graph = derive_graph(&snapshot);
@@ -3689,6 +3709,7 @@ services:
             networks: Vec::new(),
             volumes: Vec::new(),
             last_updated: 1,
+            ..Default::default()
         };
 
         let correlations = correlate_compose_runtime(&scan, &snapshot);

@@ -317,7 +317,10 @@ export default function ServiceMap({ model, selectedId, selectedService, onSelec
                 onKeyDown={(e) => {
                   if (selectable && (e.key === "Enter" || e.key === " ")) {
                     e.preventDefault();
-                    onSelect(service.id);
+                    // Same toggle path as mouse click: Enter/Space on an
+                    // already-selected node deselects it (aria-pressed must
+                    // be toggleable by keyboard, #86 C1).
+                    onSelect(service.id === selectedId ? null : service.id);
                   }
                 }}
               >

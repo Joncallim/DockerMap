@@ -63,7 +63,7 @@ describe("Copilot truthfulness in live mode", () => {
     ];
     const snapshot: DockerSnapshot = { containers, images: [], networks: [], volumes: [], lastUpdated: 0 };
     const response = answer(buildModel(snapshot, runtime), "what depends on db", "live", "live");
-    expect(response.headline).toContain("declare start order after db");
+    expect(response.headline).toContain("declares start order after db");
     expect(response.body.join(" ")).toContain("start after db");
     expect(response.body.join(" ")).not.toContain("fails, these are affected");
     expect(response.body.join(" ")).not.toContain("can fail in isolation");

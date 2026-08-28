@@ -204,6 +204,16 @@ test.describe("responsive and accessibility matrix", () => {
       await expect(clear).toBeVisible();
       await clear.click();
       await expect(directoryPostgres).toBeFocused();
+      // Regression (C1): Enter/Space on an already-selected GRAPH node must
+      // toggle it off (aria-pressed can be deselected by keyboard) and return
+      // focus to the directory entry — not leave focus on body.
+      await directoryPostgres.click();
+      await expect(clear).toBeVisible();
+      const graphNode = page.getByRole("group", { name: "Compose start-order map" }).getByLabel("postgres, healthy");
+      await graphNode.focus();
+      await page.keyboard.press("Enter");
+      await expect(clear).toBeHidden();
+      await expect(directoryPostgres).toBeFocused();
       await page.getByRole("button", { name: "Attention" }).click();
       await expect(page.getByRole("button", { name: /Clear postgres service selection/ })).toBeHidden();
       await page.getByRole("button", { name: "All", exact: true }).click();

@@ -66,6 +66,13 @@ export interface DockerSnapshot {
   networks: NetworkRecord[];
   volumes: VolumeRecord[];
   lastUpdated: number;
+  /**
+   * ACTUAL source of these bytes, attested by the daemon route layer from its
+   * runtime mode: "docker" (live collection) or "mock" (daemon mock fallback).
+   * The Node API's own route-local mock fallback also stamps "mock" here, so
+   * a consumer can always tell what produced the payload it holds (#85 A3).
+   */
+  source?: RuntimeMode;
 }
 
 export interface LogEntry {
@@ -80,6 +87,14 @@ export interface LogsResponse {
   service: string | null;
   entries: LogEntry[];
   nextCursor: string | null;
+  /**
+   * ACTUAL source of these log bytes (#85 A3 / #87 E1): "docker" (live host
+   * log collection) or "mock" (fabricated sample lines). Attested by the
+   * daemon route layer and by the Node API's mock fallback, so the UI tags
+   * sample log streams from the RESPONSE's own provenance — never inferred
+   * from the system model's snapshot/runtime provenance.
+   */
+  source?: RuntimeMode;
 }
 
 export interface LogsQueryParams {
@@ -124,7 +139,17 @@ export interface DiagnosticsReport {
 export interface StatusResponse {
   service: "dockermap";
   status: "ok" | "degraded" | "offline";
-  mode: RuntimeMode;
+  /**
+   * The source that describes BOTH the health AND the counts. "mixed" when
+   * /daemon/health and /daemon/snapshot resolved from different sources
+   * (one live, one route-local mock) — the payload must not claim a coherent
+   * docker/mock source next to counts from the other source (#88 F4).
+   */
+  mode: RuntimeMode | "mixed";
+  /** True when health.mode and snapshot.source agree. */
+  sourceCoherent: boolean;
+  /** The snapshot's actual attested source. */
+  snapshotSource: RuntimeMode;
   dockerReachable: boolean;
   containers: number;
   containersRunning: number;
@@ -426,6 +451,13 @@ export interface RuntimeMap {
   edges: RuntimeMapEdge[];
   diagnostics: RuntimeMapDiagnostic[];
   lastUpdated: number;
+  /**
+   * ACTUAL source of these bytes, attested by the daemon route layer from its
+   * runtime mode: "docker" (live collection) or "mock" (daemon mock fallback).
+   * The Node API's own route-local mock fallback also stamps "mock" here
+   * (#85 A3).
+   */
+  source?: RuntimeMode;
 }
 
 export interface HealthResponse {

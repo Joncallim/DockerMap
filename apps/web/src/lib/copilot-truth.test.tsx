@@ -169,3 +169,148 @@ describe("C. evidence kinds must be accurate", () => {
     expect(response.evidence).toBe("inferred");
   });
 });
+
+describe("A4. direct-vs-transitive downstream claims", () => {
+  it("two-hop chain: C does NOT directly declare start order after A", () => {
+    const model = buildModel(snapshot([
+      healthy("a", { id: "a", dependsOn: [] }),
+      healthy("b", { id: "b", dependsOn: ["a"] }),
+      healthy("c", { id: "c", dependsOn: ["b"] })
+    ]), runtime);
+    const response = answer(model, "what declares start order after a", "live", "live");
+    // Only B declares directly after A; C is transitively downstream.
+    expect(response.headline).toBe("1 service declares start order after a");
+    expect(response.body.join(" ")).toContain("• b");
+    expect(response.body.join(" ")).not.toContain("• c");
+  });
+
+  it("service overview counts only direct downstream declarations", () => {
+    const model = buildModel(snapshot([
+      healthy("a", { id: "a", dependsOn: [] }),
+      healthy("b", { id: "b", dependsOn: ["a"] }),
+      healthy("c", { id: "c", dependsOn: ["b"] })
+    ]), runtime);
+    const response = answer(model, "tell me about a", "live", "live");
+    expect(response.body.join(" ")).toContain("1 declare start order after it");
+    expect(response.body.join(" ")).not.toContain("2 declare start order after it");
+  });
+});
+
+describe("A5. no unsupported causal localization", () => {
+  it("unknown upstream: cause not established, never local inference", () => {
+    const model = buildModel(snapshot([
+      healthy("web", { id: "web", status: "Exited (1)", dependsOn: ["db"] }),
+      healthy("db", { id: "db", status: "unknown" })
+    ]), runtime);
+    const response = answer(model, "why is web offline", "live", "live");
+    const text = response.body.join(" ");
+    expect(text).not.toContain("likely local");
+    expect(text).not.toContain("cause is local");
+    expect(text).toMatch(/not established|unknown/i);
+  });
+
+  it("updating upstream: cause not established, never local inference", () => {
+    const model = buildModel(snapshot([
+      healthy("web", { id: "web", status: "Exited (1)", dependsOn: ["db"] }),
+      healthy("db", { id: "db", status: "restarting" })
+    ]), runtime);
+    const response = answer(model, "why is web offline", "live", "live");
+    const text = response.body.join(" ");
+    expect(text).not.toContain("likely local");
+    expect(text).not.toContain("cause is local");
+  });
+
+  it("healthy upstreams: no upstream problem observed, but cause remains unknown", () => {
+    const model = buildModel(snapshot([
+      healthy("web", { id: "web", status: "Exited (1)", dependsOn: ["db"] }),
+      healthy("db", { id: "db", status: "running" })
+    ]), runtime);
+    const response = answer(model, "why is web offline", "live", "live");
+    const text = response.body.join(" ");
+    expect(text).not.toContain("cause is likely local");
+    expect(text).toMatch(/cause remains unknown|no upstream problem observed|not established/i);
+  });
+});
+
+describe("A6. exposed vs published port claims", () => {
+  it("private-only port is exposed, not published", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: ["8080/tcp"] })]), runtime);
+    const response = answer(model, "show everything using port 8080", "live", "live");
+    const text = response.body.join(" ");
+    expect(text).toContain("exposes port 8080");
+    expect(text).not.toContain("publishes port 8080");
+  });
+
+  it("public:private port publishes the public side", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: ["80:8080/tcp"] })]), runtime);
+    const response = answer(model, "show everything using port 80", "live", "live");
+    expect(response.body.join(" ")).toContain("publishes port 80");
+  });
+
+  it("public:private port does not claim the private side is published", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: ["80:8080/tcp"] })]), runtime);
+    const response = answer(model, "show everything using port 8080", "live", "live");
+    const text = response.body.join(" ");
+    expect(text).toContain("exposes port 8080");
+    expect(text).not.toContain("publishes port 8080");
+  });
+
+  it("no-match wording uses published only for true publications", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: ["8080/tcp"] })]), runtime);
+    const response = answer(model, "show everything using port 80", "live", "live");
+    expect(response.headline).toBe("No service publishes port 80");
+  });
+});
+
+describe("A8. expose/listening phrasings share the port grammar", () => {
+  it("'what is listening on 8443?' resolves the exposed side", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: ["443:8443/tcp"] })]), runtime);
+    const response = answer(model, "what is listening on 8443", "live", "live");
+    expect(response.body.join(" ")).toContain("api");
+    expect(response.body.join(" ")).toContain("exposes port 8443");
+  });
+
+  it("'what is listening on 443?' answers the exposed side, not the published side", () => {
+    // A `443:8443/tcp` service publishes 443 but EXPOSES 8443 — an exposure
+    // question about 443 must not be answered with the published side (#89 P2).
+    const model = buildModel(snapshot([healthy("api", { ports: ["443:8443/tcp"] })]), runtime);
+    const response = answer(model, "what is listening on 443", "live", "live");
+    expect(response.headline).toBe("No service exposes port 443");
+    expect(response.body.join(" ")).not.toContain("publishes port 443");
+  });
+
+  it("'what exposes 8080?' resolves the port", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: ["8080/tcp"] })]), runtime);
+    const response = answer(model, "what exposes 8080", "live", "live");
+    expect(response.body.join(" ")).toContain("api");
+  });
+
+  it("'what is listening on 9999?' with no match does not list everything", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: ["8080/tcp"] })]), runtime);
+    const response = answer(model, "what is listening on 9999", "live", "live");
+    expect(response.headline).toBe("No service exposes port 9999");
+    expect(response.body.join(" ")).not.toContain("api");
+  });
+});
+
+describe("A7. authority failure is not presented as collector-unavailable", () => {
+  it("unresolved authority renders a dedicated source-authority status", () => {
+    const model = buildModel(snapshot([healthy("api")]), runtime);
+    const response = answer(model, "show unhealthy services", null, null);
+    expect(response.authorityUnresolved).toBe(true);
+    const value: AppContextValue = { model, modelProvenance: null, loading: false, error: null, health: null, tick: 0, evidenceMode: null, openCommand: () => {} };
+    const html = renderToStaticMarkup(
+      <AppContext.Provider value={value}>
+        <MemoryRouter initialEntries={["/copilot?q=show+unhealthy+services"]}><Copilot /></MemoryRouter>
+      </AppContext.Provider>
+    );
+    expect(html).toContain("Source authority unresolved");
+    expect(html).not.toContain("DockerMap does not collect this yet");
+  });
+
+  it("resolved answers keep the claim-kind label", () => {
+    const model = buildModel(snapshot([healthy("api")]), runtime);
+    const response = answer(model, "show unhealthy services", "live", "live");
+    expect(response.authorityUnresolved).toBeUndefined();
+  });
+});
