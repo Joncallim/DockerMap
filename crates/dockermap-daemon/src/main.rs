@@ -8,6 +8,7 @@ use axum::{
 };
 mod auth;
 mod config;
+mod docker_config;
 use auth::require_daemon_bearer_token;
 use bollard::{
     container::LogOutput,
@@ -21,6 +22,7 @@ use bollard::{
 use config::{
     project_root, read_bind_host_env, read_daemon_token_env, read_port_env, DaemonAuthToken,
 };
+use docker_config::{docker_gateway_socket_from_env, docker_label_filter_from_env};
 use dockermap_core::{
     collision_resistant_id_component, correlate_compose_runtime, derive_compose_graph,
     derive_graph, derive_images, derive_runtime_map, discover_compose_files, mock_log_entries,
@@ -67,8 +69,6 @@ const MAX_PYTHON_PROCESSES: usize = 64;
 const MAX_NATIVE_PROCESSES: usize = 256;
 const MAX_PROVIDER_OUTPUT_BYTES: usize = 1 << 20;
 const REDACTED_VALUE: &str = "[redacted]";
-const MAX_DOCKER_LABEL_FILTER_CHARS: usize = 256;
-const DEFAULT_DOCKER_GATEWAY_SOCKET: &str = "/run/dockermap/docker-read.sock";
 
 #[derive(Clone)]
 struct AppState {
@@ -570,24 +570,6 @@ impl DockerCollector {
     }
 }
 
-/// The collector has one explicit Docker endpoint: the filtered gateway
-/// socket. It never discovers or retries Docker's raw default socket.
-fn docker_gateway_socket_from_env() -> Result<String, String> {
-    let socket = std::env::var("DOCKERMAP_DOCKER_GATEWAY_SOCKET")
-        .unwrap_or_else(|_| DEFAULT_DOCKER_GATEWAY_SOCKET.into());
-    validate_docker_gateway_socket(socket)
-}
-
-fn validate_docker_gateway_socket(socket: String) -> Result<String, String> {
-    if socket.is_empty() || socket.len() > 512 || socket.contains('\0') {
-        return Err("invalid DOCKERMAP_DOCKER_GATEWAY_SOCKET".into());
-    }
-    if socket == "/var/run/docker.sock" || socket == "/run/docker.sock" {
-        return Err("DOCKERMAP_DOCKER_GATEWAY_SOCKET must not name Docker's raw socket".into());
-    }
-    Ok(socket)
-}
-
 /// Parse one timestamped Docker log line (collected with `--timestamps`) into
 /// a `(timestamp_millis, message)` pair, or `None` when the line carries no
 /// usable message.
@@ -707,37 +689,6 @@ fn publish_log_response(
 // Log page boundaries are decided by `dockermap_core::page_log_entries`
 // (imported above) — the single source of truth shared with mock_logs so the
 // live-Docker, daemon-mock, and Node-API-mock paths agree on cursor format.
-
-fn docker_label_filter_from_env() -> Result<Option<String>, String> {
-    match std::env::var("DOCKERMAP_DOCKER_LABEL_FILTER") {
-        Ok(value) => parse_docker_label_filter(&value)
-            .map_err(|message| format!("invalid DOCKERMAP_DOCKER_LABEL_FILTER: {message}")),
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            Err("invalid DOCKERMAP_DOCKER_LABEL_FILTER: value must be valid UTF-8".into())
-        }
-    }
-}
-
-fn parse_docker_label_filter(value: &str) -> Result<Option<String>, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    if trimmed.chars().count() > MAX_DOCKER_LABEL_FILTER_CHARS {
-        return Err(format!(
-            "label filter must be {MAX_DOCKER_LABEL_FILTER_CHARS} characters or fewer"
-        ));
-    }
-    if trimmed.contains('\0') {
-        return Err("label filter must not contain NUL bytes".into());
-    }
-    if trimmed.starts_with('=') {
-        return Err("label filter key must not be empty".into());
-    }
-
-    Ok(Some(trimmed.to_string()))
-}
 
 /// Parse the `com.docker.compose.depends_on` label into container refs.
 ///
@@ -5463,35 +5414,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_docker_label_filter_values() {
-        assert_eq!(
-            parse_docker_label_filter(" com.dockermap.fixture ")
-                .expect("key-only filter should parse"),
-            Some("com.dockermap.fixture".into())
-        );
-        assert_eq!(
-            parse_docker_label_filter("com.dockermap.fixture=run-123")
-                .expect("key-value filter should parse"),
-            Some("com.dockermap.fixture=run-123".into())
-        );
-        assert_eq!(
-            parse_docker_label_filter("   ").expect("empty filter should be disabled"),
-            None
-        );
-    }
-
-    #[test]
-    fn collector_endpoint_never_accepts_the_raw_docker_socket() {
-        assert_eq!(
-            validate_docker_gateway_socket(DEFAULT_DOCKER_GATEWAY_SOCKET.into()).as_deref(),
-            Ok(DEFAULT_DOCKER_GATEWAY_SOCKET)
-        );
-        for raw_socket in ["/var/run/docker.sock", "/run/docker.sock"] {
-            assert!(validate_docker_gateway_socket(raw_socket.into()).is_err());
-        }
-    }
-
-    #[test]
     fn parses_depends_on_label_with_condition_suffixes() {
         assert_eq!(
             parse_depends_on_label("redis:service_started:false,database:service_started:false"),
@@ -5514,14 +5436,6 @@ mod tests {
             Vec::<String>::new(),
             "bare separators produce no refs"
         );
-    }
-
-    #[test]
-    fn rejects_invalid_docker_label_filter_values() {
-        let oversized = "a".repeat(MAX_DOCKER_LABEL_FILTER_CHARS + 1);
-        assert!(parse_docker_label_filter(&oversized).is_err());
-        assert!(parse_docker_label_filter("com.dockermap.fixture\0bad").is_err());
-        assert!(parse_docker_label_filter("=missing-key").is_err());
     }
 
     #[test]
