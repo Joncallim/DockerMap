@@ -90,7 +90,7 @@ export async function startProductionImageStack(options: { liveDocker?: boolean 
   // already have every 172.x default bridge allocated.  This network belongs
   // solely to the temporary production-image fixture and is removed in its
   // cleanup path.
-  const clientSubnet = unusedFixtureSubnet(docker);
+  let clientSubnet = "";
   const clients = {
     a: `${container}-client-a`,
     b: `${container}-client-b`
@@ -107,6 +107,9 @@ export async function startProductionImageStack(options: { liveDocker?: boolean 
       runDocker(docker, ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "up", "-d"], fixture.dir);
       runDocker(docker, ["run", "-d", "--name", fixture.controlContainerName, "busybox:1.36.1", "sh", "-c", "while true; do sleep 60; done"], fixture.dir);
     }
+    // Select only after fixture networks exist so the isolated client bridge
+    // cannot collide with either of the fixture's two explicitly pinned nets.
+    clientSubnet = unusedFixtureSubnet(docker);
     runDocker(docker, ["build", "--tag", image, "."], repoRoot);
     const runArgs = [
       "run", "--detach", "--name", container,
