@@ -30,10 +30,13 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
   (reverse-proxy/DNS raw config parsing) remain future work.
 - [x] Keep provider security checks runnable without GUI availability or host-specific daemons beyond the test fixture or stub daemon.
 - [x] Run `npm run test:live-docker` on a Docker-capable Linux host and record the result.
-  Recorded on Hearth during the #84 release chain (2026-08-26/27); the live-Docker
-  GUI fixture (IPAM-pinned subnets) passes on this host.
+  Recorded on Hearth for DockerMap `fb30b374d86102f8420a1815ba0c30b0b1e4c012`;
+  the labelled fixture now runs through the filtered Docker Read Gateway and
+  uses inspected, distinct IPAM subnets. Host/tool versions are in
+  [the alpha baseline](ALPHA_BASELINE.md).
 - [x] Run `npm run build:deploy` on the release target or a clean Linux build host.
-  Recorded on Hearth at the #84 chain (vite 374 kB JS; cargo release ~12s).
+  Recorded on Hearth for the authority-isolated deployment baseline; see
+  [the alpha baseline](ALPHA_BASELINE.md).
 - [x] Deploy behind the documented reverse proxy with viewer authentication enabled.
   Live `dockermap.jo-nas.com` runs behind Caddy + Authentik forward-auth; public
   unauthenticated requests 302 to Authentik.
@@ -57,6 +60,9 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
   (Snapshot/health verified; full route matrix through Authentik not yet recorded.)
 - [ ] Update `README.md`, `docs/deployment/DEPLOYMENT.md`, `docs/deployment/REVERSE_PROXY.md`, `docs/testing/TESTING_PLAN.md`, and `docs/security/THREAT_MODEL.md` for any release-time behavior changes.
 - [ ] Create release notes with known limitations and the exact commit SHA.
+  The non-tagging baseline and known limitations are recorded in
+  [ALPHA_BASELINE.md](ALPHA_BASELINE.md). Final release notes must be refreshed
+  for the exact tagged candidate after the remaining #16/#63 proxy gate.
 
 ## Execute After Next Commit
 
