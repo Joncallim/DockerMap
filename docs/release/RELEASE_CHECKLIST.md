@@ -60,6 +60,22 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 
 ## Execute After Next Commit
 
+## Docker authority isolation (#62)
+
+- [x] Docker-only deployment keeps the raw Docker socket exclusively in the
+  Docker Read Gateway. The frontend and collector receive neither that socket
+  nor a direct Docker endpoint; the collector uses only the filtered Unix
+  socket.
+- [x] The gateway's fixed read allowlist, bounded log query contract, and
+  conditional label-filter contract are recorded in
+  [`DOCKER_AUTHORITY_BOUNDARY.md`](../architecture/DOCKER_AUTHORITY_BOUNDARY.md)
+  and covered by deny-before-upstream tests.
+- [x] Hearth's DockerMap-only rollout records non-root identities, dropped
+  capabilities, read-only filesystems, mount and network separation, source
+  coherence, gateway denial, and service restart recovery in #62 resolution
+  evidence. Interactive Authentik browser certification remains #16/#63 and
+  is not evidence for this authority boundary.
+
 After the next implementation commit is completed, open follow-up work items for these
 tasks before starting new GUI work:
 
