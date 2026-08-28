@@ -257,6 +257,7 @@ function whyOfflineAnswer(model: SystemModel, service: Service, q: string, autho
  */
 function parsePort(port: string): { published: number | null; exposed: number | null } {
   const body = port.split("/", 1)[0] ?? port;
+  if (body === "") return { published: null, exposed: null };
   const parts = body.split(":", 2);
   if (parts.length === 2 && parts[0] !== "") {
     const publicSide = Number(parts[0]);

@@ -177,6 +177,17 @@ export default function Logs() {
       const data = await fetchLogs(
         `${path}${separator}cursor=${encodeURIComponent(nextCursor)}&limit=${PAGE_SIZE}`
       );
+      // Source-partition boundary (#87 E1, reviewer follow-up): with the live
+      // tail OFF, a daemon flip to mock mid-session plus a "Load older" click
+      // would append fabricated mock lines under the old live tag. Detect the
+      // flip here too and refuse to merge across it — the tag flips with the
+      // next fetch, and the older page is discarded rather than mislabelled.
+      const olderSource = data.source ?? null;
+      if (logSourceRef.current !== null && olderSource !== null && logSourceRef.current !== olderSource) {
+        setError("Log source changed while paging; refresh to continue.");
+        setLoadingOlder(false);
+        return;
+      }
       setEntries((current) => {
         const known = new Set(current.map((entry) => entry.id));
         const older = data.entries.filter((entry) => !known.has(entry.id));
