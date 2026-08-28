@@ -92,6 +92,8 @@ already separate modules.
 | PID namespace boundary | `crates/dockermap-daemon/src/pid_namespace.rs` | fail-closed ambiguity and unreadable-cgroup regressions |
 | Browser API configuration | `apps/api/src/config.ts` | startup-security suite |
 | Browser API daemon client | `apps/api/src/daemonClient.ts` | daemon-token, 401 no-fallback, and timeout regressions |
+| Core log utilities | `crates/dockermap-core/src/logs.rs` | core pagination, cursor, timestamp, and stable-fixture tests |
+| Core topology identity | `crates/dockermap-core/src/identity.rs` | collision-resistant runtime/Compose identity regression |
 
 The PID namespace slice also corrected a discovered security defect rather
 than silently preserving it: `auto` and invalid namespace configuration are
