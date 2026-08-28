@@ -82,6 +82,23 @@ contains configuration, auth/session, daemon client, mock responses, handlers,
 SSE, and server startup; its route manifest and publication boundary are
 already separate modules.
 
+## Completed extraction ledger
+
+| Boundary | Module | Focused evidence |
+| --- | --- | --- |
+| Daemon startup configuration | `crates/dockermap-daemon/src/config.rs` | daemon config tests + Rust gate |
+| Daemon bearer boundary | `crates/dockermap-daemon/src/auth.rs` | router-level 401/exact-token regression |
+| Docker collector configuration | `crates/dockermap-daemon/src/docker_config.rs` | raw-socket rejection + label tests |
+| PID namespace boundary | `crates/dockermap-daemon/src/pid_namespace.rs` | fail-closed ambiguity and unreadable-cgroup regressions |
+| Browser API configuration | `apps/api/src/config.ts` | startup-security suite |
+| Browser API daemon client | `apps/api/src/daemonClient.ts` | daemon-token, 401 no-fallback, and timeout regressions |
+
+The PID namespace slice also corrected a discovered security defect rather
+than silently preserving it: `auto` and invalid namespace configuration are
+restricted, and only the documented explicit `host` mode enables full-host
+providers. This is a security tightening, not a response or provider contract
+change.
+
 The intended extraction order is config/auth/publication and daemon transport;
 then Docker/Compose; then individual providers; then core domains and API
 handlers. This order keeps authority-sensitive seams reviewable first without
