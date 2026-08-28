@@ -9,6 +9,7 @@ use axum::{
 mod auth;
 mod config;
 mod docker_config;
+mod pid_namespace;
 use auth::require_daemon_bearer_token;
 use bollard::{
     container::LogOutput,
@@ -37,6 +38,12 @@ use dockermap_core::{
     VolumeRecord, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 use futures_util::stream::StreamExt;
+#[cfg(test)]
+use pid_namespace::{
+    cgroup_implies_container, pid_namespace_scope_from_evidence, restricted_pid_namespace_evidence,
+    PidNamespaceMode,
+};
+use pid_namespace::{daemon_pid_namespace_scope, is_container_owned, PidNamespaceScope};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -2980,156 +2987,6 @@ fn real_comm(pid: u32, fallback: &str) -> String {
         }
     }
     safe_kernel_comm(fallback).unwrap_or_else(|| "unknown".into())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PidNamespaceMode {
-    Auto,
-    Host,
-    Restricted,
-}
-
-impl PidNamespaceMode {
-    fn from_env_value(value: Option<&str>) -> Self {
-        match value {
-            Some("host") => Self::Host,
-            Some("restricted") => Self::Restricted,
-            Some("auto") | None => Self::Auto,
-            // An invalid override must never make us omit host inventory.
-            Some(_) => Self::Auto,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PidNamespaceScope {
-    Host { diagnostic: Option<&'static str> },
-    Restricted,
-}
-
-impl PidNamespaceScope {
-    fn is_restricted(self) -> bool {
-        matches!(self, Self::Restricted)
-    }
-
-    fn diagnostic(self) -> Option<&'static str> {
-        match self {
-            Self::Host { diagnostic } => diagnostic,
-            Self::Restricted => None,
-        }
-    }
-}
-
-/// Kernel command name of pid 1, read from `/proc/1/comm`. `None` when the
-/// entry is unreadable or empty.
-fn host_init_comm() -> Option<String> {
-    std::fs::read_to_string("/proc/1/comm")
-        .ok()
-        .map(|comm| comm.trim().to_string())
-        .filter(|comm| !comm.is_empty())
-}
-
-fn recognized_host_init(init_comm: Option<&str>) -> bool {
-    matches!(init_comm.map(str::trim), Some("systemd" | "init"))
-}
-
-/// Container PID namespaces must be identified only by affirmative evidence.
-/// A non-systemd pid 1 is common on real hosts (runit, OpenRC, s6, dinit), so
-/// it is explicitly NOT evidence by itself.
-#[cfg(test)]
-fn restricted_pid_namespace_evidence(
-    _init_comm: Option<&str>,
-    cgroup: &str,
-    has_dockerenv: bool,
-    has_systemd_container_marker: bool,
-) -> bool {
-    restricted_pid_namespace_evidence_with_markers(
-        cgroup,
-        has_dockerenv,
-        has_systemd_container_marker,
-        false,
-    )
-}
-
-fn restricted_pid_namespace_evidence_with_markers(
-    cgroup: &str,
-    has_dockerenv: bool,
-    has_systemd_container_marker: bool,
-    has_podman_container_marker: bool,
-) -> bool {
-    has_dockerenv
-        || has_systemd_container_marker
-        || has_podman_container_marker
-        || cgroup.lines().any(cgroup_implies_container)
-}
-
-fn pid_namespace_scope_from_evidence(
-    mode: PidNamespaceMode,
-    init_comm: Option<&str>,
-    cgroup: &str,
-    has_dockerenv: bool,
-    has_systemd_container_marker: bool,
-    has_podman_container_marker: bool,
-) -> PidNamespaceScope {
-    match mode {
-        PidNamespaceMode::Host => PidNamespaceScope::Host { diagnostic: None },
-        PidNamespaceMode::Restricted => PidNamespaceScope::Restricted,
-        PidNamespaceMode::Auto => {
-            if restricted_pid_namespace_evidence_with_markers(
-                cgroup,
-                has_dockerenv,
-                has_systemd_container_marker,
-                has_podman_container_marker,
-            ) {
-                PidNamespaceScope::Restricted
-            } else {
-                PidNamespaceScope::Host {
-                    diagnostic: (!recognized_host_init(init_comm)).then_some(
-                        "PID namespace auto-detection: init system not recognized; assuming host namespace",
-                    ),
-                }
-            }
-        }
-    }
-}
-
-fn daemon_pid_namespace_scope() -> PidNamespaceScope {
-    let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
-    pid_namespace_scope_from_evidence(
-        PidNamespaceMode::from_env_value(std::env::var("DOCKERMAP_PID_NAMESPACE").ok().as_deref()),
-        host_init_comm().as_deref(),
-        &cgroup,
-        StdPath::new("/.dockerenv").exists(),
-        StdPath::new("/run/systemd/container").exists(),
-        StdPath::new("/run/.containerenv").exists(),
-    )
-}
-
-/// True when a cgroup path places the process inside a container: Docker
-/// (cgroup v1 `/docker/<id>` and systemd scope
-/// `/system.slice/docker-<id>.scope/...`), libpod (podman), or kubepods
-/// (Kubernetes). The docker provider owns container internals, so such pids
-/// must never surface as host native-process nodes.
-fn cgroup_implies_container(cgroup: &str) -> bool {
-    let path = cgroup.trim().splitn(3, ':').nth(2).unwrap_or(cgroup.trim());
-    path.contains("/docker/")
-        || path.split('/').any(|component| {
-            (component.starts_with("docker-") && component.ends_with(".scope"))
-                || (component.starts_with("libpod-") && component.ends_with(".scope"))
-                || component.starts_with("kubepods")
-        })
-}
-
-/// True when the pid's cgroup places it inside a container. An unreadable
-/// `/proc/<pid>/cgroup` means host assumption (false) — fixture pids beyond
-/// pid_max are therefore kept as host processes.
-fn is_container_owned(pid: u32) -> bool {
-    // This follows the same ~79ms ps-to-/proc PID-reuse window documented in
-    // real_comm. A reused pid can be filtered incorrectly, but only for this
-    // 2-second snapshot; no argv is published and comm is process-controlled.
-    std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
-        .map(|cgroup| cgroup.lines().any(cgroup_implies_container))
-        .unwrap_or(false)
 }
 
 /// First executable token of a ps args column, walking past common wrapper
@@ -7664,14 +7521,7 @@ mod tests {
             false,
             false,
         );
-        assert_eq!(
-            runit,
-            PidNamespaceScope::Host {
-                diagnostic: Some(
-                    "PID namespace auto-detection: init system not recognized; assuming host namespace"
-                )
-            }
-        );
+        assert_eq!(runit, PidNamespaceScope::Restricted);
         assert_eq!(
             pid_namespace_scope_from_evidence(
                 PidNamespaceMode::Auto,
@@ -7727,6 +7577,11 @@ mod tests {
         assert_eq!(
             PidNamespaceMode::from_env_value(Some("restricted")),
             PidNamespaceMode::Restricted
+        );
+        assert_eq!(
+            PidNamespaceMode::from_env_value(Some("unexpected")),
+            PidNamespaceMode::Restricted,
+            "invalid namespace configuration must not enable host collection"
         );
     }
 
