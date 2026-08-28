@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   package:
-    name: Package signed-source baseline
+    name: Package checksummed release artifacts
     runs-on: ubuntu-latest
     steps:
       - name: Checkout release tag
