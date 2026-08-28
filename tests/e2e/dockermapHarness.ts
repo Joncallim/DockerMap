@@ -44,6 +44,7 @@ type Fixture = {
 
 const repoRoot = resolve(__dirname, "../..");
 const daemonBinary = join(repoRoot, "crates/target/debug/dockermap-daemon");
+const gatewayBinary = join(repoRoot, "crates/target/debug/dockermap-docker-gateway");
 
 export async function startMockStack(): Promise<Stack> {
   const fixtureDir = mkdtempSync(join(tmpdir(), "dockermap-mock-e2e-"));
@@ -80,7 +81,7 @@ export async function startProductionImageStack(options: { liveDocker?: boolean 
     throw new SkipLiveDockerError("Docker is not reachable by the current user or sudo -n docker.");
   }
 
-  const fixture = options.liveDocker ? createLiveDockerFixture() : null;
+  const fixture = options.liveDocker ? createLiveDockerFixture(docker!) : null;
   const fixtureDir = fixture?.dir ?? mkdtempSync(join(tmpdir(), "dockermap-production-e2e-"));
   const image = `dockermap-e2e:${Date.now().toString(36)}`;
   const container = `dockermap-production-e2e-${process.pid}`;
@@ -227,7 +228,7 @@ export async function startLiveDockerStack(): Promise<Stack> {
     throw new SkipLiveDockerError("Docker is not reachable by the current user or sudo -n docker.");
   }
 
-  const fixture = createLiveDockerFixture();
+  const fixture = createLiveDockerFixture(docker);
   try {
     runDocker(docker, ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "up", "-d"], fixture.dir);
     runDocker(docker, ["run", "-d", "--name", fixture.controlContainerName, "busybox:1.36.1", "sh", "-c", "while true; do sleep 60; done"], fixture.dir);
@@ -240,12 +241,16 @@ export async function startLiveDockerStack(): Promise<Stack> {
   const processes: ProcessHandle[] = [];
 
   await ensureDaemonBinary();
+  const gatewaySocket = join(fixture.dir, "docker-read.sock");
+  processes.push(startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter }));
+  await waitForSocket(gatewaySocket);
   processes.push(startDaemon({
     port: ports.daemon,
     cwd: fixture.dir,
     useDockerAccess: true,
     docker,
     dockerLabelFilter: fixture.labelFilter,
+    gatewaySocket,
     pathPrefix: fixture.stubBinDir
   }));
   await waitForDockerHealth(`http://127.0.0.1:${ports.daemon}/daemon/health`);
@@ -338,7 +343,7 @@ function freePort(): Promise<number> {
 }
 
 async function ensureDaemonBinary() {
-  const result = spawnSync("cargo", ["build", "--manifest-path", "crates/Cargo.toml", "-p", "dockermap-daemon"], {
+  const result = spawnSync("cargo", ["build", "--manifest-path", "crates/Cargo.toml", "-p", "dockermap-daemon", "-p", "dockermap-docker-gateway"], {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -359,6 +364,7 @@ function startDaemon(options: {
   useDockerAccess: boolean;
   docker?: string[];
   dockerLabelFilter?: string;
+  gatewaySocket?: string;
   pathPrefix?: string;
   daemonToken?: string;
   apiToken?: string;
@@ -371,6 +377,7 @@ function startDaemon(options: {
     ...(options.daemonToken ? { DOCKERMAP_DAEMON_TOKEN: options.daemonToken } : {}),
     ...(options.apiToken ? { DOCKERMAP_API_TOKEN: options.apiToken } : {}),
     ...(options.dockerLabelFilter ? { DOCKERMAP_DOCKER_LABEL_FILTER: options.dockerLabelFilter } : {}),
+    ...(options.gatewaySocket ? { DOCKERMAP_DOCKER_GATEWAY_SOCKET: options.gatewaySocket } : {}),
     ...(options.pathPrefix ? { PATH: `${options.pathPrefix}:${process.env.PATH}` } : {}),
     ...(options.useDockerAccess ? {} : { DOCKERMAP_FORCE_MOCK: "true" })
   };
@@ -383,6 +390,18 @@ function startDaemon(options: {
   }
 
   return startProcess("daemon", daemonBinary, [], { cwd: options.cwd, env });
+}
+
+function startGateway(options: { socket: string; labelFilter?: string }): ProcessHandle {
+  return startProcess("docker-read-gateway", gatewayBinary, [], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      DOCKERMAP_DOCKER_GATEWAY_SOCKET: options.socket,
+      DOCKERMAP_RAW_DOCKER_SOCKET: "/var/run/docker.sock",
+      ...(options.labelFilter ? { DOCKERMAP_DOCKER_LABEL_FILTER: options.labelFilter } : {})
+    }
+  });
 }
 
 function startApi(options: { port: number; daemonPort: number; webPort: number }) {
@@ -511,6 +530,16 @@ async function waitForHttp(url: string, init?: RequestInit) {
   }, url);
 }
 
+async function waitForSocket(path: string) {
+  await waitForCondition(async () => {
+    try {
+      return statSync(path).isSocket();
+    } catch {
+      return false;
+    }
+  }, `Docker read gateway socket at ${path}`);
+}
+
 async function waitForCondition(check: () => Promise<boolean>, label: string) {
   const started = Date.now();
   let lastError: unknown;
@@ -556,7 +585,7 @@ function commandSucceeds(command: string, args: string[]) {
   return result.status === 0;
 }
 
-function createLiveDockerFixture(): Fixture {
+function createLiveDockerFixture(docker: string[]): Fixture {
   const dir = mkdtempSync(join(tmpdir(), "dockermap-live-e2e-"));
   const projectName = `dockermap-e2e-${Date.now().toString(36)}`;
   const labelFilter = `com.dockermap.fixture=${projectName}`;
@@ -586,11 +615,12 @@ function createLiveDockerFixture(): Fixture {
   writeProviderStubs(stubBinDir, projectName);
 
   const composeFile = join(dir, "compose.yaml");
-  writeFileSync(composeFile, liveComposeYaml(projectName));
+  const [frontSubnet, backSubnet] = unusedFixtureSubnets(docker, 2);
+  writeFileSync(composeFile, liveComposeYaml(projectName, frontSubnet, backSubnet));
   return { dir, composeFile, projectName, labelFilter, stubBinDir, controlContainerName };
 }
 
-function liveComposeYaml(projectName: string) {
+function liveComposeYaml(projectName: string, frontSubnet: string, backSubnet: string) {
   return `services:
   api:
     image: busybox:1.36.1
@@ -669,14 +699,14 @@ networks:
   front:
     ipam:
       config:
-        - subnet: 10.254.240.0/24
+        - subnet: ${frontSubnet}
     labels:
       com.dockermap.fixture: "${projectName}"
   back:
     internal: true
     ipam:
       config:
-        - subnet: 10.254.241.0/24
+        - subnet: ${backSubnet}
     labels:
       com.dockermap.fixture: "${projectName}"
 
@@ -826,6 +856,10 @@ function dockerOutput(docker: string[], args: string[], cwd: string) {
 
 /** Select an unused /24 from a dedicated private range for an ephemeral E2E network. */
 function unusedFixtureSubnet(docker: string[]): string {
+  return unusedFixtureSubnets(docker, 1)[0];
+}
+
+function unusedFixtureSubnets(docker: string[], count: number): string[] {
   const networkIds = dockerOutput(docker, ["network", "ls", "--quiet"], repoRoot)
     .split(/\s+/)
     .filter(Boolean);
@@ -835,11 +869,13 @@ function unusedFixtureSubnet(docker: string[]): string {
 
   // 10.254/16 is deliberately outside Docker's default 172.x pools.  Inspect
   // first so this remains safe on hosts that have chosen this range themselves.
-  for (let third = 1; third < 255; third += 1) {
+  const subnets: string[] = [];
+  for (let third = 1; third < 255 && subnets.length < count; third += 1) {
     const subnet = `10.254.${third}.0/24`;
-    if (!existing.includes(subnet)) return subnet;
+    if (!existing.includes(subnet)) subnets.push(subnet);
   }
-  throw new Error("No unused DockerMap E2E client subnet is available in 10.254.0.0/16");
+  if (subnets.length === count) return subnets;
+  throw new Error(`No ${count} unused DockerMap E2E subnet(s) are available in 10.254.0.0/16`);
 }
 
 function productionSocketIsReadOnly(docker: string[], container: string) {
