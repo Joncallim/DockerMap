@@ -2,13 +2,12 @@
 
 This document records the reproducible engineering baseline that must be
 rechecked before a `v0.1.0-alpha` tag. It is deliberately not a release
-announcement or a substitute for the remaining authenticated reverse-proxy
-certification.
+announcement or a substitute for remaining clean-host and recovery evidence.
 
 ## Certified implementation baseline
 
-- DockerMap commit: `fb30b374d86102f8420a1815ba0c30b0b1e4c012`
-- Hearth deployment configuration: `2e22669dfd6d4ecce5f3631c47dce01cbc05cc4d`
+- DockerMap commit: `17d3fa69d4a9ca363e1042d6c8f627a08f8b947c`
+- Hearth deployment configuration: `aaa54ef942673d3b42ea0f1570e62089f02abea8`
 - Host: Linux `7.0.0-29-generic` (`x86_64`)
 - Node/npm: `v22.23.2` / `10.9.8`
 - Rust/Cargo: `1.88.0`
@@ -17,7 +16,7 @@ certification.
 The validated Docker-only authority chain is:
 
 ```text
-Caddy / Authentik → DockerMap frontend → collector → Docker Read Gateway → Docker Engine
+Caddy → DockerMap frontend → collector → Docker Read Gateway → Docker Engine
 ```
 
 Only the gateway has the raw Docker socket. The frontend and collector have no
@@ -41,13 +40,12 @@ retained as release evidence.
 
 ## Known limitations before tagging
 
-- A genuine Authentik-authenticated browser traversal through the public route
-  remains required by [#16](https://github.com/Joncallim/DockerMap/issues/16)
-  and the alpha epic [#63](https://github.com/Joncallim/DockerMap/issues/63).
-  Internal trusted-header smoke and public unauthenticated redirects do not
-  substitute for that check.
-- The public reverse-proxy smoke script must be executed against the final
-  release candidate without recording credentials.
+- The current private-review deployment uses DockerMap bearer-session protection
+  rather than Authentik. It must prove anonymous API denial, rejection of
+  client-supplied identity headers, a private daemon, and SSE through Caddy.
+  Interactive SSO is deployment-specific evidence, not an alpha blocker.
+- Clean-host installation and host-reboot recovery remain required before a
+  broader support claim. This is a private alpha candidate only.
 - DockerMap intentionally has no persistent event history, resource telemetry,
   image-update/advisory lookup, or write mode. Those are later roadmap epics.
 - Full-host/native inspection is intentionally more trusted than the default
@@ -56,5 +54,5 @@ retained as release evidence.
 
 ## Tagging rule
 
-Do not tag an alpha until the remaining #16/#63 authentication and
-reverse-proxy checks have been recorded against the exact candidate commit.
+Tag only after the checklist's required boundary and build evidence has been
+recorded against the exact candidate commit. Alpha tags are prereleases.

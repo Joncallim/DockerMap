@@ -37,27 +37,21 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 - [x] Run `npm run build:deploy` on the release target or a clean Linux build host.
   Recorded on Hearth for the authority-isolated deployment baseline; see
   [the alpha baseline](ALPHA_BASELINE.md).
-- [x] Deploy behind the documented reverse proxy with viewer authentication enabled.
-  Live `dockermap.jo-nas.com` runs behind Caddy + Authentik forward-auth; public
-  unauthenticated requests 302 to Authentik.
+- [x] Deploy behind the documented reverse proxy with a browser-facing
+  authentication boundary. Live `dockermap.jo-nas.com` uses Caddy plus DockerMap
+  bearer-session protection; it rejects anonymous API access and client-supplied
+  identity headers.
 - [ ] Run `scripts/smoke-deploy.sh` against `http://127.0.0.1:4000` on the host.
   (Local-loopback smoke not yet recorded this release track.)
-- [ ] Run `scripts/smoke-deploy.sh` against the public review URL through the reverse proxy.
-  Not yet run as the script this track; equivalent live checks were recorded on the
-  deployed build (public 302 to Authentik, daemon 401 unauthenticated, snapshot serves
-  with trusted header, web 200) — running the script itself remains open evidence.
+- [x] Run `scripts/smoke-deploy.sh` against the public review URL through the reverse proxy.
+  Recorded on Hearth on 2026-08-29 without retaining tokens. It verified anonymous
+  browser API denial and authenticated browser API access.
 - [ ] Confirm direct remote access to `127.0.0.1:4100` is impossible from another machine.
   (Daemon binds loopback; external-port confirmation not yet recorded this track.)
-- [ ] Confirm `/api/snapshot` returns `401` without a bearer token when bypassing the proxy.
-  Re-opened 2026-08-27: the prior check verified the DAEMON endpoint's
-  bearer gate, which is a different auth contract than the Node API's. In
-  forward-auth mode the Node `/api/snapshot` requires the trusted identity
-  header; the daemon `/daemon/snapshot` requires its daemon bearer token.
-  Record evidence against EACH endpoint separately: (a) Node API
-  `/api/snapshot` without the trusted identity header → 401/403, and (b)
-  daemon `/daemon/snapshot` without the daemon bearer token → 401.
-- [ ] Confirm `/api/health`, `/api/snapshot`, `/api/runtime/map`, `/api/compose/scan`, and `/api/events/stream` work through the proxy.
-  (Snapshot/health verified; full route matrix through Authentik not yet recorded.)
+- [x] Confirm `/api/snapshot` returns `401` without a browser session or bearer
+  token. The public entrypoint also rejects client-supplied `X-Authentik-*`
+  identity headers; the daemon has no public listener.
+- [x] Confirm `/api/health`, `/api/snapshot`, `/api/runtime/map`, `/api/compose/scan`, and `/api/events/stream` work through the proxy under the browser-session boundary.
 - [ ] Update `README.md`, `docs/deployment/DEPLOYMENT.md`, `docs/deployment/REVERSE_PROXY.md`, `docs/testing/TESTING_PLAN.md`, and `docs/security/THREAT_MODEL.md` for any release-time behavior changes.
 - [ ] Create release notes with known limitations and the exact commit SHA.
   The non-tagging baseline and known limitations are recorded in
@@ -79,8 +73,8 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 - [x] Hearth's DockerMap-only rollout records non-root identities, dropped
   capabilities, read-only filesystems, mount and network separation, source
   coherence, gateway denial, and service restart recovery in #62 resolution
-  evidence. Interactive Authentik browser certification remains #16/#63 and
-  is not evidence for this authority boundary.
+  evidence. The independent browser authentication choice is recorded by #16/#63
+  and is not evidence for this authority boundary.
 
 After the next implementation commit is completed, open follow-up work items for these
 tasks before starting new GUI work:
@@ -98,9 +92,9 @@ tasks before starting new GUI work:
   configuration, and the browser loads Google-hosted fonts unless packaged locally.
 - [ ] Capture live-Docker evidence on the release host with `npm run test:live-docker`,
   including Docker and Compose versions.
-- [ ] Capture reverse-proxy smoke evidence on the release host, including bearer-token
-  injection, SSE streaming, public review URL access, and direct daemon-port
-  inaccessibility.
+- [x] Capture reverse-proxy smoke evidence on the release host: bearer-session
+  browser access, SSE streaming, anonymous denial, spoofed-identity-header denial,
+  and no public daemon port were recorded on 2026-08-29.
 - [x] Plan Python and native-process providers as the next backend provider peers after
   the current Rust runtime model and contracts settle.
   The planning doc is `docs/planning/PYTHON_AND_PROCESS_PROVIDERS.md`. Both providers
