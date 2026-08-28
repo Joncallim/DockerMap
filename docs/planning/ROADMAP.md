@@ -59,20 +59,21 @@ The active roadmap is filed as GitHub issues #61-#70 (each `epic`+`enhancement`)
 sequenced in each epic body. They are the source of truth for what comes next;
 this document stays a summary, not a second roadmap.
 
-- **#61 Evidence-backed live state** — decomposed into child issues #71-#77
-  (`epic:live-truth`). ALL MERGED (#71 evidence vocabulary, #72 update-claim
-  removal, #73 demo/mock/sample authority, #74 daemon-fallback provenance,
-  #75 Copilot truthfulness, #76 live-truth sweep, #77 docs reconciliation);
-  closure evidence posted 2026-08-27, maintainer close pending on #71-#75/#77.
-- **#62 Docker authority isolation** — next major slice; can run alongside #61
-  follow-ups; both must close before #63.
-- **#63 v0.1 alpha certification** — release gate; #15 (live-Docker evidence)
-  and #16 (reverse-proxy/Authentik smoke) are children, not duplicates.
+- **#61 Evidence-backed live state** — implemented through child issues #71-#76;
+  the remaining #77 documentation reconciliation is this roadmap update.
+  Closure evidence is posted; maintainer closure remains pending.
+- **#62 Docker authority isolation** — implemented and deployed: only the Docker
+  Read Gateway holds the raw socket. Closure evidence is posted; maintainer
+  closure remains pending.
+- **#63 v0.1 alpha certification** — `v0.1.0-alpha.1` is a published prerelease.
+  #15 live-Docker and #16 reverse-proxy boundary evidence are recorded. Clean-host
+  installation and host-reboot recovery remain the open alpha evidence.
 - **#64 Backend decomposition** — split the daemon's monolithic `main.rs`.
 - **#65 Canonical contract/schema authority** — generate contracts from Rust
   or add a CI drift check.
 - **#66 Provider scheduler/freshness**.
-- **#67 Hearth Design System**.
+- **#67 Hearth Design System** — source-boundary audit is complete; product UI
+  adoption remains planned work.
 - **#68 Evidence provenance**.
 - **#69 Deterministic Findings**.
 - **#70 Change history/telemetry**.
