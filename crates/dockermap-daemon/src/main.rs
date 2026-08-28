@@ -1,12 +1,14 @@
 use axum::{
-    extract::{Path, Query, Request, State},
-    http::{header::AUTHORIZATION, StatusCode},
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
+    extract::{Path, Query, State},
+    http::StatusCode,
+    middleware,
+    response::IntoResponse,
     routing::{any, get},
     Json, Router,
 };
+mod auth;
 mod config;
+use auth::require_daemon_bearer_token;
 use bollard::{
     container::LogOutput,
     models::{ContainerSummary, MountPoint, MountPointTypeEnum, VolumeListResponse},
@@ -283,52 +285,6 @@ fn daemon_router(state: AppState, daemon_token: DaemonAuthToken) -> Router {
             require_daemon_bearer_token,
         ))
         .with_state(state)
-}
-
-async fn require_daemon_bearer_token(
-    State(daemon_token): State<DaemonAuthToken>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let Some(expected) = daemon_token.0.as_deref() else {
-        return next.run(request).await;
-    };
-    let received = request
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            let mut parts = value.split_whitespace();
-            match (parts.next(), parts.next(), parts.next()) {
-                (Some("Bearer"), Some(token), None) => Some(token),
-                _ => None,
-            }
-        });
-
-    if received.is_some_and(|token| daemon_token_matches(token, expected)) {
-        next.run(request).await
-    } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({
-                "code": "unauthorized",
-                "message": "A valid Bearer token is required for this DockerMap daemon route"
-            })),
-        )
-            .into_response()
-    }
-}
-
-fn daemon_token_matches(received: &str, expected: &str) -> bool {
-    if received.len() != expected.len() {
-        return false;
-    }
-
-    received
-        .bytes()
-        .zip(expected.bytes())
-        .fold(0u8, |difference, (left, right)| difference | (left ^ right))
-        == 0
 }
 
 impl DaemonCache {
@@ -5046,6 +5002,7 @@ fn reject_symlink_path(project_root: &StdPath, canonical: &StdPath) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::Request;
     use dockermap_core::{
         ComposeMount, RuntimeAdvisorySeverity, RuntimeEventRef, RuntimeLogLevel, RuntimeLogRef,
         RuntimeOwnershipKind, RuntimePackageAdvisory, RuntimePackageUpdate,
