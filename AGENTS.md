@@ -43,13 +43,18 @@ workloads.
 ## Default Agent Workflow
 
 1. Read the issue body, acceptance criteria, and this guide before editing.
-2. Identify the narrowest matching subagent from `.codex/agents`.
-3. Inspect the current repo state and relevant files. Do not rely on stale docs
+2. The primary agent integrates the work. For substantive changes, select the
+   narrowest implementation subagent from `.codex/agents` and an independent
+   `qa-evidence` or `security-readonly` pass.
+3. Assign disjoint ownership before editing. Only one agent edits a given file;
+   QA and security passes are read-only unless explicitly handed a separate fix.
+4. Inspect the current repo state and relevant files. Do not rely on stale docs
    when code is cheap to verify.
-4. Make the smallest pass that satisfies the issue. If the request spans more
-   than the selected agent scope, stop with a handoff note instead of guessing.
-5. Run the smallest relevant verification commands and record exact results.
-6. Update docs, fixtures, and contracts when behavior changes.
+5. Make the smallest pass that satisfies the issue. If the request spans more
+   than one specialist scope, split it into bounded handoffs and let the primary
+   agent reconcile shared contracts before further edits.
+6. Run the smallest relevant verification commands and record exact results.
+7. Update docs, fixtures, and contracts when behavior changes.
 
 ## Issue Resolution Rule
 
