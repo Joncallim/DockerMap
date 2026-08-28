@@ -1,7 +1,7 @@
 # Release artifacts
 
 Tagged releases build the same deploy artifacts used by DockerMap's deployment
-build and publish a deterministic Linux `x86_64` archive plus SHA-256 file.
+build and publish a Linux `x86_64` archive plus its SHA-256 file.
 
 The archive contains the daemon and Docker Read Gateway binaries, compiled web
 assets, Docker/systemd deployment templates, and the release checklist. It is
