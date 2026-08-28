@@ -1,7 +1,7 @@
 # #67 Hearth design-system adoption: preflight boundary
 
-**Status:** preparation only; no Hearth design tokens, assets, or private
-repository content have been imported.
+**Status:** preparation and source audit only; no Hearth design tokens, assets,
+or private-repository content have been imported.
 
 ## What is verified locally
 
@@ -28,25 +28,49 @@ assets, with source/version metadata in this repository. A build-time fetch,
 git submodule, private npm registry, or runtime asset URL is rejected.
 
 Before implementation, record the authoritative Hearth export version and a
-license/asset-safety review. Until then, this document intentionally does not
-invent canonical hex values, logos, typography rules, or copy guidance.
+license/asset-safety review. The source audit below records guidance, not an
+import: DockerMap must still receive only a committed public-safe export.
+
+## Source audit — 29 August 2026
+
+The canonical source was reviewed at private repository revision
+`04f32a9a48530142189bb6ec4c4209da8ffa71bc`. That revision is provenance only:
+the public DockerMap checkout must not fetch it, include it as a submodule, or
+depend on it at build/runtime.
+
+The source establishes these relevant contracts:
+
+- Azure is the primary action/selection/focus role; purple is limited to
+  AI-assisted context; healthy, warning, and critical remain semantic states.
+- Normal UI uses the Apple/system stack beginning with `-apple-system` and
+  `BlinkMacSystemFont`; monospace is limited to technical evidence.
+- Light surfaces are warm off-whites, dark surfaces are graphite/charcoal,
+  geometry is moderately rounded with low-contrast borders, and focus uses the
+  Azure role.
+- Human-facing language leads with observed state/impact and makes inference
+  distinguishable; persona language must not alter evidence or permissions.
+
+No locked Hearth raster mark, private screenshot, generated master, or
+private deployment configuration was copied during this audit.
 
 ## Divergence matrix to complete against the source export
 
 | Area | DockerMap baseline to inspect | Migration guardrail |
 | --- | --- | --- |
-| Typography | `--font` normal UI and `--mono` technical evidence | Normal text follows the approved Hearth stack; paths, ports, logs, IDs remain monospace. |
-| Tokens | CSS custom properties in `styles.css` | Map semantic roles, never bulk-replace arbitrary colors. |
-| Themes | `data-theme` and Settings override | Keep system default and explicit user override. |
+| Typography | `--font` is currently generic-system-first; `--mono` is already constrained to technical evidence | Reorder normal text to the approved Apple/system stack; retain monospace for paths, ports, logs and IDs. |
+| Tokens | `styles.css` owns standalone dark/light custom properties; light `--accent` is close to, but not an audited export of, Hearth Azure | Export semantic roles with exact reviewed values; map roles, never bulk-replace arbitrary colors. |
+| Themes | `data-theme` and Settings override already provide system default and explicit user override | Keep behavior; migrate from cool blue-grey light surfaces and near-black dark surfaces to reviewed warm/graphite roles. |
 | Health state | service/map/runtime state colors | Do not repurpose state colors for brand decoration. |
-| AI | Copilot/evidence presentation | Reserve AI purple only for AI-assisted context. |
-| Primitives | panels, tags, links, controls, empty/error/loading states | Preserve accessible names, focus, keyboard behavior, and evidence labels. |
+| AI | Copilot/evidence presentation is distinct, but the current shared palette has no exported AI-purple role | Add a dedicated AI role only to Copilot/generated-insight context; do not recolor health or topology state. |
+| Primitives | panels, tags, links, controls, empty/error/loading states use DockerMap-local geometry | Consolidate to exported roles while preserving accessible names, focus, keyboard behavior, and evidence labels. |
 | Topology | graph node/edge and inspector rules | Preserve dense-host readability and collision visibility. |
 | Runtime egress | HTML/font/network requests | Public production page must load with no font CDN dependency. |
 
 ## Required implementation evidence
 
-1. Commit the reviewed public-safe export and its source/version metadata.
+1. Commit the reviewed public-safe export and its source/version metadata,
+   including the audited source revision above and an explicit asset-safety
+   statement.
 2. Add a deterministic drift check that does not contact a private service.
 3. Prove `npm ci`, build, and production image need no private credential.
 4. Capture an offline page load with no external font request.
