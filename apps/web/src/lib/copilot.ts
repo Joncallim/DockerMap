@@ -300,12 +300,34 @@ function portAnswer(model: SystemModel, q: string, lower: string, authority: Aut
   const exposedHits = model.services.filter((s) =>
     s.ports.some((p) => parsePort(p).exposed === port)
   );
+  // Exposure-oriented wording ("what exposes 80?", "what is listening on
+  // 443?") asks about the CONTAINER-side port. A `80:8080/tcp` service
+  // exposes 8080 — answering an "exposes 80" query with its published side
+  // would be wrong (#89 P2). Restrict such queries to the exposed side.
+  const exposureWording = /expose|exposing|listening on/.test(lower);
   if (port === null) {
     return {
       question: q,
       headline: "Ports in the snapshot",
       body: model.services.flatMap((s) => s.ports.filter((p) => p !== "").map((p) => `${identityText(s.name, UNAVAILABLE_SERVICE)} → ${p}`)),
       references: model.services.map((s) => s.name),
+      evidence: evidenceFor("derived", authority)
+    };
+  }
+  if (exposureWording) {
+    if (exposedHits.length === 0) {
+      return { question: q, headline: `No service exposes port ${port}`, body: [`No service exposes port ${port}.`], references: [], evidence: evidenceFor("derived", authority) };
+    }
+    const lines: string[] = [];
+    for (const s of exposedHits) {
+      const parts = s.ports.filter((p) => parsePort(p).exposed === port);
+      lines.push(`• ${identityText(s.name, UNAVAILABLE_SERVICE)} exposes port ${port} (${parts.join(", ")})`);
+    }
+    return {
+      question: q,
+      headline: `Port ${port}`,
+      body: lines,
+      references: [...new Set(exposedHits.map((s) => s.name))],
       evidence: evidenceFor("derived", authority)
     };
   }

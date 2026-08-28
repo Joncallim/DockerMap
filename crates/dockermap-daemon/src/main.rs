@@ -4553,6 +4553,12 @@ async fn get_logs(
     let limit = parse_log_limit(query.limit)?;
     let cache = state.cache.read().await;
     let docker_reachable = cache.health.docker_reachable;
+    // Capture the mode ONCE at the initial cache read, alongside
+    // docker_reachable, so the response stamp describes the same source that
+    // SELECTED the live-vs-mock branch. A second cache read after the
+    // collection awaits could observe a mode flip mid-request and stamp
+    // fabricated entries as docker (or live entries as mock) (#89 P1).
+    let mode = cache.health.mode.clone();
     let snapshot = cache.snapshot.clone();
     drop(cache);
 
@@ -4578,7 +4584,7 @@ async fn get_logs(
                 service: None,
                 entries: Vec::new(),
                 next_cursor: None,
-                source: Some(cache_mode(&state).await),
+                source: Some(mode.clone()),
             }));
         };
         let collector = docker_collector(&state)
@@ -4601,16 +4607,11 @@ async fn get_logs(
     let mut stamped = response;
     // Actual source stamp: fabricated mock log lines must never be shown as
     // live host activity, and live log lines must never be relabelled sample
-    // (#87 E1). The daemon attests the real source of the bytes here.
-    stamped.source = Some(cache_mode(&state).await);
+    // (#87 E1). The stamp uses the mode captured at the INITIAL cache read —
+    // the same value that selected the live-vs-mock branch — so a mode flip
+    // mid-request cannot mislabel the bytes (#89 P1).
+    stamped.source = Some(mode);
     Ok(Json(stamped))
-}
-
-/// The cache's actual runtime mode ("docker" when Docker is reachable,
-/// "mock" when the daemon fell back to fabricated data) — the authoritative
-/// source stamp for every model-bearing response the daemon serves.
-async fn cache_mode(state: &AppState) -> RuntimeMode {
-    state.cache.read().await.health.mode.clone()
 }
 
 fn compose_file_unavailable(diagnostic: String) -> ApiError {

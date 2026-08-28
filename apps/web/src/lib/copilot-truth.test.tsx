@@ -263,11 +263,20 @@ describe("A6. exposed vs published port claims", () => {
 });
 
 describe("A8. expose/listening phrasings share the port grammar", () => {
-  it("'what is listening on 443?' resolves the port", () => {
+  it("'what is listening on 8443?' resolves the exposed side", () => {
+    const model = buildModel(snapshot([healthy("api", { ports: ["443:8443/tcp"] })]), runtime);
+    const response = answer(model, "what is listening on 8443", "live", "live");
+    expect(response.body.join(" ")).toContain("api");
+    expect(response.body.join(" ")).toContain("exposes port 8443");
+  });
+
+  it("'what is listening on 443?' answers the exposed side, not the published side", () => {
+    // A `443:8443/tcp` service publishes 443 but EXPOSES 8443 — an exposure
+    // question about 443 must not be answered with the published side (#89 P2).
     const model = buildModel(snapshot([healthy("api", { ports: ["443:8443/tcp"] })]), runtime);
     const response = answer(model, "what is listening on 443", "live", "live");
-    expect(response.body.join(" ")).toContain("api");
-    expect(response.body.join(" ")).toContain("443");
+    expect(response.headline).toBe("No service exposes port 443");
+    expect(response.body.join(" ")).not.toContain("publishes port 443");
   });
 
   it("'what exposes 8080?' resolves the port", () => {
@@ -279,7 +288,7 @@ describe("A8. expose/listening phrasings share the port grammar", () => {
   it("'what is listening on 9999?' with no match does not list everything", () => {
     const model = buildModel(snapshot([healthy("api", { ports: ["8080/tcp"] })]), runtime);
     const response = answer(model, "what is listening on 9999", "live", "live");
-    expect(response.headline).toBe("No service publishes port 9999");
+    expect(response.headline).toBe("No service exposes port 9999");
     expect(response.body.join(" ")).not.toContain("api");
   });
 });
