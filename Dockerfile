@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libs
     && rm -rf /var/lib/apt/lists/*
 COPY crates ./crates
 COPY rust-toolchain.toml ./
-RUN cargo build --release --manifest-path crates/Cargo.toml -p dockermap-daemon
+RUN cargo build --release --manifest-path crates/Cargo.toml \
+    -p dockermap-daemon -p dockermap-docker-gateway
 
 # ---- Node API + React web app ---------------------------------------------
 FROM node:22-bookworm-slim AS js-builder
@@ -46,6 +47,7 @@ COPY --from=js-builder /src/apps/api/package.json ./apps/api/package.json
 COPY --from=js-builder /src/apps/web/dist ./apps/web/dist
 COPY --from=js-builder /src/packages/contracts ./packages/contracts
 COPY --from=rust-builder /src/crates/target/release/dockermap-daemon /usr/local/bin/dockermap-daemon
+COPY --from=rust-builder /src/crates/target/release/dockermap-docker-gateway /usr/local/bin/dockermap-docker-gateway
 
 COPY deploy/docker/nginx.conf /etc/nginx/sites-enabled/default
 COPY deploy/docker/entrypoint.sh /entrypoint.sh

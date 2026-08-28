@@ -2,6 +2,7 @@
 set -eu
 
 daemon_pid=
+gateway_pid=
 api_pid=
 nginx_pid=
 shutting_down=
@@ -9,7 +10,7 @@ shutting_down=
 cleanup() {
   # Best-effort graceful shutdown of every child. The daemon handles SIGTERM
   # (see shutdown_signal in the daemon), node and nginx both exit on it too.
-  kill "$daemon_pid" "$api_pid" "$nginx_pid" >/dev/null 2>&1 || true
+  kill "$gateway_pid" "$daemon_pid" "$api_pid" "$nginx_pid" >/dev/null 2>&1 || true
 }
 
 shutdown() {
@@ -21,6 +22,10 @@ shutdown() {
 trap shutdown TERM INT
 
 mkdir -p "${DOCKERMAP_PROJECT_ROOT:-/opt/dockermap/project}"
+
+echo "[dockermap] starting Docker Read Gateway"
+/usr/local/bin/dockermap-docker-gateway &
+gateway_pid=$!
 
 echo "[dockermap] starting rust daemon on ${DOCKERMAP_DAEMON_HOST:-127.0.0.1}:${DOCKERMAP_DAEMON_PORT:-4100}"
 /usr/local/bin/dockermap-daemon &
@@ -39,7 +44,7 @@ nginx_pid=$!
 # child terminates so the container stops instead of running half-dead.
 # POSIX sh has no `wait -n`, so poll with kill -0.
 while :; do
-  for pid in "$daemon_pid" "$api_pid" "$nginx_pid"; do
+  for pid in "$gateway_pid" "$daemon_pid" "$api_pid" "$nginx_pid"; do
     if ! kill -0 "$pid" 2>/dev/null; then
       cleanup
       # A child dying after a signal-initiated shutdown is the expected

@@ -1,6 +1,7 @@
 # Docker authority boundary decision (#62)
 
-Status: accepted architecture; implementation pending.
+Status: accepted; measured contract and gateway implementation complete. Runtime
+split, full-host profile, and deployment rollout remain pending.
 
 ## Decision
 
@@ -81,12 +82,13 @@ preference. A second isolated trace with
 
 The `filters` value is one percent-encoded JSON object with exactly one `label`
 array containing exactly one bounded label expression. When a gateway label
-filter is configured, it requires that exact decoded structure and value for
-all three inventory calls; omission, a different label, another filter type,
-another value, malformed JSON/encoding, or duplicate `filters` keys fails
-closed. When no gateway label filter is configured, every `filters` key fails
-closed. The gateway reuses the collector's existing bounded label-expression
-validation before comparing the canonical configured value.
+filter is configured, it requires the exact canonical measured encoding and
+value for all three inventory calls; omission, a different label, another
+filter type, another value, alternate JSON/percent-encoding, malformed input,
+or duplicate `filters` keys fails closed. When no gateway label filter is
+configured, every `filters` key fails closed. The gateway applies the same
+bounded label-expression rules as the collector before comparing the canonical
+configured value.
 
 ## Gateway policy
 
@@ -112,6 +114,27 @@ Until a separately reviewed change, allow only the measured requests above.
 - Gateway unavailability is a Docker-provider failure. The collector must
   surface unavailable/degraded evidence and must never reconnect to
   `/var/run/docker.sock` directly.
+
+## Implemented gateway boundary (slice 2)
+
+`dockermap-docker-gateway` listens only on a filtered Unix socket and opens the
+raw Docker socket only after policy approval. It uses Hyper's HTTP/1 parser and
+client over Unix streams; it does not implement a raw HTTP parser and does not
+copy requester-controlled headers upstream. The collector's explicit default
+endpoint is `/run/dockermap/docker-read.sock`; it rejects both common raw Docker
+socket paths and has no raw-socket retry path.
+
+Gateway regression tests use a fake raw Unix Docker endpoint to establish that
+allowed targets are forwarded verbatim and denied method, route, query,
+framing, upgrade, and encoded-path forms never reach Docker. They cover the
+representative mutation, inspect/archive/top/exec/events/stats/image/build, and
+request-ambiguity classes enumerated below. Slice 3 will add the isolated
+real-Docker and container-mount/network proof when the services are split.
+
+The pre-split compatibility image starts the gateway before its collector so
+the collector already exercises the filtered contract. It is **not** the final
+authority boundary: gateway and collector still share that image's raw-socket
+mount until Slice 3 removes it from the frontend/collector runtime.
 
 This policy intentionally excludes container archive/export, top/processes,
 inspect, exec, events, stats, images, builds, plugin APIs and every mutation.
