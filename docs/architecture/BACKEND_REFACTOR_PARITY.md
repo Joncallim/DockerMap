@@ -94,6 +94,8 @@ already separate modules.
 | Browser API daemon client | `apps/api/src/daemonClient.ts` | daemon-token, 401 no-fallback, and timeout regressions |
 | Core log utilities | `crates/dockermap-core/src/logs.rs` | core pagination, cursor, timestamp, and stable-fixture tests |
 | Core topology identity | `crates/dockermap-core/src/identity.rs` | collision-resistant runtime/Compose identity regression |
+| Provider command execution | `crates/dockermap-daemon/src/process_runner.rs` | timeout, descendant cleanup, null-stdin, and bounded-output regressions |
+| Core public domain models | `crates/dockermap-core/src/models.rs` | core serialization, contract, and crate-root re-export tests |
 
 The PID namespace slice also corrected a discovered security defect rather
 than silently preserving it: `auto` and invalid namespace configuration are
