@@ -10,6 +10,7 @@ mod auth;
 mod config;
 mod docker_config;
 mod pid_namespace;
+mod process_runner;
 use auth::require_daemon_bearer_token;
 use bollard::{
     container::LogOutput,
@@ -44,19 +45,23 @@ use pid_namespace::{
     PidNamespaceMode,
 };
 use pid_namespace::{daemon_pid_namespace_scope, is_container_owned, PidNamespaceScope};
+#[cfg(test)]
+use process_runner::read_bounded;
+use process_runner::{
+    run_command_with_timeout, MAX_PROVIDER_OUTPUT_BYTES, PROVIDER_COMMAND_TIMEOUT,
+};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     net::SocketAddr,
-    os::unix::process::CommandExt,
     path::{Component, Path as StdPath, PathBuf},
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        Arc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::{net::TcpListener, sync::RwLock, time::sleep};
 
@@ -74,7 +79,6 @@ const MAX_NPM_SCRIPTS: usize = 16;
 const MAX_SCRIPT_CHARS: usize = 200;
 const MAX_PYTHON_PROCESSES: usize = 64;
 const MAX_NATIVE_PROCESSES: usize = 256;
-const MAX_PROVIDER_OUTPUT_BYTES: usize = 1 << 20;
 const REDACTED_VALUE: &str = "[redacted]";
 
 #[derive(Clone)]
@@ -975,225 +979,10 @@ fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
     runtime_map
 }
 
-/// Wall-clock budget for each provider subprocess. Provider binaries
-/// (tailscale, headscale, systemctl, crontab, pm2, tmux) can hang on network
-/// calls, stale locks, or waits; every command must be bounded so a stuck
-/// provider cannot stall the runtime-map refresh or a request thread.
-const PROVIDER_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
-
 /// Overall budget for one full runtime-map collection (all provider
 /// subprocesses, the npm filesystem walk, and /proc reads) when it runs off
 /// the async runtime.
 const RUNTIME_MAP_COLLECTION_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Run a provider command with a hard wall-clock timeout. Returns the child's
-/// output on success; `Err` on spawn failure or when the command outlives the
-/// budget (the child is killed and reaped). Callers push a provider
-/// Diagnostic instead of failing the whole runtime map.
-///
-/// NOTE: the pipes are drained by reader threads WHILE the child runs — a
-/// provider whose output exceeds the pipe buffer (e.g. `ps -eo ...` on a busy
-/// host) would otherwise deadlock the child until the timeout kills it.
-struct BoundedRead {
-    bytes: Vec<u8>,
-    truncated: bool,
-}
-
-#[derive(Debug)]
-struct ProviderCommandOutput {
-    status: std::process::ExitStatus,
-    stdout: Vec<u8>,
-    stdout_truncated: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProviderCommandError {
-    Spawn,
-    Wait,
-    Reader,
-    TimedOut(Duration),
-}
-
-impl ProviderCommandError {
-    fn is_spawn(self) -> bool {
-        matches!(self, Self::Spawn)
-    }
-}
-
-impl std::fmt::Display for ProviderCommandError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Spawn => formatter.write_str("provider command unavailable"),
-            Self::Wait => formatter.write_str("provider command wait failed"),
-            Self::Reader => formatter.write_str("provider command output reader failed"),
-            Self::TimedOut(timeout) => {
-                write!(
-                    formatter,
-                    "provider command timed out after {}s",
-                    timeout.as_secs()
-                )
-            }
-        }
-    }
-}
-
-fn run_command_with_timeout(
-    command: Command,
-    timeout: Duration,
-) -> Result<ProviderCommandOutput, ProviderCommandError> {
-    run_command_with_timeout_started(command, timeout, Instant::now())
-}
-
-/// The explicit `started` argument keeps the deadline anchored before spawn.
-/// It is also a deterministic seam for testing a slow `posix_spawnp` path.
-fn run_command_with_timeout_started(
-    mut command: Command,
-    timeout: Duration,
-    started: Instant,
-) -> Result<ProviderCommandOutput, ProviderCommandError> {
-    // `Command::spawn` does NOT pipe stdio like `Command::output` does, so
-    // the pipes must be requested explicitly to collect provider output.
-    // A process group makes a timeout cover descendants retaining the pipe
-    // handles, not just the immediate provider shell.
-    command.process_group(0);
-    let mut child = command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|_| ProviderCommandError::Spawn)?;
-
-    if started.elapsed() >= timeout {
-        terminate_provider_process_group(&mut child);
-        return Err(ProviderCommandError::TimedOut(timeout));
-    }
-
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
-    let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
-    let (stderr_sender, stderr_receiver) = mpsc::sync_channel(1);
-    let mut stdout_reader = Some(std::thread::spawn(move || {
-        let _ = stdout_sender.send(read_bounded(stdout, MAX_PROVIDER_OUTPUT_BYTES));
-    }));
-    let mut stderr_reader = Some(std::thread::spawn(move || {
-        let _ = stderr_sender.send(read_bounded(stderr, MAX_PROVIDER_OUTPUT_BYTES));
-    }));
-
-    let status = loop {
-        let waited = match child.try_wait() {
-            Ok(waited) => waited,
-            Err(_) => {
-                terminate_provider_process_group(&mut child);
-                return Err(ProviderCommandError::Wait);
-            }
-        };
-        match waited {
-            Some(status) => break Some(status),
-            None if started.elapsed() >= timeout => {
-                terminate_provider_process_group(&mut child);
-                break None;
-            }
-            None => std::thread::sleep(Duration::from_millis(25)),
-        }
-    };
-
-    let deadline = started + timeout;
-    let stdout = receive_reader_until(&stdout_receiver, deadline);
-    let stderr = receive_reader_until(&stderr_receiver, deadline);
-    let reader_timed_out = stdout.is_none() || stderr.is_none();
-    if reader_timed_out && status.is_some() {
-        // The command may have exited while a forked child inherited its
-        // pipes. Killing the whole group closes those pipes and lets the
-        // readers finish instead of pinning this collection forever.
-        terminate_provider_process_group(&mut child);
-    }
-
-    // Joining only after receiving from the channel is non-blocking. When a
-    // pathological reader missed the deadline we never unconditionally join
-    // it; the group kill closes its pipes without extending the deadline.
-    let stdout_received = stdout.is_some();
-    let stderr_received = stderr.is_some();
-    if stdout_received {
-        let _ = stdout_reader.take().expect("stdout reader present").join();
-    }
-    if stderr_received {
-        let _ = stderr_reader.take().expect("stderr reader present").join();
-    }
-    if let (Some(stdout), Some(_stderr)) = (stdout, stderr) {
-        return match status {
-            Some(status) => Ok(ProviderCommandOutput {
-                status,
-                stdout: stdout.bytes,
-                stdout_truncated: stdout.truncated,
-            }),
-            None => Err(ProviderCommandError::TimedOut(timeout)),
-        };
-    }
-
-    // The provider deadline is the end-to-end bound. After killing the group,
-    // join only readers that have already completed; an undelivered reader is
-    // detached and will see EOF once the killed descendants release the pipe.
-    if !stdout_received && stdout_receiver.try_recv().is_ok() {
-        let _ = stdout_reader.take().expect("stdout reader present").join();
-    }
-    if !stderr_received && stderr_receiver.try_recv().is_ok() {
-        let _ = stderr_reader.take().expect("stderr reader present").join();
-    }
-    Err(if reader_timed_out {
-        ProviderCommandError::TimedOut(timeout)
-    } else {
-        ProviderCommandError::Reader
-    })
-}
-
-fn receive_reader_until(
-    receiver: &mpsc::Receiver<BoundedRead>,
-    deadline: Instant,
-) -> Option<BoundedRead> {
-    receiver
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .ok()
-}
-
-fn terminate_provider_process_group(child: &mut std::process::Child) {
-    let process_group = child.id() as i32;
-    if process_group > 0 {
-        // `process_group(0)` above makes the provider the group leader. A
-        // negative pid targets all descendants that inherited stdout/stderr.
-        unsafe {
-            libc::kill(-process_group, libc::SIGKILL);
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-/// Keep up to `cap` bytes from a pipe while continuing to drain the remainder,
-/// so a noisy provider can never block on a full pipe. The caller receives a
-/// truncation signal and can discard an incomplete final record safely.
-fn read_bounded(mut reader: impl std::io::Read, cap: usize) -> BoundedRead {
-    let mut buffer = Vec::new();
-    let mut truncated = false;
-    let mut chunk = [0u8; 8192];
-    loop {
-        match reader.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(read) => {
-                let remaining = cap.saturating_sub(buffer.len());
-                let kept = read.min(remaining);
-                buffer.extend_from_slice(&chunk[..kept]);
-                if read > remaining {
-                    truncated = true;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    BoundedRead {
-        bytes: buffer,
-        truncated,
-    }
-}
 
 /// Collect the runtime map off the async runtime: the provider commands are
 /// blocking `std::process` calls, so they must never run on a Tokio worker
@@ -7664,38 +7453,6 @@ mod tests {
         assert!(!api_message.contains(sentinel));
         assert!(!captured_stderr.contains(sentinel));
         assert!(captured_stderr.contains(REDACTED_VALUE));
-    }
-
-    #[test]
-    fn provider_timeout_starts_before_spawn_and_kills_pipe_holding_descendants() {
-        let started_before_spawn = Instant::now() - Duration::from_millis(200);
-        let mut fast_command = Command::new("sh");
-        fast_command.arg("-c").arg("echo should-not-complete");
-        let delayed_spawn_error = run_command_with_timeout_started(
-            fast_command,
-            Duration::from_millis(50),
-            started_before_spawn,
-        )
-        .expect_err("a delayed spawn exhausts the existing provider budget");
-        assert_eq!(
-            delayed_spawn_error,
-            ProviderCommandError::TimedOut(Duration::from_millis(50))
-        );
-
-        let started = Instant::now();
-        let mut pipe_holder = Command::new("sh");
-        pipe_holder.arg("-c").arg("sleep 30 & exit 0");
-        let error = run_command_with_timeout(pipe_holder, Duration::from_millis(200))
-            .expect_err("a child retaining the pipes must time out");
-        assert_eq!(
-            error,
-            ProviderCommandError::TimedOut(Duration::from_millis(200))
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "a pipe holder must not block reader joins: {:?}",
-            started.elapsed()
-        );
     }
 
     #[test]
