@@ -14,6 +14,13 @@ import {
 } from "../src/openapi.js";
 import { ROUTE_MANIFEST } from "../src/routes.js";
 import {
+  BROWSER_ROUTE_QUERY_CONTRACTS,
+  COMPOSE_EDIT_PLAN_QUERY_CONTRACT,
+  LOGS_QUERY_CONTRACT,
+  assertBrowserQueryContractCoverage,
+  openApiQueryParameters
+} from "../src/requestContracts.js";
+import {
   SSE_CONTENT_TYPE,
   SSE_EVENT,
   SSE_EVENT_PAYLOAD_SCHEMAS,
@@ -108,8 +115,34 @@ test("generated OpenAPI records the actual session and Compose request contracts
     type: "string", minLength: 1, maxLength: 512, pattern: "\\S"
   });
   assert.deepEqual(editParameters.find((parameter) => parameter.name === "service")?.schema, {
-    type: "string", minLength: 1, maxLength: 256, pattern: "\\S"
+    type: "string", minLength: 1, maxLength: 128, pattern: "\\S"
   });
+});
+
+test("OpenAPI query metadata is derived from the finite browser request declaration", () => {
+  const document = buildOpenApiDocument();
+  for (const [routeId, contract] of Object.entries(BROWSER_ROUTE_QUERY_CONTRACTS)) {
+    const path = ROUTE_MANIFEST.find((route) => route.id === routeId)?.paths[0]?.path;
+    assert.ok(path, `${routeId} must be a manifest route`);
+    assert.deepEqual(document.paths[path]?.get?.parameters, openApiQueryParameters(contract));
+  }
+  assert.deepEqual(openApiQueryParameters(LOGS_QUERY_CONTRACT)[3]?.schema, { type: "integer", minimum: 1, maximum: 500 });
+  assert.deepEqual(openApiQueryParameters(COMPOSE_EDIT_PLAN_QUERY_CONTRACT).filter((parameter) => parameter.required).map((parameter) => parameter.name), ["file", "service", "mount"]);
+});
+
+test("browser request contract coverage fails closed on planted mapping drift", () => {
+  assert.throws(
+    () => assertBrowserQueryContractCoverage({ ...BROWSER_ROUTE_QUERY_CONTRACTS, logs: { ...LOGS_QUERY_CONTRACT } }),
+    { message: "Browser query route must use its canonical contract: logs" }
+  );
+  assert.throws(
+    () => assertBrowserQueryContractCoverage({ ...BROWSER_ROUTE_QUERY_CONTRACTS, "compose-scan": undefined }),
+    { message: "Browser query route is missing a contract mapping: compose-scan" }
+  );
+  assert.throws(
+    () => assertBrowserQueryContractCoverage({ ...BROWSER_ROUTE_QUERY_CONTRACTS, unexpected: LOGS_QUERY_CONTRACT }),
+    { message: "Browser query route has no declared contract: unexpected" }
+  );
 });
 
 test("OpenAPI references generated Rust and Node response components exactly", () => {
