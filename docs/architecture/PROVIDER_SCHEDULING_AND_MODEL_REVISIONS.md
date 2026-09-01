@@ -6,9 +6,9 @@ a generic job framework.
 
 ## Decision
 
-DockerMap currently has one static refresh loop. It completes one Docker
-inventory read, then one bounded runtime-map collection, publishes one cache,
-and only then waits two seconds before the next cycle. There are no separate
+DockerMap currently has one static Docker-inventory refresh loop. Each cycle
+publishes the Docker snapshot immediately, then starts at most one bounded
+runtime-provider observation pass in the background. There are no separate
 provider timers, no persisted telemetry, no conditional browser fetch policy,
 and no provider plugin or policy DSL.
 
@@ -34,11 +34,11 @@ publication-sanitized runtime map and diagnostics:
 
 | State | Current meaning | Publication behaviour |
 | --- | --- | --- |
-| collected | The fixed collector completed during the static refresh. | Its normalized nodes/edges may be published. |
+| collected | The fixed collector completed against the currently published Docker snapshot. | Its normalized nodes/edges may be published. |
 | skipped | The provider is intentionally unavailable (for example restricted PID namespace, missing bounded project root, or disabled tailnet opt-in). | No invented nodes; an informational diagnostic explains the omission. |
 | degraded | A bounded provider command or read did not produce complete usable evidence. | Existing severity/message diagnostics state the limitation; no healthy inference is made. |
-| failed/timed out | The whole runtime collection task failed or exceeded its 15-second budget. | Docker-derived topology remains; host-provider nodes are omitted with a warning. |
-| in flight | A second caller reaches runtime collection while a prior blocking task has not unwound. | It receives the same Docker-derived fallback and an explicit warning. |
+| failed/timed out | The whole runtime collection task failed or exceeded its 15-second budget. | Fresh Docker topology remains. The last successful provider observations are retained only with an explicit stale/degraded warning; if none exists, host-provider nodes are omitted with a warning. |
+| in flight | A prior blocking task has not unwound. | Fresh Docker topology remains. Retained provider observations are explicitly marked stale, or an explicit warning records that no successful observations are available. |
 
 This is not a new browser contract. Diagnostics remain the only public
 per-provider state surface. A future explicit provider-state model must define
@@ -54,25 +54,28 @@ not parse it, assume clock ordering, compare it to establish same-publication
 identity, or use it as independent evidence that every optional provider ran
 successfully. Equal tokens have no per-publication uniqueness guarantee.
 
-`lastUpdated` describes the published snapshot/runtime observation timestamp;
+`lastUpdated` describes the published Docker snapshot observation timestamp;
 it is not a promise that each optional provider has fresh evidence. The
 snapshot and runtime map remain source-stamped at daemon publication. A Docker
-snapshot plus unavailable host providers is therefore Docker evidence with
-provider diagnostics, not a complete host claim. Mock fallback stays mock
-source-stamped and may not be relabelled as Docker.
+snapshot plus unavailable or retained-stale host providers is therefore Docker
+evidence with provider diagnostics, not a complete host claim. Mock fallback
+stays mock source-stamped, does not run host-provider collection, and may not
+be relabelled as Docker. A live provider result is discarded across a
+Docker/mock source transition rather than being relabelled as sample data.
 
-The current implementation constructs one `DaemonCache` per sequential refresh
-and serves snapshot and runtime-map routes from that cache, but it does not
-publish a cache identity. Browser SSE emits only health snapshots; each
+The current implementation publication-sanitizes provider observations before
+retaining them behind `DaemonCache` and rebuilds the public runtime map against
+each current Docker snapshot. It does not publish a cache identity. Browser SSE emits only health snapshots; each
 received health event triggers the existing paired snapshot/runtime refetch.
 This ADR does not alter that public behavior.
 
 ## Concurrency and bounds
 
-The refresh loop awaits collection before sleeping, so it cannot overlap its
-own cycles. Runtime collection additionally has a single-flight atomic guard.
-If a blocking collection times out, its guard remains held until the task
-unwinds; no second host-provider collection starts in the meantime. The
+The refresh loop does not await optional collection before publishing Docker
+evidence. Runtime collection has a single-flight atomic guard. If a blocking
+collection times out, its guard remains held until the task unwinds; no second
+host-provider collection starts in the meantime. A provider result completing
+after a newer snapshot is retained only as explicitly stale evidence. The
 15-second runtime budget and fixed process/filesystem bounds remain unchanged.
 
 No raw provider result bypasses `publication` redaction or source stamping.
@@ -83,10 +86,11 @@ event, or browser behavior is introduced by this baseline.
 
 Rust tests assert the two-second static cadence, exact collection-stage order,
 the non-unique snapshot-observation-token behavior, restricted-PID omission
-behavior, and the no-overlap guard. Existing API/SSE and web hook regressions
-continue to prove that SSE health events drive the paired browser refetch and
-that mismatched generation/provenance pairs are not published as a coherent
-model.
+behavior, no-overlap guard, fresh Docker publication with retained stale
+provider observations, timeout degradation, and source-transition isolation.
+Existing API/SSE and web hook regressions continue to prove that SSE health
+events drive the paired browser refetch and that mismatched
+generation/provenance pairs are not published as a coherent model.
 
 ## Consequences
 

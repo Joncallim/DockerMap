@@ -22,8 +22,7 @@ use crate::{
 };
 use dockermap_core::{
     derive_runtime_map, service_entity_kind_name, DiagnosticSeverity, DockerSnapshot, RuntimeMap,
-    RuntimeMapDiagnostic, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
-    ServiceEntityKind,
+    RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind, ServiceEntityKind,
 };
 use std::{
     collections::BTreeMap,
@@ -64,7 +63,84 @@ pub(crate) const STATIC_PROVIDER_SLOTS: &[StaticProviderSlot] = &[
     StaticProviderSlot::ProjectNpm,
 ];
 
-pub(crate) fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
+/// Debug-only instrumentation for the static collection baseline. It is never
+/// persisted or emitted through the API: diagnostics remain the public evidence
+/// surface until a future schema-backed provider-state contract.
+#[cfg(debug_assertions)]
+#[derive(Default)]
+struct StaticCollectionTrace {
+    observed: Vec<StaticProviderSlot>,
+}
+
+#[cfg(debug_assertions)]
+impl StaticCollectionTrace {
+    fn record(&mut self, slot: StaticProviderSlot) {
+        self.observed.push(slot);
+    }
+
+    fn assert_complete(&self) {
+        debug_assert_eq!(
+            self.observed, STATIC_PROVIDER_SLOTS,
+            "static runtime collection changed without revising its declared baseline"
+        );
+    }
+}
+
+/// Result of one bounded provider-observation attempt. This is deliberately
+/// internal: the cache owns both retained observations and the public runtime
+/// map, so a failed optional provider pass can never relabel old observations
+/// as a fresh successful collection.
+pub(crate) enum ProviderCollectionOutcome {
+    Collected(ProviderCollection),
+    InFlight,
+    Failed,
+    TimedOut,
+}
+
+/// Collect provider observations off the async runtime: provider commands are
+/// blocking `std::process` calls, so they must never run on a Tokio worker
+/// thread. The collection is single-flight and bounded so pathological
+/// providers cannot stall Docker snapshot publication.
+pub(crate) async fn collect_provider_observations_bounded(
+    in_flight: Arc<AtomicBool>,
+    snapshot: &DockerSnapshot,
+) -> ProviderCollectionOutcome {
+    let snapshot = snapshot.clone();
+    let Some(collection_guard) = RuntimeCollectionGuard::acquire(in_flight) else {
+        eprintln!("runtime map collection skipped: previous collection is still in flight");
+        return ProviderCollectionOutcome::InFlight;
+    };
+    let work = {
+        let snapshot = snapshot.clone();
+        tokio::task::spawn_blocking(move || {
+            let _collection_guard = collection_guard;
+            collect_provider_observations(&snapshot)
+        })
+    };
+    match tokio::time::timeout(RUNTIME_MAP_COLLECTION_TIMEOUT, work).await {
+        Ok(Ok(collection)) => ProviderCollectionOutcome::Collected(collection),
+        Ok(Err(join_error)) => {
+            eprintln!("runtime map collection task failed: {join_error}");
+            ProviderCollectionOutcome::Failed
+        }
+        Err(_elapsed) => {
+            eprintln!("runtime map collection timed out after {RUNTIME_MAP_COLLECTION_TIMEOUT:?}");
+            ProviderCollectionOutcome::TimedOut
+        }
+    }
+}
+
+pub(crate) fn runtime_map_from_collection(
+    snapshot: &DockerSnapshot,
+    collection: &ProviderCollection,
+) -> RuntimeMap {
+    let (nodes, edges, diagnostics) = collection.clone().into_parts();
+    let mut runtime_map = derive_runtime_map(snapshot, nodes, edges, diagnostics);
+    redact_runtime_map(&mut runtime_map);
+    runtime_map
+}
+
+fn collect_provider_observations(snapshot: &DockerSnapshot) -> ProviderCollection {
     let mut collection = ProviderCollection::default();
     #[cfg(debug_assertions)]
     let mut baseline_trace = StaticCollectionTrace::default();
@@ -107,9 +183,6 @@ pub(crate) fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
         baseline_trace.record(StaticProviderSlot::NativeProcesses);
     }
     if let Some(root) = project_root.as_deref() {
-        // This root is an explicit project mount/configuration target rather
-        // than namespace-global discovery, so npm remains available even to a
-        // containerized daemon (and is documented as mounted project data).
         let (nodes, edges, diagnostics) = collection.parts_mut();
         collect_npm_projects(root, pid_namespace, nodes, edges, diagnostics);
     } else {
@@ -123,95 +196,7 @@ pub(crate) fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
     baseline_trace.record(StaticProviderSlot::ProjectNpm);
     #[cfg(debug_assertions)]
     baseline_trace.assert_complete();
-
-    let (nodes, edges, diagnostics) = collection.into_parts();
-    let mut runtime_map = derive_runtime_map(snapshot, nodes, edges, diagnostics);
-    redact_runtime_map(&mut runtime_map);
-    runtime_map
-}
-
-/// Debug-only instrumentation for the static collection baseline. It is never
-/// persisted or emitted through the API: diagnostics remain the public evidence
-/// surface until a future schema-backed provider-state contract.
-#[cfg(debug_assertions)]
-#[derive(Default)]
-struct StaticCollectionTrace {
-    observed: Vec<StaticProviderSlot>,
-}
-
-#[cfg(debug_assertions)]
-impl StaticCollectionTrace {
-    fn record(&mut self, slot: StaticProviderSlot) {
-        self.observed.push(slot);
-    }
-
-    fn assert_complete(&self) {
-        debug_assert_eq!(
-            self.observed, STATIC_PROVIDER_SLOTS,
-            "static runtime collection changed without revising its declared baseline"
-        );
-    }
-}
-
-/// Collect the runtime map off the async runtime: provider commands are
-/// blocking `std::process` calls, so they must never run on a Tokio worker
-/// thread. The collection is single-flight and bounded so pathological
-/// providers degrade the map rather than stalling refresh.
-pub(crate) async fn collect_runtime_map_bounded(
-    in_flight: Arc<AtomicBool>,
-    snapshot: &DockerSnapshot,
-) -> RuntimeMap {
-    let snapshot = snapshot.clone();
-    let Some(collection_guard) = RuntimeCollectionGuard::acquire(in_flight) else {
-        eprintln!("runtime map collection skipped: previous collection is still in flight");
-        return fallback_runtime_map_with_message(
-            &snapshot,
-            "Runtime map collection is still in progress; host provider nodes omitted",
-        );
-    };
-    let work = {
-        let snapshot = snapshot.clone();
-        tokio::task::spawn_blocking(move || {
-            let _collection_guard = collection_guard;
-            collect_runtime_map(&snapshot)
-        })
-    };
-    match tokio::time::timeout(RUNTIME_MAP_COLLECTION_TIMEOUT, work).await {
-        Ok(Ok(runtime_map)) => runtime_map,
-        Ok(Err(join_error)) => {
-            eprintln!("runtime map collection task failed: {join_error}");
-            fallback_runtime_map(&snapshot)
-        }
-        Err(_elapsed) => {
-            eprintln!("runtime map collection timed out after {RUNTIME_MAP_COLLECTION_TIMEOUT:?}");
-            fallback_runtime_map(&snapshot)
-        }
-    }
-}
-
-/// Minimal runtime map served when provider collection fails or times out:
-/// Docker-derived nodes remain useful, and the warning explains why host
-/// providers are absent.
-fn fallback_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
-    fallback_runtime_map_with_message(
-        snapshot,
-        "Runtime map collection failed or timed out; host provider nodes omitted",
-    )
-}
-
-fn fallback_runtime_map_with_message(snapshot: &DockerSnapshot, message: &str) -> RuntimeMap {
-    let mut runtime_map = derive_runtime_map(
-        snapshot,
-        Vec::new(),
-        Vec::new(),
-        vec![RuntimeMapDiagnostic {
-            provider: RuntimeProviderKind::Other,
-            severity: DiagnosticSeverity::Warning,
-            message: message.into(),
-        }],
-    );
-    redact_runtime_map(&mut runtime_map);
-    runtime_map
+    collection
 }
 
 fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapNode>) {
