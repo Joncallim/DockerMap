@@ -359,6 +359,10 @@ pub fn derive_runtime_map(
     mut diagnostics: Vec<RuntimeMapDiagnostic>,
     evidence_provider_revision: &str,
 ) -> RuntimeMap {
+    assert!(
+        !evidence_provider_revision.is_empty(),
+        "runtime evidence requires a nonempty opaque Docker observation token"
+    );
     for container in &snapshot.containers {
         let mut metadata = BTreeMap::new();
         metadata.insert("image".into(), container.image.clone());

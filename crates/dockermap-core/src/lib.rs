@@ -736,6 +736,18 @@ mod tests {
     }
 
     #[test]
+    fn runtime_evidence_derivation_rejects_an_empty_observation_token() {
+        let snapshot = mock_snapshot();
+        let result = std::panic::catch_unwind(|| {
+            derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "")
+        });
+        assert!(
+            result.is_err(),
+            "an empty providerRevision must never produce a runtime map"
+        );
+    }
+
+    #[test]
     fn version_one_evidence_rejects_non_docker_or_non_observed_claims() {
         let snapshot = mock_snapshot();
         let evidence = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
