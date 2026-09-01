@@ -29,8 +29,8 @@ focused regressions, and a review of source, redaction, and cache coherence.
 
 ## Provider state vocabulary
 
-`RuntimeMap.providerStates` is a schema-backed, finite evidence surface for
-the five fixed slots: `network_infrastructure`, `host_scoped`,
+`RuntimeMap.providerStates` is a schema-backed five-item evidence vector for
+the fixed slots: `network_infrastructure`, `host_scoped`,
 `python_processes`, `native_processes`, and `project_npm`. Each entry contains
 only its slot and one of `fresh`, `stale`, `collecting`, `unavailable`,
 `timed_out`, or `disabled`. It contains no provider command, path, raw error,
@@ -103,7 +103,7 @@ revision monotonicity/stability and sanitized evidence comparison,
 restricted-PID omission behavior, no-overlap guard, fresh Docker publication
 with retained stale provider observations, timeout degradation, and
 source-transition isolation. Generated schema/API tests require non-empty
-revisions and the bounded `providerStates` field; web hook regressions retain
+revisions and a five-item `providerStates` vector; web hook regressions retain
 the current fetch cadence while refusing generation-, provenance-, or
 revision-mismatched model pairs.
 
