@@ -126,6 +126,7 @@ pub struct DockerSnapshot {
     /// Opaque daemon-publication revision. This is a process-instance scoped,
     /// monotonic cache revision, not a timestamp and not a content hash.
     #[serde(rename = "modelRevision")]
+    #[schemars(length(min = 1))]
     pub model_revision: String,
     /// ACTUAL source of these bytes: "docker" (live daemon collection) or
     /// "mock" (daemon mock fallback). Stamped by the daemon route layer from
@@ -192,6 +193,7 @@ pub struct HealthResponse {
     #[serde(rename = "snapshotVersion")]
     pub snapshot_version: String,
     #[serde(rename = "modelRevision")]
+    #[schemars(length(min = 1))]
     pub model_revision: String,
     pub message: Option<String>,
 }
@@ -779,6 +781,7 @@ pub struct RuntimeMap {
     #[serde(rename = "lastUpdated")]
     pub last_updated: u64,
     #[serde(rename = "modelRevision")]
+    #[schemars(length(min = 1))]
     pub model_revision: String,
     #[serde(rename = "providerStates")]
     pub provider_states: Vec<ProviderState>,

@@ -8,7 +8,7 @@
 use crate::{
     docker_collector::DockerCollector,
     provider_contract::ProviderCollection,
-    publication::redact_health_response,
+    publication::{publish_docker_snapshot, redact_health_response, redact_runtime_map},
     runtime_collection::{
         collect_provider_observations_bounded, runtime_map_from_collection,
         ProviderCollectionOutcome,
@@ -89,14 +89,25 @@ impl PublicationRevision {
         health: &mut HealthResponse,
         runtime_map: &mut RuntimeMap,
     ) {
-        // Serialize only values already redacted and intended for publication;
-        // the opaque revision fields themselves cannot influence change
-        // detection.
-        snapshot.model_revision.clear();
-        health.model_revision.clear();
-        runtime_map.model_revision.clear();
-        let observable = serde_json::to_string(&(&*snapshot, &*health, &*runtime_map))
-            .expect("public DockerMap models are serializable");
+        // Compare precisely the model that routes can expose. Cache inventory
+        // intentionally retains raw identities for correlation, so serializing
+        // it here would make a revision change an oracle for secret-only raw
+        // changes. The opaque revision fields themselves cannot influence
+        // change detection.
+        let mut published_snapshot = publish_docker_snapshot(snapshot);
+        let mut published_health = health.clone();
+        let mut published_runtime_map = runtime_map.clone();
+        redact_health_response(&mut published_health);
+        redact_runtime_map(&mut published_runtime_map);
+        published_snapshot.model_revision.clear();
+        published_health.model_revision.clear();
+        published_runtime_map.model_revision.clear();
+        let observable = serde_json::to_string(&(
+            &published_snapshot,
+            &published_health,
+            &published_runtime_map,
+        ))
+        .expect("public DockerMap models are serializable");
         if self.last_observable.as_deref() != Some(observable.as_str()) {
             self.sequence = self
                 .sequence
@@ -330,7 +341,9 @@ async fn apply_runtime_collection_outcome(
         return;
     }
     match outcome {
-        ProviderCollectionOutcome::Collected(collection) if cache.snapshot == observed_snapshot => {
+        ProviderCollectionOutcome::Collected(collection)
+            if same_collection_evidence(&cache.snapshot, &observed_snapshot) =>
+        {
             cache.runtime_providers =
                 RuntimeProviderState::Fresh(collection.sanitized_for_retention());
         }
@@ -359,6 +372,18 @@ async fn apply_runtime_collection_outcome(
     }
     cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
     cache.assign_revision();
+}
+
+/// A provider pass is bound to Docker evidence, not its cache-publication
+/// revision. The latter is intentionally updated when `Collecting` is
+/// published, so comparing the complete envelope would incorrectly make every
+/// normal successful collection look stale.
+fn same_collection_evidence(left: &DockerSnapshot, right: &DockerSnapshot) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.model_revision.clear();
+    right.model_revision.clear();
+    left == right
 }
 
 fn runtime_map_for_snapshot(snapshot: &DockerSnapshot, state: &RuntimeProviderState) -> RuntimeMap {
@@ -690,6 +715,31 @@ mod tests {
                 .contains("retained provider observations (stale)")));
     }
 
+    #[tokio::test]
+    async fn normal_provider_completion_for_the_same_docker_evidence_is_fresh() {
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
+        };
+        let (observed_snapshot, observed_mode) =
+            publish_docker_snapshot_cache(&state, docker_cache(mock_snapshot())).await;
+        mark_runtime_collection_started(&state).await;
+
+        apply_runtime_collection_outcome(
+            &state,
+            observed_snapshot,
+            observed_mode,
+            ProviderCollectionOutcome::Collected(ProviderCollection::default()),
+        )
+        .await;
+
+        assert!(matches!(
+            state.cache.read().await.runtime_providers,
+            RuntimeProviderState::Fresh(_)
+        ));
+    }
+
     #[test]
     fn snapshot_version_is_only_the_snapshot_observation_token() {
         assert_eq!(snapshot_observation_token(42), "42");
@@ -740,6 +790,27 @@ mod tests {
             changed.health.model_revision,
             changed.runtime_map.model_revision
         );
+    }
+
+    #[tokio::test]
+    async fn secret_only_raw_inventory_change_does_not_advance_public_revision() {
+        let mut first_snapshot = mock_snapshot();
+        first_snapshot.containers[0].role = "token=DOCKERMAP_TEST_FAKE_REVISION_A".into();
+        let mut second_snapshot = first_snapshot.clone();
+        second_snapshot.containers[0].role = "token=DOCKERMAP_TEST_FAKE_REVISION_B".into();
+        assert_ne!(first_snapshot, second_snapshot);
+
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(first_snapshot)).await;
+        let first_revision = state.cache.read().await.snapshot.model_revision.clone();
+        publish_docker_snapshot_cache(&state, docker_cache(second_snapshot)).await;
+        let second_revision = state.cache.read().await.snapshot.model_revision.clone();
+
+        assert_eq!(first_revision, second_revision);
     }
 
     #[test]

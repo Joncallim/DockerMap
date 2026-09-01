@@ -124,4 +124,26 @@ mod tests {
             "schema must reject integers that browser JSON consumers cannot represent exactly"
         );
     }
+
+    #[test]
+    fn model_revision_is_required_and_nonempty_in_every_model_envelope_schema() {
+        for name in ["DockerSnapshot", "RuntimeMap", "HealthResponse"] {
+            let schema = DAEMON_SCHEMA_NAMES
+                .iter()
+                .zip(daemon_schema_documents())
+                .find_map(|(candidate, schema)| (*candidate == name).then_some(schema))
+                .expect("model schema exists");
+            let revision = schema
+                .pointer("/properties/modelRevision")
+                .expect("model revision property exists");
+            assert_eq!(
+                revision.get("minLength").and_then(|value| value.as_u64()),
+                Some(1)
+            );
+            assert!(schema
+                .get("required")
+                .and_then(|value| value.as_array())
+                .is_some_and(|required| required.iter().any(|field| field == "modelRevision")));
+        }
+    }
 }
