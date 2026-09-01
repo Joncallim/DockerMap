@@ -14,6 +14,11 @@ import {
   assertSseEventSchemaCoverage,
   ssePayloadSchemaRef
 } from "./sseProtocol.js";
+import {
+  BROWSER_ROUTE_QUERY_CONTRACTS,
+  assertBrowserQueryContractCoverage,
+  openApiQueryParameters
+} from "./requestContracts.js";
 
 type OpenApiParameter = Readonly<{
   name: string;
@@ -148,14 +153,6 @@ function withApiErrors(success: OpenApiResponses, statuses: readonly string[] = 
   };
 }
 
-const composeFileParameter = {
-  name: "file",
-  in: "query",
-  style: "form",
-  explode: true,
-  schema: { type: "array", maxItems: 8, items: { type: "string", minLength: 1, maxLength: 512, pattern: "\\S" } }
-} as const satisfies OpenApiParameter;
-
 // This metadata owns operation documentation and Node-created response
 // envelopes. The route manifest remains authoritative for paths, methods,
 // aliases, auth, and rate limiting. Rust daemon pass-through schemas are
@@ -179,26 +176,15 @@ export const ROUTE_OPERATION_METADATA = {
   "logs": {
     summary: "Container logs with cursor pagination",
     tags: ["logs"],
-    parameters: [
-      { name: "service", in: "query", schema: { type: "string", maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]*$" } },
-      { name: "q", in: "query", schema: { type: "string", maxLength: 256 } },
-      { name: "cursor", in: "query", schema: { type: "string", maxLength: 32, pattern: "^\\d+(:\\d+)?$" } },
-      { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500 } }
-    ],
+    parameters: openApiQueryParameters(BROWSER_ROUTE_QUERY_CONTRACTS.logs),
     responses: withApiErrors(rustJsonResponseFor("logs"), ["400", "401", "500"])
   },
-  "compose-scan": { summary: "Scan Compose files and correlate mounts", tags: ["compose"], parameters: [composeFileParameter], responses: withApiErrors(rustJsonResponseFor("compose-scan"), ["400", "401", "500"]) },
-  "compose-graph": { summary: "Derive Compose dependency graph", tags: ["compose"], parameters: [composeFileParameter], responses: withApiErrors(rustJsonResponseFor("compose-graph"), ["400", "401", "500"]) },
+  "compose-scan": { summary: "Scan Compose files and correlate mounts", tags: ["compose"], parameters: openApiQueryParameters(BROWSER_ROUTE_QUERY_CONTRACTS["compose-scan"]), responses: withApiErrors(rustJsonResponseFor("compose-scan"), ["400", "401", "500"]) },
+  "compose-graph": { summary: "Derive Compose dependency graph", tags: ["compose"], parameters: openApiQueryParameters(BROWSER_ROUTE_QUERY_CONTRACTS["compose-graph"]), responses: withApiErrors(rustJsonResponseFor("compose-graph"), ["400", "401", "500"]) },
   "compose-edit-plan": {
     summary: "Dry-run edit plan (never writes)",
     tags: ["compose"],
-    parameters: [
-      { name: "file", in: "query", required: true, schema: { type: "string", minLength: 1, maxLength: 512, pattern: "\\S" } },
-      { name: "service", in: "query", required: true, schema: { type: "string", minLength: 1, maxLength: 256, pattern: "\\S" } },
-      { name: "mount", in: "query", required: true, schema: { type: "string", maxLength: 16, pattern: "^\\d+$" } },
-      { name: "source", in: "query", schema: { type: "string", maxLength: 512 } },
-      { name: "target", in: "query", schema: { type: "string", maxLength: 512 } }
-    ],
+    parameters: openApiQueryParameters(BROWSER_ROUTE_QUERY_CONTRACTS["compose-edit-plan"]),
     responses: withApiErrors(rustJsonResponseFor("compose-edit-plan"), ["400", "401", "500"])
   },
   "events-stream": { summary: "Server-sent event stream of health snapshots", tags: ["system"], responses: withApiErrors(sseResponse(), ["401", "429", "500", "503"]) },
@@ -265,6 +251,7 @@ function operationFor(route: (typeof ROUTE_MANIFEST)[number], path: string): Ope
 export function buildOpenApiDocument() {
   assertRustRouteSchemaCoverage();
   assertSseEventSchemaCoverage();
+  assertBrowserQueryContractCoverage();
   const paths: Record<string, OpenApiPathItem> = {};
   for (const route of ROUTE_MANIFEST) {
     for (const routePath of route.paths) {

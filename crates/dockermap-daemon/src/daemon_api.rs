@@ -15,7 +15,7 @@ use crate::{
     AppState, DaemonAuthToken,
 };
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
     http::StatusCode,
     middleware,
     response::IntoResponse,
@@ -27,12 +27,11 @@ use dockermap_core::{
     GraphResponse, HealthResponse, ImagesResponse, LogCursor, LogsResponse, NetworksResponse,
     RuntimeMap, VolumesResponse, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
-use serde::Deserialize;
 
 pub(crate) const MAX_LOG_QUERY_CHARS: usize = 256;
 const MAX_LOG_SERVICE_CHARS: usize = 128;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct LogsQuery {
     service: Option<String>,
     q: Option<String>,
@@ -175,8 +174,9 @@ pub(crate) fn docker_log_collection_failed(error: &str) -> ApiError {
 
 async fn get_logs(
     State(state): State<AppState>,
-    Query(query): Query<LogsQuery>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<LogsResponse>, ApiError> {
+    let query = parse_logs_query(raw.as_deref())?;
     let service =
         validate_optional_query(query.service.as_deref(), "service", MAX_LOG_SERVICE_CHARS)?;
     let q = validate_optional_query(query.q.as_deref(), "q", MAX_LOG_QUERY_CHARS)?;
@@ -236,6 +236,95 @@ async fn get_logs(
     Ok(Json(stamped))
 }
 
+fn invalid_logs_query() -> ApiError {
+    ApiError {
+        status: StatusCode::BAD_REQUEST,
+        message: "invalid log query".into(),
+    }
+}
+
+fn parse_logs_query(raw: Option<&str>) -> Result<LogsQuery, ApiError> {
+    let raw = raw.unwrap_or("");
+    if !strict_form_urlencoded_utf8(raw) {
+        return Err(invalid_logs_query());
+    }
+    let mut values = std::collections::BTreeMap::new();
+    for (name, value) in url::form_urlencoded::parse(raw.as_bytes()).into_owned() {
+        if !matches!(name.as_str(), "service" | "q" | "cursor" | "limit")
+            || values.insert(name, value).is_some()
+        {
+            return Err(invalid_logs_query());
+        }
+    }
+    let limit = values
+        .remove("limit")
+        .map(|value| {
+            if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(invalid_logs_query());
+            }
+            value.parse::<usize>().map_err(|_| invalid_logs_query())
+        })
+        .transpose()?;
+    let service = values.remove("service");
+    if service
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| {
+            !value
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+        })
+    {
+        return Err(invalid_logs_query());
+    }
+    Ok(LogsQuery {
+        service,
+        q: values.remove("q"),
+        cursor: values.remove("cursor"),
+        limit,
+    })
+}
+
+fn strict_form_urlencoded_utf8(raw: &str) -> bool {
+    raw.split(['&', '=']).all(|component| {
+        let bytes = component.as_bytes();
+        let mut decoded = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'+' => {
+                    decoded.push(b' ');
+                    index += 1;
+                }
+                b'%' if index + 2 < bytes.len()
+                    && bytes[index + 1].is_ascii_hexdigit()
+                    && bytes[index + 2].is_ascii_hexdigit() =>
+                {
+                    let nibble = |byte: u8| match byte {
+                        b'0'..=b'9' => byte - b'0',
+                        b'a'..=b'f' => byte - b'a' + 10,
+                        b'A'..=b'F' => byte - b'A' + 10,
+                        _ => unreachable!("checked hexadecimal byte"),
+                    };
+                    decoded.push(nibble(bytes[index + 1]) * 16 + nibble(bytes[index + 2]));
+                    index += 3;
+                }
+                b'%' => return false,
+                byte => {
+                    decoded.push(byte);
+                    index += 1;
+                }
+            }
+        }
+        std::str::from_utf8(&decoded).is_ok()
+    })
+}
+
 async fn not_found() -> ApiError {
     ApiError {
         status: StatusCode::NOT_FOUND,
@@ -283,5 +372,39 @@ pub(crate) fn parse_log_limit(value: Option<usize>) -> Result<usize, ApiError> {
             message: format!("query parameter `limit` must be between 1 and {MAX_LOG_PAGE_SIZE}"),
         }),
         None => Ok(DEFAULT_LOG_PAGE_SIZE),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_log_query_rejects_unknown_duplicate_and_malformed_input() {
+        let valid = parse_logs_query(Some("service=api&q=timeout&cursor=123%3A4&limit=5"))
+            .expect("bounded documented log query is accepted");
+        assert_eq!(valid.service.as_deref(), Some("api"));
+        assert_eq!(valid.limit, Some(5));
+        for raw in [
+            "service=api&service=worker",
+            "service=api/../../etc",
+            "limit=5&unknown=1",
+            "limit=+5",
+            "cursor=123%",
+            "q=%FF",
+            "limit=not-a-number",
+        ] {
+            assert!(
+                parse_logs_query(Some(raw)).is_err(),
+                "{raw} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn daemon_log_query_keeps_valid_unicode() {
+        let valid = parse_logs_query(Some("q=%E2%9C%93"))
+            .expect("valid UTF-8 percent encoding must remain accepted");
+        assert_eq!(valid.q.as_deref(), Some("✓"));
     }
 }

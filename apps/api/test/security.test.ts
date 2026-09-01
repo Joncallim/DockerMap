@@ -659,7 +659,7 @@ test("logs and compose query validation rejects arrays, null bytes, and oversize
 
   const duplicateLogFilter = await request(api, "/api/logs?q=error&q=warn");
   assert.equal(duplicateLogFilter.status, 400);
-  assert.equal((await duplicateLogFilter.json()).message, "Query parameter q must be a string");
+  assert.equal((await duplicateLogFilter.json()).message, "Query parameter q must not be repeated");
 
   const oversizedLogFilter = await request(api, `/api/logs?q=${"x".repeat(257)}`);
   assert.equal(oversizedLogFilter.status, 400);
@@ -677,7 +677,7 @@ test("logs and compose query validation rejects arrays, null bytes, and oversize
     "/api/compose/edit-plan?file=compose.yaml&service=api&mount=1&mount=2"
   );
   assert.equal(duplicateMount.status, 400);
-  assert.equal((await duplicateMount.json()).message, "Query parameter mount must be a string");
+  assert.equal((await duplicateMount.json()).message, "Query parameter mount must not be repeated");
 });
 
 test("log pagination rejects invalid cursor and limit values", async () => {
@@ -703,7 +703,7 @@ test("log pagination rejects invalid cursor and limit values", async () => {
 
   const duplicateLimit = await request(api, "/api/logs?limit=50&limit=60");
   assert.equal(duplicateLimit.status, 400);
-  assert.equal((await duplicateLimit.json()).message, "Query parameter limit must be an integer");
+  assert.equal((await duplicateLimit.json()).message, "Query parameter limit must not be repeated");
 
   const nonNumericCursor = await request(api, "/api/logs?cursor=not-a-cursor");
   assert.equal(nonNumericCursor.status, 400);
@@ -1562,6 +1562,11 @@ test("API forwards fixed read-only daemon paths with normalized query encoding",
   );
   assert.equal(paginatedLogs.status, 200);
 
+  const versionedLogs = await request(api, "/api/v1/logs?service=worker&limit=50", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(versionedLogs.status, 200);
+
   const composeParams = new URLSearchParams();
   composeParams.append("file", "docker-compose.yml");
   composeParams.append("file", "stack/systemd-proxy.yml");
@@ -1589,7 +1594,7 @@ test("API forwards fixed read-only daemon paths with normalized query encoding",
     daemon.requests.some(
       (entry) =>
         entry.method === "GET" &&
-        entry.url === "/daemon/compose/scan?file=docker-compose.yml%2Cstack%2Fsystemd-proxy.yml"
+        entry.url === "/daemon/compose/scan?file=docker-compose.yml&file=stack%2Fsystemd-proxy.yml"
     )
   );
   assert.ok(
@@ -1599,6 +1604,51 @@ test("API forwards fixed read-only daemon paths with normalized query encoding",
     daemon.requests.every((entry) => entry.authorization === "Bearer test-token"),
     "every daemon proxy request carries the fallback API token"
   );
+});
+
+test("canonical and v1 logs and Compose routes fail closed before daemon forwarding", async () => {
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url?.startsWith("/daemon/logs")) return sendJson(res, 200, { service: null, entries: [], nextCursor: null });
+    if (req.url?.startsWith("/daemon/compose/scan") || req.url?.startsWith("/daemon/compose/graph")) {
+      return sendJson(res, 200, { files: [], projectRoot: "/workspace", services: [], mounts: [], correlations: [], diagnostics: [] });
+    }
+    if (req.url?.startsWith("/daemon/compose/edit-plan")) return sendJson(res, 200, { willWrite: false, changes: [] });
+    return sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+  const auth = { Authorization: "Bearer test-token" };
+
+  for (const path of [
+    "/api/logs?service=worker&cursor=123%3A4&limit=5",
+    "/api/v1/logs?q=timeout",
+    "/api/compose/scan?file=compose.yml&file=compose.override.yml",
+    "/api/v1/compose/scan?file=%E2%9C%93-compose.yml",
+    "/api/v1/compose/graph?file=compose.yml",
+    "/api/compose/edit-plan?file=compose.yml&service=api&mount=0",
+    "/api/v1/compose/edit-plan?file=compose.yml&service=api&mount=0&target=%2Fdata"
+  ]) {
+    const response = await request(api, path, { headers: auth });
+    assert.equal(response.status, 200, path);
+  }
+
+  const upstreamRequests = daemon.requests.length;
+  for (const path of [
+    "/api/logs?unknown=1",
+    "/api/v1/logs?toString=1",
+    "/api/v1/logs?limit=5&limit=6",
+    "/api/logs?q=%FF",
+    "/api/compose/scan?file%5B%5D=compose.yml",
+    "/api/compose/scan?file=",
+    "/api/v1/compose/graph?file=compose.yml&unexpected=1",
+    "/api/v1/compose/graph?file=%FF",
+    "/api/compose/edit-plan?file=compose.yml&service=api&mount=0&mount=1",
+    "/api/v1/compose/edit-plan?file=compose.yml&service=%FF&mount=0",
+    "/api/v1/compose/edit-plan?file=compose.yml&service=api&mount=0&source%5B%5D=bad"
+  ]) {
+    const response = await request(api, path, { headers: auth });
+    assert.equal(response.status, 400, path);
+  }
+  assert.equal(daemon.requests.length, upstreamRequests, "invalid browser query input must not reach the daemon");
 });
 
 test("API sends the dedicated daemon token before falling back to the API token", async () => {

@@ -21,6 +21,16 @@ import { HttpError } from "./daemonClient.js";
 import { OPENAPI_DOCUMENT } from "./openapi.js";
 import { publishApiPayload } from "./publication.js";
 import { PRODUCT_VERSION } from "./generated/productVersion.js";
+import {
+  COMPOSE_EDIT_PLAN_QUERY_CONTRACT,
+  COMPOSE_SCAN_QUERY_CONTRACT,
+  LOGS_QUERY_CONTRACT,
+  assertStrictRequestQueryEncoding,
+  assertOnlyDeclaredQueryKeys,
+  readQueryInteger,
+  readQueryString,
+  readRepeatedQueryStrings
+} from "./requestContracts.js";
 
 export type FetchDaemon = <T>(path: string) => Promise<T>;
 export type SendError = (res: express.Response, error: unknown) => void;
@@ -31,11 +41,8 @@ export type ReadHandlerDependencies = Readonly<{
   port: number;
 }>;
 
-const maxQueryLength = 256;
 const maxContainerNameLength = 128;
-const maxComposeFiles = 8;
 const maxComposeFileLength = 512;
-const maxLogPageSize = 500;
 
 // The bare /api/v1 (with or without trailing slash) answers with a small
 // version descriptor instead of 404ing. Versioned aliases for every other
@@ -49,58 +56,37 @@ export const VERSION_DESCRIPTOR = {
 export { OPENAPI_DOCUMENT } from "./openapi.js";
 
 export function buildLogsPath(query: express.Request["query"]) {
+  assertOnlyDeclaredQueryKeys(query, LOGS_QUERY_CONTRACT);
   const params = new URLSearchParams();
-  const service = readOptionalQueryString(query.service, "service", maxContainerNameLength);
-  if (service && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(service)) {
-    throw new HttpError(400, { code: "invalid_query", message: "Query parameter service must be a Docker container name" });
-  }
-  const q = readOptionalQueryString(query.q, "q", maxQueryLength);
-  const cursor = readOptionalQueryString(query.cursor, "cursor", 32);
-  const limit = readOptionalQueryInt(query.limit, "limit", 1, maxLogPageSize);
+  const service = readQueryString(query.service, LOGS_QUERY_CONTRACT.service);
+  const q = readQueryString(query.q, LOGS_QUERY_CONTRACT.q);
+  const cursor = readQueryString(query.cursor, LOGS_QUERY_CONTRACT.cursor);
+  const limit = readQueryInteger(query.limit, LOGS_QUERY_CONTRACT.limit);
   if (service) params.set("service", service);
   if (q) params.set("q", q);
-  if (cursor) {
-    if (!/^\d+(:\d+)?$/.test(cursor)) {
-      throw new HttpError(400, { code: "invalid_query", message: "Query parameter cursor must be `millis` or `millis:offset`" });
-    }
-    params.set("cursor", cursor);
-  }
+  if (cursor) params.set("cursor", cursor);
   if (limit !== undefined) params.set("limit", String(limit));
   const suffix = params.toString();
   return suffix ? `/daemon/logs?${suffix}` : "/daemon/logs";
 }
 
 export function buildComposeScanPath(query: express.Request["query"]) {
+  assertOnlyDeclaredQueryKeys(query, COMPOSE_SCAN_QUERY_CONTRACT);
   const params = new URLSearchParams();
-  const files = Array.isArray(query.file) ? query.file : query.file ? [query.file] : [];
-  if (files.length > maxComposeFiles) {
-    throw new HttpError(400, { code: "too_many_compose_files", message: `Compose scan accepts at most ${maxComposeFiles} files` });
-  }
-  const normalizedFiles = files.map((file) => {
-    if (typeof file !== "string" || !file.trim()) {
-      throw new HttpError(400, { code: "invalid_compose_file", message: "Compose scan file query values must be non-empty strings" });
-    }
-    const normalized = file.trim();
-    if (normalized.length > maxComposeFileLength || normalized.includes("\0")) {
-      throw new HttpError(400, { code: "invalid_compose_file", message: `Compose scan file query values must be ${maxComposeFileLength} characters or fewer` });
-    }
-    return normalized;
-  });
-  if (normalizedFiles.length > 0) params.set("file", normalizedFiles.join(","));
+  const normalizedFiles = readRepeatedQueryStrings(query.file, COMPOSE_SCAN_QUERY_CONTRACT.file);
+  for (const file of normalizedFiles) params.append("file", file);
   const suffix = params.toString();
   return suffix ? `/daemon/compose/scan?${suffix}` : "/daemon/compose/scan";
 }
 
 export function buildComposeEditPlanPath(query: express.Request["query"]) {
+  assertOnlyDeclaredQueryKeys(query, COMPOSE_EDIT_PLAN_QUERY_CONTRACT);
   const params = new URLSearchParams();
-  const file = readRequiredQueryString(query.file, "file", maxComposeFileLength);
-  const service = readRequiredQueryString(query.service, "service", maxQueryLength);
-  const mount = readRequiredQueryString(query.mount, "mount", 16);
-  const source = readOptionalQueryString(query.source, "source", maxComposeFileLength);
-  const target = readOptionalQueryString(query.target, "target", maxComposeFileLength);
-  if (!/^\d+$/.test(mount)) {
-    throw new HttpError(400, { code: "invalid_query", message: "Query parameter mount must be a zero-based integer" });
-  }
+  const file = readQueryString(query.file, COMPOSE_EDIT_PLAN_QUERY_CONTRACT.file);
+  const service = readQueryString(query.service, COMPOSE_EDIT_PLAN_QUERY_CONTRACT.service);
+  const mount = readQueryString(query.mount, COMPOSE_EDIT_PLAN_QUERY_CONTRACT.mount);
+  const source = readQueryString(query.source, COMPOSE_EDIT_PLAN_QUERY_CONTRACT.source);
+  const target = readQueryString(query.target, COMPOSE_EDIT_PLAN_QUERY_CONTRACT.target);
   params.set("file", file);
   params.set("service", service);
   params.set("mount", mount);
@@ -201,9 +187,9 @@ export function createReadHandlers({ fetchDaemon, sendError, port }: ReadHandler
     images: respond<{ images: ImageRecord[] }>("/daemon/images"),
     networks: respond<{ networks: NetworkRecord[] }>("/daemon/networks"),
     volumes: respond<{ volumes: VolumeRecord[] }>("/daemon/volumes"),
-    logs: async (req, res) => { try { res.json(await fetchDaemon<LogsResponse>(buildLogsPath(req.query))); } catch (error) { sendError(res, error); } },
-    composeScan: async (req, res) => { try { res.json(await fetchDaemon<ComposeScan>(buildComposeScanPath(req.query))); } catch (error) { sendError(res, error); } },
-    composeGraph: async (req, res) => { try { res.json(await fetchDaemon<ComposeGraph>(buildComposeScanPath(req.query).replace("/scan", "/graph"))); } catch (error) { sendError(res, error); } },
-    composeEditPlan: async (req, res) => { try { res.json(await fetchDaemon<ComposeEditPlan>(buildComposeEditPlanPath(req.query))); } catch (error) { sendError(res, error); } },
+    logs: async (req, res) => { try { assertStrictRequestQueryEncoding(req, LOGS_QUERY_CONTRACT); res.json(await fetchDaemon<LogsResponse>(buildLogsPath(req.query))); } catch (error) { sendError(res, error); } },
+    composeScan: async (req, res) => { try { assertStrictRequestQueryEncoding(req, COMPOSE_SCAN_QUERY_CONTRACT); res.json(await fetchDaemon<ComposeScan>(buildComposeScanPath(req.query))); } catch (error) { sendError(res, error); } },
+    composeGraph: async (req, res) => { try { assertStrictRequestQueryEncoding(req, COMPOSE_SCAN_QUERY_CONTRACT); res.json(await fetchDaemon<ComposeGraph>(buildComposeScanPath(req.query).replace("/scan", "/graph"))); } catch (error) { sendError(res, error); } },
+    composeEditPlan: async (req, res) => { try { assertStrictRequestQueryEncoding(req, COMPOSE_EDIT_PLAN_QUERY_CONTRACT); res.json(await fetchDaemon<ComposeEditPlan>(buildComposeEditPlanPath(req.query))); } catch (error) { sendError(res, error); } },
   } satisfies Record<string, express.RequestHandler>;
 }
