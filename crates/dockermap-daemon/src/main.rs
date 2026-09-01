@@ -1,4 +1,5 @@
 mod auth;
+mod cache_refresh;
 mod compose_api;
 mod config;
 mod daemon_api;
@@ -13,6 +14,10 @@ mod runtime_collection;
 use axum::{http::StatusCode, response::IntoResponse};
 #[cfg(test)]
 use bollard::Docker;
+pub(crate) use cache_refresh::AppState;
+#[cfg(test)]
+use cache_refresh::DaemonCache;
+use cache_refresh::{refresh_cache, refresh_loop};
 use compose_api::run_cli;
 use config::{read_bind_host_env, read_daemon_token_env, read_port_env, DaemonAuthToken};
 use daemon_api::daemon_router;
@@ -24,6 +29,7 @@ use daemon_api::{
 };
 #[cfg(test)]
 use docker_collector::publish_log_response;
+#[cfg(test)]
 use docker_collector::DockerCollector;
 #[cfg(test)]
 use docker_collector::{
@@ -32,10 +38,6 @@ use docker_collector::{
 };
 #[cfg(test)]
 use dockermap_core::mock_log_entries;
-use dockermap_core::{
-    derive_images, mock_snapshot, DockerSnapshot, HealthResponse, HealthState, RuntimeMap,
-    RuntimeMode,
-};
 #[cfg(test)]
 use dockermap_core::{
     derive_runtime_map, page_log_entries, ComposeFileOrigin, ComposeMountKind, ContainerMount,
@@ -44,6 +46,8 @@ use dockermap_core::{
     RuntimeProviderKind, RuntimeRelationshipKind, RuntimeServiceEntity, RuntimeServiceStatus,
     VolumeRecord, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
+#[cfg(test)]
+use dockermap_core::{mock_snapshot, HealthResponse, HealthState, RuntimeMap, RuntimeMode};
 #[cfg(test)]
 use pid_namespace::{
     cgroup_implies_container, pid_namespace_scope_from_evidence, restricted_pid_namespace_evidence,
@@ -61,40 +65,20 @@ use providers::processes::{
     real_comm, MAX_NATIVE_PROCESSES, MAX_PYTHON_PROCESSES,
 };
 use publication::*;
-use runtime_collection::collect_runtime_map_bounded;
+use std::net::SocketAddr;
 #[cfg(test)]
 use std::path::PathBuf;
+#[cfg(test)]
+use std::time::Duration;
 #[cfg(test)]
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
-};
-use std::{
-    net::SocketAddr,
     sync::{atomic::AtomicBool, Arc},
-    time::Duration,
 };
-use tokio::{net::TcpListener, sync::RwLock, time::sleep};
-
-#[derive(Clone)]
-pub(crate) struct AppState {
-    pub(crate) cache: Arc<RwLock<DaemonCache>>,
-    /// Reused bollard Docker client (connection pooling), created on first
-    /// use and recreated after a failed interaction so a restarted Docker
-    /// daemon is picked up. `None` means "not connected yet / previous
-    /// attempt failed".
-    docker: Arc<RwLock<Option<DockerCollector>>>,
-    /// A timed-out blocking collection keeps running until its subprocesses
-    /// unwind. Do not start a second expensive collection while that happens.
-    runtime_collection_in_flight: Arc<AtomicBool>,
-}
-
-#[derive(Clone)]
-pub(crate) struct DaemonCache {
-    pub(crate) snapshot: DockerSnapshot,
-    pub(crate) health: HealthResponse,
-    pub(crate) runtime_map: RuntimeMap,
-}
+use tokio::net::TcpListener;
+#[cfg(test)]
+use tokio::sync::RwLock;
 
 const CLI_USAGE: &str = "\
 DockerMap daemon — read-only Docker/host inspector
@@ -146,11 +130,7 @@ async fn main() {
     let port = read_port_env("DOCKERMAP_DAEMON_PORT", 4100);
     let host = read_bind_host_env("DOCKERMAP_DAEMON_HOST", daemon_token.0.is_some());
     let address = SocketAddr::from((host, port));
-    let state = AppState {
-        cache: Arc::new(RwLock::new(DaemonCache::mock())),
-        docker: Arc::new(RwLock::new(None)),
-        runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
-    };
+    let state = AppState::new();
 
     refresh_cache(&state).await;
     tokio::spawn(refresh_loop(state.clone()));
@@ -168,37 +148,6 @@ async fn main() {
         .expect("daemon server should run");
 }
 
-impl DaemonCache {
-    pub(crate) fn mock() -> Self {
-        let mut snapshot = mock_snapshot();
-        snapshot.images = derive_images(&snapshot);
-
-        let mut health = HealthResponse {
-            status: HealthState::Degraded,
-            mode: RuntimeMode::Mock,
-            docker_reachable: false,
-            last_updated: snapshot.last_updated,
-            snapshot_version: snapshot.last_updated.to_string(),
-            message: Some("Docker unavailable, serving mock data".into()),
-        };
-        redact_health_response(&mut health);
-
-        let last_updated = snapshot.last_updated;
-
-        Self {
-            snapshot,
-            health,
-            runtime_map: RuntimeMap {
-                nodes: Vec::new(),
-                edges: Vec::new(),
-                diagnostics: Vec::new(),
-                last_updated,
-                ..Default::default()
-            },
-        }
-    }
-}
-
 async fn shutdown_signal() {
     // systemd sends SIGTERM (KillSignal) and Docker's stop signal defaults to
     // SIGTERM; ctrl_c alone left `systemctl stop` hanging until SIGKILL.
@@ -207,111 +156,6 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
-    }
-}
-
-async fn refresh_loop(state: AppState) {
-    loop {
-        refresh_cache(&state).await;
-        sleep(Duration::from_secs(2)).await;
-    }
-}
-
-async fn refresh_cache(state: &AppState) {
-    let updated = collect_snapshot(state).await;
-    let mut cache = state.cache.write().await;
-    *cache = updated;
-}
-
-/// Returns the cached Docker collector, connecting on first use. The client
-/// is reused across refresh ticks and log requests (bollard pools the Unix
-/// socket connection) instead of being recreated on every call, which churned
-/// connections and added per-request latency.
-pub(crate) async fn docker_collector(state: &AppState) -> Result<DockerCollector, String> {
-    {
-        let guard = state.docker.read().await;
-        if let Some(collector) = guard.as_ref() {
-            return Ok(collector.clone());
-        }
-    }
-    let collector = DockerCollector::connect()?;
-    *state.docker.write().await = Some(collector.clone());
-    Ok(collector)
-}
-
-/// Drop the cached collector after a failed interaction so the next refresh
-/// reconnects — a pooled Unix-socket connection can go stale when the Docker
-/// daemon restarts.
-async fn invalidate_docker_collector(state: &AppState) {
-    *state.docker.write().await = None;
-}
-
-async fn collect_snapshot(state: &AppState) -> DaemonCache {
-    if std::env::var("DOCKERMAP_FORCE_MOCK").ok().as_deref() == Some("true") {
-        let mut cache = DaemonCache::mock();
-        cache.health.message = Some("Mock mode forced by DOCKERMAP_FORCE_MOCK".into());
-        redact_health_response(&mut cache.health);
-        cache.runtime_map = collect_runtime_map_bounded(
-            state.runtime_collection_in_flight.clone(),
-            &cache.snapshot,
-        )
-        .await;
-        return cache;
-    }
-
-    let mut cache = match docker_collector(state).await {
-        Ok(collector) => match collector.collect_snapshot().await {
-            Ok(mut snapshot) => {
-                snapshot.images = derive_images(&snapshot);
-                let health = HealthResponse {
-                    status: HealthState::Ok,
-                    mode: RuntimeMode::Docker,
-                    docker_reachable: true,
-                    last_updated: snapshot.last_updated,
-                    snapshot_version: snapshot.last_updated.to_string(),
-                    message: Some("Docker engine connected".into()),
-                };
-                DaemonCache {
-                    snapshot,
-                    health,
-                    runtime_map: empty_runtime_map(0),
-                }
-            }
-            Err(error) => {
-                invalidate_docker_collector(state).await;
-                let mut cache = DaemonCache::mock();
-                cache.health.message =
-                    Some(format!("Docker read failed, serving mock data: {error}"));
-                cache
-            }
-        },
-        Err(error) => {
-            let mut cache = DaemonCache::mock();
-            cache.health.message = Some(format!("Docker unavailable, serving mock data: {error}"));
-            cache
-        }
-    };
-
-    // The runtime map is expensive (provider subprocesses, filesystem walk)
-    // and must never run on a Tokio worker thread, so it is computed once per
-    // refresh cycle — same cadence as the snapshot — and served from the
-    // cache by `get_runtime_map`.
-    cache.runtime_map =
-        collect_runtime_map_bounded(state.runtime_collection_in_flight.clone(), &cache.snapshot)
-            .await;
-    // Docker failure details are provider-controlled text. Sanitize before the
-    // cache becomes observable through health, API proxy, or SSE routes.
-    redact_health_response(&mut cache.health);
-    cache
-}
-
-fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
-    RuntimeMap {
-        nodes: Vec::new(),
-        edges: Vec::new(),
-        diagnostics: Vec::new(),
-        last_updated,
-        ..Default::default()
     }
 }
 
