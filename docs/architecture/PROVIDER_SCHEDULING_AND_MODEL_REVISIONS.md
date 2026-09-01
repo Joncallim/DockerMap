@@ -1,8 +1,8 @@
 # Provider scheduling and model revisions
 
-Status: accepted baseline for #66. This ADR records the implementation before
-any scheduler work. It is deliberately a characterization, not a proposal for
-a generic job framework.
+Status: implemented coherence baseline for #66. This ADR records the fixed
+collection boundary and its public coherence contract; it is not a proposal
+for a generic job framework.
 
 ## Decision
 
@@ -29,24 +29,38 @@ focused regressions, and a review of source, redaction, and cache coherence.
 
 ## Provider state vocabulary
 
-At this baseline, provider state is represented only by the existing,
-publication-sanitized runtime map and diagnostics:
+`RuntimeMap.providerStates` is a schema-backed, finite evidence surface for
+the five fixed slots: `network_infrastructure`, `host_scoped`,
+`python_processes`, `native_processes`, and `project_npm`. Each entry contains
+only its slot and one of `fresh`, `stale`, `collecting`, `unavailable`,
+`timed_out`, or `disabled`. It contains no provider command, path, raw error,
+diagnostic, secret, timestamp, or configurable policy. Diagnostics remain the
+human-readable, publication-sanitized explanation.
 
 | State | Current meaning | Publication behaviour |
 | --- | --- | --- |
-| collected | The fixed collector completed against the currently published Docker snapshot. | Its normalized nodes/edges may be published. |
-| skipped | The provider is intentionally unavailable (for example restricted PID namespace, missing bounded project root, or disabled tailnet opt-in). | No invented nodes; an informational diagnostic explains the omission. |
-| degraded | A bounded provider command or read did not produce complete usable evidence. | Existing severity/message diagnostics state the limitation; no healthy inference is made. |
-| failed/timed out | The whole runtime collection task failed or exceeded its 15-second budget. | Fresh Docker topology remains. The last successful provider observations are retained only with an explicit stale/degraded warning; if none exists, host-provider nodes are omitted with a warning. |
-| in flight | A prior blocking task has not unwound. | Fresh Docker topology remains. Retained provider observations are explicitly marked stale, or an explicit warning records that no successful observations are available. |
+| fresh | The fixed collector completed against the current published Docker evidence. | Its normalized nodes/edges may be published. |
+| disabled | The slot is intentionally unavailable under the selected bounded profile (for example restricted PID or missing project root). | No invented nodes; diagnostics explain the omission. |
+| collecting | A first bounded collection is in flight and no earlier observations are retained. | Fresh Docker topology remains; provider observations are unavailable. |
+| stale | A new pass is in flight, failed, or completed for older evidence while sanitized observations are retained. | Retained observations carry an explicit stale/degraded diagnostic. |
+| unavailable | No usable provider observations are retained after a failure or source transition. | Fresh Docker topology remains with an explicit warning. |
+| timed_out | The bounded provider pass exceeded its 15-second budget. | Fresh Docker topology remains; retained observations, if any, remain stale. |
 
-This is not a new browser contract. Diagnostics remain the only public
-per-provider state surface. A future explicit provider-state model must define
-schema ownership and source stamps before it is emitted.
+This is a fixed public contract, generated from Rust alongside the daemon
+models. It is not a scheduler policy API and does not create independent
+provider timers.
 
 ## Snapshot token and future model-revision semantics
 
-There is **no public cache-model revision at this baseline**.
+`DockerSnapshot`, `RuntimeMap`, and `HealthResponse` carry the same required,
+opaque non-empty `modelRevision`. It is generated from a CSPRNG boot-instance
+component plus a checked monotonic publication sequence. It advances only when
+the publication-sanitized observable model or provider-state evidence changes;
+identical publication bytes retain it. It is not a timestamp, hash, secret
+oracle, or ordering value across daemon restarts. Browser model composition
+requires matching non-empty snapshot/runtime revisions, while retaining the
+existing paired fetch and SSE cadence.
+
 `HealthResponse.snapshotVersion` is an opaque snapshot-observation token: the
 current implementation is the decimal string form of the Docker snapshot's
 `lastUpdated`, assigned before runtime collection completes. Consumers must
@@ -65,9 +79,9 @@ Docker/mock source transition rather than being relabelled as sample data.
 
 The current implementation publication-sanitizes provider observations before
 retaining them behind `DaemonCache` and rebuilds the public runtime map against
-each current Docker snapshot. It does not publish a cache identity. Browser SSE emits only health snapshots; each
-received health event triggers the existing paired snapshot/runtime refetch.
-This ADR does not alter that public behavior.
+each current Docker snapshot. It emits the coherence revision but does not add
+conditional HTTP fetching or revision-driven SSE behavior: each received
+health event still triggers the existing paired browser refetch.
 
 ## Concurrency and bounds
 
@@ -85,16 +99,18 @@ event, or browser behavior is introduced by this baseline.
 ## Regression evidence
 
 Rust tests assert the two-second static cadence, exact collection-stage order,
-the non-unique snapshot-observation-token behavior, restricted-PID omission
-behavior, no-overlap guard, fresh Docker publication with retained stale
-provider observations, timeout degradation, and source-transition isolation.
-Existing API/SSE and web hook regressions continue to prove that SSE health
-events drive the paired browser refetch and that mismatched
-generation/provenance pairs are not published as a coherent model.
+revision monotonicity/stability and sanitized evidence comparison,
+restricted-PID omission behavior, no-overlap guard, fresh Docker publication
+with retained stale provider observations, timeout degradation, and
+source-transition isolation. Generated schema/API tests require non-empty
+revisions and complete state vectors; web hook regressions retain the current
+fetch cadence while refusing generation-, provenance-, or revision-mismatched
+model pairs.
 
 ## Consequences
 
-This supplies a fixed comparison point for #66. Later scheduling work may add
-only explicitly reviewed provider policies and revision semantics; it must not
-silently convert static collection into background jobs or make freshness
-claims stronger than the actual collected evidence.
+This supplies the coherence comparison point for #66. Later work may consume
+the revision through conditional fetching or revise fixed schedules only by
+explicit ADR and review; it must not silently convert static collection into a
+generic background job framework or make freshness claims stronger than the
+actual collected evidence.
