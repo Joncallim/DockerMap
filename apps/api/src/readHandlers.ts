@@ -18,6 +18,7 @@ import type {
   VolumeRecord,
 } from "@dockermap/contracts";
 import { HttpError } from "./daemonClient.js";
+import { OPENAPI_DOCUMENT } from "./openapi.js";
 import { publishApiPayload } from "./publication.js";
 
 export type FetchDaemon = <T>(path: string) => Promise<T>;
@@ -44,47 +45,7 @@ export const VERSION_DESCRIPTOR = {
   version: "0.1.0"
 } as const;
 
-export const OPENAPI_DOCUMENT = {
-  openapi: "3.0.3",
-  info: {
-    title: "DockerMap Read-Only API",
-    version: "0.1.0",
-    description:
-      "Read-only inventory, topology, runtime, compose, logs, and diagnostics endpoints. All /api/v1/* routes alias these paths. Protected routes require a Bearer token (or reverse-proxy forward-auth)."
-  },
-  paths: {
-    "/health": { get: { summary: "API and daemon health", tags: ["system"] } },
-    "/api/v1": { get: { summary: "Version descriptor for the /api/v1 alias", tags: ["system"] } },
-    "/api/health": { get: { summary: "API and daemon health", tags: ["system"] } },
-    "/api/status": { get: { summary: "Compact dashboard status for external widgets (Homepage-style)", tags: ["system"] } },
-    "/api/auth/whoami": { get: { summary: "Current authenticated identity", tags: ["system"] } },
-    "/api/snapshot": { get: { summary: "Full Docker inventory snapshot", tags: ["docker"] } },
-    "/api/containers": { get: { summary: "List containers", tags: ["docker"] } },
-    "/api/containers/{name}": { get: { summary: "Container detail", tags: ["docker"] } },
-    "/api/images": { get: { summary: "List images", tags: ["docker"] } },
-    "/api/networks": { get: { summary: "List networks", tags: ["docker"] } },
-    "/api/volumes": { get: { summary: "List volumes", tags: ["docker"] } },
-    "/api/graph": { get: { summary: "Topology graph", tags: ["topology"] } },
-    "/api/runtime/map": { get: { summary: "Runtime map across all providers", tags: ["runtime"] } },
-    "/api/logs": {
-      get: {
-        summary: "Container logs with cursor pagination",
-        parameters: [
-          { name: "service", in: "query", schema: { type: "string" } },
-          { name: "q", in: "query", schema: { type: "string" } },
-          { name: "cursor", in: "query", schema: { type: "string" } },
-          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500 } }
-        ],
-        tags: ["logs"]
-      }
-    },
-    "/api/compose/scan": { get: { summary: "Scan Compose files and correlate mounts", tags: ["compose"] } },
-    "/api/compose/graph": { get: { summary: "Derive Compose dependency graph", tags: ["compose"] } },
-    "/api/compose/edit-plan": { get: { summary: "Dry-run edit plan (never writes)", tags: ["compose"] } },
-    "/api/diagnostics": { get: { summary: "Aggregated compose + runtime diagnostics", tags: ["system"] } },
-    "/api/events/stream": { get: { summary: "Server-sent event stream of health snapshots", tags: ["system"] } }
-  }
-} as const;
+export { OPENAPI_DOCUMENT } from "./openapi.js";
 
 export function buildLogsPath(query: express.Request["query"]) {
   const params = new URLSearchParams();
