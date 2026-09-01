@@ -40,6 +40,7 @@ import {
   volumes as mockVolumes
 } from "./mockData.js";
 import { canonicalRoutePath, routeById, routeForRequest, type RegisteredRoute, type RouteId } from "./routes.js";
+import { SSE_CONTENT_TYPE, SSE_EVENT, formatSseEvent, formatSseHeartbeat } from "./sseProtocol.js";
 
 export const app = express();
 const expectedMiddleware = new WeakSet<Function>();
@@ -589,7 +590,7 @@ registerRoute("events-stream", async (req, res) => {
     } satisfies ApiError);
     return;
   }
-  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Content-Type", SSE_CONTENT_TYPE);
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
@@ -616,8 +617,7 @@ registerRoute("events-stream", async (req, res) => {
         if (!res.writableEnded && !res.destroyed) res.end();
         return;
       }
-      res.write(`event: snapshot\n`);
-      res.write(`data: ${JSON.stringify(publishApiPayload(health))}\n\n`);
+      res.write(formatSseEvent(SSE_EVENT.snapshot, publishApiPayload(health)));
     } catch (error) {
       if (res.writableEnded || res.destroyed || (cookieSession && !validSession(cookieSession))) {
         if (!res.writableEnded && !res.destroyed) res.end();
@@ -631,8 +631,7 @@ registerRoute("events-stream", async (req, res) => {
               message: "Live stream failed"
             }
       );
-      res.write(`event: error\n`);
-      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      res.write(formatSseEvent(SSE_EVENT.error, payload));
     } finally {
       busy = false;
     }
@@ -643,7 +642,7 @@ registerRoute("events-stream", async (req, res) => {
   // snapshot emits (SSE comments are ignored by EventSource clients).
   const heartbeat = setInterval(() => {
     if (!res.writableEnded && !res.destroyed) {
-      res.write(": ping\n\n");
+      res.write(formatSseHeartbeat());
     }
   }, 15_000);
 

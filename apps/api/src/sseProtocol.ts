@@ -14,8 +14,14 @@ export const SSE_EVENT_PAYLOAD_SCHEMAS = {
   schema: RustResponseSchemaId | NodeEnvelopeSchemaId;
 }>;
 
+export const SSE_CONTENT_TYPE = "text/event-stream";
+export const SSE_HEARTBEAT_COMMENT = "ping";
 export type SseEventName = keyof typeof SSE_EVENT_PAYLOAD_SCHEMAS;
 export type SseEventPayloadSchema = (typeof SSE_EVENT_PAYLOAD_SCHEMAS)[SseEventName];
+/** Event wire names are derived from, and cannot diverge from, mapping keys. */
+export const SSE_EVENT = Object.fromEntries(
+  Object.keys(SSE_EVENT_PAYLOAD_SCHEMAS).map((event) => [event, event])
+) as { readonly [Event in SseEventName]: Event };
 
 const EXPECTED_SSE_EVENT_PAYLOAD_SCHEMAS = {
   snapshot: { authority: "rust", schema: "HealthResponse" },
@@ -23,8 +29,13 @@ const EXPECTED_SSE_EVENT_PAYLOAD_SCHEMAS = {
 } as const satisfies typeof SSE_EVENT_PAYLOAD_SCHEMAS;
 
 export function assertSseEventSchemaCoverage(
-  mappings: Record<SseEventName, SseEventPayloadSchema> = SSE_EVENT_PAYLOAD_SCHEMAS
+  mappings: Readonly<Record<string, SseEventPayloadSchema | undefined>> = SSE_EVENT_PAYLOAD_SCHEMAS
 ) {
+  const actualEvents = Object.keys(mappings).sort();
+  const expectedEvents = Object.keys(EXPECTED_SSE_EVENT_PAYLOAD_SCHEMAS).sort();
+  if (actualEvents.length !== expectedEvents.length || actualEvents.some((event, index) => event !== expectedEvents[index])) {
+    throw new Error(`SSE event schema mapping has unexpected event names: ${actualEvents.join(", ")}`);
+  }
   for (const event of Object.keys(EXPECTED_SSE_EVENT_PAYLOAD_SCHEMAS) as SseEventName[]) {
     const actual = mappings[event];
     const expected = EXPECTED_SSE_EVENT_PAYLOAD_SCHEMAS[event];
@@ -36,6 +47,16 @@ export function assertSseEventSchemaCoverage(
 
 export function ssePayloadSchemaRef(contract: SseEventPayloadSchema) {
   return `#/components/schemas/${contract.schema}`;
+}
+
+/** Serialize a named event from the declared event-name set. */
+export function formatSseEvent(event: SseEventName, data: unknown) {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+/** Keepalive comments are protocol control data, never a JSON event. */
+export function formatSseHeartbeat() {
+  return `: ${SSE_HEARTBEAT_COMMENT}\n\n`;
 }
 
 export type ParsedSseFrame =

@@ -7,7 +7,13 @@ import {
   type NodeEnvelopeSchemaId,
   type RustResponseSchemaId
 } from "@dockermap/contracts";
-import { SSE_EVENT_PAYLOAD_SCHEMAS, assertSseEventSchemaCoverage, ssePayloadSchemaRef } from "./sseProtocol.js";
+import {
+  SSE_CONTENT_TYPE,
+  SSE_EVENT_PAYLOAD_SCHEMAS,
+  SSE_HEARTBEAT_COMMENT,
+  assertSseEventSchemaCoverage,
+  ssePayloadSchemaRef
+} from "./sseProtocol.js";
 
 type OpenApiParameter = Readonly<{
   name: string;
@@ -74,14 +80,14 @@ function sseResponse() {
     "200": {
       description: "A long-lived Server-Sent Events stream. Named event data is JSON; comment frames are keepalives and have no JSON payload.",
       content: {
-        "text/event-stream": {
+        [SSE_CONTENT_TYPE]: {
           schema: { type: "string", description: "UTF-8 Server-Sent Events framing; see x-dockermap-sse-events." },
           "x-dockermap-sse-events": Object.entries(SSE_EVENT_PAYLOAD_SCHEMAS).map(([event, contract]) => ({
             event,
             data: { $ref: ssePayloadSchemaRef(contract) },
             "x-dockermap-schema-authority": contract.authority
           })),
-          "x-dockermap-sse-comment-frames": ["ping"]
+          "x-dockermap-sse-comment-frames": [SSE_HEARTBEAT_COMMENT]
         }
       }
     }
