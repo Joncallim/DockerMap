@@ -37,6 +37,7 @@ export type {
   RuntimeAdvisorySeverity,
   RuntimeEvidenceAssertionKind,
   RuntimeEvidenceKind,
+  RuntimeEvidenceProvider,
   RuntimeEvidenceRef,
   RuntimeEventRef,
   RuntimeHealth,

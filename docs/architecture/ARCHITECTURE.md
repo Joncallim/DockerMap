@@ -62,7 +62,8 @@ collector -> bounded RuntimeEvidenceRef -> RuntimeMapEdge -> daemon publication/
 
 The first facts are Docker network membership, volume attachment, and port
 publication. They are `observed`, carry the Docker collection timestamp and
-opaque Docker observation token, and declare `fresh` only for that Docker
+an opaque Docker observation revision token (deliberately neither a timestamp
+nor the cache model revision), and declare `fresh` only for that Docker
 observation. Provider-slot freshness continues to describe optional host
 collection separately. An empty array is explicit migration state for a
 relationship family that has not yet gained provenance; it must not be

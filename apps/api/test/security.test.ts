@@ -1131,6 +1131,68 @@ test("runtime evidence is required and fails closed before browser publication",
   const extra = structuredClone(fixture);
   extra.edges[0].evidenceRefs[0].rawConfig = "must never become a public field";
   assert.throws(() => validateDaemonResponse("/daemon/runtime/map", extra));
+
+  for (const [field, value] of [
+    ["provider", "systemd"],
+    ["kind", "systemd_requires"],
+    ["assertionKind", "inferred"],
+    ["freshness", "stale"],
+    ["version", 2]
+  ] as const) {
+    const fabricated = structuredClone(fixture);
+    fabricated.edges[0].evidenceRefs[0][field] = value;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", fabricated),
+      `v1 evidence must reject fabricated ${field}`
+    );
+  }
+
+  const evidence = fixture.edges[0].evidenceRefs[0];
+  assert.notEqual(
+    evidence.providerRevision,
+    String(evidence.collectedAt),
+    "providerRevision is an opaque observation token, not a timestamp alias"
+  );
+  const timestampAlias = structuredClone(fixture);
+  timestampAlias.edges[0].evidenceRefs[0].providerRevision = String(timestampAlias.edges[0].evidenceRefs[0].collectedAt);
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", timestampAlias));
+
+  for (const [kind, relationship] of [
+    ["docker_network_membership", "mounts"],
+    ["docker_volume_mount", "exposes"],
+    ["docker_port_publication", "connected_to"]
+  ] as const) {
+    const mismatched = structuredClone(fixture);
+    mismatched.edges[0].evidenceRefs[0].kind = kind;
+    mismatched.edges[0].relationship = relationship;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", mismatched),
+      `${kind} must not support ${relationship}`
+    );
+  }
+});
+
+test("fabricated runtime evidence is rejected over the authenticated API boundary", async () => {
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json", import.meta.url),
+    "utf8"
+  ));
+  const sentinel = "DOCKERMAP_TEST_FAKE_RUNTIME_EVIDENCE_SECRET";
+  const hostile = structuredClone(fixture);
+  hostile.edges[0].evidenceRefs[0].provider = `token=${sentinel}`;
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/runtime/map") return sendJson(res, 200, hostile);
+    return sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+  const response = await request(api, "/api/runtime/map", { headers: { Authorization: "Bearer test-token" } });
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.deepEqual(body, {
+    code: "daemon_invalid_response",
+    message: "Daemon response did not match its declared contract"
+  });
+  assert.doesNotMatch(JSON.stringify(body), new RegExp(sentinel));
 });
 
 test("actual canonical and v1 SSE snapshot/error frames use their declared payload schemas", async () => {
@@ -1998,7 +2060,7 @@ test("API publishes redacted and normalized daemon data on every response route"
         edges: [{
           source: hostile,
           target: hostile,
-          relationship: "depends_on",
+          relationship: "connected_to",
           metadata: { [hostile]: hostile },
           evidenceRefs: [{
             version: 1,

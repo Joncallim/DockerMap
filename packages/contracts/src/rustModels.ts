@@ -43,18 +43,23 @@ export type RuntimeProviderKind =
   | 'other';
 export type DiagnosticSeverity = 'info' | 'warning' | 'error' | 'blocked';
 /**
- * Whether a runtime claim was directly observed, deterministically derived
- * from bounded observations, or inferred by a future heuristic.  This is a
- * closed vocabulary: callers must not translate provider error text into a
- * confidence-like assertion label.
+ * Version-one evidence is a direct Docker observation. Derived and inferred
+ * claims need a later, deliberately versioned evidence contract rather than
+ * a permissive enum value in this first slice.
  */
-export type RuntimeEvidenceAssertionKind = 'observed' | 'derived' | 'inferred';
+export type RuntimeEvidenceAssertionKind = 'observed';
 /**
  * Safe, provider-specific fact families supported by the first provenance
  * slice.  New sources require an explicit enum addition rather than an
  * arbitrary source string or metadata map.
  */
 export type RuntimeEvidenceKind = 'docker_network_membership' | 'docker_volume_mount' | 'docker_port_publication';
+/**
+ * Evidence provider for the version-one Docker-only evidence shape. New
+ * providers require a new versioned evidence representation; they cannot be
+ * passed off as v1 through the broad runtime-provider enum.
+ */
+export type RuntimeEvidenceProvider = 'docker';
 export type RuntimeRelationshipKind =
   | 'connected_to'
   | 'depends_on'
@@ -288,7 +293,7 @@ export interface RuntimeEvidenceRef {
   freshness: 'fresh';
   id: string;
   kind: RuntimeEvidenceKind;
-  provider: RuntimeProviderKind;
+  provider: RuntimeEvidenceProvider;
   /**
    * Opaque Docker observation token, not a cache-publication revision or
    * source dump.
