@@ -32,7 +32,7 @@ export const DAEMON_RESPONSE_SCHEMA_PATHS = [
   { path: "/daemon/compose/edit-plan", routeId: "compose-edit-plan", schema: RUST_ROUTE_RESPONSE_SCHEMAS["compose-edit-plan"] },
 ] as const satisfies readonly { path: string; schema: RustResponseSchemaId; routeId?: keyof typeof RUST_ROUTE_RESPONSE_SCHEMAS }[];
 
-const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } });
+const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint8: true, uint32: true, uint64: true } });
 const validators = new Map<RustResponseSchemaId, ValidateFunction>(
   (Object.entries(RUST_RESPONSE_SCHEMAS) as [RustResponseSchemaId, (typeof RUST_RESPONSE_SCHEMAS)[RustResponseSchemaId]][])
     .map(([schema, definition]) => [schema, ajv.compile(definition)]),
@@ -51,6 +51,16 @@ const PROVIDER_STATE_SLOT_SET = {
 } as const satisfies Record<ProviderSlot, true>;
 const PROVIDER_STATE_SLOTS = Object.keys(PROVIDER_STATE_SLOT_SET) as ProviderSlot[];
 const U32_MAX = 4_294_967_295;
+
+// Version-one evidence is intentionally a discriminated Docker observation,
+// not a generic provenance bag. JSON Schema owns each field's closed enum;
+// this small cross-field table binds an emitted fact to the relationship it
+// can actually support. A later evidence version must add an explicit row.
+const V1_EVIDENCE_EDGE = {
+  docker_network_membership: { relationship: "connected_to", sourcePrefix: "docker_container_", targetPrefix: "docker_network_" },
+  docker_volume_mount: { relationship: "mounts", sourcePrefix: "docker_container_", targetPrefix: "docker_volume_" },
+  docker_port_publication: { relationship: "exposes", sourcePrefix: "docker_container_", targetPrefix: "network_listener_" },
+} as const;
 
 function hasCompleteProviderStateVector(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
@@ -119,6 +129,31 @@ function hasCoherentProviderFreshness(payload: unknown): boolean {
   });
 }
 
+function hasCoherentRuntimeEvidence(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const edges = (payload as { edges?: unknown }).edges;
+  if (!Array.isArray(edges)) return false;
+  return edges.every((edge) => {
+    if (!edge || typeof edge !== "object") return false;
+    const candidate = edge as { source?: unknown; target?: unknown; relationship?: unknown; evidenceRefs?: unknown };
+    if (!Array.isArray(candidate.evidenceRefs)) return false;
+    return candidate.evidenceRefs.every((evidence) => {
+      if (!evidence || typeof evidence !== "object") return false;
+      const value = evidence as {
+        version?: unknown; provider?: unknown; kind?: unknown; assertionKind?: unknown;
+        freshness?: unknown; providerRevision?: unknown; collectedAt?: unknown; subjectRef?: unknown;
+      };
+      if (value.version !== 1 || value.provider !== "docker" || value.assertionKind !== "observed" || value.freshness !== "fresh") return false;
+      const expected = typeof value.kind === "string" ? V1_EVIDENCE_EDGE[value.kind as keyof typeof V1_EVIDENCE_EDGE] : undefined;
+      if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return false;
+      if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix)) return false;
+      // An opaque observation token must never be the collection timestamp
+      // re-labelled as a revision. The daemon produces it independently.
+      return typeof value.providerRevision === "string" && value.providerRevision !== String(value.collectedAt);
+    });
+  });
+}
+
 export function daemonResponseSchemaId(path: string): RustResponseSchemaId | undefined {
   const pathname = path.split("?", 1)[0];
   if (pathname === "/daemon/containers") return "ContainersResponse";
@@ -150,7 +185,7 @@ export class DaemonResponseValidationError extends Error {
 export function validateDaemonResponse(path: string, payload: unknown) {
   const schema = daemonResponseSchemaId(path);
   const validator = schema && validators.get(schema);
-  if (!validator || !validator(payload) || (schema === "RuntimeMap" && (!hasCompleteProviderStateVector(payload) || !hasCoherentProviderFreshness(payload)))) {
+  if (!validator || !validator(payload) || (schema === "RuntimeMap" && (!hasCompleteProviderStateVector(payload) || !hasCoherentProviderFreshness(payload) || !hasCoherentRuntimeEvidence(payload)))) {
     throw new DaemonResponseValidationError();
   }
   return payload;

@@ -113,9 +113,16 @@ pub(crate) async fn collect_provider_slot_bounded(
 pub(crate) fn runtime_map_from_collection(
     snapshot: &DockerSnapshot,
     collection: &ProviderCollection,
+    docker_observation_revision: &str,
 ) -> RuntimeMap {
     let (nodes, edges, diagnostics) = collection.clone().into_parts();
-    let mut runtime_map = derive_runtime_map(snapshot, nodes, edges, diagnostics);
+    let mut runtime_map = derive_runtime_map(
+        snapshot,
+        nodes,
+        edges,
+        diagnostics,
+        docker_observation_revision,
+    );
     redact_runtime_map(&mut runtime_map);
     runtime_map
 }

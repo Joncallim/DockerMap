@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { ProviderSlot, ProviderState, ProviderStatusReason, RuntimeLocation, RuntimeProviderKind } from "@dockermap/contracts";
+import type { ProviderSlot, ProviderState, ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceRef, RuntimeLocation, RuntimeMapEdge, RuntimeProviderKind } from "@dockermap/contracts";
 import { useApp } from "../context";
 import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord } from "../lib/model";
 import { formatRelative } from "../lib/format";
@@ -83,6 +83,23 @@ const PROVIDER_REASON_LABEL: Record<ProviderStatusReason, string> = {
   disabled: "Collection disabled"
 };
 
+const ASSERTION_KIND_LABEL: Record<RuntimeEvidenceAssertionKind, string> = {
+  observed: "Observed fact"
+};
+
+const FRESHNESS_LABEL: Record<RuntimeEvidenceRef["freshness"], string> = {
+  fresh: "Current at collection"
+};
+
+type SelectedRuntimeEdge = {
+  edge: RuntimeMapEdge;
+  key: string;
+};
+
+function runtimeEdgeKey(edge: RuntimeMapEdge) {
+  return [edge.source, edge.target, edge.relationship, ...edge.evidenceRefs.map((evidence) => evidence.id)].join("\u0000");
+}
+
 function providerFreshnessText(providerState: ProviderState): string {
   if (providerState.lastSuccessMs !== null) return `Last collected ${formatRelative(providerState.lastSuccessMs)}`;
   if (providerState.lastAttemptMs !== null) return `Last attempted ${formatRelative(providerState.lastAttemptMs)}`;
@@ -95,6 +112,7 @@ export default function RuntimeScreen() {
   const [layerFilter, setLayerFilter] = useState<RuntimeLayerId | "all">("all");
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedEdge, setSelectedEdge] = useState<SelectedRuntimeEdge | null>(null);
   const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
   /**
    * KEYED focus request: set by selectNode, consumed by the layout effect
@@ -164,6 +182,7 @@ export default function RuntimeScreen() {
    */
   const selectNode = (id: string) => {
     setSelectedId(id);
+    setSelectedEdge(null);
     const node = runtime?.byId.get(id);
     if (!node) return;
     if (!filteredNodes.some((n) => n.id === id)) {
@@ -409,8 +428,10 @@ export default function RuntimeScreen() {
                 </div>
               )}
 
-              <RelationList title="Outgoing relationships" selected={selected} model={model} edges={selected.outgoing} direction="outgoing" onSelect={selectNode} />
-              <RelationList title="Incoming relationships" selected={selected} model={model} edges={selected.incoming} direction="incoming" onSelect={selectNode} />
+              <RelationList title="Outgoing relationships" selected={selected} model={model} edges={selected.outgoing} direction="outgoing" onSelect={selectNode} onInspectEdge={(edge) => setSelectedEdge({ edge, key: runtimeEdgeKey(edge) })} selectedEdgeKey={selectedEdge?.key ?? null} />
+              <RelationList title="Incoming relationships" selected={selected} model={model} edges={selected.incoming} direction="incoming" onSelect={selectNode} onInspectEdge={(edge) => setSelectedEdge({ edge, key: runtimeEdgeKey(edge) })} selectedEdgeKey={selectedEdge?.key ?? null} />
+
+              {selectedEdge ? <RuntimeEvidenceInspector edge={selectedEdge.edge} model={model} /> : null}
 
               {selected.service?.logs.length ? (
                 <div className="inspector-section">
@@ -482,7 +503,9 @@ function RelationList({
   model,
   edges,
   direction,
-  onSelect
+  onSelect,
+  onInspectEdge,
+  selectedEdgeKey
 }: {
   title: string;
   selected: RuntimeNodeRecord;
@@ -490,6 +513,8 @@ function RelationList({
   edges: RuntimeNodeRecord["incoming"];
   direction: "incoming" | "outgoing";
   onSelect: (id: string) => void;
+  onInspectEdge: (edge: RuntimeMapEdge) => void;
+  selectedEdgeKey: string | null;
 }) {
   return (
     <div className="inspector-section">
@@ -499,6 +524,7 @@ function RelationList({
       ) : (
         <ul className="runtime-edge-list">
           {edges.map((edge, index) => {
+            const edgeKey = runtimeEdgeKey(edge);
             const targetId = direction === "outgoing" ? edge.target : edge.source;
             const node = model.runtime.byId.get(targetId);
             if (!node) {
@@ -508,6 +534,9 @@ function RelationList({
                   <Tag tone="muted">{edge.relationship.replaceAll("_", " ")}</Tag>
                   <span className={collided ? "collision-identity" : undefined} title={collided ? COLLISION_HINT : undefined}>{identityText(targetId, UNAVAILABLE_RUNTIME_ID)}</span>
                   {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
+                  <button type="button" className={`runtime-edge-evidence${selectedEdgeKey === edgeKey ? " is-active" : ""}`} aria-pressed={selectedEdgeKey === edgeKey} onClick={() => onInspectEdge(edge)}>
+                    Inspect evidence
+                  </button>
                 </li>
               );
             }
@@ -519,12 +548,63 @@ function RelationList({
                   <span>{identityText(node.label, UNAVAILABLE_RUNTIME_NODE)}</span>
                 </button>
                 <Tag tone="muted">{edge.relationship.replaceAll("_", " ")}</Tag>
+                <button type="button" className={`runtime-edge-evidence${selectedEdgeKey === edgeKey ? " is-active" : ""}`} aria-pressed={selectedEdgeKey === edgeKey} onClick={() => onInspectEdge(edge)}>
+                  Inspect evidence
+                </button>
               </li>
             );
           })}
         </ul>
       )}
     </div>
+  );
+}
+
+export function RuntimeEvidenceInspector({
+  edge,
+  model
+}: {
+  edge: RuntimeMapEdge;
+  model: NonNullable<ReturnType<typeof useApp>["model"]>;
+}) {
+  const source = model.runtime.byId.get(edge.source);
+  const target = model.runtime.byId.get(edge.target);
+  const relationship = edge.relationship.replaceAll("_", " ");
+
+  return (
+    <div className="inspector-section runtime-edge-evidence-inspector" aria-live="polite">
+      <h4>Relationship evidence</h4>
+      <p className="runtime-edge-evidence-heading">
+        {identityText(source?.label ?? edge.source, UNAVAILABLE_RUNTIME_ID)} <span aria-hidden="true">→</span> {identityText(target?.label ?? edge.target, UNAVAILABLE_RUNTIME_ID)}
+      </p>
+      <KeyValue label="Relationship" value={relationship} />
+      {edge.evidenceRefs.length === 0 ? (
+        <p className="muted-line">No evidence references yet — this relationship family is still migrating.</p>
+      ) : (
+        <ul className="runtime-evidence-list" aria-label="Relationship evidence references">
+          {edge.evidenceRefs.map((evidence) => <RuntimeEvidenceReference key={evidence.id} evidence={evidence} />)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function RuntimeEvidenceReference({ evidence }: { evidence: RuntimeEvidenceRef }) {
+  return (
+    <li className="runtime-evidence-reference">
+      <div className="runtime-evidence-reference-head">
+        <Tag tone="muted">{ASSERTION_KIND_LABEL[evidence.assertionKind]}</Tag>
+        <Tag tone="muted">{evidence.kind.replaceAll("_", " ")}</Tag>
+        <span className="runtime-evidence-time">{formatRelative(evidence.collectedAt)}</span>
+      </div>
+      <p>{identityText(evidence.summary, "Evidence summary unavailable")}</p>
+      <div className="runtime-evidence-reference-details">
+        <KeyValue label="Provider" value={evidence.provider} />
+        <KeyValue label="Subject" value={identityText(evidence.subjectRef, UNAVAILABLE_RUNTIME_ID)} mono />
+        <KeyValue label="Freshness" value={FRESHNESS_LABEL[evidence.freshness]} />
+        <KeyValue label="Provider revision" value={identityText(evidence.providerRevision, "Unavailable")} mono />
+      </div>
+    </li>
   );
 }
 

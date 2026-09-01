@@ -487,6 +487,101 @@ export const RUST_RESPONSE_SCHEMAS = {
       ],
       "type": "object"
     },
+    "RuntimeEvidenceAssertionKind": {
+      "description": "Version-one evidence is a direct Docker observation. Derived and inferred\nclaims need a later, deliberately versioned evidence contract rather than\na permissive enum value in this first slice.",
+      "enum": [
+        "observed"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceFreshness": {
+      "enum": [
+        "fresh"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceKind": {
+      "description": "Safe, provider-specific fact families supported by the first provenance\nslice.  New sources require an explicit enum addition rather than an\narbitrary source string or metadata map.",
+      "enum": [
+        "docker_network_membership",
+        "docker_volume_mount",
+        "docker_port_publication"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceProvider": {
+      "description": "Evidence provider for the version-one Docker-only evidence shape. New\nproviders require a new versioned evidence representation; they cannot be\npassed off as v1 through the broad runtime-provider enum.",
+      "enum": [
+        "docker"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceRef": {
+      "additionalProperties": false,
+      "description": "A compact, versioned reference to the bounded fact supporting a runtime\nrelationship.  It intentionally contains no raw command output, config\nfragment, path, process arguments, or generic metadata bag.",
+      "properties": {
+        "assertionKind": {
+          "$ref": "#/$defs/RuntimeEvidenceAssertionKind"
+        },
+        "collectedAt": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freshness": {
+          "$ref": "#/$defs/RuntimeEvidenceFreshness",
+          "description": "The Docker snapshot is observed as a single current publication. Host\nprovider freshness remains represented by `providerStates` (#66)."
+        },
+        "id": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/RuntimeEvidenceKind"
+        },
+        "provider": {
+          "$ref": "#/$defs/RuntimeEvidenceProvider"
+        },
+        "providerRevision": {
+          "description": "Opaque Docker observation token, not a cache-publication revision or\nsource dump.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "subjectRef": {
+          "description": "The already-public runtime entity whose Docker fact was observed.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "A bounded, curated explanation; it is never copied from a raw source.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
+          "format": "uint8",
+          "maximum": 1,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "provider",
+        "kind",
+        "assertionKind",
+        "summary",
+        "subjectRef",
+        "collectedAt",
+        "providerRevision",
+        "freshness"
+      ],
+      "type": "object"
+    },
     "RuntimeHealth": {
       "additionalProperties": false,
       "properties": {
@@ -621,6 +716,14 @@ export const RUST_RESPONSE_SCHEMAS = {
     "RuntimeMapEdge": {
       "additionalProperties": false,
       "properties": {
+        "evidenceRefs": {
+          "description": "Empty for relationship families that have not yet been migrated to the\nevidence model. It remains present on the wire so API/UI consumers have\none stable, bounded relationship shape while the migration continues.",
+          "items": {
+            "$ref": "#/$defs/RuntimeEvidenceRef"
+          },
+          "maxItems": 8,
+          "type": "array"
+        },
         "metadata": {
           "additionalProperties": {
             "type": "string"
@@ -641,7 +744,8 @@ export const RUST_RESPONSE_SCHEMAS = {
         "source",
         "target",
         "relationship",
-        "metadata"
+        "metadata",
+        "evidenceRefs"
       ],
       "type": "object"
     },
@@ -2590,6 +2694,101 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       ],
       "type": "object"
     },
+    "RuntimeEvidenceAssertionKind": {
+      "description": "Version-one evidence is a direct Docker observation. Derived and inferred\nclaims need a later, deliberately versioned evidence contract rather than\na permissive enum value in this first slice.",
+      "enum": [
+        "observed"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceFreshness": {
+      "enum": [
+        "fresh"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceKind": {
+      "description": "Safe, provider-specific fact families supported by the first provenance\nslice.  New sources require an explicit enum addition rather than an\narbitrary source string or metadata map.",
+      "enum": [
+        "docker_network_membership",
+        "docker_volume_mount",
+        "docker_port_publication"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceProvider": {
+      "description": "Evidence provider for the version-one Docker-only evidence shape. New\nproviders require a new versioned evidence representation; they cannot be\npassed off as v1 through the broad runtime-provider enum.",
+      "enum": [
+        "docker"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceRef": {
+      "additionalProperties": false,
+      "description": "A compact, versioned reference to the bounded fact supporting a runtime\nrelationship.  It intentionally contains no raw command output, config\nfragment, path, process arguments, or generic metadata bag.",
+      "properties": {
+        "assertionKind": {
+          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceAssertionKind"
+        },
+        "collectedAt": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freshness": {
+          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceFreshness",
+          "description": "The Docker snapshot is observed as a single current publication. Host\nprovider freshness remains represented by `providerStates` (#66)."
+        },
+        "id": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceKind"
+        },
+        "provider": {
+          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceProvider"
+        },
+        "providerRevision": {
+          "description": "Opaque Docker observation token, not a cache-publication revision or\nsource dump.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "subjectRef": {
+          "description": "The already-public runtime entity whose Docker fact was observed.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "A bounded, curated explanation; it is never copied from a raw source.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
+          "format": "uint8",
+          "maximum": 1,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "provider",
+        "kind",
+        "assertionKind",
+        "summary",
+        "subjectRef",
+        "collectedAt",
+        "providerRevision",
+        "freshness"
+      ],
+      "type": "object"
+    },
     "RuntimeHealth": {
       "additionalProperties": false,
       "properties": {
@@ -2724,6 +2923,14 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "RuntimeMapEdge": {
       "additionalProperties": false,
       "properties": {
+        "evidenceRefs": {
+          "description": "Empty for relationship families that have not yet been migrated to the\nevidence model. It remains present on the wire so API/UI consumers have\none stable, bounded relationship shape while the migration continues.",
+          "items": {
+            "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceRef"
+          },
+          "maxItems": 8,
+          "type": "array"
+        },
         "metadata": {
           "additionalProperties": {
             "type": "string"
@@ -2744,7 +2951,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "source",
         "target",
         "relationship",
-        "metadata"
+        "metadata",
+        "evidenceRefs"
       ],
       "type": "object"
     },
