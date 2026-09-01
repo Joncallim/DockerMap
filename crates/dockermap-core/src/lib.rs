@@ -17,9 +17,7 @@ pub use logs::{
     MAX_LOG_PAGE_SIZE,
 };
 pub use models::*;
-pub use snapshot_runtime::{
-    derive_graph, derive_images, derive_runtime_map, derive_runtime_map_with_evidence_revision,
-};
+pub use snapshot_runtime::{derive_graph, derive_images, derive_runtime_map};
 
 pub fn service_entity_kind_name(kind: &ServiceEntityKind) -> &'static str {
     match kind {
@@ -629,7 +627,7 @@ mod tests {
     #[test]
     fn derives_runtime_map_from_docker_snapshot() {
         let snapshot = mock_snapshot();
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
 
         assert!(runtime_map
             .nodes
@@ -650,7 +648,7 @@ mod tests {
     #[test]
     fn docker_runtime_edges_carry_bounded_observed_evidence_without_confidence() {
         let snapshot = mock_snapshot();
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
         let network = runtime_map
             .edges
             .iter()
@@ -696,10 +694,7 @@ mod tests {
             assert_eq!(evidence.freshness, RuntimeEvidenceFreshness::Fresh);
             assert_eq!(evidence.subject_ref, edge.source);
             assert_eq!(evidence.collected_at, snapshot.last_updated);
-            assert_eq!(
-                evidence.provider_revision,
-                snapshot.last_updated.to_string()
-            );
+            assert_eq!(evidence.provider_revision, "test");
             assert!(!evidence.summary.contains(&snapshot.containers[0].name));
         }
 
@@ -721,7 +716,7 @@ mod tests {
         // into provider evidence.
         snapshot.model_revision = "daemon-publication-999".into();
 
-        let runtime_map = derive_runtime_map_with_evidence_revision(
+        let runtime_map = derive_runtime_map(
             &snapshot,
             Vec::new(),
             Vec::new(),
@@ -743,7 +738,7 @@ mod tests {
     #[test]
     fn version_one_evidence_rejects_non_docker_or_non_observed_claims() {
         let snapshot = mock_snapshot();
-        let evidence = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new())
+        let evidence = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
             .edges
             .into_iter()
             .flat_map(|edge| edge.evidence_refs)
@@ -764,6 +759,26 @@ mod tests {
                 "v1 must reject fabricated {field} evidence"
             );
         }
+    }
+
+    #[test]
+    fn version_one_evidence_cannot_attest_a_different_runtime_edge() {
+        let snapshot = mock_snapshot();
+        let edge = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
+            .edges
+            .into_iter()
+            .find(|edge| {
+                edge.relationship == RuntimeRelationshipKind::ConnectedTo
+                    && !edge.evidence_refs.is_empty()
+            })
+            .expect("mock snapshot emits a Docker network edge");
+        let mut malformed = serde_json::to_value(edge).expect("edge serializes");
+        malformed["relationship"] = serde_json::json!("exposes");
+
+        assert!(
+            serde_json::from_value::<RuntimeMapEdge>(malformed).is_err(),
+            "network membership evidence must not attest a port-publication edge"
+        );
     }
 
     #[test]
@@ -793,7 +808,7 @@ mod tests {
                 attached_to: Vec::new(),
             })
             .collect();
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
         let volume_ids = runtime_map
             .nodes
             .iter()
@@ -886,7 +901,7 @@ mod tests {
         snapshot.networks.clear();
         snapshot.volumes.clear();
 
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
         let listeners = runtime_map
             .nodes
             .iter()
@@ -922,8 +937,9 @@ mod tests {
         reordered.networks.reverse();
         reordered.volumes.reverse();
 
-        let first_map = derive_runtime_map(&first, Vec::new(), Vec::new(), Vec::new());
-        let reordered_map = derive_runtime_map(&reordered, Vec::new(), Vec::new(), Vec::new());
+        let first_map = derive_runtime_map(&first, Vec::new(), Vec::new(), Vec::new(), "test");
+        let reordered_map =
+            derive_runtime_map(&reordered, Vec::new(), Vec::new(), Vec::new(), "test");
 
         assert_eq!(reordered_map.nodes, first_map.nodes);
         assert_eq!(reordered_map.edges, first_map.edges);
@@ -946,7 +962,7 @@ mod tests {
             },
         ];
 
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
         let duplicated = runtime_map
             .nodes
             .iter()
@@ -971,7 +987,7 @@ mod tests {
         // JSON → Rust) instead of a hand-written fixture, so the contract test
         // validates output collectors actually produce.
         let snapshot = mock_snapshot();
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
 
         let serialized = serde_json::to_string(&runtime_map).expect("map should serialize");
         let deserialized: RuntimeMap =

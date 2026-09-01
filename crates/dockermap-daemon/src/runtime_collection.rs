@@ -21,9 +21,9 @@ use crate::{
     publication::redact_runtime_map,
 };
 use dockermap_core::{
-    derive_runtime_map_with_evidence_revision, service_entity_kind_name, DiagnosticSeverity,
-    DockerSnapshot, ProviderSlot, ProviderStateKind, RuntimeMap, RuntimeMapNode, RuntimeNodeKind,
-    RuntimeNodeLayer, RuntimeProviderKind, ServiceEntityKind,
+    derive_runtime_map, service_entity_kind_name, DiagnosticSeverity, DockerSnapshot, ProviderSlot,
+    ProviderStateKind, RuntimeMap, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer,
+    RuntimeProviderKind, ServiceEntityKind,
 };
 use std::{
     collections::BTreeMap,
@@ -116,7 +116,7 @@ pub(crate) fn runtime_map_from_collection(
     docker_observation_revision: &str,
 ) -> RuntimeMap {
     let (nodes, edges, diagnostics) = collection.clone().into_parts();
-    let mut runtime_map = derive_runtime_map_with_evidence_revision(
+    let mut runtime_map = derive_runtime_map(
         snapshot,
         nodes,
         edges,

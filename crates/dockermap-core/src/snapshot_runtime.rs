@@ -348,27 +348,11 @@ fn docker_runtime_evidence(
     }
 }
 
-pub fn derive_runtime_map(
-    snapshot: &DockerSnapshot,
-    nodes: Vec<RuntimeMapNode>,
-    edges: Vec<RuntimeMapEdge>,
-    diagnostics: Vec<RuntimeMapDiagnostic>,
-) -> RuntimeMap {
-    // Direct core callers have no daemon observation-token lifecycle. The
-    // daemon uses the explicit variant below; this compatibility projection is
-    // still nonempty and contains no raw Docker source text.
-    derive_runtime_map_with_evidence_revision(
-        snapshot,
-        nodes,
-        edges,
-        diagnostics,
-        &snapshot.last_updated.to_string(),
-    )
-}
-
 /// Derive runtime topology with the daemon-owned opaque Docker observation
-/// token that attests the bounded snapshot used for this map.
-pub fn derive_runtime_map_with_evidence_revision(
+/// token that attests the bounded snapshot used for this map. Callers must
+/// supply a nonempty opaque token; a timestamp fallback would falsely claim a
+/// provider revision and is intentionally not exposed.
+pub fn derive_runtime_map(
     snapshot: &DockerSnapshot,
     mut nodes: Vec<RuntimeMapNode>,
     mut edges: Vec<RuntimeMapEdge>,
