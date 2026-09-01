@@ -106,6 +106,14 @@ export type RuntimeNodeKind =
 export type ProviderSlot =
   'network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm';
 export type ProviderStateKind = 'fresh' | 'stale' | 'collecting' | 'unavailable' | 'timed_out' | 'disabled';
+/**
+ * A deliberately small, non-diagnostic explanation for a provider slot that
+ * is not currently serving fresh observations.  This is a closed enum rather
+ * than provider supplied text: command lines, paths, error output and other
+ * host details must never cross the runtime-map boundary through this field.
+ */
+export type ProviderStatusReason =
+  'initial' | 'refreshing' | 'collection_failed' | 'collection_timed_out' | 'source_reset' | 'disabled';
 export type MountCorrelationStatus = 'matched' | 'missing' | 'extra';
 export type ComposeRelationshipKind = 'declares_mount' | 'mounted_at';
 export type ComposeNodeKind = 'service' | 'host_path' | 'container_path' | 'named_volume' | 'anonymous_volume';
@@ -312,8 +320,32 @@ export interface RuntimeLogRef {
   source: string;
 }
 export interface ProviderState {
+  consecutiveFailureCount: number;
+  /**
+   * Opaque, per-slot data identity. It is absent before a successful pass
+   * and after a source reset, and otherwise advances only for sanitized
+   * observable slot-data changes.
+   */
+  dataRevision: string | null;
+  /**
+   * Wall-clock collection timestamps are nullable because a slot can have
+   * no attempt yet (or its source was reset).  The upper bound preserves
+   * lossless JSON transport through JavaScript's numeric representation.
+   */
+  lastAttemptMs: number | null;
+  /**
+   * Duration of the last successful collection. Failed and timed-out
+   * passes deliberately retain this last known-good evidence.
+   */
+  lastDurationMs: number | null;
+  lastSuccessMs: number | null;
   slot: ProviderSlot;
   state: ProviderStateKind;
+  /**
+   * Null for fresh and initial-unavailable slots. Non-null values are the
+   * closed, safe transitional/exceptional reasons above, never raw errors.
+   */
+  statusReason: ProviderStatusReason | null;
 }
 export interface ComposeScan {
   correlations: MountCorrelation[];

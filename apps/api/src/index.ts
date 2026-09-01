@@ -14,6 +14,8 @@ import type {
   LogsResponse,
   NetworkRecord,
   RuntimeMap,
+  ProviderSlot,
+  ProviderState,
   RuntimeServiceStatus,
   StatusResponse,
   VolumeRecord
@@ -420,11 +422,9 @@ function getMockResponse<T>(path: string): T {
       lastUpdated: mockSnapshot.lastUpdated ?? Date.now(),
       modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1",
       providerStates: [
-        { slot: "network_infrastructure", state: "unavailable" },
-        { slot: "host_scoped", state: "unavailable" },
-        { slot: "python_processes", state: "unavailable" },
-        { slot: "native_processes", state: "unavailable" },
-        { slot: "project_npm", state: "unavailable" }
+        unavailableProviderState("network_infrastructure"), unavailableProviderState("host_scoped"),
+        unavailableProviderState("python_processes"), unavailableProviderState("native_processes"),
+        unavailableProviderState("project_npm")
       ],
       source: "mock"
     };
@@ -742,3 +742,9 @@ process.on("uncaughtException", (error) => {
   console.error("uncaughtException:", error);
   process.exit(1);
 });
+function unavailableProviderState(slot: ProviderSlot): ProviderState {
+  return {
+    slot, state: "unavailable", lastAttemptMs: null, lastSuccessMs: null,
+    lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial"
+  };
+}

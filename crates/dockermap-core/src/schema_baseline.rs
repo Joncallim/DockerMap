@@ -87,6 +87,7 @@ fn deny_unknown_object_properties(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::{daemon_schema_documents, DAEMON_SCHEMA_NAMES, JSON_SAFE_INTEGER_MAX};
+    use serde_json::Value;
 
     #[test]
     fn public_schema_generation_is_deterministic() {
@@ -165,5 +166,57 @@ mod tests {
             states.get("maxItems").and_then(|value| value.as_u64()),
             Some(5)
         );
+    }
+
+    #[test]
+    fn provider_freshness_schema_is_bounded_nullable_and_closed() {
+        let schema = DAEMON_SCHEMA_NAMES
+            .iter()
+            .zip(daemon_schema_documents())
+            .find_map(|(name, schema)| (*name == "RuntimeMap").then_some(schema))
+            .expect("runtime map schema exists");
+        let state = schema
+            .pointer("/$defs/ProviderState")
+            .expect("provider state definition exists");
+        let required = state
+            .get("required")
+            .and_then(|value| value.as_array())
+            .expect("provider freshness fields are always present, even when null");
+        for field in ["lastAttemptMs", "lastSuccessMs", "lastDurationMs"] {
+            let property = state
+                .pointer(&format!("/properties/{field}"))
+                .expect("freshness timestamp property exists");
+            assert_eq!(
+                property.get("maximum").and_then(|value| value.as_u64()),
+                Some(JSON_SAFE_INTEGER_MAX),
+                "{field} must remain lossless through browser JSON"
+            );
+            assert!(property
+                .get("type")
+                .and_then(|types| types.as_array())
+                .is_some_and(|types| types.contains(&Value::String("null".into()))));
+            assert!(required.iter().any(|candidate| candidate == field));
+        }
+        assert_eq!(
+            state
+                .pointer("/properties/dataRevision/minLength")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert!(required.iter().any(|candidate| candidate == "dataRevision"));
+        assert!(required.iter().any(|candidate| candidate == "statusReason"));
+        assert_eq!(
+            state
+                .pointer("/properties/consecutiveFailureCount/maximum")
+                .and_then(|value| value.as_u64()),
+            Some(u32::MAX as u64),
+            "failure counts must not promise values beyond the Rust u32 wire type"
+        );
+        let reasons = schema
+            .pointer("/$defs/ProviderStatusReason/enum")
+            .and_then(|value| value.as_array())
+            .expect("nullable closed status reason enum exists");
+        assert_eq!(reasons.len(), 6);
+        assert!(reasons.iter().all(|reason| reason.is_string()));
     }
 }

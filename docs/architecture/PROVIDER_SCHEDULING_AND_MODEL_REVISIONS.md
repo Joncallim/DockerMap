@@ -45,6 +45,34 @@ boundary additionally rejects a vector unless every fixed slot appears exactly
 once. This is a closed, typed contract invariant rather than a configurable
 policy.
 
+## Public provider freshness metadata
+
+Each fixed slot also publishes bounded collection evidence: nullable
+`lastAttemptMs`, `lastSuccessMs`, and `lastDurationMs`; a non-negative
+`consecutiveFailureCount`; nullable opaque `dataRevision`; and nullable closed
+`statusReason`. Timestamp values are Unix wall-clock milliseconds and are
+schema-bounded to JavaScript's exact integer range. `lastDurationMs` is the
+duration of the last successful collection, so a failure or timeout retains
+the last known-good success/duration/revision while its attempt and failure
+state remain explicit.
+
+`dataRevision` is absent before a successful collection and after a live/mock
+source reset. When present it is a non-empty CSPRNG-backed opaque revision,
+not a raw-data hash or timestamp. It advances only when sanitized observable
+data for that one slot changes; repeated Docker polling and timestamp-only
+publication cannot churn it. `statusReason` is null for fresh and ordinary
+initial-unavailable slots. The only non-null values are the closed safe terms
+`initial`, `refreshing`, `collection_failed`, `collection_timed_out`,
+`source_reset`, and `disabled`. No command, path, root, argument, raw or
+sanitized error string, diagnostic, hostname, PID, cadence, source generation,
+guard state, or raw-data hash is exposed through this metadata.
+
+The scheduler writes it only while claiming a due slot, applying a terminal
+outcome, or resetting a source. A source flip clears timestamps, failure
+count, retained data identity, and observations before publishing a
+`source_reset` reason. These fields express evidence quality only; they never
+claim the health of a discovered target service.
+
 | State | Current meaning | Publication behaviour |
 | --- | --- | --- |
 | fresh | The fixed collector completed against the current published Docker evidence. | Its normalized nodes/edges may be published. |

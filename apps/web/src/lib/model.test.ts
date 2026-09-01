@@ -63,11 +63,11 @@ describe("stateForStatus", () => {
 describe("runtime collection evidence", () => {
   it("carries each fixed provider slot into the UI model without treating it as node health", () => {
     const providerStates: RuntimeMap["providerStates"] = [
-      { slot: "network_infrastructure", state: "fresh" },
-      { slot: "host_scoped", state: "stale" },
-      { slot: "python_processes", state: "collecting" },
-      { slot: "native_processes", state: "timed_out" },
-      { slot: "project_npm", state: "disabled" }
+      { ...testProviderStates[0], state: "fresh", lastAttemptMs: 1, lastSuccessMs: 2, lastDurationMs: 1, dataRevision: "test-provider-1", statusReason: null },
+      { ...testProviderStates[1], state: "stale", lastAttemptMs: 1, lastSuccessMs: 2, lastDurationMs: 1, consecutiveFailureCount: 1, dataRevision: "test-provider-2", statusReason: "collection_failed" },
+      { ...testProviderStates[2], state: "collecting", lastAttemptMs: 3, lastSuccessMs: 2, lastDurationMs: 1, dataRevision: "test-provider-3", statusReason: "refreshing" },
+      { ...testProviderStates[3], state: "timed_out", lastAttemptMs: 3, lastSuccessMs: 2, lastDurationMs: 1, consecutiveFailureCount: 1, dataRevision: "test-provider-4", statusReason: "collection_timed_out" },
+      { ...testProviderStates[4], state: "disabled", statusReason: "disabled" }
     ];
     const model = buildModel(snapshot([]), { ...emptyRuntime, providerStates });
 

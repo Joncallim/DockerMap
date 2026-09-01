@@ -231,11 +231,11 @@ const demoComposeScan: ComposeScan = {
 const demoRuntimeMap: RuntimeMap = {
   modelRevision: "demo-v1",
   providerStates: [
-    { slot: "network_infrastructure", state: "unavailable" },
-    { slot: "host_scoped", state: "unavailable" },
-    { slot: "python_processes", state: "unavailable" },
-    { slot: "native_processes", state: "unavailable" },
-    { slot: "project_npm", state: "unavailable" }
+    { slot: "network_infrastructure", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+    { slot: "host_scoped", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+    { slot: "python_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+    { slot: "native_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+    { slot: "project_npm", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" }
   ],
   nodes: [
     {

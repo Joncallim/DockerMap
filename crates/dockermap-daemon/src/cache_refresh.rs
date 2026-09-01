@@ -16,13 +16,13 @@ use crate::{
 };
 use dockermap_core::{
     derive_images, mock_snapshot, DiagnosticSeverity, DockerSnapshot, HealthResponse, HealthState,
-    ProviderSlot, ProviderState, ProviderStateKind, RuntimeMap, RuntimeMapDiagnostic, RuntimeMode,
-    RuntimeProviderKind,
+    ProviderSlot, ProviderState, ProviderStateKind, ProviderStatusReason, RuntimeMap,
+    RuntimeMapDiagnostic, RuntimeMode, RuntimeProviderKind,
 };
 use std::{
     collections::BTreeMap,
     sync::{atomic::AtomicBool, Arc, OnceLock},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{sync::RwLock, time::sleep};
 
@@ -181,6 +181,7 @@ struct SlotRuntimeState {
     /// Monotonic process-relative completion time. It is private cache state,
     /// never exposed as host/provider telemetry.
     completed_at: Option<Duration>,
+    freshness: SlotFreshness,
 }
 
 impl Default for SlotRuntimeState {
@@ -188,7 +189,50 @@ impl Default for SlotRuntimeState {
         Self {
             observation: RuntimeProviderState::Unavailable,
             completed_at: None,
+            freshness: SlotFreshness::default(),
         }
+    }
+}
+
+/// Private scheduler metadata. Only `ProviderState` projects its bounded,
+/// sanitized fields; no command, path, collector diagnostics, cadence, guard
+/// state, source generation, or raw-data identity is retained here.
+#[derive(Clone, Default)]
+struct SlotFreshness {
+    last_attempt_ms: Option<u64>,
+    last_success_ms: Option<u64>,
+    last_duration_ms: Option<u64>,
+    consecutive_failure_count: u32,
+    data_revision: Option<SlotDataRevision>,
+    /// A private serialization of already-sanitized observable collection
+    /// evidence. It is comparison-only and never enters a public envelope.
+    data_observable: Option<String>,
+    status_reason: Option<ProviderStatusReason>,
+}
+
+#[derive(Clone)]
+struct SlotDataRevision {
+    boot: String,
+    sequence: u64,
+}
+
+impl SlotDataRevision {
+    fn first() -> Self {
+        Self {
+            boot: boot_instance_component(),
+            sequence: 1,
+        }
+    }
+
+    fn advance(&mut self) {
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .expect("provider data revision sequence overflow");
+    }
+
+    fn public(&self) -> String {
+        format!("{}-{}", self.boot, self.sequence)
     }
 }
 
@@ -358,7 +402,7 @@ async fn publish_docker_snapshot_cache(
     updated.runtime_providers = if same_source {
         cache.runtime_providers.clone()
     } else {
-        unavailable_provider_slots()
+        source_reset_provider_slots()
     };
     if same_source && !same_collection_evidence(&cache.snapshot, &updated.snapshot) {
         mark_network_observation_stale(&mut updated.runtime_providers);
@@ -453,12 +497,39 @@ fn monotonic_now() -> Duration {
     START.get_or_init(Instant::now).elapsed()
 }
 
+/// The public contract uses Unix milliseconds for browser age calculations.
+/// A system clock before the Unix epoch is represented as absent rather than
+/// wrapping or emitting an unsafe number.
+fn wall_clock_millis() -> Option<u64> {
+    const MAX_SAFE_JS_INTEGER: u128 = 9_007_199_254_740_991;
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    (millis <= MAX_SAFE_JS_INTEGER).then_some(millis as u64)
+}
+
+fn successful_duration_ms(attempt_ms: Option<u64>, completed_ms: Option<u64>) -> Option<u64> {
+    Some(completed_ms?.saturating_sub(attempt_ms?))
+}
+
 fn unavailable_provider_slots() -> RuntimeProviderSlots {
     STATIC_PROVIDER_SLOTS
         .iter()
         .copied()
         .map(|slot| (slot, SlotRuntimeState::default()))
         .collect()
+}
+
+fn source_reset_provider_slots() -> RuntimeProviderSlots {
+    let mut slots = unavailable_provider_slots();
+    for slot in slots.values_mut() {
+        // A source flip deliberately drops all retained live/mock evidence and
+        // its opaque identity. The reason says only that a source reset
+        // happened; it leaks neither source generation nor host details.
+        slot.freshness.status_reason = Some(ProviderStatusReason::SourceReset);
+    }
+    slots
 }
 
 /// Claims immediately due fixed slots, capped by the policy's total worker
@@ -511,6 +582,8 @@ fn claim_due_slots_with_active_workers(
         }
         let retained = retained_collection(&current.observation);
         current.observation = RuntimeProviderState::Collecting(retained);
+        current.freshness.last_attempt_ms = wall_clock_millis();
+        current.freshness.status_reason = Some(ProviderStatusReason::Refreshing);
         claimed.push(slot);
         remaining -= 1;
     }
@@ -564,16 +637,33 @@ async fn apply_provider_slot_outcome(
     };
     match outcome {
         ProviderCollectionOutcome::Collected(collection) if same_evidence => {
-            slot_state.observation =
-                RuntimeProviderState::Fresh(collection.sanitized_for_retention());
+            let collection = collection.sanitized_for_retention();
+            update_slot_data_revision(&mut slot_state.freshness, &collection);
+            let completed_ms = wall_clock_millis();
+            slot_state.freshness.last_success_ms = completed_ms;
+            slot_state.freshness.last_duration_ms =
+                successful_duration_ms(slot_state.freshness.last_attempt_ms, completed_ms);
+            slot_state.freshness.consecutive_failure_count = 0;
+            slot_state.freshness.status_reason = None;
+            slot_state.observation = RuntimeProviderState::Fresh(collection);
             slot_state.completed_at = Some(completed_at);
         }
         ProviderCollectionOutcome::Collected(collection) => {
             // Docker changed while the bounded optional pass was in flight.
             // Preserve it only as explicitly stale evidence; the next tick
             // collects against the new snapshot.
-            slot_state.observation =
-                RuntimeProviderState::Degraded(Some(collection.sanitized_for_retention()));
+            let collection = collection.sanitized_for_retention();
+            update_slot_data_revision(&mut slot_state.freshness, &collection);
+            // This is still a successful bounded collection, but its evidence
+            // is stale relative to Docker. Preserve its completion metadata
+            // without pretending its observations are fresh.
+            let completed_ms = wall_clock_millis();
+            slot_state.freshness.last_success_ms = completed_ms;
+            slot_state.freshness.last_duration_ms =
+                successful_duration_ms(slot_state.freshness.last_attempt_ms, completed_ms);
+            slot_state.freshness.consecutive_failure_count = 0;
+            slot_state.freshness.status_reason = None;
+            slot_state.observation = RuntimeProviderState::Degraded(Some(collection));
             slot_state.completed_at = Some(completed_at);
         }
         // A prior timed-out worker still owns the per-slot guard. Restore an
@@ -582,6 +672,11 @@ async fn apply_provider_slot_outcome(
         ProviderCollectionOutcome::InFlight => {
             let retained = retained_collection(&slot_state.observation);
             slot_state.observation = RuntimeProviderState::TimedOut(retained);
+            slot_state.freshness.consecutive_failure_count = slot_state
+                .freshness
+                .consecutive_failure_count
+                .saturating_add(1);
+            slot_state.freshness.status_reason = Some(ProviderStatusReason::CollectionTimedOut);
         }
         ProviderCollectionOutcome::Failed | ProviderCollectionOutcome::TimedOut => {
             let retained = retained_collection(&slot_state.observation);
@@ -590,6 +685,16 @@ async fn apply_provider_slot_outcome(
             } else {
                 RuntimeProviderState::Degraded(retained)
             };
+            slot_state.freshness.consecutive_failure_count = slot_state
+                .freshness
+                .consecutive_failure_count
+                .saturating_add(1);
+            slot_state.freshness.status_reason =
+                Some(if matches!(outcome, ProviderCollectionOutcome::TimedOut) {
+                    ProviderStatusReason::CollectionTimedOut
+                } else {
+                    ProviderStatusReason::CollectionFailed
+                });
             slot_state.completed_at = Some(completed_at);
         }
     }
@@ -610,6 +715,18 @@ async fn apply_provider_slot_outcome(
             due,
         );
     }
+}
+
+fn update_slot_data_revision(freshness: &mut SlotFreshness, collection: &ProviderCollection) {
+    let observable = collection.sanitized_observable_identity();
+    if freshness.data_observable.as_deref() == Some(observable.as_str()) {
+        return;
+    }
+    match freshness.data_revision.as_mut() {
+        Some(revision) => revision.advance(),
+        None => freshness.data_revision = Some(SlotDataRevision::first()),
+    }
+    freshness.data_observable = Some(observable);
 }
 
 async fn cache_generation(state: &AppState) -> u64 {
@@ -687,6 +804,12 @@ fn unavailable_provider_states() -> Vec<ProviderState> {
         .map(|slot| ProviderState {
             slot,
             state: ProviderStateKind::Unavailable,
+            last_attempt_ms: None,
+            last_success_ms: None,
+            last_duration_ms: None,
+            consecutive_failure_count: 0,
+            data_revision: None,
+            status_reason: None,
         })
         .collect()
 }
@@ -728,7 +851,25 @@ fn provider_states_for(slots: &RuntimeProviderSlots) -> Vec<ProviderState> {
                 RuntimeProviderState::TimedOut(_) => ProviderStateKind::TimedOut,
                 RuntimeProviderState::Unavailable => ProviderStateKind::Unavailable,
             };
-            ProviderState { slot, state }
+            let freshness = &slots[&slot].freshness;
+            let disabled = state == ProviderStateKind::Disabled;
+            ProviderState {
+                slot,
+                state,
+                last_attempt_ms: freshness.last_attempt_ms,
+                last_success_ms: freshness.last_success_ms,
+                last_duration_ms: freshness.last_duration_ms,
+                consecutive_failure_count: freshness.consecutive_failure_count,
+                data_revision: freshness
+                    .data_revision
+                    .as_ref()
+                    .map(SlotDataRevision::public),
+                status_reason: if disabled {
+                    Some(ProviderStatusReason::Disabled)
+                } else {
+                    freshness.status_reason
+                },
+            }
         })
         .collect()
 }
@@ -1051,6 +1192,133 @@ mod scheduler_tests {
         assert_eq!(health.last_updated, 11);
         assert_eq!(health.snapshot_version, "11");
         assert_eq!(runtime_map.last_updated, 11);
+    }
+
+    #[test]
+    fn provider_freshness_projection_is_safe_and_retains_good_evidence_on_failure() {
+        let snapshot = mock_snapshot();
+        let slot = ProviderSlot::PythonProcesses;
+        let mut slots = slots();
+        let entry = slots.get_mut(&slot).unwrap();
+        let mut collection = ProviderCollection::default();
+        collection.set_state(slot, ProviderStateKind::Fresh);
+        let collection = collection.sanitized_for_retention();
+        update_slot_data_revision(&mut entry.freshness, &collection);
+        entry.observation = RuntimeProviderState::Fresh(collection);
+        entry.freshness.last_attempt_ms = Some(100);
+        entry.freshness.last_success_ms = Some(110);
+        entry.freshness.last_duration_ms = Some(10);
+        entry.freshness.status_reason = None;
+
+        let before = provider_states_for(&slots)
+            .into_iter()
+            .find(|state| state.slot == slot)
+            .unwrap();
+        assert_eq!(
+            before.data_revision.as_deref().map(str::is_empty),
+            Some(false)
+        );
+        assert_eq!(before.status_reason, None);
+        assert_eq!(before.consecutive_failure_count, 0);
+
+        let retained = {
+            let entry = slots.get_mut(&slot).unwrap();
+            let retained = retained_collection(&entry.observation);
+            // A retained collection continues to report its original success and
+            // duration while a later attempt is in flight. Its new attempt must
+            // not be mistaken for the historical successful attempt.
+            entry.observation = RuntimeProviderState::Collecting(retained.clone());
+            entry.freshness.last_attempt_ms = Some(120);
+            entry.freshness.status_reason = Some(ProviderStatusReason::Refreshing);
+            retained
+        };
+        let refreshing = runtime_map_for_snapshot(&snapshot, &slots)
+            .provider_states
+            .into_iter()
+            .find(|state| state.slot == slot)
+            .unwrap();
+        assert_eq!(refreshing.state, ProviderStateKind::Stale);
+        assert_eq!(refreshing.last_attempt_ms, Some(120));
+        assert_eq!(refreshing.last_success_ms, Some(110));
+        assert_eq!(refreshing.last_duration_ms, Some(10));
+        assert_eq!(
+            refreshing.status_reason,
+            Some(ProviderStatusReason::Refreshing)
+        );
+
+        let entry = slots.get_mut(&slot).unwrap();
+        entry.observation = RuntimeProviderState::TimedOut(retained);
+        entry.freshness.consecutive_failure_count = 1;
+        entry.freshness.status_reason = Some(ProviderStatusReason::CollectionTimedOut);
+        let timed_out = runtime_map_for_snapshot(&snapshot, &slots)
+            .provider_states
+            .into_iter()
+            .find(|state| state.slot == slot)
+            .unwrap();
+        assert_eq!(timed_out.state, ProviderStateKind::TimedOut);
+        assert_eq!(timed_out.last_attempt_ms, Some(120));
+        assert_eq!(timed_out.last_success_ms, Some(110));
+        assert_eq!(timed_out.last_duration_ms, Some(10));
+        assert_eq!(timed_out.data_revision, before.data_revision);
+        assert_eq!(timed_out.consecutive_failure_count, 1);
+        assert_eq!(
+            timed_out.status_reason,
+            Some(ProviderStatusReason::CollectionTimedOut)
+        );
+    }
+
+    #[test]
+    fn source_reset_clears_provider_freshness_without_exposing_private_state() {
+        let slot = ProviderSlot::NetworkInfrastructure;
+        let mut slots = source_reset_provider_slots();
+        let state = provider_states_for(&slots)
+            .into_iter()
+            .find(|state| state.slot == slot)
+            .unwrap();
+        assert_eq!(state.state, ProviderStateKind::Unavailable);
+        assert_eq!(state.last_attempt_ms, None);
+        assert_eq!(state.last_success_ms, None);
+        assert_eq!(state.last_duration_ms, None);
+        assert_eq!(state.consecutive_failure_count, 0);
+        assert_eq!(state.data_revision, None);
+        assert_eq!(state.status_reason, Some(ProviderStatusReason::SourceReset));
+
+        // Source reset state is data-free and resettable rather than a hidden
+        // source-generation or error disclosure.
+        slots.get_mut(&slot).unwrap().freshness.status_reason = None;
+        assert_eq!(
+            provider_states_for(&slots)
+                .into_iter()
+                .find(|state| state.slot == slot)
+                .unwrap()
+                .status_reason,
+            None
+        );
+    }
+
+    #[test]
+    fn opaque_data_revision_changes_only_for_sanitized_observable_data() {
+        let slot = ProviderSlot::NativeProcesses;
+        let mut freshness = SlotFreshness::default();
+        let mut first = ProviderCollection::default();
+        first.set_state(slot, ProviderStateKind::Fresh);
+        let first = first.sanitized_for_retention();
+        update_slot_data_revision(&mut freshness, &first);
+        let revision = freshness.data_revision.as_ref().unwrap().public();
+        update_slot_data_revision(&mut freshness, &first);
+        assert_eq!(freshness.data_revision.as_ref().unwrap().public(), revision);
+
+        let mut changed = first.clone();
+        changed.push_diagnostic(ProviderDiagnostic::new(
+            RuntimeProviderKind::Process,
+            DiagnosticSeverity::Info,
+            "token=DOCKERMAP_TEST_PROVIDER_METADATA_SECRET",
+        ));
+        let changed = changed.sanitized_for_retention();
+        update_slot_data_revision(&mut freshness, &changed);
+        let changed_revision = freshness.data_revision.as_ref().unwrap().public();
+        assert_ne!(changed_revision, revision);
+        assert!(!changed_revision.contains("DOCKERMAP_TEST_PROVIDER_METADATA_SECRET"));
     }
 
     #[tokio::test]

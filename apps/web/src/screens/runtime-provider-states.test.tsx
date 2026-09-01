@@ -6,6 +6,12 @@ import { AppContext, type AppContextValue } from "../context";
 import { buildModel } from "../lib/model";
 import RuntimeScreen from "./Runtime";
 
+const collectionState = (slot: RuntimeMap["providerStates"][number]["slot"], state: RuntimeMap["providerStates"][number]["state"], overrides: Partial<RuntimeMap["providerStates"][number]> = {}) => ({
+  slot, state, lastAttemptMs: 1, lastSuccessMs: 2, lastDurationMs: 1,
+  consecutiveFailureCount: 0, dataRevision: "test-provider-revision", statusReason: null,
+  ...overrides
+});
+
 const snapshot: DockerSnapshot = {
   containers: [], images: [], networks: [], volumes: [], lastUpdated: 1, modelRevision: "test-revision"
 };
@@ -13,11 +19,11 @@ const snapshot: DockerSnapshot = {
 const runtime: RuntimeMap = {
   nodes: [], edges: [], diagnostics: [], lastUpdated: 1, modelRevision: "test-revision",
   providerStates: [
-    { slot: "network_infrastructure", state: "fresh" },
-    { slot: "host_scoped", state: "stale" },
-    { slot: "python_processes", state: "collecting" },
-    { slot: "native_processes", state: "timed_out" },
-    { slot: "project_npm", state: "disabled" }
+    collectionState("network_infrastructure", "fresh"),
+    collectionState("host_scoped", "stale", { consecutiveFailureCount: 1, statusReason: "collection_failed" }),
+    collectionState("python_processes", "collecting", { statusReason: "refreshing" }),
+    collectionState("native_processes", "timed_out", { consecutiveFailureCount: 1, statusReason: "collection_timed_out" }),
+    collectionState("project_npm", "disabled", { lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, dataRevision: null, statusReason: "disabled" })
   ]
 };
 
@@ -50,6 +56,11 @@ describe("Runtime collection evidence", () => {
     expect(html).toContain("Collecting");
     expect(html).toContain("Timed out");
     expect(html).toContain("Disabled");
+    expect(html).toContain("Last collected");
+    expect(html).toContain("Last collection failed");
+    expect(html).toContain("Refresh in progress");
+    expect(html).toContain("Last collection timed out");
+    expect(html).toContain("Collection disabled");
   });
 
   it("uses a labelled semantic list and does not present sample-mode collection state as host evidence", () => {
