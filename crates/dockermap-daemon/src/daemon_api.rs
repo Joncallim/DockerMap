@@ -1,0 +1,278 @@
+//! Read-only daemon HTTP cache and log request boundary.
+//!
+//! This module owns the routes that publish the daemon cache and the bounded
+//! log-query parsing. Collection, cache refresh, and publication sanitizers
+//! deliberately remain in their dedicated modules.
+
+use crate::{
+    auth::require_daemon_bearer_token,
+    compose_api::{get_compose_edit_plan, get_compose_graph, get_compose_scan},
+    docker_collector,
+    publication::{
+        publish_docker_snapshot, redact_container_record, redact_health_response,
+        redact_runtime_display_text,
+    },
+    AppState, DaemonAuthToken,
+};
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    middleware,
+    response::IntoResponse,
+    routing::{any, get},
+    Json, Router,
+};
+use dockermap_core::{
+    derive_graph, mock_log_entries, ContainerRecord, DockerSnapshot, GraphResponse, HealthResponse,
+    LogCursor, LogsResponse, RuntimeMap, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+};
+use serde::Deserialize;
+
+pub(crate) const MAX_LOG_QUERY_CHARS: usize = 256;
+const MAX_LOG_SERVICE_CHARS: usize = 128;
+
+#[derive(Debug, Deserialize)]
+struct LogsQuery {
+    service: Option<String>,
+    q: Option<String>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ApiError {
+    pub(crate) status: StatusCode,
+    pub(crate) message: String,
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let body = serde_json::json!({
+            "code": self.status.as_str(),
+            "message": redact_runtime_display_text(&self.message),
+        });
+        (self.status, Json(body)).into_response()
+    }
+}
+
+pub(crate) fn daemon_router(state: AppState, daemon_token: DaemonAuthToken) -> Router {
+    Router::new()
+        .route("/daemon/health", get(get_health))
+        .route("/daemon/snapshot", get(get_snapshot))
+        .route("/daemon/graph", get(get_graph))
+        .route("/daemon/runtime/map", get(get_runtime_map))
+        .route("/daemon/containers", get(get_containers))
+        .route("/daemon/containers/{name}", get(get_container))
+        .route("/daemon/images", get(get_images))
+        .route("/daemon/networks", get(get_networks))
+        .route("/daemon/volumes", get(get_volumes))
+        .route("/daemon/logs", get(get_logs))
+        .route("/daemon/compose/scan", get(get_compose_scan))
+        .route("/daemon/compose/graph", get(get_compose_graph))
+        .route("/daemon/compose/edit-plan", get(get_compose_edit_plan))
+        .fallback(any(not_found))
+        .layer(middleware::from_fn_with_state(
+            daemon_token,
+            require_daemon_bearer_token,
+        ))
+        .with_state(state)
+}
+
+async fn get_health(State(state): State<AppState>) -> Json<HealthResponse> {
+    let cache = state.cache.read().await;
+    let mut health = cache.health.clone();
+    redact_health_response(&mut health);
+    Json(health)
+}
+
+async fn get_snapshot(State(state): State<AppState>) -> Json<DockerSnapshot> {
+    let cache = state.cache.read().await;
+    let mut published = publish_docker_snapshot(&cache.snapshot);
+    // Actual source stamp: these bytes came from live Docker collection or
+    // the daemon's mock fallback — attested by the cache's runtime mode so
+    // the browser can never mistake fabricated sample bytes for host data.
+    published.source = Some(cache.health.mode.clone());
+    Json(published)
+}
+
+async fn get_graph(State(state): State<AppState>) -> Json<GraphResponse> {
+    let cache = state.cache.read().await;
+    let snapshot = publish_docker_snapshot(&cache.snapshot);
+    Json(derive_graph(&snapshot))
+}
+
+async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
+    // Served from the refresh cache rather than collecting on the Tokio worker
+    // per request.
+    let cache = state.cache.read().await;
+    let mut runtime_map = cache.runtime_map.clone();
+    runtime_map.source = Some(cache.health.mode.clone());
+    Json(runtime_map)
+}
+
+async fn get_containers(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let cache = state.cache.read().await;
+    let snapshot = publish_docker_snapshot(&cache.snapshot);
+    Json(serde_json::json!({ "containers": snapshot.containers }))
+}
+
+async fn get_container(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<ContainerRecord>, ApiError> {
+    let cache = state.cache.read().await;
+    let mut container = cache
+        .snapshot
+        .containers
+        .iter()
+        .find(|item| item.name == name)
+        .cloned()
+        .ok_or(ApiError {
+            status: StatusCode::NOT_FOUND,
+            message: format!("container `{name}` not found"),
+        })?;
+    redact_container_record(&mut container);
+    Ok(Json(container))
+}
+
+async fn get_images(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let cache = state.cache.read().await;
+    let snapshot = publish_docker_snapshot(&cache.snapshot);
+    Json(serde_json::json!({ "images": snapshot.images }))
+}
+
+async fn get_networks(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let cache = state.cache.read().await;
+    let snapshot = publish_docker_snapshot(&cache.snapshot);
+    Json(serde_json::json!({ "networks": snapshot.networks }))
+}
+
+async fn get_volumes(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let cache = state.cache.read().await;
+    let snapshot = publish_docker_snapshot(&cache.snapshot);
+    Json(serde_json::json!({ "volumes": snapshot.volumes }))
+}
+
+pub(crate) fn docker_log_collection_failed(error: &str) -> ApiError {
+    eprintln!(
+        "Docker log collection failed: {}",
+        redact_runtime_display_text(error)
+    );
+    ApiError {
+        status: StatusCode::BAD_GATEWAY,
+        message: "Docker log collection failed".into(),
+    }
+}
+
+async fn get_logs(
+    State(state): State<AppState>,
+    Query(query): Query<LogsQuery>,
+) -> Result<Json<LogsResponse>, ApiError> {
+    let service =
+        validate_optional_query(query.service.as_deref(), "service", MAX_LOG_SERVICE_CHARS)?;
+    let q = validate_optional_query(query.q.as_deref(), "q", MAX_LOG_QUERY_CHARS)?;
+    let cursor = parse_log_cursor(query.cursor.as_deref())?;
+    let limit = parse_log_limit(query.limit)?;
+    let cache = state.cache.read().await;
+    let docker_reachable = cache.health.docker_reachable;
+    // Capture the mode with the branch-selection data. A later refresh must
+    // not relabel fabricated entries as Docker bytes, or vice versa.
+    let mode = cache.health.mode.clone();
+    let snapshot = cache.snapshot.clone();
+    drop(cache);
+
+    if let Some(service) = service {
+        if !snapshot
+            .containers
+            .iter()
+            .any(|container| container.name == service)
+        {
+            return Err(ApiError {
+                status: StatusCode::NOT_FOUND,
+                message: format!("container `{service}` not found in current snapshot"),
+            });
+        }
+    }
+
+    let response = if docker_reachable {
+        let Some(service) = service else {
+            // Live mode has no service-scoped view of all logs. Do not attach
+            // fabricated entries to a real inventory.
+            return Ok(Json(LogsResponse {
+                service: None,
+                entries: Vec::new(),
+                next_cursor: None,
+                source: Some(mode.clone()),
+            }));
+        };
+        let collector = docker_collector(&state)
+            .await
+            .map_err(|error| docker_log_collection_failed(&error))?;
+        collector
+            .collect_logs(service, q, cursor, limit)
+            .await
+            .map_err(|error| docker_log_collection_failed(&error))?
+    } else {
+        crate::docker_collector::publish_log_response(
+            service,
+            mock_log_entries(&snapshot, service),
+            q,
+            cursor,
+            limit,
+        )
+    };
+
+    let mut stamped = response;
+    stamped.source = Some(mode);
+    Ok(Json(stamped))
+}
+
+async fn not_found() -> ApiError {
+    ApiError {
+        status: StatusCode::NOT_FOUND,
+        message: "Route not found".into(),
+    }
+}
+
+pub(crate) fn validate_optional_query<'a>(
+    value: Option<&'a str>,
+    name: &str,
+    max_chars: usize,
+) -> Result<Option<&'a str>, ApiError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.chars().count() > max_chars || value.contains('\0') {
+        return Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            message: format!("query parameter `{name}` must be {max_chars} characters or fewer"),
+        });
+    }
+    Ok(Some(value))
+}
+
+pub(crate) fn parse_log_cursor(value: Option<&str>) -> Result<Option<LogCursor>, ApiError> {
+    validate_optional_query(value, "cursor", 32)?
+        .map(|value| {
+            LogCursor::parse(value).ok_or_else(|| ApiError {
+                status: StatusCode::BAD_REQUEST,
+                message: "query parameter `cursor` must be `millis` or `millis:offset`".into(),
+            })
+        })
+        .transpose()
+}
+
+pub(crate) fn parse_log_limit(value: Option<usize>) -> Result<usize, ApiError> {
+    match value {
+        Some(value) if (1..=MAX_LOG_PAGE_SIZE).contains(&value) => Ok(value),
+        Some(_) => Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            message: format!("query parameter `limit` must be between 1 and {MAX_LOG_PAGE_SIZE}"),
+        }),
+        None => Ok(DEFAULT_LOG_PAGE_SIZE),
+    }
+}

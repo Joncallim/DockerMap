@@ -1,14 +1,7 @@
-use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    middleware,
-    response::IntoResponse,
-    routing::{any, get},
-    Json, Router,
-};
 mod auth;
 mod compose_api;
 mod config;
+mod daemon_api;
 mod docker_collector;
 mod docker_config;
 mod pid_namespace;
@@ -16,29 +9,40 @@ mod process_runner;
 mod providers;
 mod publication;
 mod runtime_collection;
-use auth::require_daemon_bearer_token;
+#[cfg(test)]
+use axum::{http::StatusCode, response::IntoResponse};
 #[cfg(test)]
 use bollard::Docker;
-use compose_api::{get_compose_edit_plan, get_compose_graph, get_compose_scan, run_cli};
+use compose_api::run_cli;
 use config::{read_bind_host_env, read_daemon_token_env, read_port_env, DaemonAuthToken};
+use daemon_api::daemon_router;
+pub(crate) use daemon_api::ApiError;
+#[cfg(test)]
+use daemon_api::{
+    docker_log_collection_failed, parse_log_cursor, parse_log_limit, validate_optional_query,
+    MAX_LOG_QUERY_CHARS,
+};
+#[cfg(test)]
+use docker_collector::publish_log_response;
+use docker_collector::DockerCollector;
 #[cfg(test)]
 use docker_collector::{
     log_entry_id, log_tail_count, log_until_seconds, parse_depends_on_label,
     parse_timestamped_log_line, MAX_LOG_CURSOR_TAIL,
 };
-use docker_collector::{publish_log_response, DockerCollector};
+#[cfg(test)]
+use dockermap_core::mock_log_entries;
 use dockermap_core::{
-    derive_graph, derive_images, mock_log_entries, mock_snapshot, ContainerRecord, DockerSnapshot,
-    GraphResponse, HealthResponse, HealthState, LogCursor, LogsResponse, RuntimeMap, RuntimeMode,
-    DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+    derive_images, mock_snapshot, DockerSnapshot, HealthResponse, HealthState, RuntimeMap,
+    RuntimeMode,
 };
 #[cfg(test)]
 use dockermap_core::{
     derive_runtime_map, page_log_entries, ComposeFileOrigin, ComposeMountKind, ContainerMount,
-    DiagnosticSeverity, LogEntry, NetworkRecord, RuntimeMapDiagnostic, RuntimeMapEdge,
+    DiagnosticSeverity, LogCursor, LogEntry, NetworkRecord, RuntimeMapDiagnostic, RuntimeMapEdge,
     RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeOwnership, RuntimePackageEntity,
     RuntimeProviderKind, RuntimeRelationshipKind, RuntimeServiceEntity, RuntimeServiceStatus,
-    VolumeRecord,
+    VolumeRecord, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 #[cfg(test)]
 use pid_namespace::{
@@ -58,7 +62,6 @@ use providers::processes::{
 };
 use publication::*;
 use runtime_collection::collect_runtime_map_bounded;
-use serde::Deserialize;
 #[cfg(test)]
 use std::path::PathBuf;
 #[cfg(test)]
@@ -73,12 +76,9 @@ use std::{
 };
 use tokio::{net::TcpListener, sync::RwLock, time::sleep};
 
-const MAX_LOG_QUERY_CHARS: usize = 256;
-const MAX_LOG_SERVICE_CHARS: usize = 128;
-
 #[derive(Clone)]
-struct AppState {
-    cache: Arc<RwLock<DaemonCache>>,
+pub(crate) struct AppState {
+    pub(crate) cache: Arc<RwLock<DaemonCache>>,
     /// Reused bollard Docker client (connection pooling), created on first
     /// use and recreated after a failed interaction so a restarted Docker
     /// daemon is picked up. `None` means "not connected yet / previous
@@ -90,34 +90,10 @@ struct AppState {
 }
 
 #[derive(Clone)]
-struct DaemonCache {
-    snapshot: DockerSnapshot,
-    health: HealthResponse,
-    runtime_map: RuntimeMap,
-}
-
-#[derive(Debug, Deserialize)]
-struct LogsQuery {
-    service: Option<String>,
-    q: Option<String>,
-    cursor: Option<String>,
-    limit: Option<usize>,
-}
-
-#[derive(Debug)]
-struct ApiError {
-    status: StatusCode,
-    message: String,
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> axum::response::Response {
-        let body = serde_json::json!({
-            "code": self.status.as_str(),
-            "message": redact_runtime_display_text(&self.message),
-        });
-        (self.status, Json(body)).into_response()
-    }
+pub(crate) struct DaemonCache {
+    pub(crate) snapshot: DockerSnapshot,
+    pub(crate) health: HealthResponse,
+    pub(crate) runtime_map: RuntimeMap,
 }
 
 const CLI_USAGE: &str = "\
@@ -192,31 +168,8 @@ async fn main() {
         .expect("daemon server should run");
 }
 
-fn daemon_router(state: AppState, daemon_token: DaemonAuthToken) -> Router {
-    Router::new()
-        .route("/daemon/health", get(get_health))
-        .route("/daemon/snapshot", get(get_snapshot))
-        .route("/daemon/graph", get(get_graph))
-        .route("/daemon/runtime/map", get(get_runtime_map))
-        .route("/daemon/containers", get(get_containers))
-        .route("/daemon/containers/{name}", get(get_container))
-        .route("/daemon/images", get(get_images))
-        .route("/daemon/networks", get(get_networks))
-        .route("/daemon/volumes", get(get_volumes))
-        .route("/daemon/logs", get(get_logs))
-        .route("/daemon/compose/scan", get(get_compose_scan))
-        .route("/daemon/compose/graph", get(get_compose_graph))
-        .route("/daemon/compose/edit-plan", get(get_compose_edit_plan))
-        .fallback(any(not_found))
-        .layer(middleware::from_fn_with_state(
-            daemon_token,
-            require_daemon_bearer_token,
-        ))
-        .with_state(state)
-}
-
 impl DaemonCache {
-    fn mock() -> Self {
+    pub(crate) fn mock() -> Self {
         let mut snapshot = mock_snapshot();
         snapshot.images = derive_images(&snapshot);
 
@@ -274,7 +227,7 @@ async fn refresh_cache(state: &AppState) {
 /// is reused across refresh ticks and log requests (bollard pools the Unix
 /// socket connection) instead of being recreated on every call, which churned
 /// connections and added per-request latency.
-async fn docker_collector(state: &AppState) -> Result<DockerCollector, String> {
+pub(crate) async fn docker_collector(state: &AppState) -> Result<DockerCollector, String> {
     {
         let guard = state.docker.read().await;
         if let Some(collector) = guard.as_ref() {
@@ -380,223 +333,6 @@ pub(crate) fn looks_like_ai_agent(value: &str) -> bool {
 pub(crate) fn non_empty_string(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-async fn get_health(State(state): State<AppState>) -> Json<HealthResponse> {
-    let cache = state.cache.read().await;
-    let mut health = cache.health.clone();
-    redact_health_response(&mut health);
-    Json(health)
-}
-
-async fn get_snapshot(State(state): State<AppState>) -> Json<DockerSnapshot> {
-    let cache = state.cache.read().await;
-    let mut published = publish_docker_snapshot(&cache.snapshot);
-    // Actual source stamp: these bytes came from live Docker collection or
-    // the daemon's mock fallback — attested by the cache's runtime mode so
-    // the browser can never mistake fabricated sample bytes for host data
-    // (#85 A3).
-    published.source = Some(cache.health.mode.clone());
-    Json(published)
-}
-
-async fn get_graph(State(state): State<AppState>) -> Json<GraphResponse> {
-    let cache = state.cache.read().await;
-    let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(derive_graph(&snapshot))
-}
-
-async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
-    // Served from the cache: the map is recomputed on the refresh cadence
-    // (off the async runtime, with per-provider timeouts) instead of on every
-    // request, which previously ran ~8 blocking provider subprocesses
-    // synchronously on a Tokio worker per call.
-    let cache = state.cache.read().await;
-    let mut runtime_map = cache.runtime_map.clone();
-    // Actual source stamp, matching /daemon/snapshot (#85 A3): the runtime
-    // map bytes are live-host or daemon-mock, attested by the cache mode.
-    runtime_map.source = Some(cache.health.mode.clone());
-    Json(runtime_map)
-}
-
-async fn get_containers(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let cache = state.cache.read().await;
-    let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(serde_json::json!({ "containers": snapshot.containers }))
-}
-
-async fn get_container(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<Json<ContainerRecord>, ApiError> {
-    let cache = state.cache.read().await;
-    let mut container = cache
-        .snapshot
-        .containers
-        .iter()
-        .find(|item| item.name == name)
-        .cloned()
-        .ok_or(ApiError {
-            status: StatusCode::NOT_FOUND,
-            message: format!("container `{name}` not found"),
-        })?;
-    redact_container_record(&mut container);
-
-    Ok(Json(container))
-}
-
-async fn get_images(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let cache = state.cache.read().await;
-    let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(serde_json::json!({ "images": snapshot.images }))
-}
-
-async fn get_networks(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let cache = state.cache.read().await;
-    let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(serde_json::json!({ "networks": snapshot.networks }))
-}
-
-async fn get_volumes(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let cache = state.cache.read().await;
-    let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(serde_json::json!({ "volumes": snapshot.volumes }))
-}
-
-fn docker_log_collection_failed(error: &str) -> ApiError {
-    eprintln!(
-        "Docker log collection failed: {}",
-        redact_runtime_display_text(error)
-    );
-    ApiError {
-        status: StatusCode::BAD_GATEWAY,
-        message: "Docker log collection failed".into(),
-    }
-}
-
-async fn get_logs(
-    State(state): State<AppState>,
-    Query(query): Query<LogsQuery>,
-) -> Result<Json<LogsResponse>, ApiError> {
-    let service =
-        validate_optional_query(query.service.as_deref(), "service", MAX_LOG_SERVICE_CHARS)?;
-    let q = validate_optional_query(query.q.as_deref(), "q", MAX_LOG_QUERY_CHARS)?;
-    let cursor = parse_log_cursor(query.cursor.as_deref())?;
-    let limit = parse_log_limit(query.limit)?;
-    let cache = state.cache.read().await;
-    let docker_reachable = cache.health.docker_reachable;
-    // Capture the mode ONCE at the initial cache read, alongside
-    // docker_reachable, so the response stamp describes the same source that
-    // SELECTED the live-vs-mock branch. A second cache read after the
-    // collection awaits could observe a mode flip mid-request and stamp
-    // fabricated entries as docker (or live entries as mock) (#89 P1).
-    let mode = cache.health.mode.clone();
-    let snapshot = cache.snapshot.clone();
-    drop(cache);
-
-    if let Some(service) = service {
-        if !snapshot
-            .containers
-            .iter()
-            .any(|container| container.name == service)
-        {
-            return Err(ApiError {
-                status: StatusCode::NOT_FOUND,
-                message: format!("container `{service}` not found in current snapshot"),
-            });
-        }
-    }
-
-    let response = if docker_reachable {
-        let Some(service) = service else {
-            // Live mode has no service-scoped view of "all logs" — fabricating
-            // mock entries would attribute invented lines to real containers.
-            // Clients must name a service (or run in explicit mock mode).
-            return Ok(Json(LogsResponse {
-                service: None,
-                entries: Vec::new(),
-                next_cursor: None,
-                source: Some(mode.clone()),
-            }));
-        };
-        let collector = docker_collector(&state)
-            .await
-            .map_err(|error| docker_log_collection_failed(&error))?;
-        collector
-            .collect_logs(service, q, cursor, limit)
-            .await
-            .map_err(|error| docker_log_collection_failed(&error))?
-    } else {
-        publish_log_response(
-            service,
-            mock_log_entries(&snapshot, service),
-            q,
-            cursor,
-            limit,
-        )
-    };
-
-    let mut stamped = response;
-    // Actual source stamp: fabricated mock log lines must never be shown as
-    // live host activity, and live log lines must never be relabelled sample
-    // (#87 E1). The stamp uses the mode captured at the INITIAL cache read —
-    // the same value that selected the live-vs-mock branch — so a mode flip
-    // mid-request cannot mislabel the bytes (#89 P1).
-    stamped.source = Some(mode);
-    Ok(Json(stamped))
-}
-
-async fn not_found() -> ApiError {
-    ApiError {
-        status: StatusCode::NOT_FOUND,
-        message: "Route not found".into(),
-    }
-}
-
-fn validate_optional_query<'a>(
-    value: Option<&'a str>,
-    name: &str,
-    max_chars: usize,
-) -> Result<Option<&'a str>, ApiError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let value = value.trim();
-
-    if value.is_empty() {
-        return Ok(None);
-    }
-
-    if value.chars().count() > max_chars || value.contains('\0') {
-        return Err(ApiError {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("query parameter `{name}` must be {max_chars} characters or fewer"),
-        });
-    }
-
-    Ok(Some(value))
-}
-
-fn parse_log_cursor(value: Option<&str>) -> Result<Option<LogCursor>, ApiError> {
-    validate_optional_query(value, "cursor", 32)?
-        .map(|value| {
-            LogCursor::parse(value).ok_or_else(|| ApiError {
-                status: StatusCode::BAD_REQUEST,
-                message: "query parameter `cursor` must be `millis` or `millis:offset`".into(),
-            })
-        })
-        .transpose()
-}
-
-fn parse_log_limit(value: Option<usize>) -> Result<usize, ApiError> {
-    match value {
-        Some(value) if (1..=MAX_LOG_PAGE_SIZE).contains(&value) => Ok(value),
-        Some(_) => Err(ApiError {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("query parameter `limit` must be between 1 and {MAX_LOG_PAGE_SIZE}"),
-        }),
-        None => Ok(DEFAULT_LOG_PAGE_SIZE),
-    }
 }
 
 pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
