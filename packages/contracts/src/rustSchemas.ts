@@ -353,6 +353,7 @@ export const RUST_RESPONSE_SCHEMAS = {
       "properties": {
         "consecutiveFailureCount": {
           "format": "uint32",
+          "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"
         },
@@ -2455,6 +2456,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "properties": {
         "consecutiveFailureCount": {
           "format": "uint32",
+          "maximum": 4294967295,
           "minimum": 0,
           "type": "integer"
         },

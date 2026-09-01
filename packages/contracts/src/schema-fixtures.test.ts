@@ -29,7 +29,7 @@ describe("Rust-owned daemon schema baseline", () => {
   it.each(fixtures)("validates %s fixtures against the committed generated schema", async (schemaName, fixtureNames) => {
     const schemaPath = `${repoRoot}packages/contracts/generated/rust/${schemaName}.schema.json`;
     const schema = await readSchema(schemaPath);
-    const validator = new Ajv2020({ allErrors: true, formats: { uint64: true } }).compile(schema);
+    const validator = new Ajv2020({ allErrors: true, formats: { uint32: true, uint64: true } }).compile(schema);
 
     for (const fixtureName of fixtureNames) {
       const fixture = await readJson(`${repoRoot}tests/fixtures/contracts/${fixtureName}`);
@@ -39,7 +39,7 @@ describe("Rust-owned daemon schema baseline", () => {
 
   it("rejects a fixture that drifts from the Rust-owned serialization shape", async () => {
     const schema = await readSchema(`${repoRoot}packages/contracts/generated/rust/docker-snapshot.schema.json`);
-    const validator = new Ajv2020({ allErrors: true, formats: { uint64: true } }).compile(schema);
+    const validator = new Ajv2020({ allErrors: true, formats: { uint32: true, uint64: true } }).compile(schema);
     const fixture = await readJson(`${repoRoot}tests/fixtures/contracts/mock-snapshot.json`) as {
       lastUpdated: unknown;
     };
@@ -52,7 +52,7 @@ describe("Rust-owned daemon schema baseline", () => {
 
   it("rejects integers above the browser-safe JSON range", async () => {
     const schema = await readSchema(`${repoRoot}packages/contracts/generated/rust/docker-snapshot.schema.json`);
-    const validator = new Ajv2020({ allErrors: true, formats: { uint64: true } }).compile(schema);
+    const validator = new Ajv2020({ allErrors: true, formats: { uint32: true, uint64: true } }).compile(schema);
     const fixture = await readJson(`${repoRoot}tests/fixtures/contracts/mock-snapshot.json`) as {
       lastUpdated: unknown;
     };
@@ -65,7 +65,7 @@ describe("Rust-owned daemon schema baseline", () => {
 
   it("rejects an undeclared response field instead of letting fixtures redefine the contract", async () => {
     const schema = await readSchema(`${repoRoot}packages/contracts/generated/rust/health-response.schema.json`);
-    const validator = new Ajv2020({ allErrors: true, formats: { uint64: true } }).compile(schema);
+    const validator = new Ajv2020({ allErrors: true, formats: { uint32: true, uint64: true } }).compile(schema);
     const fixture = await readJson(`${repoRoot}tests/fixtures/contracts/health-response.json`) as Record<string, unknown>;
 
     fixture.unreviewed = true;

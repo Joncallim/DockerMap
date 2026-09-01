@@ -205,6 +205,13 @@ mod tests {
         );
         assert!(required.iter().any(|candidate| candidate == "dataRevision"));
         assert!(required.iter().any(|candidate| candidate == "statusReason"));
+        assert_eq!(
+            state
+                .pointer("/properties/consecutiveFailureCount/maximum")
+                .and_then(|value| value.as_u64()),
+            Some(u32::MAX as u64),
+            "failure counts must not promise values beyond the Rust u32 wire type"
+        );
         let reasons = schema
             .pointer("/$defs/ProviderStatusReason/enum")
             .and_then(|value| value.as_array())

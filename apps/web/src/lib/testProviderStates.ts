@@ -1,10 +1,15 @@
-import type { ProviderState } from "@dockermap/contracts";
+import type { ProviderSlot, ProviderState } from "@dockermap/contracts";
+
+function unavailableProviderState(slot: ProviderSlot): ProviderState {
+  return {
+    slot, state: "unavailable", lastAttemptMs: null, lastSuccessMs: null,
+    lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial"
+  };
+}
 
 /** Complete fixed-slot state used by browser-only fixtures. */
 export const testProviderStates: [ProviderState, ProviderState, ProviderState, ProviderState, ProviderState] = [
-  { slot: "network_infrastructure", state: "unavailable" },
-  { slot: "host_scoped", state: "unavailable" },
-  { slot: "python_processes", state: "unavailable" },
-  { slot: "native_processes", state: "unavailable" },
-  { slot: "project_npm", state: "unavailable" }
+  unavailableProviderState("network_infrastructure"), unavailableProviderState("host_scoped"),
+  unavailableProviderState("python_processes"), unavailableProviderState("native_processes"),
+  unavailableProviderState("project_npm")
 ];

@@ -1221,8 +1221,32 @@ mod scheduler_tests {
         assert_eq!(before.status_reason, None);
         assert_eq!(before.consecutive_failure_count, 0);
 
+        let retained = {
+            let entry = slots.get_mut(&slot).unwrap();
+            let retained = retained_collection(&entry.observation);
+            // A retained collection continues to report its original success and
+            // duration while a later attempt is in flight. Its new attempt must
+            // not be mistaken for the historical successful attempt.
+            entry.observation = RuntimeProviderState::Collecting(retained.clone());
+            entry.freshness.last_attempt_ms = Some(120);
+            entry.freshness.status_reason = Some(ProviderStatusReason::Refreshing);
+            retained
+        };
+        let refreshing = runtime_map_for_snapshot(&snapshot, &slots)
+            .provider_states
+            .into_iter()
+            .find(|state| state.slot == slot)
+            .unwrap();
+        assert_eq!(refreshing.state, ProviderStateKind::Stale);
+        assert_eq!(refreshing.last_attempt_ms, Some(120));
+        assert_eq!(refreshing.last_success_ms, Some(110));
+        assert_eq!(refreshing.last_duration_ms, Some(10));
+        assert_eq!(
+            refreshing.status_reason,
+            Some(ProviderStatusReason::Refreshing)
+        );
+
         let entry = slots.get_mut(&slot).unwrap();
-        let retained = retained_collection(&entry.observation);
         entry.observation = RuntimeProviderState::TimedOut(retained);
         entry.freshness.consecutive_failure_count = 1;
         entry.freshness.status_reason = Some(ProviderStatusReason::CollectionTimedOut);
@@ -1232,6 +1256,7 @@ mod scheduler_tests {
             .find(|state| state.slot == slot)
             .unwrap();
         assert_eq!(timed_out.state, ProviderStateKind::TimedOut);
+        assert_eq!(timed_out.last_attempt_ms, Some(120));
         assert_eq!(timed_out.last_success_ms, Some(110));
         assert_eq!(timed_out.last_duration_ms, Some(10));
         assert_eq!(timed_out.data_revision, before.data_revision);

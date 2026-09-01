@@ -216,6 +216,7 @@ pub struct ProviderState {
     #[schemars(required, extend("type" = ["integer", "null"]))]
     pub last_duration_ms: Option<u64>,
     #[serde(rename = "consecutiveFailureCount")]
+    #[schemars(range(max = 4_294_967_295u64))]
     pub consecutive_failure_count: u32,
     /// Opaque, per-slot data identity. It is absent before a successful pass
     /// and after a source reset, and otherwise advances only for sanitized

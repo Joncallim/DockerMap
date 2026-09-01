@@ -32,7 +32,7 @@ export const DAEMON_RESPONSE_SCHEMA_PATHS = [
   { path: "/daemon/compose/edit-plan", routeId: "compose-edit-plan", schema: RUST_ROUTE_RESPONSE_SCHEMAS["compose-edit-plan"] },
 ] as const satisfies readonly { path: string; schema: RustResponseSchemaId; routeId?: keyof typeof RUST_ROUTE_RESPONSE_SCHEMAS }[];
 
-const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint64: true } });
+const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } });
 const validators = new Map<RustResponseSchemaId, ValidateFunction>(
   (Object.entries(RUST_RESPONSE_SCHEMAS) as [RustResponseSchemaId, (typeof RUST_RESPONSE_SCHEMAS)[RustResponseSchemaId]][])
     .map(([schema, definition]) => [schema, ajv.compile(definition)]),
@@ -50,6 +50,7 @@ const PROVIDER_STATE_SLOT_SET = {
   project_npm: true,
 } as const satisfies Record<ProviderSlot, true>;
 const PROVIDER_STATE_SLOTS = Object.keys(PROVIDER_STATE_SLOT_SET) as ProviderSlot[];
+const U32_MAX = 4_294_967_295;
 
 function hasCompleteProviderStateVector(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
@@ -60,6 +61,62 @@ function hasCompleteProviderStateVector(payload: unknown): boolean {
   );
   return slots.size === PROVIDER_STATE_SLOTS.length
     && PROVIDER_STATE_SLOTS.every((slot) => slots.has(slot));
+}
+
+// JSON Schema deliberately carries the wire shape, while this boundary check
+// carries the small cross-field truth table.  Keep it closed and structural:
+// no daemon-supplied diagnostic text is accepted as a reason.
+function hasCoherentProviderFreshness(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const providerStates = (payload as { providerStates?: unknown }).providerStates;
+  if (!Array.isArray(providerStates)) return false;
+  return providerStates.every((candidate) => {
+    if (!candidate || typeof candidate !== "object") return false;
+    const state = candidate as {
+      state?: unknown; statusReason?: unknown; lastAttemptMs?: unknown;
+      lastSuccessMs?: unknown; lastDurationMs?: unknown;
+      consecutiveFailureCount?: unknown; dataRevision?: unknown;
+    };
+    const attempt = state.lastAttemptMs;
+    const success = state.lastSuccessMs;
+    const duration = state.lastDurationMs;
+    const failures = state.consecutiveFailureCount;
+    const revision = state.dataRevision;
+    if (typeof failures !== "number" || !Number.isSafeInteger(failures) || failures < 0 || failures > U32_MAX) return false;
+    if (![attempt, success, duration].every((value) => value === null || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0))) return false;
+    if (!(revision === null || (typeof revision === "string" && revision.length > 0))) return false;
+    const attemptedMs = attempt as number | null;
+    const successfulMs = success as number | null;
+    const durationMs = duration as number | null;
+    if (successfulMs !== null && attemptedMs === null) return false;
+    // A failed or timed-out retry legitimately has a newer last attempt than
+    // its retained last success. Duration belongs to that prior success, not
+    // to the current attempt, so only bound it to a possible clock timeline.
+    if (durationMs !== null && (successfulMs === null || durationMs > successfulMs)) return false;
+    if ((success === null) !== (duration === null)) return false;
+    if (revision !== null && success === null) return false;
+
+    switch (state.state) {
+      case "fresh": return state.statusReason === null && failures === 0 && successfulMs !== null && attemptedMs !== null && attemptedMs <= successfulMs && revision !== null;
+      case "collecting":
+        return state.statusReason === "refreshing" && attemptedMs !== null
+          && successfulMs === null && durationMs === null && revision === null;
+      case "timed_out": return state.statusReason === "collection_timed_out" && failures > 0 && attemptedMs !== null;
+      case "disabled": return state.statusReason === "disabled";
+      case "stale":
+        if (successfulMs === null || revision === null) return false;
+        return (state.statusReason === "refreshing" && attemptedMs !== null)
+          || (state.statusReason === "collection_failed" && attemptedMs !== null && failures > 0)
+          || (state.statusReason === null && attemptedMs !== null && attemptedMs <= successfulMs);
+      case "unavailable":
+        if (state.statusReason === "collection_failed") {
+          return attemptedMs !== null && successfulMs === null && durationMs === null && revision === null && failures > 0;
+        }
+        return (state.statusReason === null || state.statusReason === "initial" || state.statusReason === "source_reset")
+          && attemptedMs === null && successfulMs === null && durationMs === null && revision === null && failures === 0;
+      default: return false;
+    }
+  });
 }
 
 export function daemonResponseSchemaId(path: string): RustResponseSchemaId | undefined {
@@ -93,7 +150,7 @@ export class DaemonResponseValidationError extends Error {
 export function validateDaemonResponse(path: string, payload: unknown) {
   const schema = daemonResponseSchemaId(path);
   const validator = schema && validators.get(schema);
-  if (!validator || !validator(payload) || (schema === "RuntimeMap" && !hasCompleteProviderStateVector(payload))) {
+  if (!validator || !validator(payload) || (schema === "RuntimeMap" && (!hasCompleteProviderStateVector(payload) || !hasCoherentProviderFreshness(payload)))) {
     throw new DaemonResponseValidationError();
   }
   return payload;

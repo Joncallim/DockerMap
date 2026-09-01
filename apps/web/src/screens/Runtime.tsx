@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { ProviderSlot, ProviderState, RuntimeLocation, RuntimeProviderKind } from "@dockermap/contracts";
+import type { ProviderSlot, ProviderState, ProviderStatusReason, RuntimeLocation, RuntimeProviderKind } from "@dockermap/contracts";
 import { useApp } from "../context";
 import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord } from "../lib/model";
 import { formatRelative } from "../lib/format";
@@ -71,6 +71,23 @@ const PROVIDER_STATE_TONE: Record<ProviderState["state"], "accent" | "warn" | "e
   timed_out: "error",
   disabled: "muted"
 };
+
+// These are daemon-owned closed reasons, deliberately rendered as collection
+// evidence instead of raw provider output or a service-health diagnosis.
+const PROVIDER_REASON_LABEL: Record<ProviderStatusReason, string> = {
+  initial: "Awaiting first collection",
+  refreshing: "Refresh in progress",
+  collection_failed: "Last collection failed",
+  collection_timed_out: "Last collection timed out",
+  source_reset: "Collection source reset",
+  disabled: "Collection disabled"
+};
+
+function providerFreshnessText(providerState: ProviderState): string {
+  if (providerState.lastSuccessMs !== null) return `Last collected ${formatRelative(providerState.lastSuccessMs)}`;
+  if (providerState.lastAttemptMs !== null) return `Last attempted ${formatRelative(providerState.lastAttemptMs)}`;
+  return "No collection recorded";
+}
 
 export default function RuntimeScreen() {
   const { model, loading, error, evidenceMode } = useApp();
@@ -264,7 +281,13 @@ export default function RuntimeScreen() {
         <ul className="provider-state-list" aria-label="Provider collection evidence">
           {runtime.providerStates.map((providerState) => (
             <li key={providerState.slot} className={`provider-state-row provider-state-${providerState.state}`}>
-              <span className="provider-state-slot">{PROVIDER_SLOT_LABEL[providerState.slot]}</span>
+              <div>
+                <span className="provider-state-slot">{PROVIDER_SLOT_LABEL[providerState.slot]}</span>
+                <span className="provider-state-freshness">{providerFreshnessText(providerState)}</span>
+                {providerState.statusReason !== null ? (
+                  <span className="provider-state-reason">{PROVIDER_REASON_LABEL[providerState.statusReason]}</span>
+                ) : null}
+              </div>
               <Tag tone={PROVIDER_STATE_TONE[providerState.state]}>{PROVIDER_STATE_LABEL[providerState.state]}</Tag>
             </li>
           ))}

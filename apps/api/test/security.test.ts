@@ -902,7 +902,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
     DOCKERMAP_API_TOKEN: "test-token"
   });
-  const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint64: true } });
+  const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } });
   const validators = new Map<RustResponseSchemaId, ReturnType<Ajv2020["compile"]>>();
   for (const [schemaName, schema] of Object.entries(RUST_RESPONSE_SCHEMAS) as [RustResponseSchemaId, (typeof RUST_RESPONSE_SCHEMAS)[RustResponseSchemaId]][]) {
     validators.set(schemaName, ajv.compile(schema));
@@ -993,6 +993,42 @@ test("daemon model responses require non-empty revision and complete provider st
       const value = structuredClone(runtime);
       value.providerStates[4].slot = value.providerStates[0].slot;
       return value;
+    })()],
+    ["/daemon/runtime/map", (() => {
+      const value = structuredClone(runtime);
+      value.providerStates[0].state = "fresh";
+      value.providerStates[0].statusReason = "collection_failed";
+      return value;
+    })()],
+    ["/daemon/runtime/map", (() => {
+      const value = structuredClone(runtime);
+      value.providerStates[0].lastDurationMs = 1_710_000_000_002;
+      return value;
+    })()],
+    ["/daemon/runtime/map", (() => {
+      const value = structuredClone(runtime);
+      value.providerStates[0].consecutiveFailureCount = 4_294_967_296;
+      return value;
+    })()],
+    ["/daemon/runtime/map", (() => {
+      const value = structuredClone(runtime);
+      value.providerStates[0].state = "collecting";
+      value.providerStates[0].statusReason = "refreshing";
+      return value;
+    })()],
+    ["/daemon/runtime/map", (() => {
+      const value = structuredClone(runtime);
+      value.providerStates[0].state = "unavailable";
+      value.providerStates[0].statusReason = "initial";
+      return value;
+    })()],
+    ["/daemon/runtime/map", (() => {
+      const value = structuredClone(runtime);
+      Object.assign(value.providerStates[0], {
+        state: "unavailable", statusReason: "collection_failed", lastAttemptMs: null,
+        lastSuccessMs: null, lastDurationMs: null, dataRevision: null, consecutiveFailureCount: 0
+      });
+      return value;
     })()]
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
@@ -1008,6 +1044,47 @@ test("daemon model responses require non-empty revision and complete provider st
       code: "daemon_invalid_response",
       message: "Daemon response did not match its declared contract"
     });
+  }
+});
+
+test("daemon runtime provider metadata retains successful evidence across retries", async () => {
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/runtime-map.json", import.meta.url), "utf8"
+  )) as Record<string, unknown> & { providerStates: Array<Record<string, unknown>> };
+  const variants = [
+    (() => {
+      const value = structuredClone(fixture);
+      Object.assign(value.providerStates[0], {
+        state: "stale", statusReason: "refreshing", lastAttemptMs: 1710000000010,
+        lastSuccessMs: 1710000000001, lastDurationMs: 1, consecutiveFailureCount: 0
+      });
+      return value;
+    })(),
+    (() => {
+      const value = structuredClone(fixture);
+      Object.assign(value.providerStates[0], {
+        state: "stale", statusReason: "collection_failed", lastAttemptMs: 1710000000010,
+        lastSuccessMs: 1710000000001, lastDurationMs: 1, consecutiveFailureCount: 1
+      });
+      return value;
+    })(),
+    (() => {
+      const value = structuredClone(fixture);
+      Object.assign(value.providerStates[0], {
+        state: "timed_out", statusReason: "collection_timed_out", lastAttemptMs: 1710000000010,
+        lastSuccessMs: 1710000000001, lastDurationMs: 1, consecutiveFailureCount: 1
+      });
+      return value;
+    })()
+  ];
+  for (const runtime of variants) {
+    const daemon = await startStubDaemon((req, res) => {
+      if (req.url === "/daemon/runtime/map") return sendJson(res, 200, runtime);
+      return sendJson(res, 404, { code: "not_found", message: "missing" });
+    });
+    const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+    const response = await request(api, "/api/runtime/map", { headers: { Authorization: "Bearer test-token" } });
+    assert.equal(response.status, 200);
   }
 });
 
@@ -1046,7 +1123,7 @@ test("actual canonical and v1 SSE snapshot/error frames use their declared paylo
     DOCKERMAP_API_TOKEN: "test-token"
   });
   const auth = { Authorization: "Bearer test-token" };
-  const rustValidator = new Ajv2020({ allErrors: true, strict: true, formats: { uint64: true } })
+  const rustValidator = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } })
     .compile(RUST_RESPONSE_SCHEMAS.HealthResponse);
 
   for (const path of ["/api/events/stream", "/api/v1/events/stream"]) {
@@ -1902,11 +1979,11 @@ test("API publishes redacted and normalized daemon data on every response route"
         lastUpdated: 1,
         modelRevision: "revision-1",
         providerStates: [
-          { slot: "network_infrastructure", state: "unavailable" },
-          { slot: "host_scoped", state: "unavailable" },
-          { slot: "python_processes", state: "unavailable" },
-          { slot: "native_processes", state: "unavailable" },
-          { slot: "project_npm", state: "unavailable" }
+          { slot: "network_infrastructure", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+          { slot: "host_scoped", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+          { slot: "python_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+          { slot: "native_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+          { slot: "project_npm", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" }
         ]
       });
       return;
