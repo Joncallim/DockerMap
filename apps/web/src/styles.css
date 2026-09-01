@@ -826,6 +826,41 @@ kbd {
   align-items: start;
 }
 
+.provider-state-panel {
+  margin-top: var(--s4);
+}
+
+.provider-state-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--s2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.provider-state-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.provider-state-slot {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.provider-state-note {
+  margin: var(--s3) 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .diag-list,
 .runtime-node-list,
 .runtime-edge-list,

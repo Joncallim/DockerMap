@@ -60,6 +60,22 @@ describe("stateForStatus", () => {
   });
 });
 
+describe("runtime collection evidence", () => {
+  it("carries each fixed provider slot into the UI model without treating it as node health", () => {
+    const providerStates: RuntimeMap["providerStates"] = [
+      { slot: "network_infrastructure", state: "fresh" },
+      { slot: "host_scoped", state: "stale" },
+      { slot: "python_processes", state: "collecting" },
+      { slot: "native_processes", state: "timed_out" },
+      { slot: "project_npm", state: "disabled" }
+    ];
+    const model = buildModel(snapshot([]), { ...emptyRuntime, providerStates });
+
+    expect(model.runtime.providerStates).toEqual(providerStates);
+    expect(model.runtime.nodes).toEqual([]);
+  });
+});
+
 describe("splitImage (via buildModel)", () => {
   it("splits repo and tag at the last colon after the last slash", () => {
     const model = buildModel(snapshot([container({ id: "c1", name: "web", image: "nginx:1.27-alpine" })]), emptyRuntime);

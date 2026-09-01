@@ -8,6 +8,7 @@ import type {
   RuntimeMapEdge,
   RuntimeMapNode,
   RuntimeProviderKind,
+  ProviderState,
   VolumeRecord
 } from "@dockermap/contracts";
 
@@ -161,6 +162,12 @@ export interface RuntimeModel {
   idCollisions: Set<string>;
   providerSummary: RuntimeBucketSummary<RuntimeProviderKind>[];
   layerSummary: RuntimeBucketSummary<RuntimeLayerId>[];
+  /**
+   * Fixed daemon-owned collection slots. These are collection evidence, not
+   * service-health states: a stale host observation does not classify any
+   * runtime node as unhealthy.
+   */
+  providerStates: ProviderState[];
   summary: RuntimeSummary;
   lastUpdated: number;
 }
@@ -673,6 +680,7 @@ function buildRuntimeModel(runtimeMap: RuntimeMap): RuntimeModel {
     idCollisions,
     providerSummary,
     layerSummary,
+    providerStates: runtimeMap.providerStates,
     summary: {
       totalNodes: nodes.length,
       serviceNodes: nodes.filter((node) => node.service || node.package).length,
