@@ -35,7 +35,9 @@ Docker, Compose, and host runtime signals -> dockermap-daemon -> apps/api -> app
 
 The Rust model is currently mirrored manually in `packages/contracts`. To keep those two
 sides honest, shared JSON examples live in `tests/fixtures/contracts`. Rust tests
-deserialize them, and TypeScript tests import the same files.
+deserialize them, and TypeScript tests import the same files. The planned canonical
+ownership and deterministic schema strategy, including the known limits of this interim
+check, is recorded in [`CONTRACT_AUTHORITY.md`](CONTRACT_AUTHORITY.md) (#144 / #65).
 
 ## Runtime Map
 
