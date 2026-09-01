@@ -7,6 +7,7 @@ use axum::{
     Json, Router,
 };
 mod auth;
+mod compose_api;
 mod config;
 mod docker_collector;
 mod docker_config;
@@ -17,6 +18,7 @@ mod publication;
 use auth::require_daemon_bearer_token;
 #[cfg(test)]
 use bollard::Docker;
+use compose_api::{get_compose_edit_plan, get_compose_graph, get_compose_scan, run_cli};
 use config::{
     project_root, read_bind_host_env, read_daemon_token_env, read_port_env, DaemonAuthToken,
 };
@@ -27,14 +29,11 @@ use docker_collector::{
 };
 use docker_collector::{publish_log_response, DockerCollector};
 use dockermap_core::{
-    correlate_compose_runtime, derive_compose_graph, derive_graph, derive_images,
-    derive_runtime_map, discover_compose_files, mock_log_entries, mock_snapshot,
-    plan_compose_mount_edit, scan_compose_files, service_entity_kind_name, ComposeDiagnostic,
-    ComposeEditPlan, ComposeGraph, ComposeScan, ContainerRecord, DiagnosticSeverity,
-    DockerSnapshot, GraphResponse, HealthResponse, HealthState, LogCursor, LogsResponse,
-    RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode, RuntimeMode, RuntimeNodeKind,
-    RuntimeNodeLayer, RuntimeProviderKind, ServiceEntityKind, DEFAULT_LOG_PAGE_SIZE,
-    MAX_LOG_PAGE_SIZE,
+    derive_graph, derive_images, derive_runtime_map, mock_log_entries, mock_snapshot,
+    service_entity_kind_name, ContainerRecord, DiagnosticSeverity, DockerSnapshot, GraphResponse,
+    HealthResponse, HealthState, LogCursor, LogsResponse, RuntimeMap, RuntimeMapDiagnostic,
+    RuntimeMapEdge, RuntimeMapNode, RuntimeMode, RuntimeNodeKind, RuntimeNodeLayer,
+    RuntimeProviderKind, ServiceEntityKind, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 #[cfg(test)]
 use dockermap_core::{
@@ -73,11 +72,13 @@ use publication::*;
 use serde::Deserialize;
 #[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::{
     collections::BTreeMap,
     fs,
     net::SocketAddr,
-    path::{Component, Path as StdPath, PathBuf},
+    path::Path as StdPath,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -88,8 +89,6 @@ use tokio::{net::TcpListener, sync::RwLock, time::sleep};
 
 const MAX_LOG_QUERY_CHARS: usize = 256;
 const MAX_LOG_SERVICE_CHARS: usize = 128;
-const MAX_COMPOSE_FILES: usize = 8;
-const MAX_COMPOSE_FILE_CHARS: usize = 512;
 
 #[derive(Clone)]
 struct AppState {
@@ -117,20 +116,6 @@ struct LogsQuery {
     q: Option<String>,
     cursor: Option<String>,
     limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ComposeScanQuery {
-    file: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ComposeEditPlanQuery {
-    file: String,
-    service: String,
-    mount: usize,
-    source: Option<String>,
-    target: Option<String>,
 }
 
 #[derive(Debug)]
@@ -797,300 +782,11 @@ async fn get_logs(
     Ok(Json(stamped))
 }
 
-fn compose_file_unavailable(diagnostic: String) -> ApiError {
-    eprintln!(
-        "Compose request unavailable: {}",
-        redact_runtime_display_text(&diagnostic)
-    );
-    ApiError {
-        status: StatusCode::BAD_REQUEST,
-        message: "requested Compose file is unavailable".into(),
-    }
-}
-
-fn compose_inspection_unavailable(diagnostic: String) -> ApiError {
-    eprintln!(
-        "Compose inspection unavailable: {}",
-        redact_runtime_display_text(&diagnostic)
-    );
-    ApiError {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message: "Compose inspection is unavailable".into(),
-    }
-}
-
-fn compose_scan_unavailable(diagnostic: String) -> ApiError {
-    eprintln!(
-        "Compose scan unavailable: {}",
-        redact_runtime_display_text(&diagnostic)
-    );
-    ApiError {
-        status: StatusCode::BAD_REQUEST,
-        message: "Compose scan is unavailable".into(),
-    }
-}
-
-async fn get_compose_scan(
-    State(state): State<AppState>,
-    Query(query): Query<ComposeScanQuery>,
-) -> Result<Json<ComposeScan>, ApiError> {
-    let mut scan = scan_compose_query(query).await?;
-    let cache = state.cache.read().await;
-    scan.correlations = correlate_compose_runtime(&scan, &cache.snapshot);
-    redact_compose_scan(&mut scan);
-    Ok(Json(scan))
-}
-
-async fn get_compose_graph(
-    Query(query): Query<ComposeScanQuery>,
-) -> Result<Json<ComposeGraph>, ApiError> {
-    let mut scan = scan_compose_query(query).await?;
-    // Bind sources are embedded in graph node ids and labels, so the scan must
-    // be redacted BEFORE deriving the graph — otherwise secrets in mount
-    // sources (inline auth URLs, token= patterns) leak through this endpoint.
-    redact_compose_scan(&mut scan);
-    Ok(Json(derive_compose_graph(&scan)))
-}
-
-async fn get_compose_edit_plan(
-    Query(query): Query<ComposeEditPlanQuery>,
-) -> Result<Json<ComposeEditPlan>, ApiError> {
-    let project_root = project_root().map_err(compose_inspection_unavailable)?;
-    let file =
-        resolve_scannable_file(&project_root, &query.file).map_err(compose_file_unavailable)?;
-    let service = validate_required_value(&query.service, "service", MAX_LOG_SERVICE_CHARS)?;
-    let source =
-        validate_optional_query(query.source.as_deref(), "source", MAX_COMPOSE_FILE_CHARS)?;
-    let target =
-        validate_optional_query(query.target.as_deref(), "target", MAX_COMPOSE_FILE_CHARS)?;
-    let scan = scan_compose_files(&project_root, std::slice::from_ref(&file))
-        .map_err(compose_scan_unavailable)?;
-    let mount = scan
-        .mounts
-        .iter()
-        .find(|mount| {
-            mount.service == service
-                && mount
-                    .origin
-                    .field
-                    .ends_with(&format!(".volumes[{}]", query.mount))
-        })
-        .ok_or(ApiError {
-            status: StatusCode::NOT_FOUND,
-            message: format!("mount {} for service `{service}` not found", query.mount),
-        })?;
-    let content = fs::read_to_string(&file).map_err(|error| {
-        compose_file_unavailable(format!(
-            "failed to read compose file `{}`: {error}",
-            file.display()
-        ))
-    })?;
-
-    let mut plan = plan_compose_mount_edit(&file, &content, mount, source, target);
-    redact_compose_edit_plan(&mut plan);
-    Ok(Json(plan))
-}
-
-async fn scan_compose_query(query: ComposeScanQuery) -> Result<ComposeScan, ApiError> {
-    let project_root = project_root().map_err(compose_inspection_unavailable)?;
-
-    let files = match query.file {
-        Some(value) if !value.trim().is_empty() => {
-            let requested = parse_compose_file_query(&value)?;
-            requested
-                .iter()
-                .map(|value| resolve_scannable_file(&project_root, value))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(compose_file_unavailable)?
-        }
-        _ => discover_compose_files(&project_root)
-            .iter()
-            .map(|path| {
-                let requested = path
-                    .strip_prefix(&project_root)
-                    .unwrap_or(path)
-                    .to_string_lossy();
-                resolve_scannable_file(&project_root, &requested)
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(compose_file_unavailable)?,
-    };
-
-    let scan = scan_compose_files(&project_root, &files).map_err(compose_scan_unavailable)?;
-
-    Ok(scan)
-}
-
 async fn not_found() -> ApiError {
     ApiError {
         status: StatusCode::NOT_FOUND,
         message: "Route not found".into(),
     }
-}
-
-fn run_cli(command: &str, args: &[String]) -> Result<i32, String> {
-    let project_root = project_root()?;
-    let files = cli_compose_files(&project_root, args)?;
-    let scan = scan_compose_files(&project_root, &files)?;
-
-    match command {
-        "scan" => {
-            print_json(&scan)?;
-            Ok(0)
-        }
-        "validate" => {
-            print_json(&scan.diagnostics)?;
-            Ok(if has_blocking_diagnostics(&scan.diagnostics) {
-                1
-            } else {
-                0
-            })
-        }
-        "export" => {
-            let format = cli_option_value(args, "--format").unwrap_or("json");
-            if format != "json" {
-                return Err("only `--format json` is supported".into());
-            }
-            print_json(&scan)?;
-            Ok(0)
-        }
-        _ => Err(format!("unknown command `{command}`")),
-    }
-}
-
-fn cli_compose_files(project_root: &StdPath, args: &[String]) -> Result<Vec<PathBuf>, String> {
-    let mut files = Vec::new();
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--file" => {
-                let Some(value) = args.get(index + 1) else {
-                    return Err("`--file` requires a value".into());
-                };
-                files.push(resolve_scannable_file(project_root, value)?);
-                index += 2;
-            }
-            "--format" => {
-                index += 2;
-            }
-            value => {
-                return Err(format!("unknown argument `{value}`"));
-            }
-        }
-    }
-
-    if files.is_empty() {
-        discover_compose_files(project_root)
-            .iter()
-            .map(|path| {
-                let requested = path
-                    .strip_prefix(project_root)
-                    .unwrap_or(path)
-                    .to_string_lossy();
-                resolve_scannable_file(project_root, &requested)
-            })
-            .collect()
-    } else {
-        Ok(files)
-    }
-}
-
-fn cli_option_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.windows(2)
-        .find(|window| window[0] == name)
-        .map(|window| window[1].as_str())
-}
-
-fn has_blocking_diagnostics(diagnostics: &[ComposeDiagnostic]) -> bool {
-    diagnostics.iter().any(|diagnostic| {
-        matches!(
-            diagnostic.severity,
-            dockermap_core::DiagnosticSeverity::Error | dockermap_core::DiagnosticSeverity::Blocked
-        )
-    })
-}
-
-fn print_json<T: serde::Serialize>(value: &T) -> Result<(), String> {
-    let output = serde_json::to_string_pretty(value)
-        .map_err(|error| format!("failed to serialize JSON: {error}"))?;
-    println!("{output}");
-    Ok(())
-}
-
-fn resolve_scannable_file(project_root: &StdPath, requested: &str) -> Result<PathBuf, String> {
-    if requested.trim().is_empty() || requested.contains('\0') {
-        return Err("compose file path is empty or invalid".into());
-    }
-
-    let requested_path = StdPath::new(requested);
-    if requested_path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err(format!(
-            "compose file `{requested}` must not contain parent traversal"
-        ));
-    }
-
-    let candidate = if requested_path.is_absolute() {
-        requested_path.to_path_buf()
-    } else {
-        project_root.join(requested_path)
-    };
-
-    reject_symlink_path(project_root, &candidate)?;
-
-    let canonical = fs::canonicalize(&candidate).map_err(|error| {
-        format!(
-            "compose file `{}` is not readable: {error}",
-            candidate.display()
-        )
-    })?;
-
-    if !canonical.starts_with(project_root) {
-        return Err(format!(
-            "compose file `{}` is outside project root `{}`",
-            canonical.display(),
-            project_root.display()
-        ));
-    }
-
-    if !canonical.is_file() {
-        return Err(format!(
-            "compose file `{}` is not a file",
-            canonical.display()
-        ));
-    }
-
-    Ok(canonical)
-}
-
-fn parse_compose_file_query(value: &str) -> Result<Vec<String>, ApiError> {
-    let files = value
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            if value.len() > MAX_COMPOSE_FILE_CHARS || value.contains('\0') {
-                return Err(ApiError {
-                    status: StatusCode::BAD_REQUEST,
-                    message: format!(
-                        "compose file query values must be {MAX_COMPOSE_FILE_CHARS} characters or fewer"
-                    ),
-                });
-            }
-            Ok(value.to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    if files.len() > MAX_COMPOSE_FILES {
-        return Err(ApiError {
-            status: StatusCode::BAD_REQUEST,
-            message: format!("compose scan accepts at most {MAX_COMPOSE_FILES} files"),
-        });
-    }
-
-    Ok(files)
 }
 
 fn validate_optional_query<'a>(
@@ -1139,17 +835,6 @@ fn parse_log_limit(value: Option<usize>) -> Result<usize, ApiError> {
     }
 }
 
-fn validate_required_value<'a>(
-    value: &'a str,
-    name: &str,
-    max_chars: usize,
-) -> Result<&'a str, ApiError> {
-    validate_optional_query(Some(value), name, max_chars)?.ok_or(ApiError {
-        status: StatusCode::BAD_REQUEST,
-        message: format!("query parameter `{name}` is required"),
-    })
-}
-
 pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
     let mut output = value.chars().take(max_chars).collect::<String>();
     if value.chars().count() > max_chars {
@@ -1158,38 +843,15 @@ pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
     output
 }
 
-fn reject_symlink_path(project_root: &StdPath, canonical: &StdPath) -> Result<(), String> {
-    let relative = canonical.strip_prefix(project_root).map_err(|_| {
-        format!(
-            "compose file `{}` is outside project root `{}`",
-            canonical.display(),
-            project_root.display()
-        )
-    })?;
-    let mut current = project_root.to_path_buf();
-
-    for component in relative.components() {
-        current.push(component.as_os_str());
-        let metadata = fs::symlink_metadata(&current)
-            .map_err(|error| format!("cannot inspect `{}`: {error}", current.display()))?;
-        if metadata.file_type().is_symlink() {
-            return Err(format!(
-                "compose file path `{}` contains a symlink; refusing to follow it",
-                current.display()
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::process_runner::{run_command_with_timeout, MAX_PROVIDER_OUTPUT_BYTES};
     use axum::extract::Request;
     use dockermap_core::{
-        ComposeMount, RuntimeAdvisorySeverity, RuntimeEventRef, RuntimeLogLevel, RuntimeLogRef,
+        derive_compose_graph, scan_compose_files, ComposeDiagnostic, ComposeEditPlan, ComposeMount,
+        ComposeScan, RuntimeAdvisorySeverity, RuntimeEventRef, RuntimeLogLevel, RuntimeLogRef,
         RuntimeOwnershipKind, RuntimePackageAdvisory, RuntimePackageUpdate,
     };
     use std::{collections::HashSet, process::Command};
@@ -1580,17 +1242,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_too_many_compose_files() {
-        let value = (0..=MAX_COMPOSE_FILES)
-            .map(|index| format!("compose-{index}.yaml"))
-            .collect::<Vec<_>>()
-            .join(",");
-
-        let error = parse_compose_file_query(&value).expect_err("too many files should fail");
-        assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    }
-
-    #[test]
     fn rejects_oversized_query_values() {
         let oversized = "a".repeat(MAX_LOG_QUERY_CHARS + 1);
         let error = validate_optional_query(Some(&oversized), "q", MAX_LOG_QUERY_CHARS)
@@ -1676,13 +1327,6 @@ mod tests {
     fn truncates_log_messages_on_character_boundaries() {
         assert_eq!(truncate_chars("abcdef", 3), "abc...");
         assert_eq!(truncate_chars("ok", 3), "ok");
-    }
-
-    #[test]
-    fn cli_rejects_unknown_format() {
-        let args = vec!["--format".to_string(), "yaml".to_string()];
-        let error = run_cli("export", &args).expect_err("yaml export should fail");
-        assert!(error.contains("only `--format json`"));
     }
 
     #[test]
