@@ -189,7 +189,7 @@ export function createReadHandlers({ fetchDaemon, sendError, port }: ReadHandler
       try {
         const entries: DiagnosticsEntry[] = [];
         const [scanResult, runtimeResult] = await Promise.allSettled([fetchDaemon<ComposeScan>("/daemon/compose/scan"), fetchDaemon<RuntimeMap>("/daemon/runtime/map")]);
-        if (scanResult.status === "fulfilled") for (const diagnostic of scanResult.value.diagnostics) entries.push({ id: diagnostic.id, source: "compose", severity: diagnostic.severity, message: diagnostic.message, file: diagnostic.origin.file, service: diagnostic.origin.service });
+        if (scanResult.status === "fulfilled") for (const diagnostic of scanResult.value.diagnostics) entries.push({ id: diagnostic.id, source: "compose", severity: diagnostic.severity, message: diagnostic.message, file: diagnostic.origin.file, service: diagnostic.origin.service ?? null });
         else entries.push({ id: null, source: "api", severity: "warning", message: `Compose diagnostics unavailable: ${scanResult.reason instanceof Error ? scanResult.reason.message : "request failed"}`, file: null, service: null });
         if (runtimeResult.status === "fulfilled") for (const diagnostic of runtimeResult.value.diagnostics) entries.push({ id: diagnostic.provider, source: "runtime", severity: diagnostic.severity, message: diagnostic.message, file: null, service: null });
         else entries.push({ id: null, source: "api", severity: "warning", message: `Runtime diagnostics unavailable: ${runtimeResult.reason instanceof Error ? runtimeResult.reason.message : "request failed"}`, file: null, service: null });

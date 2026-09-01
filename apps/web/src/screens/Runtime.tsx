@@ -313,7 +313,7 @@ export default function RuntimeScreen() {
                   <KeyValue label="Reported status" value={identityText(selected.service.status, UNAVAILABLE_SERVICE_STATUS)} />
                   <KeyValue label="Health" value={selected.service.health?.message || selected.service.health?.state || "—"} />
                   <KeyValue label="Owner" value={identityText(selected.service.owner?.name, UNAVAILABLE_OWNER, "—")} />
-                  <KeyValue label="Location" value={locationLabel(selected.service.location)} />
+                  <KeyValue label="Location" value={locationLabel(selected.service.location ?? null)} />
                 </div>
               )}
 

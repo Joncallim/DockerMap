@@ -63,7 +63,7 @@ export default function Logs() {
       logSourceRef.current = data.source ?? null;
       setLogSource(logSourceRef.current);
       setEntries(data.entries);
-      setNextCursor(data.nextCursor);
+      setNextCursor(data.nextCursor ?? null);
       // A fresh selection (first load or service/path change) starts from an
       // un-exhausted cursor state: any prior "reached the end of history"
       // flag belonged to the old path/service and must not suppress cursor
@@ -100,7 +100,7 @@ export default function Logs() {
         logSourceRef.current = nextSource;
         setLogSource(nextSource);
         setEntries(data.entries);
-        setNextCursor(data.nextCursor);
+        setNextCursor(data.nextCursor ?? null);
         setError(null);
         return;
       }
@@ -144,7 +144,7 @@ export default function Logs() {
       // it would re-fetch already-displayed entries (deduped away) and
       // drain cursor round-trips before paging back to null.
       setNextCursor((current) =>
-        current === null && !exhaustedRef.current ? data.nextCursor : current
+        current === null && !exhaustedRef.current ? data.nextCursor ?? null : current
       );
       setError(null);
     } catch (cause) {
@@ -193,11 +193,11 @@ export default function Logs() {
         const older = data.entries.filter((entry) => !known.has(entry.id));
         return [...current, ...older];
       });
-      setNextCursor(data.nextCursor);
+      setNextCursor(data.nextCursor ?? null);
       // A null cursor means the daemon's history window is fully consumed:
       // remember that so a live poll's shallow first-page cursor cannot
       // resurrect the "Load older" button (see refreshLive).
-      exhaustedRef.current = data.nextCursor === null;
+      exhaustedRef.current = (data.nextCursor ?? null) === null;
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") {
         return;
