@@ -6,7 +6,8 @@ explicitly changes them.
 
 ## Baseline
 
-- Source commit: `d2fca150e1dafa7189a80d53fc9c7761b4193fe3`
+- Original baseline: `d2fca150e1dafa7189a80d53fc9c7761b4193fe3`
+- Current ledger commit: `5aec7bc69f9fc5b12c88475e991c448fdaf30acf`
 - Canonical checks: `npm run check`, `npm run test:e2e`,
   `npm run test:live-docker`, `npm run build:deploy`, and production-image E2E.
 - Route/contract authority: `apps/api/src/routes.ts` and the shared contract
@@ -42,6 +43,7 @@ boundaries, then to `dockermap-core` and fixed system/Docker interfaces:
 main.rs (bootstrap and CLI dispatch)
   -> auth / config / docker_config / pid_namespace
   -> cache_refresh / daemon_api / docker_collector / runtime_collection / compose_api
+       -> provider_contract
        -> providers/* / process_runner
        -> publication
        -> dockermap-core
@@ -60,6 +62,14 @@ interaction failure without attempting a direct-socket alternative.
 and bounded log-query parsing, while delegating Compose request handling to
 `compose_api`. This is the current module map, not a claim that the entrypoint
 has been fully decomposed.
+
+`provider_contract` is an internal, short-lived collection boundary, not a
+plugin API. It owns the accumulated provider nodes, edges, and diagnostics for
+one runtime refresh. Only `runtime_collection` converts those observations to
+a public `RuntimeMap`; diagnostic insertion goes through the existing
+redaction-before-storage publication helper. Providers remain statically
+linked, fixed read-only collectors and do not acquire route, cache, or
+publication authority.
 
 ## Route parity
 
@@ -118,6 +128,14 @@ version descriptor, OpenAPI document, and status classification live in
 `readHandlers`; its route manifest and publication boundary remain separate
 modules.
 
+PR #175 completed the provider-collection extraction without changing the
+browser route manifest, daemon route set, provider order, PID-namespace
+suppression, source stamps, or publication path. It moved the mutable
+per-refresh provider vectors behind `provider_contract`, moved shared provider
+classification helpers to `providers`, and moved character-bounded display
+truncation to `publication`. This is behavior parity, not a new provider
+extension point.
+
 ## Completed extraction ledger
 
 | Boundary | Module | Focused evidence |
@@ -151,6 +169,7 @@ modules.
 | Core Compose operations | `crates/dockermap-core/src/compose.rs` | core Compose fixture and dry-run tests plus daemon Compose coverage |
 | Daemon cache refresh and gateway-client lifecycle | `crates/dockermap-daemon/src/cache_refresh.rs` | daemon cache-refresh, mock-fallback, gateway-invalidation, and runtime-refresh regressions |
 | Core deterministic mock fixtures | `crates/dockermap-core/src/fixtures.rs` | core sample snapshot/log shape, stable mock-log cursor, and crate-root re-export tests |
+| Internal runtime-provider collection | `crates/dockermap-daemon/src/provider_contract.rs` | provider diagnostic redaction regression, restricted-PID omission regression, daemon route/runtime-map coverage, and production-image E2E |
 
 The PID namespace slice also corrected a discovered security defect rather
 than silently preserving it: `auto` and invalid namespace configuration are
@@ -170,3 +189,47 @@ Future #64 slices must update this record from the merged code rather than
 assuming the original extraction order remains a plan. The refactor remains a
 module-boundary effort: it must not introduce a plugin system or silently
 change behavior.
+
+## Representative parity evidence at the current ledger commit
+
+- Contract fixtures remain Rust-owned and schema-validated in both runtimes:
+  snapshot, graph, runtime-map, diagnostics, Compose scan/graph, health, and
+  status fixtures are checked by `packages/contracts` against committed
+  generated schemas. The negative fixture regressions reject undeclared
+  response fields, invalid timestamps/integers, and invalid source stamps.
+- The browser route manifest remains the only declaration for browser-facing
+  routes. API tests prove OpenAPI operations and registered response-capable
+  Express layers are bidirectionally complete with that manifest, including
+  aliases and auth/rate-limit policy.
+- The new provider collection has a direct regression proving a secret-like
+  provider diagnostic is redacted before its collection can expose it. The
+  runtime collection regressions continue to prove restricted PID namespaces
+  omit host-scoped collectors while reporting diagnostics, rather than
+  relabelling container-local observations as host evidence.
+- The public authority direction is unchanged: browser responses pass through
+  the Node API publication boundary; daemon runtime output is derived after
+  collection and then redacted by `publication`; the collector still reaches
+  Docker only through the filtered gateway.
+
+## Validation record
+
+The current ledger commit is `5aec7bc69f9fc5b12c88475e991c448fdaf30acf`.
+The final implementation ancestors, PR #175
+(`34861861b583dd667a465e090979179c33c0f0a4`) and PR #176
+(`801669f`), each completed their GitHub Actions matrix successfully. The
+matrix executed the following commands with success: `npm run check:version`,
+`npm audit --omit=dev`, `npm run check:contracts`, `npm run typecheck`,
+`npm run build`, `npm run test:version`, `npm run test:js`, `cargo fmt
+--manifest-path crates/Cargo.toml --all -- --check`, `cargo clippy
+--manifest-path crates/Cargo.toml --all-targets -- -D warnings`, `cargo test
+--manifest-path crates/Cargo.toml`, `npm run test:e2e`, `npm run build:deploy`,
+and the production-image browser and Docker-image smoke commands defined in
+`.github/workflows/ci.yml`. The current commit additionally has a local
+focused daemon verification:
+
+- `npm run test:rust:daemon` — 125 passed, 0 failed.
+
+The canonical final parity gate remains `npm run check`, `npm run test:e2e`,
+`npm run test:live-docker`, and `npm run build:deploy`. This ledger records
+what was verified for the merged refactor; it does not claim a fresh live-host
+or deployment certification from a docs-only update.
