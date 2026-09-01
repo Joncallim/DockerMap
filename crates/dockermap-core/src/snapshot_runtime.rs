@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     collision_resistant_id_component, service_entity_kind_name, ContainerRecord,
     DiagnosticSeverity, DockerSnapshot, GraphEdge, GraphNode, GraphResponse, ImageRecord, NodeKind,
-    RelationshipKind, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode,
+    RelationshipKind, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
+    RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode,
     RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind, RuntimeRelationshipKind,
     RuntimeServiceEntity, RuntimeServiceStatus,
 };
@@ -307,6 +308,50 @@ fn runtime_edge_sort_key(edge: &RuntimeMapEdge) -> String {
     serde_json::to_string(edge).expect("runtime edges must serialize")
 }
 
+/// Construct evidence only from already-derived runtime identities and a
+/// closed fact family. No raw Docker value is copied into the evidence record:
+/// labels and detail stay on their existing, independently redacted entities.
+fn docker_runtime_evidence(
+    snapshot: &DockerSnapshot,
+    source: &str,
+    target: &str,
+    kind: RuntimeEvidenceKind,
+) -> RuntimeEvidenceRef {
+    let kind_id = match kind {
+        RuntimeEvidenceKind::DockerNetworkMembership => "network-membership",
+        RuntimeEvidenceKind::DockerVolumeMount => "volume-mount",
+        RuntimeEvidenceKind::DockerPortPublication => "port-publication",
+    };
+    let summary = match kind {
+        RuntimeEvidenceKind::DockerNetworkMembership => {
+            "Docker reported container network membership"
+        }
+        RuntimeEvidenceKind::DockerVolumeMount => "Docker reported volume attachment",
+        RuntimeEvidenceKind::DockerPortPublication => "Docker reported container port publication",
+    };
+    let provider_revision = if snapshot.model_revision.is_empty() {
+        format!("docker-observation-{}", snapshot.last_updated)
+    } else {
+        snapshot.model_revision.clone()
+    };
+    RuntimeEvidenceRef {
+        version: 1,
+        id: format!(
+            "docker_evidence_{}_{}",
+            kind_id,
+            collision_resistant_id_component(&format!("{source}\u{1f}{target}"))
+        ),
+        provider: RuntimeProviderKind::Docker,
+        kind,
+        assertion_kind: RuntimeEvidenceAssertionKind::Observed,
+        summary: summary.into(),
+        subject_ref: source.into(),
+        collected_at: snapshot.last_updated,
+        provider_revision,
+        freshness: RuntimeEvidenceFreshness::Fresh,
+    }
+}
+
 pub fn derive_runtime_map(
     snapshot: &DockerSnapshot,
     mut nodes: Vec<RuntimeMapNode>,
@@ -344,15 +389,23 @@ pub fn derive_runtime_map(
         });
 
         for network_id in &container.networks {
+            let source = format!(
+                "docker_container_{}",
+                collision_resistant_id_component(&container.id)
+            );
+            let target = format!(
+                "docker_network_{}",
+                collision_resistant_id_component(network_id)
+            );
             edges.push(RuntimeMapEdge {
-                source: format!(
-                    "docker_container_{}",
-                    collision_resistant_id_component(&container.id)
-                ),
-                target: format!(
-                    "docker_network_{}",
-                    collision_resistant_id_component(network_id)
-                ),
+                evidence_refs: vec![docker_runtime_evidence(
+                    snapshot,
+                    &source,
+                    &target,
+                    RuntimeEvidenceKind::DockerNetworkMembership,
+                )],
+                source,
+                target,
                 relationship: RuntimeRelationshipKind::ConnectedTo,
                 metadata: BTreeMap::new(),
             });
@@ -381,11 +434,18 @@ pub fn derive_runtime_map(
                 service: None,
                 package: None,
             });
+            let source = format!(
+                "docker_container_{}",
+                collision_resistant_id_component(&container.id)
+            );
             edges.push(RuntimeMapEdge {
-                source: format!(
-                    "docker_container_{}",
-                    collision_resistant_id_component(&container.id)
-                ),
+                evidence_refs: vec![docker_runtime_evidence(
+                    snapshot,
+                    &source,
+                    &listener_id,
+                    RuntimeEvidenceKind::DockerPortPublication,
+                )],
+                source,
                 target: listener_id,
                 relationship: RuntimeRelationshipKind::Exposes,
                 metadata: BTreeMap::new(),
@@ -440,15 +500,23 @@ pub fn derive_runtime_map(
                 .iter()
                 .find(|container| container.name == *attached)
             {
+                let source = format!(
+                    "docker_container_{}",
+                    collision_resistant_id_component(&container.id)
+                );
+                let target = format!(
+                    "docker_volume_{}",
+                    collision_resistant_id_component(&volume.id)
+                );
                 edges.push(RuntimeMapEdge {
-                    source: format!(
-                        "docker_container_{}",
-                        collision_resistant_id_component(&container.id)
-                    ),
-                    target: format!(
-                        "docker_volume_{}",
-                        collision_resistant_id_component(&volume.id)
-                    ),
+                    evidence_refs: vec![docker_runtime_evidence(
+                        snapshot,
+                        &source,
+                        &target,
+                        RuntimeEvidenceKind::DockerVolumeMount,
+                    )],
+                    source,
+                    target,
                     relationship: RuntimeRelationshipKind::Mounts,
                     metadata: BTreeMap::new(),
                 });

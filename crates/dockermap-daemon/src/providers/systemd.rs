@@ -182,6 +182,7 @@ pub(crate) fn collect_systemd_services(
             target,
             relationship: RuntimeRelationshipKind::DependsOn,
             metadata,
+            evidence_refs: Vec::new(),
         });
     }
 }

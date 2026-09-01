@@ -815,12 +815,77 @@ pub struct RuntimeMapNode {
     pub package: Option<RuntimePackageEntity>,
 }
 
+/// Whether a runtime claim was directly observed, deterministically derived
+/// from bounded observations, or inferred by a future heuristic.  This is a
+/// closed vocabulary: callers must not translate provider error text into a
+/// confidence-like assertion label.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceAssertionKind {
+    Observed,
+    Derived,
+    Inferred,
+}
+
+/// Safe, provider-specific fact families supported by the first provenance
+/// slice.  New sources require an explicit enum addition rather than an
+/// arbitrary source string or metadata map.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceKind {
+    DockerNetworkMembership,
+    DockerVolumeMount,
+    DockerPortPublication,
+}
+
+/// A compact, versioned reference to the bounded fact supporting a runtime
+/// relationship.  It intentionally contains no raw command output, config
+/// fragment, path, process arguments, or generic metadata bag.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeEvidenceRef {
+    /// Version of this closed evidence representation, not a provider API
+    /// version.  It lets future additions remain explicit and reviewable.
+    #[schemars(range(min = 1, max = 1))]
+    pub version: u8,
+    pub id: String,
+    pub provider: RuntimeProviderKind,
+    pub kind: RuntimeEvidenceKind,
+    #[serde(rename = "assertionKind")]
+    pub assertion_kind: RuntimeEvidenceAssertionKind,
+    /// A bounded, curated explanation; it is never copied from a raw source.
+    pub summary: String,
+    /// The already-public runtime entity whose Docker fact was observed.
+    #[serde(rename = "subjectRef")]
+    pub subject_ref: String,
+    #[serde(rename = "collectedAt")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub collected_at: u64,
+    /// Opaque Docker observation revision, not a timestamp or source dump.
+    #[serde(rename = "providerRevision")]
+    pub provider_revision: String,
+    /// The Docker snapshot is observed as a single current publication. Host
+    /// provider freshness remains represented by `providerStates` (#66).
+    pub freshness: RuntimeEvidenceFreshness,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceFreshness {
+    Fresh,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeMapEdge {
     pub source: String,
     pub target: String,
     pub relationship: RuntimeRelationshipKind,
     pub metadata: BTreeMap<String, String>,
+    /// Empty for relationship families that have not yet been migrated to the
+    /// evidence model. It remains present on the wire so API/UI consumers have
+    /// one stable, bounded relationship shape while the migration continues.
+    #[serde(rename = "evidenceRefs")]
+    #[schemars(required, length(max = 8))]
+    pub evidence_refs: Vec<RuntimeEvidenceRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
