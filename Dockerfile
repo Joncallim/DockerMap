@@ -34,6 +34,10 @@ COPY packages ./packages
 # is not nullish, so apiUrl() yields same-origin paths the proxy can serve.
 ENV VITE_API_BASE_URL=""
 RUN npm run check:version && npm run build
+# `@dockermap/contracts` is a real runtime dependency of the compiled API.
+# Build and assert the entire package artifact, rather than relying on a
+# source-tree module that happened to be copied into the image.
+RUN test -f packages/contracts/dist/index.js && test -f packages/contracts/dist/nodeSchemas.js
 
 # ---- Runtime image ----------------------------------------------------------
 FROM node:22-bookworm-slim AS runtime
@@ -60,7 +64,8 @@ COPY --from=js-builder /src/package.json ./package.json
 COPY --from=js-builder /src/apps/api/dist ./apps/api/dist
 COPY --from=js-builder /src/apps/api/package.json ./apps/api/package.json
 COPY --from=js-builder /src/apps/web/dist ./apps/web/dist
-COPY --from=js-builder /src/packages/contracts ./packages/contracts
+COPY --from=js-builder /src/packages/contracts/package.json ./packages/contracts/package.json
+COPY --from=js-builder /src/packages/contracts/dist ./packages/contracts/dist
 COPY --from=rust-builder /src/crates/target/release/dockermap-daemon /usr/local/bin/dockermap-daemon
 COPY --from=rust-builder /src/crates/target/release/dockermap-docker-gateway /usr/local/bin/dockermap-docker-gateway
 

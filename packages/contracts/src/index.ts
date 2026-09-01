@@ -483,3 +483,5 @@ export interface AuthWhoamiResponse {
   email: string | null;
   groups: string[];
 }
+
+export { NODE_ENVELOPE_SCHEMAS, type NodeEnvelopeSchemaId } from "./nodeSchemas.js";

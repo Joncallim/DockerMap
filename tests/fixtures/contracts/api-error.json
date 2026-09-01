@@ -1,0 +1,4 @@
+{
+  "code": "unauthorized",
+  "message": "A valid API token is required"
+}

@@ -4,11 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc --project tsconfig.json",
+    "dev": "npm run build --workspace @dockermap/contracts && tsx watch src/index.ts",
+    "build": "npm run build --workspace @dockermap/contracts && tsc --project tsconfig.json",
     "typecheck": "tsc --project tsconfig.json",
     "start": "node dist/index.js",
-    "test": "tsx --test test/*.test.ts"
+    "test": "npm run build --workspace @dockermap/contracts && tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@dockermap/contracts": "0.1.0",
@@ -20,6 +20,7 @@
     "@apidevtools/swagger-parser": "^12.1.0",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
+    "ajv": "^8.20.0",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }
