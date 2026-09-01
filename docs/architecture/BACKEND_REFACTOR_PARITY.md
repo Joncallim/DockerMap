@@ -39,9 +39,9 @@ Within the daemon, dependencies flow inward from the entrypoint to focused
 boundaries, then to `dockermap-core` and fixed system/Docker interfaces:
 
 ```text
-main.rs (bootstrap, router, cache, cached Docker reads)
+main.rs (bootstrap, cache refresh, cached Docker reads)
   -> auth / config / docker_config / pid_namespace
-  -> docker_collector / runtime_collection / compose_api
+  -> daemon_api / docker_collector / runtime_collection / compose_api
        -> providers/* / process_runner
        -> publication
        -> dockermap-core
@@ -52,9 +52,11 @@ handlers call it before data becomes a public response, but it does not call
 providers, routes, or Docker. `runtime_collection`
 coordinates provider order and bounded execution; individual provider modules
 own their fixed commands, parsers, and provider-specific bounds. `main.rs`
-still owns the Axum router, daemon cache lifecycle, Docker-collector reuse,
-cached inventory/log handlers, and server bootstrap. This is the current
-module map, not a claim that the entrypoint has been fully decomposed.
+owns daemon cache lifecycle, Docker-collector reuse, and server bootstrap.
+`daemon_api` owns Axum router construction, cached read publication routes,
+and bounded log-query parsing, while delegating Compose request handling to
+`compose_api`. This is the current module map, not a claim that the entrypoint
+has been fully decomposed.
 
 ## Route parity
 
@@ -98,16 +100,19 @@ behavior. In particular, preserve:
 At the original baseline, `crates/dockermap-daemon/src/main.rs` contained
 bootstrap, daemon auth/routes/cache, Docker collection, Compose handling,
 provider execution/parsers, publication, CLI, and tests. Through merged PR
-#134, Docker collection, Compose request handling, runtime orchestration,
-publication, and every then-existing host provider have moved to named daemon
-modules. The entrypoint retains the authority-sensitive cache and route
-assembly described above.
+#139, Docker collection, Compose request handling, runtime orchestration,
+publication, daemon read HTTP handling, and every then-existing host provider
+have moved to named daemon modules. The entrypoint retains the
+authority-sensitive cache lifecycle described above.
 
-`crates/dockermap-core/src/lib.rs` exposes models, Compose, graphs, logs, and
-fixtures through focused modules. `apps/api/src/index.ts` still owns the
-browser-facing server flow (configuration, auth/session, daemon client, mock
-responses, handlers, SSE, and startup); its route manifest and publication
-boundary remain separate modules.
+`crates/dockermap-core/src/lib.rs` re-exports models, Compose operations,
+snapshot/runtime derivations, graphs, logs, and fixtures from focused modules.
+`apps/api/src/index.ts` owns the browser-facing server flow (configuration,
+auth/session, daemon client, mock responses, SSE, startup, and explicit route
+registration). Its daemon-backed read responders, bounded query builders,
+version descriptor, OpenAPI document, and status classification live in
+`readHandlers`; its route manifest and publication boundary remain separate
+modules.
 
 ## Completed extraction ledger
 
@@ -136,6 +141,10 @@ boundary remain separate modules.
 | Daemon publication and normalization | `crates/dockermap-daemon/src/publication.rs` | redaction, Unicode/collision, stable-order, and public-model regressions |
 | Compose HTTP/CLI request boundary | `crates/dockermap-daemon/src/compose_api.rs` | root confinement, symlink denial, request validation, and dry-run regressions |
 | Runtime-map collection orchestration | `crates/dockermap-daemon/src/runtime_collection.rs` | PID-restricted omissions, single-flight/timeout fallback, provider-order, and runtime-redaction regressions |
+| Core Docker snapshot/runtime derivation | `crates/dockermap-core/src/snapshot_runtime.rs` | core derivation tests plus daemon runtime-map coverage |
+| Daemon cached read HTTP boundary | `crates/dockermap-daemon/src/daemon_api.rs` | daemon route, bearer, bounded log-query, source-stamp, and sanitized-404 regressions |
+| Browser API daemon-backed read handlers | `apps/api/src/readHandlers.ts` | focused query/status tests plus API route-manifest coverage |
+| Core Compose operations | `crates/dockermap-core/src/compose.rs` | core Compose fixture and dry-run tests plus daemon Compose coverage |
 
 The PID namespace slice also corrected a discovered security defect rather
 than silently preserving it: `auto` and invalid namespace configuration are
@@ -148,8 +157,9 @@ focused evidence here before the epic's final parity certification.
 
 Completed work followed the authority-sensitive sequence: configuration and
 auth; core domains and process execution; Docker collection; individual
-providers; publication; Compose request handling; and runtime orchestration.
-Future #64 slices must update this record from the merged code rather than
-assuming the original extraction order remains a plan. The refactor remains a
-module-boundary effort: it must not introduce a plugin system or silently
-change behavior.
+providers; publication; Compose request handling; runtime orchestration; core
+snapshot/runtime derivation; daemon HTTP reads; browser API reads; and core
+Compose operations. Future #64 slices must update this record from the merged
+code rather than assuming the original extraction order remains a plan. The
+refactor remains a module-boundary effort: it must not introduce a plugin
+system or silently change behavior.
