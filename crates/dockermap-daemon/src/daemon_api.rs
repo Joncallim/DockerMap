@@ -6,8 +6,8 @@
 
 use crate::{
     auth::require_daemon_bearer_token,
+    cache_refresh::docker_collector,
     compose_api::{get_compose_edit_plan, get_compose_graph, get_compose_scan},
-    docker_collector,
     publication::{
         publish_docker_snapshot, redact_container_record, redact_health_response,
         redact_runtime_display_text,
