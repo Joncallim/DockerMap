@@ -896,7 +896,7 @@ fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
 mod scheduler_tests {
     use super::*;
     use crate::provider_contract::ProviderDiagnostic;
-    use dockermap_core::{mock_snapshot, HealthState};
+    use dockermap_core::{mock_snapshot, HealthState, RuntimeProviderKind};
 
     fn slots() -> RuntimeProviderSlots {
         unavailable_provider_slots()
@@ -920,6 +920,67 @@ mod scheduler_tests {
             source_generation: 0,
             revision: PublicationRevision::new(),
         }
+    }
+
+    /// Complete a claimed fixed slot without running a host collector. This is
+    /// intentionally a virtual-time policy trace: it counts scheduler
+    /// execution opportunities, not CPU time or child-process creation.
+    fn complete_synthetic_slot(
+        slots: &mut RuntimeProviderSlots,
+        slot: ProviderSlot,
+        completed_at: Duration,
+    ) {
+        let mut collection = ProviderCollection::default();
+        collection.set_state(slot, ProviderStateKind::Fresh);
+        let state = slots.get_mut(&slot).expect("fixed slot state exists");
+        state.observation = RuntimeProviderState::Fresh(collection);
+        state.completed_at = Some(completed_at);
+    }
+
+    /// Apply immediate synthetic completions through the same cache state the
+    /// real scheduler claims from. This keeps the virtual trace deterministic
+    /// without invoking host collectors or inventing a production clock.
+    async fn complete_synthetic_claims(
+        app: &AppState,
+        claimed: &[ProviderSlot],
+        completed_at: Duration,
+    ) {
+        let mut cache = app.cache.write().await;
+        for slot in claimed {
+            complete_synthetic_slot(&mut cache.runtime_providers, *slot, completed_at);
+        }
+        cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
+        cache.assign_revision();
+    }
+
+    fn generated_large_snapshot(last_updated: u64) -> DockerSnapshot {
+        let mut snapshot = mock_snapshot();
+        let template = snapshot.containers[0].clone();
+        snapshot.containers = (0..500)
+            .map(|index| {
+                let mut container = template.clone();
+                container.id = format!("generated-container-{index:03}");
+                container.name = format!("generated-service-{index:03}");
+                container.depends_on.clear();
+                // Keep this a 500-container inventory-scale test, rather
+                // than accidentally turning it into a dense shared-network
+                // graph benchmark. The metric here is scheduler opportunity.
+                container.networks.clear();
+                container.ports.clear();
+                container.mounts.clear();
+                container
+            })
+            .collect();
+        snapshot.last_updated = last_updated;
+        snapshot
+    }
+
+    fn fresh_slots_at(completed_at: Duration) -> RuntimeProviderSlots {
+        let mut slots = slots();
+        for slot in STATIC_PROVIDER_SLOTS.iter().copied() {
+            complete_synthetic_slot(&mut slots, slot, completed_at);
+        }
+        slots
     }
 
     #[test]
@@ -980,6 +1041,140 @@ mod scheduler_tests {
         assert_eq!(invocations(ProviderSlot::PythonProcesses), 7);
         assert_eq!(invocations(ProviderSlot::NativeProcesses), 7);
         assert_eq!(invocations(ProviderSlot::ProjectNpm), 2);
+    }
+
+    #[tokio::test]
+    async fn five_hundred_container_publications_keep_provider_opportunities_inventory_independent()
+    {
+        let initial = docker_cache(generated_large_snapshot(0));
+        let state = AppState {
+            cache: Arc::new(RwLock::new(initial)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        let mut publications = 0;
+        let mut starts = BTreeMap::new();
+        let mut maximum_live_workers = 0;
+        for second in 0..=60 {
+            let now = Duration::from_secs(second);
+            if second % STATIC_REFRESH_INTERVAL.as_secs() == 0 {
+                let snapshot = generated_large_snapshot(second);
+                publish_docker_snapshot_cache(&state, docker_cache(snapshot)).await;
+                publications += 1;
+                let cache = state.cache.read().await;
+                assert_eq!(cache.snapshot.containers.len(), 500);
+                assert_eq!(cache.runtime_map.last_updated, second);
+                assert!(!cache.snapshot.model_revision.is_empty());
+                assert_eq!(
+                    cache.snapshot.model_revision,
+                    cache.runtime_map.model_revision
+                );
+                assert_eq!(
+                    cache.runtime_map.provider_states.len(),
+                    STATIC_PROVIDER_SLOTS.len()
+                );
+                for (provider, expected_slot) in cache
+                    .runtime_map
+                    .provider_states
+                    .iter()
+                    .zip(STATIC_PROVIDER_SLOTS.iter())
+                {
+                    assert_eq!(&provider.slot, expected_slot);
+                }
+                assert!(cache
+                    .runtime_map
+                    .nodes
+                    .iter()
+                    .any(|node| node.provider == RuntimeProviderKind::Docker));
+            }
+            loop {
+                let claimed = claim_due_provider_slots(&state, now).await;
+                maximum_live_workers = maximum_live_workers.max(claimed.len());
+                if claimed.is_empty() {
+                    break;
+                }
+                for slot in &claimed {
+                    *starts.entry(*slot).or_insert(0) += 1;
+                }
+                complete_synthetic_claims(&state, &claimed, now).await;
+            }
+        }
+        assert_eq!(publications, 31);
+        assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
+        assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+        assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);
+        assert_eq!(starts[&ProviderSlot::NativeProcesses], 7);
+        assert_eq!(starts[&ProviderSlot::ProjectNpm], 2);
+        assert_eq!(starts.values().sum::<usize>(), 28);
+        assert!(maximum_live_workers <= MAX_CONCURRENT_PROVIDER_SLOTS);
+        let legacy_slot_passes =
+            (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * STATIC_PROVIDER_SLOTS.len() as u64;
+        assert_eq!(legacy_slot_passes, 155);
+    }
+
+    #[tokio::test]
+    async fn occupied_timeout_and_stale_slots_do_not_block_docker_publication() {
+        let mut initial = docker_cache(generated_large_snapshot(0));
+        initial.runtime_providers = fresh_slots_at(Duration::ZERO);
+        let network = initial
+            .runtime_providers
+            .get_mut(&ProviderSlot::NetworkInfrastructure)
+            .expect("fixed network slot exists");
+        network.observation =
+            RuntimeProviderState::TimedOut(retained_collection(&network.observation));
+        let python = initial
+            .runtime_providers
+            .get_mut(&ProviderSlot::PythonProcesses)
+            .expect("fixed python slot exists");
+        python.observation =
+            RuntimeProviderState::Collecting(retained_collection(&python.observation));
+        initial.runtime_map =
+            runtime_map_for_snapshot(&initial.snapshot, &initial.runtime_providers);
+        initial.assign_revision();
+        let state = AppState {
+            cache: Arc::new(RwLock::new(initial)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        state
+            .provider_slot_in_flight
+            .for_slot(ProviderSlot::NetworkInfrastructure)
+            .store(true, std::sync::atomic::Ordering::Release);
+        state
+            .provider_slot_in_flight
+            .for_slot(ProviderSlot::PythonProcesses)
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(claim_due_provider_slots(&state, Duration::from_secs(60))
+            .await
+            .is_empty());
+
+        for second in [2_u64, 4, 6] {
+            let snapshot = generated_large_snapshot(second);
+            publish_docker_snapshot_cache(&state, docker_cache(snapshot)).await;
+            let cache = state.cache.read().await;
+            assert_eq!(cache.snapshot.last_updated, second);
+            assert_eq!(cache.snapshot.containers.len(), 500);
+            let network = cache
+                .runtime_map
+                .provider_states
+                .iter()
+                .find(|state| state.slot == ProviderSlot::NetworkInfrastructure)
+                .expect("network state is always projected");
+            let python = cache
+                .runtime_map
+                .provider_states
+                .iter()
+                .find(|state| state.slot == ProviderSlot::PythonProcesses)
+                .expect("python state is always projected");
+            assert_eq!(network.state, ProviderStateKind::TimedOut);
+            assert_eq!(python.state, ProviderStateKind::Stale);
+            assert!(cache
+                .runtime_map
+                .nodes
+                .iter()
+                .any(|node| node.provider == RuntimeProviderKind::Docker));
+        }
     }
 
     #[test]
