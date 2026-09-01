@@ -50,6 +50,40 @@ acceptance work are recorded in [`CONTRACT_AUTHORITY.md`](CONTRACT_AUTHORITY.md)
 
 `GET /daemon/runtime/map` is the backend's provider-neutral JSON graph for visualization. `apps/api` proxies it as `GET /api/runtime/map`.
 
+### Relationship evidence lifecycle
+
+Each runtime edge has a required `evidenceRefs` array. The current Docker
+slice emits bounded, versioned records alongside the edge during derivation;
+they are not reconstructed from labels in React:
+
+```text
+collector -> bounded RuntimeEvidenceRef -> RuntimeMapEdge -> daemon publication/redaction -> API contract validation -> Runtime inspector
+```
+
+The first facts are Docker network membership, volume attachment, and port
+publication. They are `observed`, carry the Docker collection timestamp and
+opaque publication revision, and declare `fresh` only for that Docker
+observation. Provider-slot freshness continues to describe optional host
+collection separately. An empty array is explicit migration state for a
+relationship family that has not yet gained provenance; it must not be
+silently presented as an observed fact.
+
+The evidence representation is closed: provider, kind, assertion kind and
+freshness are enums, and there is no free-form metadata/config/command-line
+field. The daemon and browser publication boundaries redact display-hostile
+or secret-like strings before response bytes reach the UI. Identity collisions
+remain visible but non-routable; an edge inspector can still explain the
+selected relationship without joining a collided target.
+
+Current relationship-source matrix:
+
+| Relationship family | Source | Assertion | Evidence status |
+| --- | --- | --- | --- |
+| Docker container -> network | Docker inventory membership | observed | emitted |
+| Docker container -> volume | Docker volume attachment | observed | emitted |
+| Docker container -> listener | Docker published port | observed | emitted |
+| systemd, npm, tmux, proxy, DNS, process and cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
+
 The map is organized around a unified service concept. Docker containers, systemd
 services, tmux sessions, npm applications, Python applications, and native processes
 should all expose the same operational shape wherever the provider can safely populate

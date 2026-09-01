@@ -32,7 +32,7 @@ export const DAEMON_RESPONSE_SCHEMA_PATHS = [
   { path: "/daemon/compose/edit-plan", routeId: "compose-edit-plan", schema: RUST_ROUTE_RESPONSE_SCHEMAS["compose-edit-plan"] },
 ] as const satisfies readonly { path: string; schema: RustResponseSchemaId; routeId?: keyof typeof RUST_ROUTE_RESPONSE_SCHEMAS }[];
 
-const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } });
+const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint8: true, uint32: true, uint64: true } });
 const validators = new Map<RustResponseSchemaId, ValidateFunction>(
   (Object.entries(RUST_RESPONSE_SCHEMAS) as [RustResponseSchemaId, (typeof RUST_RESPONSE_SCHEMAS)[RustResponseSchemaId]][])
     .map(([schema, definition]) => [schema, ajv.compile(definition)]),
