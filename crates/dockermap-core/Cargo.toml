@@ -14,4 +14,5 @@ sha2 = "0.11.0"
 yaml_serde = "0.10"
 
 [dev-dependencies]
+jsonschema = { version = "=0.52.1", default-features = false, features = ["arbitrary-precision"] }
 tempfile = "3"

@@ -7,6 +7,7 @@ const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
 const fixtures = [
   ["docker-snapshot", ["mock-snapshot.json"]],
+  ["graph-response", ["graph-response.json"]],
   ["runtime-map", ["runtime-map.json", "runtime-map-expanded.json", "runtime-map-daemon-emitted.json"]],
   ["compose-scan", ["compose-scan.json"]],
   ["compose-graph", ["compose-graph.json"]],

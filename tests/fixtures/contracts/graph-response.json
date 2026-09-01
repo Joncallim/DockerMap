@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    {
+      "id": "container_api",
+      "type": "container",
+      "label": "api"
+    },
+    {
+      "id": "network_app",
+      "type": "network",
+      "label": "app"
+    }
+  ],
+  "edges": [
+    {
+      "source": "container_api",
+      "target": "network_app",
+      "relationship": "connected_to"
+    }
+  ]
+}
