@@ -172,7 +172,12 @@ only that socket through the gateway group and never joins Docker's group;
 `dockermap-api` is a third identity. It keeps bounded existing host providers,
 with the documented privacy/trust trade-off. Tailscale and Headscale are
 separately opt-in and off by default; #62 adds neither credentials nor
-control-plane permissions.
+control-plane permissions. The native collector unit forces
+`DOCKERMAP_PID_NAMESPACE=host` in its final `ExecStart`, overriding the shared
+environment file's Docker-only-safe `restricted` value; it does not rely on
+automatic namespace detection. `ProtectSystem=strict` leaves
+`/opt/dockermap` read-only: the collector has no persistent writable project
+path.
 
 ## Read-only Hearth discovery (2026-08-28, pre-cutover record)
 

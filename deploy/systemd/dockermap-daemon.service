@@ -13,7 +13,10 @@ SupplementaryGroups=dockermap-gateway
 WorkingDirectory=/opt/dockermap
 EnvironmentFile=/etc/dockermap/dockermap.env
 Environment=DOCKERMAP_DOCKER_GATEWAY_SOCKET=/run/dockermap/docker-read.sock
-ExecStart=/opt/dockermap/crates/target/release/dockermap-daemon
+# This unit is the explicit native full-host profile. EnvironmentFile values
+# override Environment= in systemd, so force `host` at the final exec boundary.
+# Container deployments retain their separate `restricted` default.
+ExecStart=/usr/bin/env DOCKERMAP_PID_NAMESPACE=host /opt/dockermap/crates/target/release/dockermap-daemon
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -22,7 +25,9 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/dockermap
+# The collector reads its binaries and bounded project root but persists no
+# state. Do not reopen the deployment tree after ProtectSystem=strict.
+ReadOnlyPaths=/opt/dockermap
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
