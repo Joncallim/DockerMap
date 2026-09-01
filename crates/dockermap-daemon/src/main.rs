@@ -43,10 +43,11 @@ use dockermap_core::mock_log_entries;
 use dockermap_core::{
     derive_runtime_map, page_log_entries, ComposeFileOrigin, ComposeMountKind, ContainerMount,
     DiagnosticSeverity, LogCursor, LogEntry, NetworkRecord, RuntimeEvidenceAssertionKind,
-    RuntimeEvidenceFreshness, RuntimeEvidenceKind, RuntimeEvidenceRef, RuntimeMapDiagnostic,
-    RuntimeMapEdge, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeOwnership,
-    RuntimePackageEntity, RuntimeProviderKind, RuntimeRelationshipKind, RuntimeServiceEntity,
-    RuntimeServiceStatus, VolumeRecord, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+    RuntimeEvidenceFreshness, RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef,
+    RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer,
+    RuntimeOwnership, RuntimePackageEntity, RuntimeProviderKind, RuntimeRelationshipKind,
+    RuntimeServiceEntity, RuntimeServiceStatus, VolumeRecord, DEFAULT_LOG_PAGE_SIZE,
+    MAX_LOG_PAGE_SIZE,
 };
 #[cfg(test)]
 use dockermap_core::{mock_snapshot, HealthResponse, HealthState, RuntimeMap, RuntimeMode};
@@ -1589,7 +1590,7 @@ mod tests {
         let evidence = |summary: String| RuntimeEvidenceRef {
             version: 1,
             id: format!("evidence-{oversized}"),
-            provider: RuntimeProviderKind::Docker,
+            provider: RuntimeEvidenceProvider::Docker,
             kind: RuntimeEvidenceKind::DockerNetworkMembership,
             assertion_kind: RuntimeEvidenceAssertionKind::Observed,
             summary,

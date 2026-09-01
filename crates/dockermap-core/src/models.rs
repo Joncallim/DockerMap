@@ -815,16 +815,22 @@ pub struct RuntimeMapNode {
     pub package: Option<RuntimePackageEntity>,
 }
 
-/// Whether a runtime claim was directly observed, deterministically derived
-/// from bounded observations, or inferred by a future heuristic.  This is a
-/// closed vocabulary: callers must not translate provider error text into a
-/// confidence-like assertion label.
+/// Evidence provider for the version-one Docker-only evidence shape. New
+/// providers require a new versioned evidence representation; they cannot be
+/// passed off as v1 through the broad runtime-provider enum.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceProvider {
+    Docker,
+}
+
+/// Version-one evidence is a direct Docker observation. Derived and inferred
+/// claims need a later, deliberately versioned evidence contract rather than
+/// a permissive enum value in this first slice.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeEvidenceAssertionKind {
     Observed,
-    Derived,
-    Inferred,
 }
 
 /// Safe, provider-specific fact families supported by the first provenance
@@ -849,7 +855,7 @@ pub struct RuntimeEvidenceRef {
     pub version: u8,
     #[schemars(length(min = 1, max = 259))]
     pub id: String,
-    pub provider: RuntimeProviderKind,
+    pub provider: RuntimeEvidenceProvider,
     pub kind: RuntimeEvidenceKind,
     #[serde(rename = "assertionKind")]
     pub assertion_kind: RuntimeEvidenceAssertionKind,
