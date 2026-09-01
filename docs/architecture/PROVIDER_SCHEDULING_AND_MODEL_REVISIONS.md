@@ -168,6 +168,26 @@ separate controlled runner harness; DockerMap intentionally adds no runtime
 telemetry, configuration, route, command, or production benchmark for that
 purpose.
 
+The daemon unit suite now also supplies that controlled **test-only** harness:
+it self-spawns one isolated Rust-test child per full-host and restricted-PID
+profile. Each child has an empty project root and a temporary `PATH` containing
+only harmless fixed-name stubs for the seven existing provider command names;
+the stubs append their own fixed command name to a private temporary counter.
+The child collector path additionally requires a parent-created, private,
+random temporary-file attestation and matching token; an ambient or malformed
+child-profile flag exits without starting any collector. On Linux it also
+requires `/proc/<ppid>/exe` to canonically match the current test executable,
+so a Cargo/shell/CI parent cannot forge entry by supplying a token-shaped file
+and environment values.
+The child drives the actual fixed slot collectors through the production
+scheduler's virtual 0–60 second claims, using immediate test completions.
+The full-host trace proves 28 scheduler starts and 48 actual child commands
+(versus the former 155 starts and 248 commands for 31 whole passes). The
+restricted profile proves zero host command stubs execute and that the
+host-scoped, Python, and native slots become terminal `disabled` states after
+their initial profile observation. This is deterministic command-churn
+evidence, not host CPU or wall-clock benchmarking.
+
 No raw provider result bypasses `publication` redaction or source stamping.
 No new command, network egress, Docker authority, filesystem root, route, SSE
 event, or browser behavior is introduced by this baseline.
@@ -191,6 +211,16 @@ opportunity trace, the explicit 155-opportunity legacy baseline, 31
 publications of a generated 500-container snapshot, inventory-independent
 provider starts, and occupied timeout/stale slots while Docker publication
 continues.
+
+Run the physical-command fixture with:
+
+```sh
+(cd crates && cargo test -p dockermap-daemon scheduler_process_churn_uses_fixed_path_stubs_in_isolated_child)
+```
+
+It performs nonzero work: the full-host child asserts all 48 stub launches and
+their per-command breakdown, while the restricted child asserts a zero-line
+counter. It neither contacts Docker nor invokes a host provider command.
 
 ## Consequences
 
