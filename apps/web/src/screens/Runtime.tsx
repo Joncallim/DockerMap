@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { RuntimeLocation, RuntimeProviderKind } from "@dockermap/contracts";
+import type { ProviderSlot, ProviderState, RuntimeLocation, RuntimeProviderKind } from "@dockermap/contracts";
 import { useApp } from "../context";
 import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord } from "../lib/model";
 import { formatRelative } from "../lib/format";
@@ -46,8 +46,34 @@ const LAYER_LABEL: Record<RuntimeLayerId, string> = {
   unassigned: "Unassigned"
 };
 
+const PROVIDER_SLOT_LABEL: Record<ProviderSlot, string> = {
+  network_infrastructure: "Network infrastructure",
+  host_scoped: "Host-scoped services",
+  python_processes: "Python processes",
+  native_processes: "Native processes",
+  project_npm: "Project npm"
+};
+
+const PROVIDER_STATE_LABEL: Record<ProviderState["state"], string> = {
+  fresh: "Current",
+  stale: "Retained observation",
+  collecting: "Collecting",
+  unavailable: "Not collected",
+  timed_out: "Timed out",
+  disabled: "Disabled"
+};
+
+const PROVIDER_STATE_TONE: Record<ProviderState["state"], "accent" | "warn" | "error" | "muted"> = {
+  fresh: "accent",
+  stale: "warn",
+  collecting: "muted",
+  unavailable: "muted",
+  timed_out: "error",
+  disabled: "muted"
+};
+
 export default function RuntimeScreen() {
-  const { model, loading, error } = useApp();
+  const { model, loading, error, evidenceMode } = useApp();
   const [providerFilter, setProviderFilter] = useState<RuntimeProviderKind | "all">("all");
   const [layerFilter, setLayerFilter] = useState<RuntimeLayerId | "all">("all");
   const [attentionOnly, setAttentionOnly] = useState(false);
@@ -228,6 +254,25 @@ export default function RuntimeScreen() {
           )}
         </Panel>
       </div>
+
+      <Panel
+        title="Collection evidence"
+        icon="history"
+        hint="Collection state only — it does not describe service health"
+        className="provider-state-panel"
+      >
+        <ul className="provider-state-list" aria-label="Provider collection evidence">
+          {runtime.providerStates.map((providerState) => (
+            <li key={providerState.slot} className={`provider-state-row provider-state-${providerState.state}`}>
+              <span className="provider-state-slot">{PROVIDER_SLOT_LABEL[providerState.slot]}</span>
+              <Tag tone={PROVIDER_STATE_TONE[providerState.state]}>{PROVIDER_STATE_LABEL[providerState.state]}</Tag>
+            </li>
+          ))}
+        </ul>
+        {evidenceMode === "demo" || evidenceMode === "mock" ? (
+          <p className="provider-state-note">Sample mode: these collection states are not host evidence.</p>
+        ) : null}
+      </Panel>
 
       <div className="map-layout runtime-layout">
         <div className="stack">
