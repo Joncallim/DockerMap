@@ -38,6 +38,21 @@ socket. The exact read policy and deployment-profile trade-offs are in
 No credential, session cookie, bearer token, or persistent browser profile was
 retained as release evidence.
 
+## Release-host revalidation
+
+On 2026-09-02, the Docker-capable Hearth release host reran the isolated
+live-Docker fixture against DockerMap commit
+`783a7a4d3c228862c5f0a5b3647949ed9b679dd9`.
+
+- Host: Linux `7.0.0-30-generic` (`x86_64`)
+- Node/npm: `v22.23.2` / `10.9.8`
+- Rust/Cargo: `1.88.0`
+- Docker/Compose: `29.7.2` / `v5.5.0`
+- Result: `npm run test:live-docker` passed (one isolated labelled fixture).
+
+This is release-host evidence only. It does not substitute for the remaining
+clean-host installation or host-reboot recovery evidence below.
+
 ## Known limitations before tagging
 
 - The current private-review deployment uses DockerMap bearer-session protection
