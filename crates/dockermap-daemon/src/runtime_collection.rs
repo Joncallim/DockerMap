@@ -41,8 +41,33 @@ use std::{
 /// the async runtime.
 const RUNTIME_MAP_COLLECTION_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Static collection slots in their observed collection order.
+///
+/// This is baseline instrumentation, not a scheduler or plugin interface.
+/// Each refresh invokes the fixed implementation below at most once. A future
+/// scheduling change must explicitly revise this list, its contract ADR, and
+/// the single-flight tests rather than silently introducing a background job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StaticProviderSlot {
+    NetworkInfrastructure,
+    HostScoped,
+    PythonProcesses,
+    NativeProcesses,
+    ProjectNpm,
+}
+
+pub(crate) const STATIC_PROVIDER_SLOTS: &[StaticProviderSlot] = &[
+    StaticProviderSlot::NetworkInfrastructure,
+    StaticProviderSlot::HostScoped,
+    StaticProviderSlot::PythonProcesses,
+    StaticProviderSlot::NativeProcesses,
+    StaticProviderSlot::ProjectNpm,
+];
+
 pub(crate) fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
     let mut collection = ProviderCollection::default();
+    #[cfg(debug_assertions)]
+    let mut baseline_trace = StaticCollectionTrace::default();
     let project_root = project_root().ok();
     let pid_namespace = daemon_pid_namespace_scope();
 
@@ -67,11 +92,19 @@ pub(crate) fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
         let (nodes, edges, diagnostics) = collection.parts_mut();
         collect_network_infrastructure(pid_namespace, snapshot, nodes, edges, diagnostics);
     }
+    #[cfg(debug_assertions)]
+    baseline_trace.record(StaticProviderSlot::NetworkInfrastructure);
     collect_host_scoped_runtime_providers(pid_namespace, &mut collection);
+    #[cfg(debug_assertions)]
+    baseline_trace.record(StaticProviderSlot::HostScoped);
     {
         let (nodes, _, diagnostics) = collection.parts_mut();
         collect_python_processes(pid_namespace.is_restricted(), nodes, diagnostics);
+        #[cfg(debug_assertions)]
+        baseline_trace.record(StaticProviderSlot::PythonProcesses);
         collect_native_processes_with_scope(pid_namespace.is_restricted(), nodes, diagnostics);
+        #[cfg(debug_assertions)]
+        baseline_trace.record(StaticProviderSlot::NativeProcesses);
     }
     if let Some(root) = project_root.as_deref() {
         // This root is an explicit project mount/configuration target rather
@@ -86,11 +119,38 @@ pub(crate) fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
             "npm discovery skipped: project root unavailable",
         ));
     }
+    #[cfg(debug_assertions)]
+    baseline_trace.record(StaticProviderSlot::ProjectNpm);
+    #[cfg(debug_assertions)]
+    baseline_trace.assert_complete();
 
     let (nodes, edges, diagnostics) = collection.into_parts();
     let mut runtime_map = derive_runtime_map(snapshot, nodes, edges, diagnostics);
     redact_runtime_map(&mut runtime_map);
     runtime_map
+}
+
+/// Debug-only instrumentation for the static collection baseline. It is never
+/// persisted or emitted through the API: diagnostics remain the public evidence
+/// surface until a future schema-backed provider-state contract.
+#[cfg(debug_assertions)]
+#[derive(Default)]
+struct StaticCollectionTrace {
+    observed: Vec<StaticProviderSlot>,
+}
+
+#[cfg(debug_assertions)]
+impl StaticCollectionTrace {
+    fn record(&mut self, slot: StaticProviderSlot) {
+        self.observed.push(slot);
+    }
+
+    fn assert_complete(&self) {
+        debug_assert_eq!(
+            self.observed, STATIC_PROVIDER_SLOTS,
+            "static runtime collection changed without revising its declared baseline"
+        );
+    }
 }
 
 /// Collect the runtime map off the async runtime: provider commands are
@@ -293,6 +353,21 @@ mod tests {
         assert!(
             RuntimeCollectionGuard::acquire(in_flight).is_some(),
             "the next refresh may run after the original collection finishes"
+        );
+    }
+
+    #[test]
+    fn static_provider_baseline_has_one_fixed_slot_per_collection_stage() {
+        assert_eq!(
+            STATIC_PROVIDER_SLOTS,
+            [
+                StaticProviderSlot::NetworkInfrastructure,
+                StaticProviderSlot::HostScoped,
+                StaticProviderSlot::PythonProcesses,
+                StaticProviderSlot::NativeProcesses,
+                StaticProviderSlot::ProjectNpm,
+            ],
+            "changing provider cadence or introducing an independently scheduled provider requires an explicit contract revision"
         );
     }
 }

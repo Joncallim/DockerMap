@@ -19,6 +19,22 @@ use std::{
 };
 use tokio::{sync::RwLock, time::sleep};
 
+/// Current static cache cadence. A refresh is deliberately completed before
+/// the next interval begins: the daemon has no independent provider scheduler
+/// or overlapping refresh jobs at this baseline.
+pub(crate) const STATIC_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticRefreshStage {
+    DockerSnapshot,
+    RuntimeMap,
+}
+
+const STATIC_REFRESH_STAGES: &[StaticRefreshStage] = &[
+    StaticRefreshStage::DockerSnapshot,
+    StaticRefreshStage::RuntimeMap,
+];
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) cache: Arc<RwLock<DaemonCache>>,
@@ -58,7 +74,7 @@ impl DaemonCache {
             mode: RuntimeMode::Mock,
             docker_reachable: false,
             last_updated: snapshot.last_updated,
-            snapshot_version: snapshot.last_updated.to_string(),
+            snapshot_version: snapshot_observation_token(snapshot.last_updated),
             message: Some("Docker unavailable, serving mock data".into()),
         };
         redact_health_response(&mut health);
@@ -81,7 +97,7 @@ impl DaemonCache {
 pub(crate) async fn refresh_loop(state: AppState) {
     loop {
         refresh_cache(&state).await;
-        sleep(Duration::from_secs(2)).await;
+        sleep(STATIC_REFRESH_INTERVAL).await;
     }
 }
 
@@ -114,8 +130,12 @@ async fn invalidate_docker_collector(state: &AppState) {
 }
 
 async fn collect_snapshot(state: &AppState) -> DaemonCache {
+    #[cfg(debug_assertions)]
+    let mut baseline_trace = StaticRefreshTrace::default();
     if std::env::var("DOCKERMAP_FORCE_MOCK").ok().as_deref() == Some("true") {
         let mut cache = DaemonCache::mock();
+        #[cfg(debug_assertions)]
+        baseline_trace.record(StaticRefreshStage::DockerSnapshot);
         cache.health.message = Some("Mock mode forced by DOCKERMAP_FORCE_MOCK".into());
         redact_health_response(&mut cache.health);
         cache.runtime_map = collect_runtime_map_bounded(
@@ -123,6 +143,10 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
             &cache.snapshot,
         )
         .await;
+        #[cfg(debug_assertions)]
+        baseline_trace.record(StaticRefreshStage::RuntimeMap);
+        #[cfg(debug_assertions)]
+        baseline_trace.assert_complete();
         return cache;
     }
 
@@ -135,7 +159,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     mode: RuntimeMode::Docker,
                     docker_reachable: true,
                     last_updated: snapshot.last_updated,
-                    snapshot_version: snapshot.last_updated.to_string(),
+                    snapshot_version: snapshot_observation_token(snapshot.last_updated),
                     message: Some("Docker engine connected".into()),
                 };
                 DaemonCache {
@@ -158,16 +182,51 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
             cache
         }
     };
+    #[cfg(debug_assertions)]
+    baseline_trace.record(StaticRefreshStage::DockerSnapshot);
 
     // Host collection is expensive and blocking; run it once per snapshot
     // cadence and retain its original source alongside the snapshot cache.
     cache.runtime_map =
         collect_runtime_map_bounded(state.runtime_collection_in_flight.clone(), &cache.snapshot)
             .await;
+    #[cfg(debug_assertions)]
+    baseline_trace.record(StaticRefreshStage::RuntimeMap);
+    #[cfg(debug_assertions)]
+    baseline_trace.assert_complete();
     // Docker failure details are provider-controlled. Sanitize before the
     // cache is observable through health, API proxy, or SSE routes.
     redact_health_response(&mut cache.health);
     cache
+}
+
+/// The existing public field is only the opaque string form of the Docker
+/// snapshot observation timestamp. It is not a cache-publication/model
+/// revision: runtime collection may complete after this value is assigned.
+fn snapshot_observation_token(last_updated: u64) -> String {
+    last_updated.to_string()
+}
+
+/// Debug-only instrumentation for the current sequential refresh baseline. It
+/// deliberately has no production, public-model, or telemetry side effect.
+#[cfg(debug_assertions)]
+#[derive(Default)]
+struct StaticRefreshTrace {
+    observed: Vec<StaticRefreshStage>,
+}
+
+#[cfg(debug_assertions)]
+impl StaticRefreshTrace {
+    fn record(&mut self, stage: StaticRefreshStage) {
+        self.observed.push(stage);
+    }
+
+    fn assert_complete(&self) {
+        debug_assert_eq!(
+            self.observed, STATIC_REFRESH_STAGES,
+            "static refresh changed without revising its declared baseline"
+        );
+    }
 }
 
 fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
@@ -177,5 +236,45 @@ fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
         diagnostics: Vec::new(),
         last_updated,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        snapshot_observation_token, StaticRefreshStage, STATIC_REFRESH_INTERVAL,
+        STATIC_REFRESH_STAGES,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn static_refresh_cadence_is_explicit_and_not_a_provider_scheduler() {
+        assert_eq!(STATIC_REFRESH_INTERVAL, Duration::from_secs(2));
+        assert!(
+            !STATIC_REFRESH_INTERVAL.is_zero(),
+            "a zero cadence would turn the static sequential loop into a busy refresh loop"
+        );
+    }
+
+    #[test]
+    fn static_refresh_baseline_collects_inventory_before_runtime_map() {
+        assert_eq!(
+            STATIC_REFRESH_STAGES,
+            [
+                StaticRefreshStage::DockerSnapshot,
+                StaticRefreshStage::RuntimeMap
+            ],
+            "a separate provider schedule requires an explicit architecture and contract revision"
+        );
+    }
+
+    #[test]
+    fn snapshot_version_is_only_the_snapshot_observation_token() {
+        assert_eq!(snapshot_observation_token(42), "42");
+        assert_eq!(
+            snapshot_observation_token(42),
+            snapshot_observation_token(42),
+            "the existing field has no per-publication uniqueness guarantee"
+        );
     }
 }
