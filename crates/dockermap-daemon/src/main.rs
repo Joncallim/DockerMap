@@ -2666,6 +2666,7 @@ mod tests {
             docker_reachable: false,
             last_updated: 1,
             snapshot_version: "1".into(),
+            model_revision: String::new(),
             message: Some(hostile),
         };
         redact_health_response(&mut health);

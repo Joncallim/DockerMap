@@ -111,6 +111,7 @@ mod tests {
         let valid = serde_json::json!({
             "containers": [], "images": [], "networks": [], "volumes": [],
             "lastUpdated": JSON_SAFE_INTEGER_MAX,
+            "modelRevision": "test-revision",
         });
         let above_json_safe = serde_json::from_str(
             r#"{"containers":[],"images":[],"networks":[],"volumes":[],"lastUpdated":9007199254740992}"#,

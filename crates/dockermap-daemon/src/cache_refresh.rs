@@ -16,10 +16,11 @@ use crate::{
 };
 use dockermap_core::{
     derive_images, mock_snapshot, DiagnosticSeverity, DockerSnapshot, HealthResponse, HealthState,
-    RuntimeMap, RuntimeMapDiagnostic, RuntimeMode, RuntimeProviderKind,
+    ProviderSlot, ProviderState, ProviderStateKind, RuntimeMap, RuntimeMapDiagnostic, RuntimeMode,
+    RuntimeProviderKind,
 };
 use std::{
-    sync::{atomic::AtomicBool, Arc},
+    sync::{atomic::AtomicBool, Arc, OnceLock},
     time::Duration,
 };
 use tokio::{sync::RwLock, time::sleep};
@@ -57,6 +58,68 @@ pub(crate) struct DaemonCache {
     pub(crate) health: HealthResponse,
     pub(crate) runtime_map: RuntimeMap,
     runtime_providers: RuntimeProviderState,
+    revision: PublicationRevision,
+}
+
+/// Per-process, opaque revision source. The boot value comes from the OS CSPRNG
+/// and is deliberately never derived from inventory, timestamps, or secrets.
+#[derive(Clone)]
+struct PublicationRevision {
+    boot: String,
+    sequence: u64,
+    last_observable: Option<String>,
+}
+
+impl PublicationRevision {
+    fn new() -> Self {
+        Self {
+            boot: boot_instance_component(),
+            sequence: 0,
+            last_observable: None,
+        }
+    }
+
+    fn current(&self) -> String {
+        format!("{}-{}", self.boot, self.sequence)
+    }
+
+    fn assign(
+        &mut self,
+        snapshot: &mut DockerSnapshot,
+        health: &mut HealthResponse,
+        runtime_map: &mut RuntimeMap,
+    ) {
+        // Serialize only values already redacted and intended for publication;
+        // the opaque revision fields themselves cannot influence change
+        // detection.
+        snapshot.model_revision.clear();
+        health.model_revision.clear();
+        runtime_map.model_revision.clear();
+        let observable = serde_json::to_string(&(&*snapshot, &*health, &*runtime_map))
+            .expect("public DockerMap models are serializable");
+        if self.last_observable.as_deref() != Some(observable.as_str()) {
+            self.sequence = self
+                .sequence
+                .checked_add(1)
+                .expect("model revision sequence overflow");
+            self.last_observable = Some(observable);
+        }
+        let revision = self.current();
+        snapshot.model_revision = revision.clone();
+        health.model_revision = revision.clone();
+        runtime_map.model_revision = revision;
+    }
+}
+
+fn boot_instance_component() -> String {
+    static BOOT: OnceLock<String> = OnceLock::new();
+    BOOT.get_or_init(|| {
+        let mut bytes = [0_u8; 16];
+        getrandom::fill(&mut bytes)
+            .expect("OS CSPRNG must be available for model revision boot instance");
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    })
+    .clone()
 }
 
 /// Provider observations are retained independently from the Docker snapshot.
@@ -70,6 +133,7 @@ enum RuntimeProviderState {
     Fresh(ProviderCollection),
     Collecting(Option<ProviderCollection>),
     Degraded(Option<ProviderCollection>),
+    TimedOut(Option<ProviderCollection>),
 }
 
 impl DaemonCache {
@@ -83,12 +147,13 @@ impl DaemonCache {
             docker_reachable: false,
             last_updated: snapshot.last_updated,
             snapshot_version: snapshot_observation_token(snapshot.last_updated),
+            model_revision: String::new(),
             message: Some("Docker unavailable, serving mock data".into()),
         };
         redact_health_response(&mut health);
 
         let last_updated = snapshot.last_updated;
-        Self {
+        let mut cache = Self {
             snapshot,
             health,
             runtime_map: RuntimeMap {
@@ -99,7 +164,17 @@ impl DaemonCache {
                 ..Default::default()
             },
             runtime_providers: RuntimeProviderState::Unavailable,
-        }
+            revision: PublicationRevision::new(),
+        };
+        cache.assign_revision();
+        cache
+    }
+
+    fn assign_revision(&mut self) {
+        // All three independently routable model envelopes attest the same
+        // publication. Provider state is runtime-topology evidence only.
+        self.revision
+            .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
     }
 }
 
@@ -147,6 +222,8 @@ async fn publish_docker_snapshot_cache(
         RuntimeProviderState::Unavailable
     };
     updated.runtime_map = runtime_map_for_snapshot(&updated.snapshot, &updated.runtime_providers);
+    updated.revision = cache.revision.clone();
+    updated.assign_revision();
     *cache = updated;
     (cache.snapshot.clone(), cache.health.mode.clone())
 }
@@ -191,6 +268,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     docker_reachable: true,
                     last_updated: snapshot.last_updated,
                     snapshot_version: snapshot_observation_token(snapshot.last_updated),
+                    model_revision: String::new(),
                     message: Some("Docker engine connected".into()),
                 };
                 DaemonCache {
@@ -198,6 +276,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     health,
                     runtime_map: empty_runtime_map(0),
                     runtime_providers: RuntimeProviderState::Unavailable,
+                    revision: PublicationRevision::new(),
                 }
             }
             Err(error) => {
@@ -225,13 +304,16 @@ async fn mark_runtime_collection_started(state: &AppState) {
     let retained = match &cache.runtime_providers {
         RuntimeProviderState::Fresh(collection)
         | RuntimeProviderState::Collecting(Some(collection))
-        | RuntimeProviderState::Degraded(Some(collection)) => Some(collection.clone()),
+        | RuntimeProviderState::Degraded(Some(collection))
+        | RuntimeProviderState::TimedOut(Some(collection)) => Some(collection.clone()),
         RuntimeProviderState::Unavailable
         | RuntimeProviderState::Collecting(None)
-        | RuntimeProviderState::Degraded(None) => None,
+        | RuntimeProviderState::Degraded(None)
+        | RuntimeProviderState::TimedOut(None) => None,
     };
     cache.runtime_providers = RuntimeProviderState::Collecting(retained);
     cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
+    cache.assign_revision();
 }
 
 async fn apply_runtime_collection_outcome(
@@ -263,14 +345,20 @@ async fn apply_runtime_collection_outcome(
         ProviderCollectionOutcome::Failed | ProviderCollectionOutcome::TimedOut => {
             let retained = match &cache.runtime_providers {
                 RuntimeProviderState::Collecting(retained)
-                | RuntimeProviderState::Degraded(retained) => retained.clone(),
+                | RuntimeProviderState::Degraded(retained)
+                | RuntimeProviderState::TimedOut(retained) => retained.clone(),
                 RuntimeProviderState::Fresh(collection) => Some(collection.clone()),
                 RuntimeProviderState::Unavailable => None,
             };
-            cache.runtime_providers = RuntimeProviderState::Degraded(retained);
+            cache.runtime_providers = if matches!(outcome, ProviderCollectionOutcome::TimedOut) {
+                RuntimeProviderState::TimedOut(retained)
+            } else {
+                RuntimeProviderState::Degraded(retained)
+            };
         }
     }
     cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
+    cache.assign_revision();
 }
 
 fn runtime_map_for_snapshot(snapshot: &DockerSnapshot, state: &RuntimeProviderState) -> RuntimeMap {
@@ -292,12 +380,21 @@ fn runtime_map_for_snapshot(snapshot: &DockerSnapshot, state: &RuntimeProviderSt
             ProviderCollection::default(),
             Some("Runtime provider refresh failed or timed out; no successful provider observations are available"),
         ),
+        RuntimeProviderState::TimedOut(Some(collection)) => (
+            collection.clone(),
+            Some("Runtime provider refresh timed out; serving retained provider observations (stale)"),
+        ),
+        RuntimeProviderState::TimedOut(None) => (
+            ProviderCollection::default(),
+            Some("Runtime provider refresh timed out; no successful provider observations are available"),
+        ),
         RuntimeProviderState::Unavailable => (
             ProviderCollection::default(),
             Some("Runtime provider observations are unavailable until the first successful collection"),
         ),
     };
     let mut runtime_map = runtime_map_from_collection(snapshot, &collection);
+    runtime_map.provider_states = provider_states_for(state, &collection);
     if let Some(message) = diagnostic {
         runtime_map.diagnostics.push(RuntimeMapDiagnostic {
             provider: RuntimeProviderKind::Other,
@@ -306,6 +403,55 @@ fn runtime_map_for_snapshot(snapshot: &DockerSnapshot, state: &RuntimeProviderSt
         });
     }
     runtime_map
+}
+
+const STATIC_PROVIDER_SLOTS: [ProviderSlot; 5] = [
+    ProviderSlot::NetworkInfrastructure,
+    ProviderSlot::HostScoped,
+    ProviderSlot::PythonProcesses,
+    ProviderSlot::NativeProcesses,
+    ProviderSlot::ProjectNpm,
+];
+
+/// Retained successful slots stay explicitly stale while a new attempt runs or
+/// after a failed attempt. Disabled slots are configuration/profile facts, not
+/// transient freshness states, and remain disabled through those transitions.
+fn provider_states_for(
+    state: &RuntimeProviderState,
+    collection: &ProviderCollection,
+) -> Vec<ProviderState> {
+    STATIC_PROVIDER_SLOTS
+        .into_iter()
+        .map(|slot| {
+            let base = collection
+                .states()
+                .iter()
+                .find(|candidate| candidate.slot == slot)
+                .map(|candidate| candidate.state)
+                .unwrap_or(ProviderStateKind::Unavailable);
+            let state = match state {
+                RuntimeProviderState::Fresh(_) => base,
+                RuntimeProviderState::Collecting(_) if base == ProviderStateKind::Disabled => {
+                    ProviderStateKind::Disabled
+                }
+                RuntimeProviderState::Collecting(_) if base == ProviderStateKind::Unavailable => {
+                    ProviderStateKind::Collecting
+                }
+                RuntimeProviderState::Collecting(_) => ProviderStateKind::Stale,
+                RuntimeProviderState::Degraded(_) if base == ProviderStateKind::Disabled => {
+                    ProviderStateKind::Disabled
+                }
+                RuntimeProviderState::Degraded(Some(_)) => ProviderStateKind::Stale,
+                RuntimeProviderState::Degraded(None) => ProviderStateKind::Unavailable,
+                RuntimeProviderState::TimedOut(_) if base == ProviderStateKind::Disabled => {
+                    ProviderStateKind::Disabled
+                }
+                RuntimeProviderState::TimedOut(_) => ProviderStateKind::TimedOut,
+                RuntimeProviderState::Unavailable => ProviderStateKind::Unavailable,
+            };
+            ProviderState { slot, state }
+        })
+        .collect()
 }
 
 /// The existing public field is only the opaque string form of the Docker
@@ -342,10 +488,12 @@ mod tests {
                 docker_reachable: true,
                 last_updated,
                 snapshot_version: snapshot_observation_token(last_updated),
+                model_revision: String::new(),
                 message: Some("controlled Docker cache".into()),
             },
             runtime_map: empty_runtime_map(last_updated),
             runtime_providers: RuntimeProviderState::Unavailable,
+            revision: PublicationRevision::new(),
         }
     }
 
@@ -550,5 +698,105 @@ mod tests {
             snapshot_observation_token(42),
             "the existing field has no per-publication uniqueness guarantee"
         );
+    }
+
+    #[tokio::test]
+    async fn coherent_model_revision_is_stable_for_unchanged_publication_and_monotonic_for_state_change(
+    ) {
+        let initial = docker_cache(mock_snapshot());
+        let state = AppState {
+            cache: Arc::new(RwLock::new(initial)),
+            docker: Arc::new(RwLock::new(None)),
+            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
+        };
+
+        let same = docker_cache(mock_snapshot());
+        publish_docker_snapshot_cache(&state, same.clone()).await;
+        let first = state.cache.read().await.clone();
+        assert_eq!(first.snapshot.model_revision, first.health.model_revision);
+        assert_eq!(
+            first.health.model_revision,
+            first.runtime_map.model_revision
+        );
+
+        publish_docker_snapshot_cache(&state, same).await;
+        let stable = state.cache.read().await.clone();
+        assert_eq!(
+            stable.snapshot.model_revision,
+            first.snapshot.model_revision
+        );
+
+        mark_runtime_collection_started(&state).await;
+        let changed = state.cache.read().await.clone();
+        assert_ne!(
+            changed.snapshot.model_revision,
+            stable.snapshot.model_revision
+        );
+        assert_eq!(
+            changed.snapshot.model_revision,
+            changed.health.model_revision
+        );
+        assert_eq!(
+            changed.health.model_revision,
+            changed.runtime_map.model_revision
+        );
+    }
+
+    #[test]
+    fn model_revision_has_an_opaque_boot_component_and_monotonic_sequence() {
+        let mut first = PublicationRevision {
+            boot: "boot-a".into(),
+            sequence: 0,
+            last_observable: None,
+        };
+        let second = PublicationRevision {
+            boot: "boot-b".into(),
+            sequence: 0,
+            last_observable: None,
+        };
+        assert_ne!(
+            first.current(),
+            second.current(),
+            "distinct daemon boot instances must not share revisions"
+        );
+        first.sequence = 1;
+        assert_eq!(first.current(), "boot-a-1");
+        assert_eq!(
+            boot_instance_component().len(),
+            32,
+            "boot component is 128 bits of CSPRNG output encoded as hex"
+        );
+    }
+
+    #[test]
+    fn provider_states_are_fixed_and_timeout_and_failure_do_not_masquerade_as_fresh() {
+        let snapshot = mock_snapshot();
+        let failed = runtime_map_for_snapshot(&snapshot, &RuntimeProviderState::Degraded(None));
+        assert_eq!(failed.provider_states.len(), STATIC_PROVIDER_SLOTS.len());
+        assert!(failed
+            .provider_states
+            .iter()
+            .all(|state| state.state == ProviderStateKind::Unavailable));
+
+        let timed_out = runtime_map_for_snapshot(&snapshot, &RuntimeProviderState::TimedOut(None));
+        assert!(timed_out
+            .provider_states
+            .iter()
+            .all(|state| state.state == ProviderStateKind::TimedOut));
+
+        let mut collection = ProviderCollection::default();
+        collection.set_state(ProviderSlot::HostScoped, ProviderStateKind::Disabled);
+        let retained =
+            runtime_map_for_snapshot(&snapshot, &RuntimeProviderState::Degraded(Some(collection)));
+        assert!(retained
+            .provider_states
+            .iter()
+            .any(|state| state.slot == ProviderSlot::HostScoped
+                && state.state == ProviderStateKind::Disabled));
+        assert!(retained
+            .provider_states
+            .iter()
+            .any(|state| state.slot == ProviderSlot::ProjectNpm
+                && state.state == ProviderStateKind::Stale));
     }
 }

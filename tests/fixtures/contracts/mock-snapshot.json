@@ -50,5 +50,6 @@
       "attachedTo": ["api"]
     }
   ],
-  "lastUpdated": 1710000000000
+  "lastUpdated": 1710000000000,
+  "modelRevision": "fixture-boot-1"
 }
