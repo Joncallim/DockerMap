@@ -56,10 +56,10 @@ const U32_MAX = 4_294_967_295;
 // not a generic provenance bag. JSON Schema owns each field's closed enum;
 // this small cross-field table binds an emitted fact to the relationship it
 // can actually support. A later evidence version must add an explicit row.
-const V1_EVIDENCE_RELATIONSHIP = {
-  docker_network_membership: "connected_to",
-  docker_volume_mount: "mounts",
-  docker_port_publication: "exposes",
+const V1_EVIDENCE_EDGE = {
+  docker_network_membership: { relationship: "connected_to", sourcePrefix: "docker_container_", targetPrefix: "docker_network_" },
+  docker_volume_mount: { relationship: "mounts", sourcePrefix: "docker_container_", targetPrefix: "docker_volume_" },
+  docker_port_publication: { relationship: "exposes", sourcePrefix: "docker_container_", targetPrefix: "network_listener_" },
 } as const;
 
 function hasCompleteProviderStateVector(payload: unknown): boolean {
@@ -135,16 +135,18 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
   if (!Array.isArray(edges)) return false;
   return edges.every((edge) => {
     if (!edge || typeof edge !== "object") return false;
-    const candidate = edge as { relationship?: unknown; evidenceRefs?: unknown };
+    const candidate = edge as { source?: unknown; target?: unknown; relationship?: unknown; evidenceRefs?: unknown };
     if (!Array.isArray(candidate.evidenceRefs)) return false;
     return candidate.evidenceRefs.every((evidence) => {
       if (!evidence || typeof evidence !== "object") return false;
       const value = evidence as {
         version?: unknown; provider?: unknown; kind?: unknown; assertionKind?: unknown;
-        freshness?: unknown; providerRevision?: unknown; collectedAt?: unknown;
+        freshness?: unknown; providerRevision?: unknown; collectedAt?: unknown; subjectRef?: unknown;
       };
       if (value.version !== 1 || value.provider !== "docker" || value.assertionKind !== "observed" || value.freshness !== "fresh") return false;
-      if (typeof value.kind !== "string" || V1_EVIDENCE_RELATIONSHIP[value.kind as keyof typeof V1_EVIDENCE_RELATIONSHIP] !== candidate.relationship) return false;
+      const expected = typeof value.kind === "string" ? V1_EVIDENCE_EDGE[value.kind as keyof typeof V1_EVIDENCE_EDGE] : undefined;
+      if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return false;
+      if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix)) return false;
       // An opaque observation token must never be the collection timestamp
       // re-labelled as a revision. The daemon produces it independently.
       return typeof value.providerRevision === "string" && value.providerRevision !== String(value.collectedAt);
