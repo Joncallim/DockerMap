@@ -9,6 +9,16 @@
 
 **Scope guard (post-review amended):** web-only. ZERO changes to `packages/contracts`, `crates/`, `apps/api`. No new endpoints, no network calls — the runtime stays network-quiet (DM-01). The provenance-race remediation may change only the web evidence/hook/context path named in §9: `lib/evidence.ts`, `hooks/useApiResource.ts`, `hooks/useSystemModel.ts`, `context.tsx`, `components/AppShell.tsx`, the two history generators/screens, and their tests/fixtures. `lib/model.ts`, `SystemModel`, and `buildModel` remain unchanged; provenance is a fetch/model-state sidecar, not daemon/domain data.
 
+### Amendment — #167 (2026-09-02): synthetic history is explicit-Demo-only
+
+The shipped #74 mock-history decision is superseded. `changeFeed` and
+`causalChain` may synthesize only for the exact `(demo, demo)` pair. All
+other pairs — including settled `(mock, mock)` fallback — render the canonical
+`Not collected` claims, with no timeline rows, causal rows, filter chips, or
+synthetic timestamps. This amendment overrides the contrary historical Q5,
+test-plan, and mock-timeline statements below; those sections remain as a
+record of the earlier decision, not current product behavior.
+
 ---
 
 ## 1. Verified current state (post-#72, every line re-read on THIS tree)

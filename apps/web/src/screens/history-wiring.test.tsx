@@ -116,12 +116,15 @@ describe("history wiring — model/provenance held fixed while ONLY the mode fli
       expect(target.textContent).not.toContain("prod-secret-host");
     }
 
-    // Only a newly published mock pair may resume tagged sample rows.
+    // A newly published mock pair is still not change-event evidence. Default
+    // mock fallback must not create fresh timestamps or labelled history.
     state.model = demoModel;
     state.modelProvenance = "mock";
     rerender(path);
-    expect(target.querySelectorAll(".feed-row, .timeline-row").length).toBeGreaterThan(0);
-    expect(target.textContent).toContain("Sample data");
+    expect(target.querySelectorAll(".feed-row, .timeline-row").length).toBe(0);
+    expect(target.querySelectorAll(".filter-chip").length).toBe(0);
+    expect(target.textContent).not.toContain("Sample data");
+    expect(target.textContent).toContain("Not collected");
   });
 
   it("distinguishes a filtered-empty sample feed from a truly empty sample feed", () => {

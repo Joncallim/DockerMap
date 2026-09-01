@@ -48,7 +48,10 @@ describe("history surfaces distinguish sample and non-sample authority", () => {
     expect(visibleText(home)).toContain("Event causality not reconstructed — DockerMap observes current state, not transitions");
   });
 
-  it.each([["demo", sampleSnapshot, "demo"], ["mock", sampleSnapshot, "mock"]] as const)("renders tagged samples for the matching pair (%s, %s, %s)", (mode, snapshot, provenance) => {
+  it("renders tagged samples only for explicit Demo Mode", () => {
+    const mode = "demo";
+    const snapshot = sampleSnapshot;
+    const provenance = "demo";
     const changes = renderScreen("/changes", snapshot, mode, provenance);
     const home = renderScreen("/", snapshot, mode, provenance);
     expect(changes).toContain("timeline-row");

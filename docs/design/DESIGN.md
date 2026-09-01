@@ -116,7 +116,8 @@ layer. Today it reasons locally and deterministically over the live model.
 - Empty states teach the next action; they never market, decorate, or celebrate.
 - Resource usage samples are shown only in explicit demo mode and labelled "Sample data";
   mock and live mode report non-collection rather than showing a number. Change history
-  retains its separately documented demo/mock policy.
+  is likewise synthetic only in explicit demo mode; mock and live mode report it as
+  not collected.
 
 ## Accessibility Baseline
 

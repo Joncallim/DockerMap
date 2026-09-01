@@ -1,8 +1,9 @@
 import { evidenceLabel, unavailable } from "./evidence";
 
 /**
- * DockerMap has no change-event collector in any mode. Demo and mock can show
- * tagged samples, but neither records a real deployment, restart, or failure.
+ * DockerMap has no change-event collector. Only explicit Demo Mode can show
+ * tagged synthetic samples; default mock fallback never invents a deployment,
+ * restart, or failure history.
  */
 const CHANGE_HISTORY_DETAIL = "Change collectors not wired — DockerMap does not record deploy, restart or failure events";
 const CAUSAL_CHAIN_DETAIL = "Event causality not reconstructed — DockerMap observes current state, not transitions";

@@ -1,6 +1,6 @@
 import { hashString, needsAttention, type Service, type SystemModel } from "./model";
 import { identityText, UNAVAILABLE_SERVICE } from "./identity";
-import { claimAuthority, demoSample, type Claim, type EvidenceMode, type ModelProvenance } from "./evidence";
+import { demoSample, type Claim, type EvidenceMode, type ModelProvenance } from "./evidence";
 import { CAUSAL_CHAIN_CLAIM, CHANGE_HISTORY_CLAIM } from "./history";
 import { RESOURCE_STATS_CLAIM } from "./resources";
 
@@ -11,8 +11,8 @@ import { RESOURCE_STATS_CLAIM } from "./resources";
  *
  * The daemon exposes no per-service resource usage. Explicit demo mode may
  * derive stable samples from its fabricated topology. Mock, live, mismatched,
- * and unresolved pairs take the unavailable arm; history retains its separate
- * #74 policy unchanged. See `maySynthesizeResourceSample`.
+ * and unresolved pairs take the unavailable arm. Change history is stricter:
+ * it is synthetic only in explicit Demo Mode. See `maySynthesizeResourceSample`.
  * ──────────────────────────────────────────────────────────────────────────
  */
 
@@ -107,20 +107,14 @@ const CHANGE_TEMPLATES: Record<
 };
 
 /**
- * §9 Option A gate — positive allow-listing, shared by both generators and
- * run BEFORE any model iteration or clock read. Authority is necessary but
- * not sufficient: a sample tag requires the model's bytes to actually match
- * the declared mode (demo bytes under demo mode; daemon bytes under mock
- * mode). Every mismatch, unknown value, and null takes the unavailable arm —
- * a retained live model under demo authority must never be relabelled as a
- * freshly selected demo sample (DM-06/G-24).
+ * #74.1 gate — positive allow-listing, shared by both generators and run
+ * BEFORE any model iteration or clock read. Synthetic event timestamps are
+ * Demo Mode-only: daemon mock fallback is useful topology test data, but it
+ * is not permission to fabricate deploy, restart, or failure history. Every
+ * other pair, including mock/mock, takes the unavailable arm.
  */
 function maySynthesizeHistory(mode: EvidenceMode | null, modelProvenance: ModelProvenance | null): boolean {
-  if (claimAuthority(mode) !== "sample") return false;
-  return (
-    (mode === "demo" && modelProvenance === "demo") ||
-    (mode === "mock" && modelProvenance === "mock")
-  );
+  return mode === "demo" && modelProvenance === "demo";
 }
 
 export function changeFeed(
