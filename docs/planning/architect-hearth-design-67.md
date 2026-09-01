@@ -1,7 +1,8 @@
 # #67 Hearth design-system adoption: preflight boundary
 
-**Status:** preparation and source audit only; no Hearth design tokens, assets,
-or private-repository content have been imported.
+**Status:** the public-safe token export is committed in DockerMap; no private
+package, asset, URL, or build-time fetch is required. Wider primitive and
+screen alignment remains incremental work under #67.
 
 ## What is verified locally
 
@@ -27,9 +28,10 @@ consume a **committed public-safe export** containing only reviewed tokens and
 assets, with source/version metadata in this repository. A build-time fetch,
 git submodule, private npm registry, or runtime asset URL is rejected.
 
-Before implementation, record the authoritative Hearth export version and a
-license/asset-safety review. The source audit below records guidance, not an
-import: DockerMap must still receive only a committed public-safe export.
+The committed `apps/web/src/hearth-tokens.css` is the public-safe export. It
+records its source revision and contains only reviewed CSS primitives. It is
+not a package, asset import, or private-repository dependency; public builds
+continue to work with no Hearth credentials.
 
 ## Source audit — 29 August 2026
 
@@ -57,8 +59,8 @@ private deployment configuration was copied during this audit.
 
 | Area | DockerMap baseline to inspect | Migration guardrail |
 | --- | --- | --- |
-| Typography | `--font` is currently generic-system-first; `--mono` is already constrained to technical evidence | Reorder normal text to the approved Apple/system stack; retain monospace for paths, ports, logs and IDs. |
-| Tokens | `styles.css` owns standalone dark/light custom properties; light `--accent` is close to, but not an audited export of, Hearth Azure | Export semantic roles with exact reviewed values; map roles, never bulk-replace arbitrary colors. |
+| Typography | `--font` and `--mono` now resolve through the committed Hearth export | Retain monospace for paths, ports, logs and IDs. |
+| Tokens | `styles.css` consumes the committed Hearth canvas, surface, text, Azure, AI, border, shadow, and font roles | Map remaining screen-local hard-coded values gradually; never bulk-replace arbitrary colors. |
 | Themes | `data-theme` and Settings override already provide system default and explicit user override | Keep behavior; migrate from cool blue-grey light surfaces and near-black dark surfaces to reviewed warm/graphite roles. |
 | Health state | service/map/runtime state colors | Do not repurpose state colors for brand decoration. |
 | AI | Copilot/evidence presentation is distinct, but the current shared palette has no exported AI-purple role | Add a dedicated AI role only to Copilot/generated-insight context; do not recolor health or topology state. |
@@ -68,9 +70,9 @@ private deployment configuration was copied during this audit.
 
 ## Required implementation evidence
 
-1. Commit the reviewed public-safe export and its source/version metadata,
-   including the audited source revision above and an explicit asset-safety
-   statement.
+1. **Completed:** commit the reviewed public-safe export and its source/version
+   metadata, including the audited source revision above and an explicit
+   asset-safety statement.
 2. Add a deterministic drift check that does not contact a private service.
 3. Prove `npm ci`, build, and production image need no private credential.
 4. Capture an offline page load with no external font request.

@@ -1,0 +1,50 @@
+/*
+ * Public-safe Hearth token export, version 2026-08-29.
+ *
+ * Source guidance: Hearth design-system revision
+ * 04f32a9a48530142189bb6ec4c4209da8ffa71bc. This committed file contains
+ * only reviewed CSS primitives: no private package, asset, URL, or build-time
+ * fetch is required by DockerMap.
+ */
+
+:root {
+  --hearth-canvas: #0b0f1a;
+  --hearth-canvas-raised: #141b23;
+  --hearth-surface: #1b232c;
+  --hearth-surface-raised: #202a33;
+  --hearth-border: rgb(220 228 234 / 16%);
+  --hearth-border-strong: rgb(220 228 234 / 26%);
+  --hearth-text: #eff3f6;
+  --hearth-text-soft: #dde4e9;
+  --hearth-muted: #b5bec6;
+  --hearth-muted-deep: #8e99a2;
+  --hearth-azure: #168bff;
+  --hearth-azure-strong: #006fd6;
+  --hearth-azure-text: #a7d7fb;
+  --hearth-azure-soft: rgb(22 139 255 / 18%);
+  --hearth-ai: #b9a4ff;
+  --hearth-ai-soft: #231c3a;
+  --hearth-shadow: 0 8px 24px rgb(0 0 0 / 20%);
+  --hearth-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter, system-ui, sans-serif;
+  --hearth-mono: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", ui-monospace, monospace;
+}
+
+:root[data-theme="light"] {
+  --hearth-canvas: #f7f7fb;
+  --hearth-canvas-raised: #f2f4f6;
+  --hearth-surface: rgb(255 255 255 / 94%);
+  --hearth-surface-raised: rgb(250 251 253 / 94%);
+  --hearth-border: rgb(23 33 42 / 14%);
+  --hearth-border-strong: rgb(23 33 42 / 22%);
+  --hearth-text: #17212a;
+  --hearth-text-soft: #26333d;
+  --hearth-muted: #5c6872;
+  --hearth-muted-deep: #5c6872;
+  --hearth-azure: #0067b8;
+  --hearth-azure-strong: #004f8f;
+  --hearth-azure-text: #0067b8;
+  --hearth-azure-soft: rgb(22 139 255 / 20%);
+  --hearth-ai: #6f42c1;
+  --hearth-ai-soft: #f2ecff;
+  --hearth-shadow: 0 8px 24px rgb(27 36 43 / 8%);
+}
