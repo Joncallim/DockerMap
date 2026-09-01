@@ -7,6 +7,7 @@ mod fixtures;
 mod identity;
 mod logs;
 mod models;
+pub mod schema_baseline;
 mod snapshot_runtime;
 
 pub use fixtures::{mock_log_entries, mock_logs, mock_snapshot, unix_timestamp_millis};

@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "LogEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "container": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "level": {
+          "$ref": "#/$defs/LogLevel"
+        },
+        "message": {
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "timestamp",
+        "container",
+        "level",
+        "message"
+      ],
+      "type": "object"
+    },
+    "LogLevel": {
+      "enum": [
+        "info",
+        "warn",
+        "error"
+      ],
+      "type": "string"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/LogEntry"
+      },
+      "type": "array"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "service": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeMode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ACTUAL source of these bytes: \"docker\" or \"mock\" (#85 A3 / #87 E1).\nStamped by the daemon route layer from the cache's runtime mode so\nfabricated mock log lines can never be shown as live host activity."
+    }
+  },
+  "required": [
+    "entries"
+  ],
+  "title": "LogsResponse",
+  "type": "object"
+}

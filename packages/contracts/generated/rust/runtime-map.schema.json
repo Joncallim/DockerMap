@@ -1,0 +1,707 @@
+{
+  "$defs": {
+    "DiagnosticSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "blocked"
+      ],
+      "type": "string"
+    },
+    "RuntimeAdvisorySeverity": {
+      "enum": [
+        "low",
+        "moderate",
+        "high",
+        "critical"
+      ],
+      "type": "string"
+    },
+    "RuntimeEventRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timestamp": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "RuntimeHealth": {
+      "additionalProperties": false,
+      "properties": {
+        "checkedAt": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RuntimeHealthState"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "RuntimeHealthState": {
+      "enum": [
+        "healthy",
+        "degraded",
+        "unhealthy",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "RuntimeLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/RuntimeLocationKind"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "type": "object"
+    },
+    "RuntimeLocationKind": {
+      "enum": [
+        "host",
+        "container",
+        "path",
+        "cluster",
+        "region",
+        "workspace",
+        "tailnet"
+      ],
+      "type": "string"
+    },
+    "RuntimeLogLevel": {
+      "enum": [
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ],
+      "type": "string"
+    },
+    "RuntimeLogRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "level": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeLogLevel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source"
+      ],
+      "type": "object"
+    },
+    "RuntimeMapDiagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/RuntimeProviderKind"
+        },
+        "severity": {
+          "$ref": "#/$defs/DiagnosticSeverity"
+        }
+      },
+      "required": [
+        "provider",
+        "severity",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RuntimeMapEdge": {
+      "additionalProperties": false,
+      "properties": {
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "relationship": {
+          "$ref": "#/$defs/RuntimeRelationshipKind"
+        },
+        "source": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "target",
+        "relationship",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "RuntimeMapNode": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "layer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeNodeLayer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "package": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimePackageEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/RuntimeProviderKind"
+        },
+        "service": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeServiceEntity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/RuntimeNodeKind"
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "type",
+        "label",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
+    },
+    "RuntimeNodeKind": {
+      "enum": [
+        "container",
+        "docker_network",
+        "docker_volume",
+        "host",
+        "service",
+        "systemd_service",
+        "scheduled_job",
+        "pm2_app",
+        "tmux_session",
+        "tailnet_node",
+        "reverse_proxy",
+        "local_dns_resolver",
+        "dns_provider",
+        "node_application",
+        "python_application",
+        "ai_agent",
+        "package",
+        "storage",
+        "external_api",
+        "package_dependency",
+        "database",
+        "worker",
+        "process",
+        "network_listener",
+        "orchestrator_workload"
+      ],
+      "type": "string"
+    },
+    "RuntimeNodeLayer": {
+      "enum": [
+        "edge",
+        "host",
+        "service",
+        "container",
+        "process",
+        "session",
+        "package",
+        "network",
+        "storage",
+        "advisory"
+      ],
+      "type": "string"
+    },
+    "RuntimeOwnership": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/RuntimeOwnershipKind"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "RuntimeOwnershipKind": {
+      "enum": [
+        "person",
+        "team",
+        "system",
+        "automation",
+        "vendor"
+      ],
+      "type": "string"
+    },
+    "RuntimePackageAdvisory": {
+      "additionalProperties": false,
+      "properties": {
+        "fixedVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "publishedAt": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "severity": {
+          "$ref": "#/$defs/RuntimeAdvisorySeverity"
+        },
+        "source": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "title",
+        "severity"
+      ],
+      "type": "object"
+    },
+    "RuntimePackageEntity": {
+      "additionalProperties": false,
+      "properties": {
+        "dependencies": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dependents": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reserved — not emitted by current collectors."
+        },
+        "manager": {
+          "$ref": "#/$defs/RuntimePackageManager"
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeOwnership"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reserved — not emitted by current collectors."
+        },
+        "update": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimePackageUpdate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reserved — not emitted by current collectors."
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "manager",
+        "version",
+        "dependencies",
+        "dependents"
+      ],
+      "type": "object"
+    },
+    "RuntimePackageManager": {
+      "enum": [
+        "npm",
+        "pnpm",
+        "yarn",
+        "pip",
+        "apt",
+        "apk",
+        "brew",
+        "cargo",
+        "system"
+      ],
+      "type": "string"
+    },
+    "RuntimePackageUpdate": {
+      "additionalProperties": false,
+      "properties": {
+        "advisories": {
+          "items": {
+            "$ref": "#/$defs/RuntimePackageAdvisory"
+          },
+          "type": "array"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "currentVersion": {
+          "type": "string"
+        },
+        "latestVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "currentVersion",
+        "available",
+        "advisories"
+      ],
+      "type": "object"
+    },
+    "RuntimeProviderKind": {
+      "enum": [
+        "docker",
+        "compose",
+        "host",
+        "systemd",
+        "scheduled_job",
+        "npm",
+        "pm2",
+        "tmux",
+        "tailscale",
+        "headscale",
+        "cloudflare",
+        "caddy",
+        "reverse_proxy",
+        "local_dns",
+        "dns_provider",
+        "external_api",
+        "process",
+        "python",
+        "network",
+        "kubernetes",
+        "other"
+      ],
+      "type": "string"
+    },
+    "RuntimeRelationshipKind": {
+      "enum": [
+        "connected_to",
+        "depends_on",
+        "required_by",
+        "requires",
+        "wants",
+        "after",
+        "before",
+        "part_of",
+        "binds_to",
+        "conflicts_with",
+        "mounts",
+        "manages",
+        "exposes",
+        "runs_on",
+        "uses",
+        "calls",
+        "resolves_via",
+        "proxies_to",
+        "contains",
+        "owns",
+        "related_to"
+      ],
+      "type": "string"
+    },
+    "RuntimeServiceEntity": {
+      "additionalProperties": false,
+      "properties": {
+        "dependencies": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dependents": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "events": {
+          "description": "Reserved — not emitted by current collectors.",
+          "items": {
+            "$ref": "#/$defs/RuntimeEventRef"
+          },
+          "type": "array"
+        },
+        "health": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeHealth"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reserved — not emitted by current collectors."
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reserved — not emitted by current collectors."
+        },
+        "logs": {
+          "description": "Reserved — not emitted by current collectors.",
+          "items": {
+            "$ref": "#/$defs/RuntimeLogRef"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeOwnership"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reserved — not emitted by current collectors."
+        },
+        "status": {
+          "$ref": "#/$defs/RuntimeServiceStatus"
+        }
+      },
+      "required": [
+        "name",
+        "status",
+        "dependencies",
+        "dependents",
+        "logs",
+        "events"
+      ],
+      "type": "object"
+    },
+    "RuntimeServiceStatus": {
+      "enum": [
+        "running",
+        "starting",
+        "stopping",
+        "stopped",
+        "degraded",
+        "failed",
+        "unknown"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "diagnostics": {
+      "items": {
+        "$ref": "#/$defs/RuntimeMapDiagnostic"
+      },
+      "type": "array"
+    },
+    "edges": {
+      "items": {
+        "$ref": "#/$defs/RuntimeMapEdge"
+      },
+      "type": "array"
+    },
+    "lastUpdated": {
+      "format": "uint64",
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/RuntimeMapNode"
+      },
+      "type": "array"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeMode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ACTUAL source of these bytes: \"docker\" or \"mock\" (#85 A3). Stamped by\nthe daemon route layer from the cache's runtime mode."
+    }
+  },
+  "required": [
+    "nodes",
+    "edges",
+    "diagnostics",
+    "lastUpdated"
+  ],
+  "title": "RuntimeMap",
+  "type": "object"
+}

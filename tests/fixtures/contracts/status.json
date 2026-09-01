@@ -1,7 +1,9 @@
 {
   "service": "dockermap",
   "status": "degraded",
-  "mode": "live",
+  "mode": "docker",
+  "sourceCoherent": true,
+  "snapshotSource": "docker",
   "dockerReachable": true,
   "containers": 43,
   "containersRunning": 40,

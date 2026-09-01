@@ -1,0 +1,116 @@
+{
+  "$defs": {
+    "ComposeDiagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/$defs/ComposeFileOrigin"
+        },
+        "severity": {
+          "$ref": "#/$defs/DiagnosticSeverity"
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "message",
+        "origin"
+      ],
+      "type": "object"
+    },
+    "ComposeFileOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "service": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "file",
+        "field"
+      ],
+      "type": "object"
+    },
+    "DiagnosticSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "blocked"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "diagnostics": {
+      "items": {
+        "$ref": "#/$defs/ComposeDiagnostic"
+      },
+      "type": "array"
+    },
+    "file": {
+      "type": "string"
+    },
+    "mountId": {
+      "type": "string"
+    },
+    "newSource": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "newTarget": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "originalSource": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "originalTarget": {
+      "type": "string"
+    },
+    "service": {
+      "type": "string"
+    },
+    "unifiedDiff": {
+      "type": "string"
+    },
+    "willWrite": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "file",
+    "service",
+    "mountId",
+    "originalTarget",
+    "unifiedDiff",
+    "diagnostics",
+    "willWrite"
+  ],
+  "title": "ComposeEditPlan",
+  "type": "object"
+}

@@ -1,0 +1,83 @@
+{
+  "$defs": {
+    "ComposeGraphEdge": {
+      "additionalProperties": false,
+      "properties": {
+        "relationship": {
+          "$ref": "#/$defs/ComposeRelationshipKind"
+        },
+        "source": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "target",
+        "relationship"
+      ],
+      "type": "object"
+    },
+    "ComposeGraphNode": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/ComposeNodeKind"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "label"
+      ],
+      "type": "object"
+    },
+    "ComposeNodeKind": {
+      "enum": [
+        "service",
+        "host_path",
+        "container_path",
+        "named_volume",
+        "anonymous_volume"
+      ],
+      "type": "string"
+    },
+    "ComposeRelationshipKind": {
+      "enum": [
+        "declares_mount",
+        "mounted_at"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "edges": {
+      "items": {
+        "$ref": "#/$defs/ComposeGraphEdge"
+      },
+      "type": "array"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/ComposeGraphNode"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "nodes",
+    "edges"
+  ],
+  "title": "ComposeGraph",
+  "type": "object"
+}

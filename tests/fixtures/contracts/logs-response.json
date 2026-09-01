@@ -1,0 +1,14 @@
+{
+  "service": "api",
+  "entries": [
+    {
+      "id": "container_api:1710000000000:0",
+      "timestamp": 1710000000000,
+      "container": "api",
+      "level": "info",
+      "message": "listening on 8080"
+    }
+  ],
+  "nextCursor": null,
+  "source": "docker"
+}
