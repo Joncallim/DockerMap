@@ -1,10 +1,11 @@
+import { testProviderStates } from "./testProviderStates";
 import { describe, expect, it } from "vitest";
 import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
 import { answer } from "./copilot";
 import { getDemoResponse } from "./demoData";
 import { buildModel } from "./model";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 const liveSnapshot: DockerSnapshot = { containers: [{ id: "live-api", name: "api", image: "nginx:1", status: "running", role: "api", networks: [], ports: ["443:443"], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 
 const demoSnapshot = (): DockerSnapshot => getDemoResponse<DockerSnapshot>("/api/snapshot");

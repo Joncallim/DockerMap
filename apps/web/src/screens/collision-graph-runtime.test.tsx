@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -45,7 +46,7 @@ const runtimeFixture: RuntimeMap = {
   ],
   edges: [],
   diagnostics: [],
-  providerStates: [],
+  providerStates: testProviderStates,
     lastUpdated: 0,
   modelRevision: "test-revision"
   };

@@ -1,3 +1,4 @@
+import { testProviderStates } from "./testProviderStates";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
@@ -8,7 +9,7 @@ import { answer } from "./copilot";
 import { getDemoResponse } from "./demoData";
 import { buildModel } from "./model";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 
 function snapshot(containers: DockerSnapshot["containers"]): DockerSnapshot {
   return { containers, images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };

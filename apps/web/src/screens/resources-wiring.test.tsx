@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -11,7 +12,7 @@ import type { Settings } from "../lib/settingsStore";
 import Home from "./Home";
 import ServiceDetail from "./ServiceDetail";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 const fixture = (status: string): DockerSnapshot => ({ containers: [{ id: "prod-secret-host", name: "prod-secret-host", image: "nginx", status, role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 });
 const liveModel = buildModel(fixture("Exited (1)"), runtime);
 const demoModel = buildModel(fixture("Exited (1)"), runtime);

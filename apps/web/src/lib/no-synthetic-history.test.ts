@@ -1,3 +1,4 @@
+import { testProviderStates } from "./testProviderStates";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
 import { buildModel, type SystemModel } from "./model";
@@ -5,7 +6,7 @@ import type { EvidenceMode, ModelProvenance } from "./evidence";
 import { CAUSAL_CHAIN_CLAIM, CHANGE_HISTORY_CLAIM } from "./history";
 import { causalChain, changeFeed, type ChangeEvent } from "./stubs";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 const snapshot: DockerSnapshot = { containers: [{ id: "offline", name: "db", image: "postgres", status: "Exited (1)", role: "database", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 const model: SystemModel = buildModel(snapshot, runtime);
 

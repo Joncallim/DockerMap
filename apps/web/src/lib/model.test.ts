@@ -1,3 +1,4 @@
+import { testProviderStates } from "./testProviderStates";
 import { describe, expect, it } from "vitest";
 import type {
   ContainerRecord,
@@ -8,7 +9,7 @@ import type {
 } from "@dockermap/contracts";
 import { buildModel, computeImpact, hashString, stateForStatus, summarize } from "./model";
 
-const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 
 function container(partial: Partial<ContainerRecord> & Pick<ContainerRecord, "id" | "name">): ContainerRecord {
   return {
@@ -330,7 +331,7 @@ describe("service and runtime identity indexes", () => {
       ],
       edges: [],
       diagnostics: [],
-      providerStates: [],
+      providerStates: testProviderStates,
             lastUpdated: 0,
       modelRevision: "test-revision"
       };

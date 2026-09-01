@@ -1058,6 +1058,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/$defs/ProviderState"
       },
+      "maxItems": 5,
+      "minItems": 5,
       "type": "array"
     },
     "source": {
@@ -3087,6 +3089,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/components/schemas/RuntimeMap/$defs/ProviderState"
       },
+      "maxItems": 5,
+      "minItems": 5,
       "type": "array"
     },
     "source": {

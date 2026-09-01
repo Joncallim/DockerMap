@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -15,7 +16,7 @@ import ServiceDetail from "./ServiceDetail";
 import Storage from "./Storage";
 import VolumeDetail from "./VolumeDetail";
 
-const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 
 /**
  * Collision fixture: DISTINCT records whose identities sanitize to the SAME

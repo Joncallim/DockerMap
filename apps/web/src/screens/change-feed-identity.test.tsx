@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -10,7 +11,7 @@ import type { EvidenceMode, ModelProvenance } from "../lib/evidence";
 import Changes from "./Changes";
 import Home from "./Home";
 
-const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 
 function baseContainer(partial: Partial<DockerSnapshot["containers"][number]>): DockerSnapshot["containers"][number] {
   return {

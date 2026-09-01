@@ -187,7 +187,11 @@ export interface RuntimeMap {
   lastUpdated: number;
   modelRevision: string;
   nodes: RuntimeMapNode[];
-  providerStates: ProviderState[];
+  /**
+   * @minItems 5
+   * @maxItems 5
+   */
+  providerStates: [ProviderState, ProviderState, ProviderState, ProviderState, ProviderState];
   /**
    * ACTUAL source of these bytes: "docker" or "mock" (#85 A3). Stamped by
    * the daemon route layer from the cache's runtime mode.

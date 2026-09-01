@@ -230,7 +230,13 @@ const demoComposeScan: ComposeScan = {
 
 const demoRuntimeMap: RuntimeMap = {
   modelRevision: "demo-v1",
-  providerStates: [],
+  providerStates: [
+    { slot: "network_infrastructure", state: "unavailable" },
+    { slot: "host_scoped", state: "unavailable" },
+    { slot: "python_processes", state: "unavailable" },
+    { slot: "native_processes", state: "unavailable" },
+    { slot: "project_npm", state: "unavailable" }
+  ],
   nodes: [
     {
       id: "runtime_gateway",

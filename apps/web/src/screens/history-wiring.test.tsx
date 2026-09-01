@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -12,7 +13,7 @@ import type { Settings } from "../lib/settingsStore";
 import Changes from "./Changes";
 import Home from "./Home";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 // Offline live fixture named EXACTLY prod-secret-host (DM-05 sentinel):
 // authority-only gating would deterministically fabricate a leaking failure
 // row under demo authority; the provenance gate must keep this real host

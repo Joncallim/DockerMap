@@ -987,7 +987,8 @@ test("daemon model responses require non-empty revision and complete provider st
   const invalidResponses = [
     ["/daemon/snapshot", { ...snapshot, modelRevision: "" }],
     ["/daemon/snapshot", (() => { const value = structuredClone(snapshot); delete value.modelRevision; return value; })()],
-    ["/daemon/runtime/map", (() => { const value = structuredClone(runtime); delete value.providerStates; return value; })()]
+    ["/daemon/runtime/map", (() => { const value = structuredClone(runtime); delete value.providerStates; return value; })()],
+    ["/daemon/runtime/map", { ...runtime, providerStates: [] }]
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
@@ -1859,7 +1860,13 @@ test("API publishes redacted and normalized daemon data on every response route"
         diagnostics: [{ provider: "other", severity: "warning", message: hostile }],
         lastUpdated: 1,
         modelRevision: "revision-1",
-        providerStates: []
+        providerStates: [
+          { slot: "network_infrastructure", state: "unavailable" },
+          { slot: "host_scoped", state: "unavailable" },
+          { slot: "python_processes", state: "unavailable" },
+          { slot: "native_processes", state: "unavailable" },
+          { slot: "project_npm", state: "unavailable" }
+        ]
       });
       return;
     }

@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -46,8 +47,8 @@ const snapV2: DockerSnapshot = {
   lastUpdated: 2,
   modelRevision: "revision-2"
 };
-const runtimeV1: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 1, modelRevision: "revision-1", providerStates: [] };
-const runtimeV2: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 2, modelRevision: "revision-2", providerStates: [] };
+const runtimeV1: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 1, modelRevision: "revision-1", providerStates: testProviderStates };
+const runtimeV2: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 2, modelRevision: "revision-2", providerStates: testProviderStates };
 
 type PendingRequest = { url: string; resolve: (value: Response) => void; reject: (reason: Error) => void };
 const pending: PendingRequest[] = [];

@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -24,7 +25,7 @@ import ServiceDetail from "./ServiceDetail";
 // ServiceDetail tab), ServiceDetail port tags, Runtime inspector log refs
 // and event refs.
 
-const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 
 /** Duplicate service ids (redaction can collapse container ids) drive BOTH
  * the Home attention list and the change feed (feed ids embed service.id). */
@@ -122,7 +123,7 @@ const runtimeFixture: RuntimeMap = {
   nodes: [runtimeNode("n1", "web")],
   edges: [],
   diagnostics: [],
-  providerStates: [],
+  providerStates: testProviderStates,
     lastUpdated: 0,
   modelRevision: "test-revision"
   };

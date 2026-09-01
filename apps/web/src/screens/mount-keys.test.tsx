@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -17,7 +18,7 @@ import ServiceDetail from "./ServiceDetail";
 //  2. each row keeps its own target association across a re-render
 //     (simulated refresh), which duplicate keys can corrupt.
 
-const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 
 const fixture: DockerSnapshot = {
   containers: [

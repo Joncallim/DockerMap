@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it } from "vitest";
@@ -7,7 +8,7 @@ import ServiceMap from "../components/ServiceMap";
 import { buildModel } from "../lib/model";
 import MapScreen from "./Map";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 const containers = Array.from({ length: 32 }, (_, index) => ({
   id: `service-${String(index).padStart(2, "0")}`,
   name: `service-${String(index).padStart(2, "0")}`,

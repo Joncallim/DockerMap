@@ -730,6 +730,8 @@
       "items": {
         "$ref": "#/$defs/ProviderState"
       },
+      "maxItems": 5,
+      "minItems": 5,
       "type": "array"
     },
     "source": {

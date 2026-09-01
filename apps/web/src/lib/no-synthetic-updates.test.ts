@@ -1,3 +1,4 @@
+import { testProviderStates } from "./testProviderStates";
 import { describe, expect, it } from "vitest";
 import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
 import type { Service, SystemSummary } from "./model";
@@ -5,7 +6,7 @@ import { getDemoResponse } from "./demoData";
 import { buildModel, summarize } from "./model";
 import { changeFeed, type ChangeEvent } from "./stubs";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 
 /**
  * Live-shaped payload in the shape the daemon mock emits for /api/snapshot
