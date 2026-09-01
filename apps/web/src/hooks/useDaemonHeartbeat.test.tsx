@@ -16,6 +16,7 @@ const liveSnapshot: HealthResponse = {
   mode: "docker",
   dockerReachable: true,
   lastUpdated: 4,
+  modelRevision: "test-revision",
   snapshotVersion: "live"
 };
 

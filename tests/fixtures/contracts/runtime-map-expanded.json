@@ -587,5 +587,13 @@
     }
   ],
   "diagnostics": [],
-  "lastUpdated": 1710000001234
+  "lastUpdated": 1710000001234,
+  "modelRevision": "fixture-boot-2",
+  "providerStates": [
+    { "slot": "network_infrastructure", "state": "fresh" },
+    { "slot": "host_scoped", "state": "fresh" },
+    { "slot": "python_processes", "state": "fresh" },
+    { "slot": "native_processes", "state": "fresh" },
+    { "slot": "project_npm", "state": "fresh" }
+  ]
 }

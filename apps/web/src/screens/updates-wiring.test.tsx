@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -11,8 +12,8 @@ import type { ModelProvenance } from "../lib/evidence";
 import type { Settings } from "../lib/settingsStore";
 import Home from "./Home";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
-const liveSnapshot: DockerSnapshot = { containers: [{ id: "live-api", name: "api", image: "nginx:1", status: "running", role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
+const liveSnapshot: DockerSnapshot = { containers: [{ id: "live-api", name: "api", image: "nginx:1", status: "running", role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 const demoModel = buildModel(getDemoResponse("/api/snapshot"), runtime);
 const liveModel = buildModel(liveSnapshot, runtime);
 
@@ -43,13 +44,13 @@ function updatesValue(target: HTMLElement): string {
 }
 describe("Updates wiring", () => {
   it("keeps not-collected update copy across a demo-to-live authority flip", () => {
-    state.demoMode = true; state.health = { status: "ok", mode: "mock", dockerReachable: true, lastUpdated: 1, snapshotVersion: "demo" };
+    state.demoMode = true; state.health = { status: "ok", mode: "mock", dockerReachable: true, lastUpdated: 1, modelRevision: "test-revision", snapshotVersion: "demo" };
     const target = render();
     expect(target.querySelector(".conn-mode")!.textContent).toBe("Demo Engine");
     expect(target.querySelector(".metric-updates")!.textContent).toContain("Not collected");
     // U11: the authority flip must happen INSIDE act() so React commits the
     // state change + re-render as one update (no "not wrapped in act" warning).
-    act(() => { state.demoMode = false; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 2, snapshotVersion: "live" }; root!.render(shell()); });
+    act(() => { state.demoMode = false; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 2, modelRevision: "test-revision", snapshotVersion: "live" }; root!.render(shell()); });
     expect(target.querySelector(".conn-mode")!.textContent).toBe("Docker Engine");
     expect(target.querySelector(".metric-updates")!.textContent).toContain("Not collected");
     expect(updatesValue(target)).not.toMatch(/^\d+$/); // V6: never a digit-only Updates value
@@ -59,11 +60,11 @@ describe("Updates wiring", () => {
   it("keeps not-collected copy across a live-to-demo flip", () => {
     // U12: the reverse transition (G-36 asymmetry) — live authority first,
     // then demo; the claim must not depend on flip direction.
-    state.demoMode = false; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 2, snapshotVersion: "live" };
+    state.demoMode = false; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 2, modelRevision: "test-revision", snapshotVersion: "live" };
     const target = render();
     expect(target.querySelector(".conn-mode")!.textContent).toBe("Docker Engine");
     expect(target.querySelector(".metric-updates")!.textContent).toContain("Not collected");
-    act(() => { state.demoMode = true; state.health = { status: "ok", mode: "mock", dockerReachable: true, lastUpdated: 3, snapshotVersion: "demo" }; root!.render(shell()); });
+    act(() => { state.demoMode = true; state.health = { status: "ok", mode: "mock", dockerReachable: true, lastUpdated: 3, modelRevision: "test-revision", snapshotVersion: "demo" }; root!.render(shell()); });
     expect(target.querySelector(".conn-mode")!.textContent).toBe("Demo Engine");
     expect(target.querySelector(".metric-updates")!.textContent).toContain("Not collected");
     expect(updatesValue(target)).not.toMatch(/^\d+$/);
@@ -75,10 +76,10 @@ describe("Updates wiring", () => {
     // useSystemModel's generation-checked memo). Swapping the mocked model
     // simulates that transition — the claim is mode-independent and must not
     // depend on which model instance is current.
-    state.demoMode = true; state.health = { status: "ok", mode: "mock", dockerReachable: true, lastUpdated: 1, snapshotVersion: "demo" };
+    state.demoMode = true; state.health = { status: "ok", mode: "mock", dockerReachable: true, lastUpdated: 1, modelRevision: "test-revision", snapshotVersion: "demo" };
     const target = render();
     expect(target.querySelector(".metric-updates")!.textContent).toContain("Not collected");
-    act(() => { state.demoMode = false; state.model = liveModel; state.modelProvenance = "live"; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 2, snapshotVersion: "live" }; root!.render(shell()); });
+    act(() => { state.demoMode = false; state.model = liveModel; state.modelProvenance = "live"; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 2, modelRevision: "test-revision", snapshotVersion: "live" }; root!.render(shell()); });
     expect(target.querySelector(".conn-mode")!.textContent).toBe("Docker Engine");
     expect(target.querySelector(".metric-updates")!.textContent).toContain("Not collected");
     expect(updatesValue(target)).not.toMatch(/^\d+$/);

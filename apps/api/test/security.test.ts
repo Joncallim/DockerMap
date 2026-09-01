@@ -978,6 +978,39 @@ test("authenticated daemon schema violations fail closed instead of reaching bro
   );
 });
 
+test("daemon model responses require non-empty revision and complete provider state bytes", async () => {
+  const fixture = async (name: string) => JSON.parse(
+    await readFile(new URL(`../../../tests/fixtures/contracts/${name}`, import.meta.url), "utf8")
+  ) as Record<string, unknown>;
+  const snapshot = await fixture("mock-snapshot.json");
+  const runtime = await fixture("runtime-map.json");
+  const invalidResponses = [
+    ["/daemon/snapshot", { ...snapshot, modelRevision: "" }],
+    ["/daemon/snapshot", (() => { const value = structuredClone(snapshot); delete value.modelRevision; return value; })()],
+    ["/daemon/runtime/map", (() => { const value = structuredClone(runtime); delete value.providerStates; return value; })()],
+    ["/daemon/runtime/map", { ...runtime, providerStates: [] }],
+    ["/daemon/runtime/map", (() => {
+      const value = structuredClone(runtime);
+      value.providerStates[4].slot = value.providerStates[0].slot;
+      return value;
+    })()]
+  ] as const;
+  for (const [daemonPath, body] of invalidResponses) {
+    const daemon = await startStubDaemon((req, res) => {
+      if (req.url !== daemonPath) return sendJson(res, 404, { code: "not_found", message: "missing" });
+      sendJson(res, 200, body);
+    });
+    const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+    const browserPath = daemonPath.replace("/daemon", "/api");
+    const response = await request(api, browserPath, { headers: { Authorization: "Bearer test-token" } });
+    assert.equal(response.status, 502, browserPath);
+    assert.deepEqual(await response.json(), {
+      code: "daemon_invalid_response",
+      message: "Daemon response did not match its declared contract"
+    });
+  }
+});
+
 test("daemon response validator maps every generated Rust response root and rejects unknown paths", async () => {
   const { DAEMON_RESPONSE_SCHEMA_PATHS, daemonResponseSchemaId, validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
   const { RUST_ROUTE_RESPONSE_SCHEMAS } = await import("../src/rustResponseContracts.js");
@@ -1060,6 +1093,7 @@ test("status endpoint classifies free-form docker status texts", async () => {
         mode: "docker",
         dockerReachable: true,
         lastUpdated: 1,
+        modelRevision: "revision-1",
         snapshotVersion: "1",
         message: "stub daemon"
       });
@@ -1117,7 +1151,8 @@ test("status endpoint classifies free-form docker status texts", async () => {
         images: [],
         networks: [],
         volumes: [],
-        lastUpdated: 1
+        lastUpdated: 1,
+        modelRevision: "revision-1"
       });
       return;
     }
@@ -1151,6 +1186,7 @@ test("/api/status counts a Docker health-suffix container as attention, not heal
         mode: "docker",
         dockerReachable: true,
         lastUpdated: 1,
+        modelRevision: "revision-1",
         snapshotVersion: "1"
       });
       return;
@@ -1195,7 +1231,8 @@ test("/api/status counts a Docker health-suffix container as attention, not heal
         images: [],
         networks: [],
         volumes: [],
-        lastUpdated: 1
+        lastUpdated: 1,
+        modelRevision: "revision-1"
       });
       return;
     }
@@ -1232,6 +1269,7 @@ test("/api/status refuses to claim a coherent source when health and snapshot di
         mode: "docker",
         dockerReachable: true,
         lastUpdated: 1,
+        modelRevision: "revision-1",
         snapshotVersion: "1"
       });
       return;
@@ -1504,6 +1542,7 @@ test("SSE stream survives a client disconnect mid-emit without crashing the API"
           mode: "docker",
           dockerReachable: true,
           lastUpdated: 1,
+          modelRevision: "revision-1",
           snapshotVersion: "1",
           message: "stub daemon"
         });
@@ -1575,6 +1614,7 @@ test("API forwards fixed read-only daemon paths with normalized query encoding",
         mode: "docker",
         dockerReachable: true,
         lastUpdated: 1,
+        modelRevision: "revision-1",
         snapshotVersion: "1",
         message: "stub daemon"
       });
@@ -1740,13 +1780,14 @@ test("API sends the dedicated daemon token before falling back to the API token"
           mode: "mock",
           dockerReachable: false,
           lastUpdated: 1,
+          modelRevision: "revision-1",
           snapshotVersion: "1",
           message: "stub daemon"
         });
         return;
       }
       if (req.url === "/daemon/snapshot") {
-        sendJson(res, 200, { containers: [], images: [], networks: [], volumes: [], lastUpdated: 1 });
+        sendJson(res, 200, { containers: [], images: [], networks: [], volumes: [], lastUpdated: 1, modelRevision: "revision-1" });
         return;
       }
       sendJson(res, 404, { code: "not_found", message: "missing" });
@@ -1793,7 +1834,8 @@ test("API publishes redacted and normalized daemon data on every response route"
     images: [{ image: hostile, containers: [hostile], status: hostile }],
     networks: [{ id: hostile, name: hostile, driver: hostile, internal: false, members: [hostile] }],
     volumes: [{ id: hostile, name: hostile, attachedTo: [hostile] }],
-    lastUpdated: 1
+    lastUpdated: 1,
+    modelRevision: "revision-1"
   };
   const daemon = await startStubDaemon((req, res) => {
     if (req.url === "/daemon/health") {
@@ -1802,6 +1844,7 @@ test("API publishes redacted and normalized daemon data on every response route"
         mode: "mock",
         dockerReachable: false,
         lastUpdated: 1,
+        modelRevision: "revision-1",
         snapshotVersion: hostile,
         message: hostile
       });
@@ -1820,7 +1863,15 @@ test("API publishes redacted and normalized daemon data on every response route"
         nodes: [{ id: hostile, provider: "other", type: "service", label: hostile, status: hostile, metadata: { [hostile]: hostile } }],
         edges: [{ source: hostile, target: hostile, relationship: "depends_on", metadata: { [hostile]: hostile } }],
         diagnostics: [{ provider: "other", severity: "warning", message: hostile }],
-        lastUpdated: 1
+        lastUpdated: 1,
+        modelRevision: "revision-1",
+        providerStates: [
+          { slot: "network_infrastructure", state: "unavailable" },
+          { slot: "host_scoped", state: "unavailable" },
+          { slot: "python_processes", state: "unavailable" },
+          { slot: "native_processes", state: "unavailable" },
+          { slot: "project_npm", state: "unavailable" }
+        ]
       });
       return;
     }

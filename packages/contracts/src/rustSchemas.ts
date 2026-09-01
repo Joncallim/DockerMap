@@ -205,6 +205,11 @@ export const RUST_RESPONSE_SCHEMAS = {
       "minimum": 0,
       "type": "integer"
     },
+    "modelRevision": {
+      "description": "Opaque daemon-publication revision. This is a process-instance scoped,\nmonotonic cache revision, not a timestamp and not a content hash.",
+      "minLength": 1,
+      "type": "string"
+    },
     "networks": {
       "items": {
         "$ref": "#/$defs/NetworkRecord"
@@ -234,7 +239,8 @@ export const RUST_RESPONSE_SCHEMAS = {
     "images",
     "networks",
     "volumes",
-    "lastUpdated"
+    "lastUpdated",
+    "modelRevision"
   ],
   "title": "DockerSnapshot",
   "type": "object"
@@ -328,6 +334,44 @@ export const RUST_RESPONSE_SCHEMAS = {
         "warning",
         "error",
         "blocked"
+      ],
+      "type": "string"
+    },
+    "ProviderSlot": {
+      "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
+      "enum": [
+        "network_infrastructure",
+        "host_scoped",
+        "python_processes",
+        "native_processes",
+        "project_npm"
+      ],
+      "type": "string"
+    },
+    "ProviderState": {
+      "additionalProperties": false,
+      "properties": {
+        "slot": {
+          "$ref": "#/$defs/ProviderSlot"
+        },
+        "state": {
+          "$ref": "#/$defs/ProviderStateKind"
+        }
+      },
+      "required": [
+        "slot",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ProviderStateKind": {
+      "enum": [
+        "fresh",
+        "stale",
+        "collecting",
+        "unavailable",
+        "timed_out",
+        "disabled"
       ],
       "type": "string"
     },
@@ -1000,10 +1044,22 @@ export const RUST_RESPONSE_SCHEMAS = {
       "minimum": 0,
       "type": "integer"
     },
+    "modelRevision": {
+      "minLength": 1,
+      "type": "string"
+    },
     "nodes": {
       "items": {
         "$ref": "#/$defs/RuntimeMapNode"
       },
+      "type": "array"
+    },
+    "providerStates": {
+      "items": {
+        "$ref": "#/$defs/ProviderState"
+      },
+      "maxItems": 5,
+      "minItems": 5,
       "type": "array"
     },
     "source": {
@@ -1022,7 +1078,9 @@ export const RUST_RESPONSE_SCHEMAS = {
     "nodes",
     "edges",
     "diagnostics",
-    "lastUpdated"
+    "lastUpdated",
+    "modelRevision",
+    "providerStates"
   ],
   "title": "RuntimeMap",
   "type": "object"
@@ -1603,6 +1661,10 @@ export const RUST_RESPONSE_SCHEMAS = {
     "mode": {
       "$ref": "#/$defs/RuntimeMode"
     },
+    "modelRevision": {
+      "minLength": 1,
+      "type": "string"
+    },
     "snapshotVersion": {
       "type": "string"
     },
@@ -1615,7 +1677,8 @@ export const RUST_RESPONSE_SCHEMAS = {
     "mode",
     "dockerReachable",
     "lastUpdated",
-    "snapshotVersion"
+    "snapshotVersion",
+    "modelRevision"
   ],
   "title": "HealthResponse",
   "type": "object"
@@ -2173,6 +2236,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "minimum": 0,
       "type": "integer"
     },
+    "modelRevision": {
+      "description": "Opaque daemon-publication revision. This is a process-instance scoped,\nmonotonic cache revision, not a timestamp and not a content hash.",
+      "minLength": 1,
+      "type": "string"
+    },
     "networks": {
       "items": {
         "$ref": "#/components/schemas/DockerSnapshot/$defs/NetworkRecord"
@@ -2202,7 +2270,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "images",
     "networks",
     "volumes",
-    "lastUpdated"
+    "lastUpdated",
+    "modelRevision"
   ],
   "title": "DockerSnapshot",
   "type": "object"
@@ -2296,6 +2365,44 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "warning",
         "error",
         "blocked"
+      ],
+      "type": "string"
+    },
+    "ProviderSlot": {
+      "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
+      "enum": [
+        "network_infrastructure",
+        "host_scoped",
+        "python_processes",
+        "native_processes",
+        "project_npm"
+      ],
+      "type": "string"
+    },
+    "ProviderState": {
+      "additionalProperties": false,
+      "properties": {
+        "slot": {
+          "$ref": "#/components/schemas/RuntimeMap/$defs/ProviderSlot"
+        },
+        "state": {
+          "$ref": "#/components/schemas/RuntimeMap/$defs/ProviderStateKind"
+        }
+      },
+      "required": [
+        "slot",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ProviderStateKind": {
+      "enum": [
+        "fresh",
+        "stale",
+        "collecting",
+        "unavailable",
+        "timed_out",
+        "disabled"
       ],
       "type": "string"
     },
@@ -2968,10 +3075,22 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "minimum": 0,
       "type": "integer"
     },
+    "modelRevision": {
+      "minLength": 1,
+      "type": "string"
+    },
     "nodes": {
       "items": {
         "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeMapNode"
       },
+      "type": "array"
+    },
+    "providerStates": {
+      "items": {
+        "$ref": "#/components/schemas/RuntimeMap/$defs/ProviderState"
+      },
+      "maxItems": 5,
+      "minItems": 5,
       "type": "array"
     },
     "source": {
@@ -2990,7 +3109,9 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "nodes",
     "edges",
     "diagnostics",
-    "lastUpdated"
+    "lastUpdated",
+    "modelRevision",
+    "providerStates"
   ],
   "title": "RuntimeMap",
   "type": "object"
@@ -3571,6 +3692,10 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "mode": {
       "$ref": "#/components/schemas/HealthResponse/$defs/RuntimeMode"
     },
+    "modelRevision": {
+      "minLength": 1,
+      "type": "string"
+    },
     "snapshotVersion": {
       "type": "string"
     },
@@ -3583,7 +3708,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "mode",
     "dockerReachable",
     "lastUpdated",
-    "snapshotVersion"
+    "snapshotVersion",
+    "modelRevision"
   ],
   "title": "HealthResponse",
   "type": "object"

@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -34,8 +35,8 @@ const fixture: DockerSnapshot = {
   images: [],
   networks: [],
   volumes: [],
-  lastUpdated: 0
-};
+  modelRevision: "test-revision", lastUpdated: 0,
+  };
 
 const runtimeFixture: RuntimeMap = {
   nodes: [
@@ -45,8 +46,10 @@ const runtimeFixture: RuntimeMap = {
   ],
   edges: [],
   diagnostics: [],
-  lastUpdated: 0
-};
+  providerStates: testProviderStates,
+    lastUpdated: 0,
+  modelRevision: "test-revision"
+  };
 
 const model = buildModel(fixture, runtimeFixture);
 

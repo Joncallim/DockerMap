@@ -9,6 +9,44 @@
       ],
       "type": "string"
     },
+    "ProviderSlot": {
+      "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
+      "enum": [
+        "network_infrastructure",
+        "host_scoped",
+        "python_processes",
+        "native_processes",
+        "project_npm"
+      ],
+      "type": "string"
+    },
+    "ProviderState": {
+      "additionalProperties": false,
+      "properties": {
+        "slot": {
+          "$ref": "#/$defs/ProviderSlot"
+        },
+        "state": {
+          "$ref": "#/$defs/ProviderStateKind"
+        }
+      },
+      "required": [
+        "slot",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ProviderStateKind": {
+      "enum": [
+        "fresh",
+        "stale",
+        "collecting",
+        "unavailable",
+        "timed_out",
+        "disabled"
+      ],
+      "type": "string"
+    },
     "RuntimeAdvisorySeverity": {
       "enum": [
         "low",
@@ -678,10 +716,22 @@
       "minimum": 0,
       "type": "integer"
     },
+    "modelRevision": {
+      "minLength": 1,
+      "type": "string"
+    },
     "nodes": {
       "items": {
         "$ref": "#/$defs/RuntimeMapNode"
       },
+      "type": "array"
+    },
+    "providerStates": {
+      "items": {
+        "$ref": "#/$defs/ProviderState"
+      },
+      "maxItems": 5,
+      "minItems": 5,
       "type": "array"
     },
     "source": {
@@ -700,7 +750,9 @@
     "nodes",
     "edges",
     "diagnostics",
-    "lastUpdated"
+    "lastUpdated",
+    "modelRevision",
+    "providerStates"
   ],
   "title": "RuntimeMap",
   "type": "object"

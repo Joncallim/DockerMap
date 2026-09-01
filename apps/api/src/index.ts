@@ -313,6 +313,7 @@ function getMockResponse<T>(path: string): T {
     mode: "mock",
     dockerReachable: false,
     lastUpdated: mockSnapshot.lastUpdated ?? Date.now(),
+    modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1",
     snapshotVersion: String(mockSnapshot.lastUpdated ?? Date.now()),
     message: "Node mock fallback active"
   };
@@ -417,6 +418,14 @@ function getMockResponse<T>(path: string): T {
         }
       ],
       lastUpdated: mockSnapshot.lastUpdated ?? Date.now(),
+      modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1",
+      providerStates: [
+        { slot: "network_infrastructure", state: "unavailable" },
+        { slot: "host_scoped", state: "unavailable" },
+        { slot: "python_processes", state: "unavailable" },
+        { slot: "native_processes", state: "unavailable" },
+        { slot: "project_npm", state: "unavailable" }
+      ],
       source: "mock"
     };
     return runtimeMap as T;

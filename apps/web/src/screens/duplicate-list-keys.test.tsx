@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -24,7 +25,7 @@ import ServiceDetail from "./ServiceDetail";
 // ServiceDetail tab), ServiceDetail port tags, Runtime inspector log refs
 // and event refs.
 
-const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
+const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 
 /** Duplicate service ids (redaction can collapse container ids) drive BOTH
  * the Home attention list and the change feed (feed ids embed service.id). */
@@ -56,8 +57,8 @@ const homeFixture: DockerSnapshot = {
   images: [],
   networks: [],
   volumes: [],
-  lastUpdated: 0
-};
+  modelRevision: "test-revision", lastUpdated: 0,
+  };
 
 const detailFixture: DockerSnapshot = {
   containers: [
@@ -76,8 +77,8 @@ const detailFixture: DockerSnapshot = {
   images: [],
   networks: [],
   volumes: [],
-  lastUpdated: 0
-};
+  modelRevision: "test-revision", lastUpdated: 0,
+  };
 
 const duplicateLogs: LogsResponse = {
   service: null,
@@ -122,8 +123,10 @@ const runtimeFixture: RuntimeMap = {
   nodes: [runtimeNode("n1", "web")],
   edges: [],
   diagnostics: [],
-  lastUpdated: 0
-};
+  providerStates: testProviderStates,
+    lastUpdated: 0,
+  modelRevision: "test-revision"
+  };
 
 function contextFor(fixture: DockerSnapshot, runtime: RuntimeMap, mode: EvidenceMode, modelProvenance: ModelProvenance): AppContextValue {
   const model = buildModel(fixture, runtime);
@@ -250,7 +253,7 @@ describe("collidable list keys are occurrence-qualified (client reconciler)", ()
 
   it("Runtime inspector renders duplicate log and event ref ids as distinct rows without a same-key warning", () => {
     const { hostEl, sameKeyErrors } = mountCollectingKeys(
-      <AppContext.Provider value={contextFor({ containers: [], images: [], networks: [], volumes: [], lastUpdated: 0 }, runtimeFixture, "live", "live")}>
+      <AppContext.Provider value={contextFor({ containers: [], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 }, runtimeFixture, "live", "live")}>
         <MemoryRouter initialEntries={["/runtime"]}>
           <Routes>
             <Route path="/runtime" element={<RuntimeScreen />} />

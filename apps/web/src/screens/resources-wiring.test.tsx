@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -11,8 +12,8 @@ import type { Settings } from "../lib/settingsStore";
 import Home from "./Home";
 import ServiceDetail from "./ServiceDetail";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
-const fixture = (status: string): DockerSnapshot => ({ containers: [{ id: "prod-secret-host", name: "prod-secret-host", image: "nginx", status, role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], lastUpdated: 0 });
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
+const fixture = (status: string): DockerSnapshot => ({ containers: [{ id: "prod-secret-host", name: "prod-secret-host", image: "nginx", status, role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 });
 const liveModel = buildModel(fixture("Exited (1)"), runtime);
 const demoModel = buildModel(fixture("Exited (1)"), runtime);
 const state = vi.hoisted(() => ({ demoMode: false, health: null as HealthResponse | null, model: null as SystemModel | null, modelProvenance: null as ModelProvenance | null }));
@@ -29,7 +30,7 @@ afterEach(() => { act(() => root?.unmount()); host?.remove(); root = null; host 
 
 describe("resource wiring holds model provenance through mode flips", () => {
   it("does not relabel retained live bytes, resumes only after demo pair publishes, and rejects mock", () => {
-    state.demoMode = false; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "live" }; state.model = liveModel; state.modelProvenance = "live";
+    state.demoMode = false; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, modelRevision: "test-revision", snapshotVersion: "live" }; state.model = liveModel; state.modelProvenance = "live";
     const target = render("/");
     expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected");
     expect(target.querySelectorAll(".svc-res .bar")).toHaveLength(0);
@@ -51,10 +52,10 @@ describe("resource wiring holds model provenance through mode flips", () => {
 
   it("rejects mock bytes under any authority, including dynamic docker→mock fallback", () => {
     // retained live pair, health alone flips docker→mock (G-38 scenario)
-    state.demoMode = false; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "live" }; state.model = liveModel; state.modelProvenance = "live";
+    state.demoMode = false; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, modelRevision: "test-revision", snapshotVersion: "live" }; state.model = liveModel; state.modelProvenance = "live";
     const target = render("/");
     expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected");
-    act(() => { state.health = { status: "ok", mode: "mock", dockerReachable: false, lastUpdated: 2, snapshotVersion: "mock" }; root!.render(shell("/")); });
+    act(() => { state.health = { status: "ok", mode: "mock", dockerReachable: false, lastUpdated: 2, modelRevision: "test-revision", snapshotVersion: "mock" }; root!.render(shell("/")); });
     expect(target.querySelector(".conn-mode")!.textContent).toBe("Mock Engine");
     expect(target.querySelectorAll(".svc-res .bar")).toHaveLength(0);
     expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected"); // G-15: unavailable persists
@@ -71,13 +72,13 @@ describe("resource wiring holds model provenance through mode flips", () => {
     expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected");
     expect(target.querySelectorAll(".svc-res .bar")).toHaveLength(0);
     // authority arrives — stays unavailable because mock
-    act(() => { state.health = { status: "ok", mode: "mock", dockerReachable: false, lastUpdated: 2, snapshotVersion: "mock" }; state.modelProvenance = "mock"; root!.render(shell("/")); });
+    act(() => { state.health = { status: "ok", mode: "mock", dockerReachable: false, lastUpdated: 2, modelRevision: "test-revision", snapshotVersion: "mock" }; state.modelProvenance = "mock"; root!.render(shell("/")); });
     expect(target.querySelectorAll(".svc-res .bar")).toHaveLength(0);
     expect(target.querySelector(".svc-res")!.textContent).toBe("CPU not collected");
   });
 
   it("opens the Resources tab by interaction and renders non-collection", () => {
-    state.demoMode = false; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "live" }; state.model = liveModel; state.modelProvenance = "live";
+    state.demoMode = false; state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, modelRevision: "test-revision", snapshotVersion: "live" }; state.model = liveModel; state.modelProvenance = "live";
     const target = render("/services/prod-secret-host");
     expect(target.querySelector(".panel-resources")).toBeNull();
     const tab = Array.from(target.querySelectorAll<HTMLButtonElement>("[role=tab]")).find((button) => button.textContent?.includes("Resources"));

@@ -340,6 +340,7 @@ dependencies = [
  "bollard",
  "dockermap-core",
  "futures-util",
+ "getrandom 0.3.4",
  "libc",
  "serde",
  "serde_json",

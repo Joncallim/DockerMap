@@ -21,8 +21,9 @@ use crate::{
     publication::redact_runtime_map,
 };
 use dockermap_core::{
-    derive_runtime_map, service_entity_kind_name, DiagnosticSeverity, DockerSnapshot, RuntimeMap,
-    RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind, ServiceEntityKind,
+    derive_runtime_map, service_entity_kind_name, DiagnosticSeverity, DockerSnapshot, ProviderSlot,
+    ProviderStateKind, RuntimeMap, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer,
+    RuntimeProviderKind, ServiceEntityKind,
 };
 use std::{
     collections::BTreeMap,
@@ -46,14 +47,7 @@ const RUNTIME_MAP_COLLECTION_TIMEOUT: Duration = Duration::from_secs(15);
 /// Each refresh invokes the fixed implementation below at most once. A future
 /// scheduling change must explicitly revise this list, its contract ADR, and
 /// the single-flight tests rather than silently introducing a background job.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StaticProviderSlot {
-    NetworkInfrastructure,
-    HostScoped,
-    PythonProcesses,
-    NativeProcesses,
-    ProjectNpm,
-}
+pub(crate) type StaticProviderSlot = ProviderSlot;
 
 pub(crate) const STATIC_PROVIDER_SLOTS: &[StaticProviderSlot] = &[
     StaticProviderSlot::NetworkInfrastructure,
@@ -168,9 +162,24 @@ fn collect_provider_observations(snapshot: &DockerSnapshot) -> ProviderCollectio
         let (nodes, edges, diagnostics) = collection.parts_mut();
         collect_network_infrastructure(pid_namespace, snapshot, nodes, edges, diagnostics);
     }
+    collection.set_state(
+        StaticProviderSlot::NetworkInfrastructure,
+        // This slot still derives bounded Docker network classifications in a
+        // restricted PID namespace, so it remains fresh. Host listener
+        // discovery is separately represented by the disabled HostScoped slot.
+        ProviderStateKind::Fresh,
+    );
     #[cfg(debug_assertions)]
     baseline_trace.record(StaticProviderSlot::NetworkInfrastructure);
     collect_host_scoped_runtime_providers(pid_namespace, &mut collection);
+    collection.set_state(
+        StaticProviderSlot::HostScoped,
+        if pid_namespace.is_restricted() {
+            ProviderStateKind::Disabled
+        } else {
+            ProviderStateKind::Fresh
+        },
+    );
     #[cfg(debug_assertions)]
     baseline_trace.record(StaticProviderSlot::HostScoped);
     {
@@ -182,15 +191,24 @@ fn collect_provider_observations(snapshot: &DockerSnapshot) -> ProviderCollectio
         #[cfg(debug_assertions)]
         baseline_trace.record(StaticProviderSlot::NativeProcesses);
     }
+    let process_state = if pid_namespace.is_restricted() {
+        ProviderStateKind::Disabled
+    } else {
+        ProviderStateKind::Fresh
+    };
+    collection.set_state(StaticProviderSlot::PythonProcesses, process_state);
+    collection.set_state(StaticProviderSlot::NativeProcesses, process_state);
     if let Some(root) = project_root.as_deref() {
         let (nodes, edges, diagnostics) = collection.parts_mut();
         collect_npm_projects(root, pid_namespace, nodes, edges, diagnostics);
+        collection.set_state(StaticProviderSlot::ProjectNpm, ProviderStateKind::Fresh);
     } else {
         collection.push_diagnostic(ProviderDiagnostic::new(
             RuntimeProviderKind::Npm,
             DiagnosticSeverity::Info,
             "npm discovery skipped: project root unavailable",
         ));
+        collection.set_state(StaticProviderSlot::ProjectNpm, ProviderStateKind::Disabled);
     }
     #[cfg(debug_assertions)]
     baseline_trace.record(StaticProviderSlot::ProjectNpm);

@@ -18,6 +18,7 @@ const demoHealth: HealthResponse = {
   mode: "mock", // demoData.ts:176 — demo health claims mock mode
   dockerReachable: true, // demoData.ts:177 — NOT trustworthy in demo
   lastUpdated: 1,
+  modelRevision: "test-revision",
   snapshotVersion: "demo"
 };
 const liveHealth: HealthResponse = {
@@ -25,6 +26,7 @@ const liveHealth: HealthResponse = {
   mode: "docker",
   dockerReachable: true,
   lastUpdated: 2,
+  modelRevision: "test-revision",
   snapshotVersion: "live"
 };
 const mockHealth: HealthResponse = {
@@ -32,6 +34,7 @@ const mockHealth: HealthResponse = {
   mode: "mock",
   dockerReachable: false,
   lastUpdated: 3,
+  modelRevision: "test-revision",
   snapshotVersion: "mock"
 };
 

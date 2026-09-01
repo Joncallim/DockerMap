@@ -12,7 +12,8 @@ use crate::publication::{
     redact_runtime_nodes,
 };
 use dockermap_core::{
-    DiagnosticSeverity, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode, RuntimeProviderKind,
+    DiagnosticSeverity, ProviderSlot, ProviderState, ProviderStateKind, RuntimeMapDiagnostic,
+    RuntimeMapEdge, RuntimeMapNode, RuntimeProviderKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +45,7 @@ pub(crate) struct ProviderCollection {
     nodes: Vec<RuntimeMapNode>,
     edges: Vec<RuntimeMapEdge>,
     diagnostics: Vec<RuntimeMapDiagnostic>,
+    states: Vec<ProviderState>,
 }
 
 impl ProviderCollection {
@@ -78,6 +80,26 @@ impl ProviderCollection {
         Vec<RuntimeMapDiagnostic>,
     ) {
         (self.nodes, self.edges, self.diagnostics)
+    }
+
+    /// Fixed static-slot state is collected independently of human-readable
+    /// diagnostics. That keeps the public freshness contract bounded and
+    /// prevents consumers from reverse-engineering state from error strings.
+    pub(crate) fn set_state(&mut self, slot: ProviderSlot, state: ProviderStateKind) {
+        if let Some(existing) = self
+            .states
+            .iter_mut()
+            .find(|existing| existing.slot == slot)
+        {
+            existing.state = state;
+        } else {
+            self.states.push(ProviderState { slot, state });
+            self.states.sort_by_key(|state| state.slot);
+        }
+    }
+
+    pub(crate) fn states(&self) -> &[ProviderState] {
+        &self.states
     }
 
     /// The cache can retain a successful provider pass across later failures.

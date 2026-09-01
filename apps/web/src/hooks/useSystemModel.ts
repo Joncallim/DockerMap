@@ -39,6 +39,10 @@ export function useSystemModel(refreshTick: number, evidenceMode: EvidenceMode |
     if (!snapshot.data || !runtimeMap.data) return lastModel.current;
     if (snapshot.generation !== runtimeMap.generation) return lastModel.current;
     if (snapshot.provenance !== runtimeMap.provenance) return lastModel.current;
+    // A timestamp is only an observation marker.  The daemon's opaque,
+    // monotonic model revision is the coherence authority: never combine
+    // missing, empty, or cross-publication values into browser state.
+    if (!sameNonEmptyModelRevision(snapshot.data.modelRevision, runtimeMap.data.modelRevision)) return lastModel.current;
     const built = buildModel(snapshot.data, runtimeMap.data);
     lastModel.current = built;
     lastProvenance.current = snapshot.provenance;
@@ -49,6 +53,7 @@ export function useSystemModel(refreshTick: number, evidenceMode: EvidenceMode |
     if (!snapshot.data || !runtimeMap.data) return null;
     if (snapshot.generation !== runtimeMap.generation) return lastProvenance.current;
     if (snapshot.provenance !== runtimeMap.provenance) return lastProvenance.current;
+    if (!sameNonEmptyModelRevision(snapshot.data.modelRevision, runtimeMap.data.modelRevision)) return lastProvenance.current;
     return snapshot.provenance;
   }, [snapshot.data, snapshot.generation, snapshot.provenance, runtimeMap.data, runtimeMap.generation, runtimeMap.provenance]);
 
@@ -58,4 +63,10 @@ export function useSystemModel(refreshTick: number, evidenceMode: EvidenceMode |
     loading: snapshot.loading || runtimeMap.loading,
     error: snapshot.error ?? runtimeMap.error
   };
+}
+
+function sameNonEmptyModelRevision(snapshotRevision: string | undefined, runtimeRevision: string | undefined): boolean {
+  return typeof snapshotRevision === "string"
+    && snapshotRevision.length > 0
+    && snapshotRevision === runtimeRevision;
 }

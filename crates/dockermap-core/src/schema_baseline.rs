@@ -111,6 +111,7 @@ mod tests {
         let valid = serde_json::json!({
             "containers": [], "images": [], "networks": [], "volumes": [],
             "lastUpdated": JSON_SAFE_INTEGER_MAX,
+            "modelRevision": "test-revision",
         });
         let above_json_safe = serde_json::from_str(
             r#"{"containers":[],"images":[],"networks":[],"volumes":[],"lastUpdated":9007199254740992}"#,
@@ -121,6 +122,48 @@ mod tests {
         assert!(
             !validator.is_valid(&above_json_safe),
             "schema must reject integers that browser JSON consumers cannot represent exactly"
+        );
+    }
+
+    #[test]
+    fn model_revision_is_required_and_nonempty_in_every_model_envelope_schema() {
+        for name in ["DockerSnapshot", "RuntimeMap", "HealthResponse"] {
+            let schema = DAEMON_SCHEMA_NAMES
+                .iter()
+                .zip(daemon_schema_documents())
+                .find_map(|(candidate, schema)| (*candidate == name).then_some(schema))
+                .expect("model schema exists");
+            let revision = schema
+                .pointer("/properties/modelRevision")
+                .expect("model revision property exists");
+            assert_eq!(
+                revision.get("minLength").and_then(|value| value.as_u64()),
+                Some(1)
+            );
+            assert!(schema
+                .get("required")
+                .and_then(|value| value.as_array())
+                .is_some_and(|required| required.iter().any(|field| field == "modelRevision")));
+        }
+    }
+
+    #[test]
+    fn runtime_provider_states_schema_is_exactly_the_fixed_static_slot_count() {
+        let schema = DAEMON_SCHEMA_NAMES
+            .iter()
+            .zip(daemon_schema_documents())
+            .find_map(|(name, schema)| (*name == "RuntimeMap").then_some(schema))
+            .expect("runtime map schema exists");
+        let states = schema
+            .pointer("/properties/providerStates")
+            .expect("provider state property exists");
+        assert_eq!(
+            states.get("minItems").and_then(|value| value.as_u64()),
+            Some(5)
+        );
+        assert_eq!(
+            states.get("maxItems").and_then(|value| value.as_u64()),
+            Some(5)
         );
     }
 }

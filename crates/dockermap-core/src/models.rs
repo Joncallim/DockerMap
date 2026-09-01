@@ -123,6 +123,11 @@ pub struct DockerSnapshot {
     pub volumes: Vec<VolumeRecord>,
     #[serde(rename = "lastUpdated")]
     pub last_updated: u64,
+    /// Opaque daemon-publication revision. This is a process-instance scoped,
+    /// monotonic cache revision, not a timestamp and not a content hash.
+    #[serde(rename = "modelRevision")]
+    #[schemars(length(min = 1))]
+    pub model_revision: String,
     /// ACTUAL source of these bytes: "docker" (live daemon collection) or
     /// "mock" (daemon mock fallback). Stamped by the daemon route layer from
     /// the cache's runtime mode so every model-bearing response attests its
@@ -137,6 +142,37 @@ pub struct DockerSnapshot {
 pub enum RuntimeMode {
     Docker,
     Mock,
+}
+
+/// Fixed, schema-backed host-provider slots. This is not a plugin or policy
+/// interface: the daemon owns the complete finite list.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSlot {
+    NetworkInfrastructure,
+    HostScoped,
+    PythonProcesses,
+    NativeProcesses,
+    ProjectNpm,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderStateKind {
+    Fresh,
+    Stale,
+    Collecting,
+    Unavailable,
+    TimedOut,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ProviderState {
+    pub slot: ProviderSlot,
+    pub state: ProviderStateKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -156,6 +192,9 @@ pub struct HealthResponse {
     pub last_updated: u64,
     #[serde(rename = "snapshotVersion")]
     pub snapshot_version: String,
+    #[serde(rename = "modelRevision")]
+    #[schemars(length(min = 1))]
+    pub model_revision: String,
     pub message: Option<String>,
 }
 
@@ -741,6 +780,12 @@ pub struct RuntimeMap {
     pub diagnostics: Vec<RuntimeMapDiagnostic>,
     #[serde(rename = "lastUpdated")]
     pub last_updated: u64,
+    #[serde(rename = "modelRevision")]
+    #[schemars(length(min = 1))]
+    pub model_revision: String,
+    #[serde(rename = "providerStates")]
+    #[schemars(length(min = 5, max = 5))]
+    pub provider_states: Vec<ProviderState>,
     /// ACTUAL source of these bytes: "docker" or "mock" (#85 A3). Stamped by
     /// the daemon route layer from the cache's runtime mode.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -1,11 +1,12 @@
+import { testProviderStates } from "./testProviderStates";
 import { describe, expect, it } from "vitest";
 import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
 import { answer } from "./copilot";
 import { getDemoResponse } from "./demoData";
 import { buildModel } from "./model";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
-const liveSnapshot: DockerSnapshot = { containers: [{ id: "live-api", name: "api", image: "nginx:1", status: "running", role: "api", networks: [], ports: ["443:443"], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
+const liveSnapshot: DockerSnapshot = { containers: [{ id: "live-api", name: "api", image: "nginx:1", status: "running", role: "api", networks: [], ports: ["443:443"], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 
 const demoSnapshot = (): DockerSnapshot => getDemoResponse<DockerSnapshot>("/api/snapshot");
 
@@ -61,7 +62,7 @@ describe("Copilot truthfulness in live mode", () => {
       { id: "web", name: "web", image: "nginx:1", status: "running", role: "api", networks: [], ports: [], mounts: [], dependsOn: ["db"] },
       { id: "db", name: "db", image: "postgres:16", status: "running", role: "database", networks: [], ports: [], mounts: [], dependsOn: [] }
     ];
-    const snapshot: DockerSnapshot = { containers, images: [], networks: [], volumes: [], lastUpdated: 0 };
+    const snapshot: DockerSnapshot = { containers, images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
     const response = answer(buildModel(snapshot, runtime), "what depends on db", "live", "live");
     expect(response.headline).toContain("declares start order after db");
     expect(response.body.join(" ")).toContain("start after db");
@@ -75,7 +76,7 @@ describe("Copilot truthfulness in live mode", () => {
       { id: "web", name: "web", image: "nginx:1", status: "Exited (1)", role: "api", networks: [], ports: [], mounts: [], dependsOn: ["db"] },
       { id: "db", name: "db", image: "postgres:16", status: "Exited (1)", role: "database", networks: [], ports: [], mounts: [], dependsOn: [] }
     ];
-    const snapshot: DockerSnapshot = { containers, images: [], networks: [], volumes: [], lastUpdated: 0 };
+    const snapshot: DockerSnapshot = { containers, images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
     const response = answer(buildModel(snapshot, runtime), "why is web offline", "live", "live");
     expect(response.body.join(" ")).toContain("Inferred");
     expect(response.body.join(" ")).toContain("heuristic, not measured");
@@ -87,7 +88,7 @@ describe("Copilot truthfulness in live mode", () => {
       { id: "web", name: "web", image: "nginx:1", status: "running", role: "api", networks: [], ports: [], mounts: [], dependsOn: ["db"] },
       { id: "db", name: "db", image: "postgres:16", status: "running", role: "database", networks: [], ports: [], mounts: [], dependsOn: [] }
     ];
-    const snapshot: DockerSnapshot = { containers, images: [], networks: [], volumes: [], lastUpdated: 0 };
+    const snapshot: DockerSnapshot = { containers, images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
     const response = answer(buildModel(snapshot, runtime), "tell me about web", "live", "live");
     expect(response.body.join(" ")).toContain("Declares start order after 1 service");
     expect(response.body.join(" ")).not.toContain("used by");

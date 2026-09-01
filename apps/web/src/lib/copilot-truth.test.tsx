@@ -1,3 +1,4 @@
+import { testProviderStates } from "./testProviderStates";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
@@ -8,10 +9,10 @@ import { answer } from "./copilot";
 import { getDemoResponse } from "./demoData";
 import { buildModel } from "./model";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 
 function snapshot(containers: DockerSnapshot["containers"]): DockerSnapshot {
-  return { containers, images: [], networks: [], volumes: [], lastUpdated: 0 };
+  return { containers, images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 }
 
 const healthy = (id: string, extra: Partial<DockerSnapshot["containers"][number]> = {}): DockerSnapshot["containers"][number] => ({

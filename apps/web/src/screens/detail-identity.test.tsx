@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -14,7 +15,7 @@ import ServiceDetail from "./ServiceDetail";
 import Storage from "./Storage";
 import VolumeDetail from "./VolumeDetail";
 
-const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
+const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
 
 /**
  * Fixture with schema-valid EMPTY identity strings in every new detail
@@ -106,8 +107,9 @@ const fixture: DockerSnapshot = {
     { id: "vol1", name: "vol1", attachedTo: ["", "app"] },
     { id: "", name: "empty-vol", attachedTo: ["app"] }
   ],
-  lastUpdated: 0
-};
+  lastUpdated: 0,
+  modelRevision: "test-revision"
+  };
 
 const model = buildModel(fixture, emptyRuntime);
 
@@ -325,8 +327,8 @@ describe("image status and network driver display use one qualified fallback val
     images: [{ image: "mixed:1", containers: ["svc-a", "svc-b"], status: "running" }],
     networks: [],
     volumes: [],
-    lastUpdated: 0
-  };
+    modelRevision: "test-revision", lastUpdated: 0,
+    };
 
   it("ImageDetail qualifies the header tag and reuses ONE sample status in all three locations", () => {
     const html = renderScreen("/images/mixed:1", "/images/:image", <ImageDetail defaultOpen />, buildModel(mixed, emptyRuntime));
@@ -349,8 +351,8 @@ describe("image status and network driver display use one qualified fallback val
     images: [{ image: "blank:1", containers: ["svc-a"], status: "" }],
     networks: [],
     volumes: [],
-    lastUpdated: 0
-  };
+    modelRevision: "test-revision", lastUpdated: 0,
+    };
 
   it("ImageDetail renders Unavailable image status in header, Overview, and internals when status is empty", () => {
     const html = renderScreen("/images/blank:1", "/images/:image", <ImageDetail defaultOpen />, buildModel(blank, emptyRuntime));
@@ -371,8 +373,8 @@ describe("image status and network driver display use one qualified fallback val
     images: [{ image: "twin:1", containers: ["svc-a", "svc-b", ""], status: "running" }],
     networks: [],
     volumes: [],
-    lastUpdated: 0
-  };
+    modelRevision: "test-revision", lastUpdated: 0,
+    };
 
   it("ImageDetail labels the fourth count distinct resolved service states", () => {
     const html = renderScreen("/images/twin:1", "/images/:image", <ImageDetail />, buildModel(twin, emptyRuntime));
@@ -391,8 +393,8 @@ describe("image status and network driver display use one qualified fallback val
     images: [],
     networks: [{ id: "net_x", name: "nodriver", driver: "", internal: false, members: ["app"] }],
     volumes: [],
-    lastUpdated: 0
-  };
+    modelRevision: "test-revision", lastUpdated: 0,
+    };
 
   it("NetworkDetail renders Unavailable network driver in the header tag and Overview when the driver is empty", () => {
     const html = renderScreen("/networks/nodriver", "/networks/:name", <NetworkDetail />, buildModel(nodriver, emptyRuntime));
@@ -432,8 +434,9 @@ describe("volume mount correlation is occurrence-indexed per consumer", () => {
     images: [],
     networks: [],
     volumes: [{ id: "dupvol", name: "dupvol", attachedTo: ["app", "app"] }],
-    lastUpdated: 0
-  };
+    lastUpdated: 0,
+    modelRevision: "test-revision"
+    };
 
   it("VolumeDetail counts and renders each duplicate occurrence's own mount rows", () => {
     const html = renderScreen("/volumes/dupvol", "/volumes/:name", <VolumeDetail />, buildModel(dupConsumers, emptyRuntime));

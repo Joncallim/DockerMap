@@ -1,3 +1,4 @@
+import { testProviderStates } from "../lib/testProviderStates";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -9,8 +10,8 @@ import { RESOURCE_CLAIM_MATRIX, visibleText } from "../lib/test-utils";
 import Home from "./Home";
 import ServiceDetail from "./ServiceDetail";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
-const running: DockerSnapshot = { containers: [{ id: "api", name: "api", image: "nginx", status: "running", role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
+const running: DockerSnapshot = { containers: [{ id: "api", name: "api", image: "nginx", status: "running", role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 const offline: DockerSnapshot = { ...running, containers: [{ ...running.containers[0], status: "Exited (1)" }] };
 function render(snapshot: DockerSnapshot, mode: AppContextValue["evidenceMode"], provenance: AppContextValue["modelProvenance"], path: "/" | "/services/api", screen: ReactElement) {
   const value: AppContextValue = { model: buildModel(snapshot, runtime), modelProvenance: provenance, loading: false, error: null, health: null, tick: 0, evidenceMode: mode, openCommand: () => {} };
