@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import Ajv2020 from "ajv/dist/2020.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { gzipSync } from "node:zlib";
 import net from "node:net";
 import { afterEach, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { NODE_ENVELOPE_SCHEMAS, type NodeEnvelopeSchemaId } from "@dockermap/contracts";
+import {
+  NODE_ENVELOPE_SCHEMAS,
+  RUST_RESPONSE_SCHEMAS,
+  type NodeEnvelopeSchemaId,
+  type RustResponseSchemaId
+} from "@dockermap/contracts";
 import {
   assertRouteManifestComplete,
   routePolicyForRequest,
@@ -819,7 +825,7 @@ test("status endpoint reports widget-friendly health and versioned alias works",
   const openapi = await request(api, "/api/openapi.json");
   assert.equal(openapi.status, 200);
   const doc = await openapi.json();
-  assert.equal(doc.openapi, "3.0.3");
+  assert.equal(doc.openapi, "3.1.1");
   assert.ok(doc.paths["/api/logs"], "openapi should document the logs route");
   assert.ok(doc.paths["/api/diagnostics"], "openapi should document diagnostics");
 });
@@ -856,6 +862,80 @@ test("isolated Node API endpoints emit their declared Node-owned envelopes", asy
   assert.ok(errorValidator, "missing ApiError validator");
   const error = await missing.json();
   assert.equal(errorValidator(error), true, JSON.stringify(errorValidator.errors));
+});
+
+test("authenticated browser API pass-through responses preserve Rust schemas across canonical and v1 aliases", async () => {
+  const fixture = async (name: string) => JSON.parse(
+    await readFile(new URL(`../../../tests/fixtures/contracts/${name}`, import.meta.url), "utf8")
+  ) as Record<string, unknown>;
+  const [snapshot, graph, runtimeMap, logs, composeScan, composeGraph, composeEditPlan, health] = await Promise.all([
+    fixture("mock-snapshot.json"),
+    fixture("graph-response.json"),
+    fixture("runtime-map-daemon-emitted.json"),
+    fixture("logs-response.json"),
+    fixture("compose-scan.json"),
+    fixture("compose-graph.json"),
+    fixture("compose-edit-plan.json"),
+    fixture("health-response.json")
+  ]);
+  const containers = snapshot.containers as unknown[];
+  const container = containers.find((entry) => (entry as { name?: unknown }).name === "api");
+  assert.ok(container, "serialized Rust snapshot fixture must include the api detail fixture");
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") return sendJson(res, 200, health);
+    if (req.url === "/daemon/snapshot") return sendJson(res, 200, snapshot);
+    if (req.url === "/daemon/graph") return sendJson(res, 200, graph);
+    if (req.url === "/daemon/runtime/map") return sendJson(res, 200, runtimeMap);
+    if (req.url === "/daemon/containers") return sendJson(res, 200, { containers });
+    if (req.url === "/daemon/containers/api") return sendJson(res, 200, container);
+    if (req.url === "/daemon/images") return sendJson(res, 200, { images: snapshot.images });
+    if (req.url === "/daemon/networks") return sendJson(res, 200, { networks: snapshot.networks });
+    if (req.url === "/daemon/volumes") return sendJson(res, 200, { volumes: snapshot.volumes });
+    if (req.url?.startsWith("/daemon/logs")) return sendJson(res, 200, logs);
+    if (req.url?.startsWith("/daemon/compose/scan")) return sendJson(res, 200, composeScan);
+    if (req.url?.startsWith("/daemon/compose/graph")) return sendJson(res, 200, composeGraph);
+    if (req.url?.startsWith("/daemon/compose/edit-plan")) return sendJson(res, 200, composeEditPlan);
+    return sendJson(res, 404, { code: "not_found", message: "missing daemon fixture" });
+  });
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+  const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint64: true } });
+  const validators = new Map<RustResponseSchemaId, ReturnType<Ajv2020["compile"]>>();
+  for (const [schemaName, schema] of Object.entries(RUST_RESPONSE_SCHEMAS) as [RustResponseSchemaId, (typeof RUST_RESPONSE_SCHEMAS)[RustResponseSchemaId]][]) {
+    validators.set(schemaName, ajv.compile(schema));
+  }
+
+  const canonicalSuccesses: readonly [string, RustResponseSchemaId][] = [
+    ["/api/snapshot", "DockerSnapshot"],
+    ["/api/graph", "GraphResponse"],
+    ["/api/runtime/map", "RuntimeMap"],
+    ["/api/containers", "ContainersResponse"],
+    ["/api/containers/api", "ContainerDetailResponse"],
+    ["/api/images", "ImagesResponse"],
+    ["/api/networks", "NetworksResponse"],
+    ["/api/volumes", "VolumesResponse"],
+    ["/api/logs?service=api", "LogsResponse"],
+    ["/api/compose/scan", "ComposeScan"],
+    ["/api/compose/graph", "ComposeGraph"],
+    ["/api/compose/edit-plan?file=docker-compose.yml&service=api&mount=0", "ComposeEditPlan"]
+  ];
+
+  for (const [canonicalPath, schemaName] of canonicalSuccesses) {
+    for (const path of [canonicalPath, canonicalPath.replace("/api/", "/api/v1/")]) {
+      const response = await request(api, path, { headers: { Authorization: "Bearer test-token" } });
+      assert.equal(response.status, 200, path);
+      const validator = validators.get(schemaName);
+      assert.ok(validator, `missing ${schemaName} validator`);
+      const body = await response.json();
+      assert.equal(validator(body), true, `${path}: ${JSON.stringify(validator.errors)}`);
+    }
+  }
+  assert.ok(
+    daemon.requests.every((entry) => entry.authorization === "Bearer test-token"),
+    "every validated pass-through request must use the authenticated daemon boundary"
+  );
 });
 
 test("status endpoint classifies free-form docker status texts", async () => {

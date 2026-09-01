@@ -1,0 +1,114 @@
+{
+  "$defs": {
+    "ComposeMountKind": {
+      "enum": [
+        "bind",
+        "named_volume",
+        "anonymous_volume",
+        "unsupported"
+      ],
+      "type": "string"
+    },
+    "ContainerMount": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ComposeMountKind"
+        },
+        "readOnly": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "target",
+        "readOnly"
+      ],
+      "type": "object"
+    },
+    "ContainerRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "dependsOn": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "mounts": {
+          "items": {
+            "$ref": "#/$defs/ContainerMount"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "networks": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ports": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "role": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "image",
+        "status",
+        "role",
+        "networks",
+        "ports",
+        "mounts",
+        "dependsOn"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "containers": {
+      "items": {
+        "$ref": "#/$defs/ContainerRecord"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "containers"
+  ],
+  "title": "ContainersResponse",
+  "type": "object"
+}

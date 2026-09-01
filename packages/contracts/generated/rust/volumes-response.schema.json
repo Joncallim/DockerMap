@@ -1,0 +1,42 @@
+{
+  "$defs": {
+    "VolumeRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "attachedTo": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "attachedTo"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "volumes": {
+      "items": {
+        "$ref": "#/$defs/VolumeRecord"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "volumes"
+  ],
+  "title": "VolumesResponse",
+  "type": "object"
+}
