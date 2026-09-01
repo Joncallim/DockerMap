@@ -19,6 +19,9 @@ import {
   assertBrowserQueryContractCoverage,
   openApiQueryParameters
 } from "./requestContracts.js";
+import { RUST_ROUTE_RESPONSE_SCHEMAS } from "./rustResponseContracts.js";
+
+export { RUST_ROUTE_RESPONSE_SCHEMAS } from "./rustResponseContracts.js";
 
 type OpenApiParameter = Readonly<{
   name: string;
@@ -98,23 +101,6 @@ function sseResponse() {
     }
   } as const;
 }
-
-// This is deliberately finite rather than inferred from response descriptions:
-// adding a Rust pass-through route must choose its generated response root.
-export const RUST_ROUTE_RESPONSE_SCHEMAS = {
-  snapshot: "DockerSnapshot",
-  graph: "GraphResponse",
-  "runtime-map": "RuntimeMap",
-  containers: "ContainersResponse",
-  container: "ContainerDetailResponse",
-  images: "ImagesResponse",
-  networks: "NetworksResponse",
-  volumes: "VolumesResponse",
-  logs: "LogsResponse",
-  "compose-scan": "ComposeScan",
-  "compose-graph": "ComposeGraph",
-  "compose-edit-plan": "ComposeEditPlan"
-} as const satisfies Partial<Record<RouteId, RustResponseSchemaId>>;
 
 export function assertRustRouteSchemaCoverage(
   mappings: Partial<Record<RouteId, RustResponseSchemaId>> = RUST_ROUTE_RESPONSE_SCHEMAS

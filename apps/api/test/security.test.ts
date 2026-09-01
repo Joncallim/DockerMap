@@ -939,6 +939,69 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
   );
 });
 
+test("authenticated daemon schema violations fail closed instead of reaching browser clients or mock fallback", async () => {
+  const fixture = async (name: string) => JSON.parse(
+    await readFile(new URL(`../../../tests/fixtures/contracts/${name}`, import.meta.url), "utf8")
+  ) as Record<string, unknown>;
+  const snapshot = await fixture("mock-snapshot.json");
+  const rootUnexpectedField = { ...snapshot, updateAvailable: true };
+  const nestedMalformedModel = structuredClone(snapshot);
+  const firstContainer = (nestedMalformedModel.containers as Array<Record<string, unknown>>)[0];
+  const firstMount = (firstContainer.mounts as Array<Record<string, unknown>>)[0];
+  firstMount.readOnly = "false";
+  let snapshotRequests = 0;
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url !== "/daemon/snapshot") return sendJson(res, 404, { code: "not_found", message: "missing" });
+    snapshotRequests += 1;
+    sendJson(res, 200, snapshotRequests === 1 ? rootUnexpectedField : nestedMalformedModel);
+  });
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token",
+    // An invalid successful response is a protocol violation, not availability:
+    // it must never turn into a source-stamped Node mock response.
+    DOCKERMAP_ALLOW_MOCK: "true"
+  });
+
+  for (const path of ["/api/snapshot", "/api/v1/snapshot"]) {
+    const response = await request(api, path, { headers: { Authorization: "Bearer test-token" } });
+    assert.equal(response.status, 502, path);
+    assert.deepEqual(await response.json(), {
+      code: "daemon_invalid_response",
+      message: "Daemon response did not match its declared contract"
+    }, path);
+  }
+  assert.equal(snapshotRequests, 2);
+  assert.ok(
+    daemon.requests.every((entry) => entry.authorization === "Bearer test-token"),
+    "schema validation remains behind the authenticated daemon boundary"
+  );
+});
+
+test("daemon response validator maps every generated Rust response root and rejects unknown paths", async () => {
+  const { DAEMON_RESPONSE_SCHEMA_PATHS, daemonResponseSchemaId, validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
+  const { RUST_ROUTE_RESPONSE_SCHEMAS } = await import("../src/rustResponseContracts.js");
+  assert.deepEqual(
+    new Set(DAEMON_RESPONSE_SCHEMA_PATHS.map((entry) => entry.schema)),
+    new Set(Object.keys(RUST_RESPONSE_SCHEMAS)),
+    "every generated Rust response root must be mapped at the browser publication boundary"
+  );
+  for (const entry of DAEMON_RESPONSE_SCHEMA_PATHS) {
+    assert.equal(
+      daemonResponseSchemaId(entry.path.replace(":name", "api") + (entry.path.includes("logs") ? "?service=api" : "")),
+      entry.schema,
+      entry.path
+    );
+  }
+  assert.deepEqual(
+    Object.fromEntries(DAEMON_RESPONSE_SCHEMA_PATHS.filter((entry) => "routeId" in entry).map((entry) => [entry.routeId, entry.schema])),
+    RUST_ROUTE_RESPONSE_SCHEMAS,
+    "runtime response validators must use the exact same route-to-schema authority as OpenAPI"
+  );
+  assert.equal(daemonResponseSchemaId("/daemon/containers/api/extra"), undefined, "a container detail is exactly one encoded segment");
+  assert.throws(() => validateDaemonResponse("/daemon/not-documented", {}));
+});
+
 test("actual canonical and v1 SSE snapshot/error frames use their declared payload schemas", async () => {
   const health = JSON.parse(await readFile(new URL("../../../tests/fixtures/contracts/health-response.json", import.meta.url), "utf8"));
   const healthyDaemon = await startStubDaemon((req, res) => {
@@ -994,7 +1057,7 @@ test("status endpoint classifies free-form docker status texts", async () => {
     if (req.url === "/daemon/health") {
       sendJson(res, 200, {
         status: "ok",
-        mode: "live",
+        mode: "docker",
         dockerReachable: true,
         lastUpdated: 1,
         snapshotVersion: "1",
@@ -1438,7 +1501,7 @@ test("SSE stream survives a client disconnect mid-emit without crashing the API"
       setTimeout(() => {
         sendJson(res, 200, {
           status: "ok",
-          mode: "live",
+          mode: "docker",
           dockerReachable: true,
           lastUpdated: 1,
           snapshotVersion: "1",
@@ -1495,11 +1558,21 @@ test("unsafe startup configuration fails before listening", async () => {
 });
 
 test("API forwards fixed read-only daemon paths with normalized query encoding", async () => {
+  const fixture = async (name: string) => JSON.parse(
+    await readFile(new URL(`../../../tests/fixtures/contracts/${name}`, import.meta.url), "utf8")
+  ) as Record<string, unknown>;
+  const [logs, composeScan, snapshot] = await Promise.all([
+    fixture("logs-response.json"),
+    fixture("compose-scan.json"),
+    fixture("mock-snapshot.json")
+  ]);
+  const container = (snapshot.containers as Array<Record<string, unknown>>).find((entry) => entry.name === "api");
+  assert.ok(container, "snapshot fixture must include a schema-valid container detail");
   const daemon = await startStubDaemon((req, res) => {
     if (req.url === "/daemon/health") {
       sendJson(res, 200, {
         status: "ok",
-        mode: "live",
+        mode: "docker",
         dockerReachable: true,
         lastUpdated: 1,
         snapshotVersion: "1",
@@ -1509,33 +1582,17 @@ test("API forwards fixed read-only daemon paths with normalized query encoding",
     }
 
     if (req.url?.startsWith("/daemon/logs")) {
-      sendJson(res, 200, { service: "worker", entries: [], nextCursor: null });
+      sendJson(res, 200, logs);
       return;
     }
 
     if (req.url?.startsWith("/daemon/compose/scan")) {
-      sendJson(res, 200, {
-        files: [],
-        projectRoot: "/workspace",
-        services: [],
-        mounts: [],
-        correlations: [],
-        diagnostics: []
-      });
+      sendJson(res, 200, composeScan);
       return;
     }
 
     if (req.url?.startsWith("/daemon/containers/")) {
-      sendJson(res, 200, {
-        id: "container-1",
-        name: "api/worker",
-        image: "python:3.11-slim",
-        status: "running",
-        role: "worker",
-        ports: [],
-        createdAt: 1,
-        mounts: []
-      });
+      sendJson(res, 200, container);
       return;
     }
 
@@ -1607,12 +1664,20 @@ test("API forwards fixed read-only daemon paths with normalized query encoding",
 });
 
 test("canonical and v1 logs and Compose routes fail closed before daemon forwarding", async () => {
+  const fixture = async (name: string) => JSON.parse(
+    await readFile(new URL(`../../../tests/fixtures/contracts/${name}`, import.meta.url), "utf8")
+  ) as Record<string, unknown>;
+  const [logs, composeScan, composeGraph, composeEditPlan] = await Promise.all([
+    fixture("logs-response.json"),
+    fixture("compose-scan.json"),
+    fixture("compose-graph.json"),
+    fixture("compose-edit-plan.json")
+  ]);
   const daemon = await startStubDaemon((req, res) => {
-    if (req.url?.startsWith("/daemon/logs")) return sendJson(res, 200, { service: null, entries: [], nextCursor: null });
-    if (req.url?.startsWith("/daemon/compose/scan") || req.url?.startsWith("/daemon/compose/graph")) {
-      return sendJson(res, 200, { files: [], projectRoot: "/workspace", services: [], mounts: [], correlations: [], diagnostics: [] });
-    }
-    if (req.url?.startsWith("/daemon/compose/edit-plan")) return sendJson(res, 200, { willWrite: false, changes: [] });
+    if (req.url?.startsWith("/daemon/logs")) return sendJson(res, 200, logs);
+    if (req.url?.startsWith("/daemon/compose/scan")) return sendJson(res, 200, composeScan);
+    if (req.url?.startsWith("/daemon/compose/graph")) return sendJson(res, 200, composeGraph);
+    if (req.url?.startsWith("/daemon/compose/edit-plan")) return sendJson(res, 200, composeEditPlan);
     return sendJson(res, 404, { code: "not_found", message: "missing" });
   });
   const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });

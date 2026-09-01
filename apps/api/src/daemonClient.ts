@@ -1,5 +1,6 @@
 import type { ApiError } from "@dockermap/contracts";
 import { publishApiPayload, publishDisplayText } from "./publication.js";
+import { DaemonResponseValidationError, validateDaemonResponse } from "./daemonResponseValidation.js";
 
 export class HttpError extends Error {
   constructor(
@@ -52,11 +53,19 @@ export function createDaemonClient(options: DaemonClientOptions) {
         });
       }
 
-      return publishApiPayload((await response.json()) as T);
+      // Validate before publication. `publishApiPayload` redacts display-hostile
+      // values; it is not (and must not become) a permissive schema sanitizer.
+      return publishApiPayload(validateDaemonResponse(path, await response.json()) as T);
     } catch (error) {
       // A configured daemon token being rejected is a boundary/configuration
       // failure, not an availability event. Never substitute mock data for
       // authentication or authorization denial.
+      if (error instanceof DaemonResponseValidationError) {
+        throw new HttpError(502, {
+          code: "daemon_invalid_response",
+          message: "Daemon response did not match its declared contract"
+        });
+      }
       if (error instanceof HttpError && (error.status === 401 || error.status === 403)) {
         throw error;
       }
