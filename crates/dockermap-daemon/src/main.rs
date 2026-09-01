@@ -75,7 +75,7 @@ use std::time::Duration;
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
-    sync::{atomic::AtomicBool, Arc},
+    sync::Arc,
 };
 use tokio::net::TcpListener;
 #[cfg(test)]
@@ -182,7 +182,7 @@ mod tests {
         AppState {
             cache: Arc::new(RwLock::new(DaemonCache::mock())),
             docker: Arc::new(RwLock::new(None)),
-            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
+            provider_slot_in_flight: Arc::new(crate::cache_refresh::ProviderSlotFlights::default()),
         }
     }
 
@@ -323,7 +323,7 @@ mod tests {
                 .expect("Bollard should connect to the Unix stub"),
                 None,
             )))),
-            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
+            provider_slot_in_flight: Arc::new(crate::cache_refresh::ProviderSlotFlights::default()),
         };
 
         let response = daemon_router(state, DaemonAuthToken(None))

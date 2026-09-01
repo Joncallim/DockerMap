@@ -10,8 +10,8 @@ use crate::{
     provider_contract::ProviderCollection,
     publication::{publish_docker_snapshot, redact_health_response, redact_runtime_map},
     runtime_collection::{
-        collect_provider_observations_bounded, runtime_map_from_collection,
-        ProviderCollectionOutcome,
+        collect_provider_slot_bounded, runtime_map_from_collection, slot_interval,
+        ProviderCollectionOutcome, STATIC_PROVIDER_SLOTS,
     },
 };
 use dockermap_core::{
@@ -20,8 +20,9 @@ use dockermap_core::{
     RuntimeProviderKind,
 };
 use std::{
+    collections::BTreeMap,
     sync::{atomic::AtomicBool, Arc, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{sync::RwLock, time::sleep};
 
@@ -37,9 +38,9 @@ pub(crate) struct AppState {
     /// only through `DockerCollector::connect`, which has no raw-socket
     /// fallback, and is discarded after a failed Docker interaction.
     pub(crate) docker: Arc<RwLock<Option<DockerCollector>>>,
-    /// A timed-out blocking collection keeps running until its subprocesses
-    /// unwind. Do not start a second expensive collection while that happens.
-    pub(crate) runtime_collection_in_flight: Arc<AtomicBool>,
+    /// Each static slot has an independent guard. A timed-out blocking slot
+    /// holds its guard until the blocking worker unwinds, preventing overlap.
+    pub(crate) provider_slot_in_flight: Arc<ProviderSlotFlights>,
 }
 
 impl AppState {
@@ -47,7 +48,7 @@ impl AppState {
         Self {
             cache: Arc::new(RwLock::new(DaemonCache::mock())),
             docker: Arc::new(RwLock::new(None)),
-            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
         }
     }
 }
@@ -57,7 +58,11 @@ pub(crate) struct DaemonCache {
     pub(crate) snapshot: DockerSnapshot,
     pub(crate) health: HealthResponse,
     pub(crate) runtime_map: RuntimeMap,
-    runtime_providers: RuntimeProviderState,
+    runtime_providers: RuntimeProviderSlots,
+    /// Increments on every Docker/mock source transition. A late worker must
+    /// match this generation as well as evidence, so Docker→mock→Docker can
+    /// never accept a completion from the earlier live generation.
+    source_generation: u64,
     revision: PublicationRevision,
 }
 
@@ -147,6 +152,73 @@ enum RuntimeProviderState {
     TimedOut(Option<ProviderCollection>),
 }
 
+type RuntimeProviderSlots = BTreeMap<ProviderSlot, SlotRuntimeState>;
+
+#[derive(Clone)]
+struct SlotRuntimeState {
+    observation: RuntimeProviderState,
+    /// Monotonic process-relative completion time. It is private cache state,
+    /// never exposed as host/provider telemetry.
+    completed_at: Option<Duration>,
+}
+
+impl Default for SlotRuntimeState {
+    fn default() -> Self {
+        Self {
+            observation: RuntimeProviderState::Unavailable,
+            completed_at: None,
+        }
+    }
+}
+
+pub(crate) struct ProviderSlotFlights {
+    network: Arc<AtomicBool>,
+    host: Arc<AtomicBool>,
+    python: Arc<AtomicBool>,
+    native: Arc<AtomicBool>,
+    npm: Arc<AtomicBool>,
+}
+
+impl Default for ProviderSlotFlights {
+    fn default() -> Self {
+        Self {
+            network: Arc::new(AtomicBool::new(false)),
+            host: Arc::new(AtomicBool::new(false)),
+            python: Arc::new(AtomicBool::new(false)),
+            native: Arc::new(AtomicBool::new(false)),
+            npm: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl ProviderSlotFlights {
+    fn for_slot(&self, slot: ProviderSlot) -> Arc<AtomicBool> {
+        // The atomics are never individually replaced. The caller needs an
+        // Arc for the blocking guard, so the AppState keeps one small map of
+        // guards instead of sharing Docker authority or a scheduler API.
+        match slot {
+            ProviderSlot::NetworkInfrastructure => self.network.clone(),
+            ProviderSlot::HostScoped => self.host.clone(),
+            ProviderSlot::PythonProcesses => self.python.clone(),
+            ProviderSlot::NativeProcesses => self.native.clone(),
+            ProviderSlot::ProjectNpm => self.npm.clone(),
+        }
+    }
+
+    fn active_count(&self) -> usize {
+        [
+            &self.network,
+            &self.host,
+            &self.python,
+            &self.native,
+            &self.npm,
+        ]
+        .into_iter()
+        .filter(|guard| guard.load(std::sync::atomic::Ordering::Acquire))
+        .count()
+    }
+}
+
 impl DaemonCache {
     pub(crate) fn mock() -> Self {
         let mut snapshot = mock_snapshot();
@@ -175,7 +247,8 @@ impl DaemonCache {
                 provider_states: unavailable_provider_states(),
                 ..Default::default()
             },
-            runtime_providers: RuntimeProviderState::Unavailable,
+            runtime_providers: unavailable_provider_slots(),
+            source_generation: 0,
             revision: PublicationRevision::new(),
         };
         cache.assign_revision();
@@ -198,22 +271,46 @@ pub(crate) async fn refresh_loop(state: AppState) {
 }
 
 pub(crate) async fn refresh_cache(state: &AppState) {
-    let (snapshot, mode) =
+    let (snapshot, mode, source_generation) =
         publish_docker_snapshot_cache(state, collect_snapshot(state).await).await;
 
     // Publish Docker evidence before running any optional host command. The
-    // spawned task uses the existing single-flight guard; it has no route,
+    // Spawned slot workers use fixed per-slot guards; they have no route,
     // Docker client, or source-fallback authority.
     if mode == RuntimeMode::Docker {
-        mark_runtime_collection_started(state).await;
+        let due = claim_due_provider_slots(state, monotonic_now()).await;
+        spawn_provider_slots(state.clone(), snapshot, mode, source_generation, due);
+    }
+}
+
+fn spawn_provider_slots(
+    state: AppState,
+    snapshot: DockerSnapshot,
+    mode: RuntimeMode,
+    source_generation: u64,
+    slots: Vec<ProviderSlot>,
+) {
+    for slot in slots {
         let state = state.clone();
+        let snapshot = snapshot.clone();
+        let mode = mode.clone();
         tokio::spawn(async move {
-            let outcome = collect_provider_observations_bounded(
-                state.runtime_collection_in_flight.clone(),
+            let outcome = collect_provider_slot_bounded(
+                state.provider_slot_in_flight.for_slot(slot),
+                slot,
                 &snapshot,
             )
             .await;
-            apply_runtime_collection_outcome(&state, snapshot, mode, outcome).await;
+            apply_provider_slot_outcome(
+                &state,
+                slot,
+                snapshot,
+                mode,
+                source_generation,
+                outcome,
+                monotonic_now(),
+            )
+            .await;
         });
     }
 }
@@ -224,20 +321,36 @@ pub(crate) async fn refresh_cache(state: &AppState) {
 async fn publish_docker_snapshot_cache(
     state: &AppState,
     mut updated: DaemonCache,
-) -> (DockerSnapshot, RuntimeMode) {
+) -> (DockerSnapshot, RuntimeMode, u64) {
     let mut cache = state.cache.write().await;
     // A mock fallback is a distinct source of bytes. Do not retain live host
     // observations and relabel them as sample data (or vice versa).
-    updated.runtime_providers = if cache.health.mode == updated.health.mode {
+    let same_source = cache.health.mode == updated.health.mode;
+    updated.source_generation = if same_source {
+        cache.source_generation
+    } else {
+        cache
+            .source_generation
+            .checked_add(1)
+            .expect("source generation overflow")
+    };
+    updated.runtime_providers = if same_source {
         cache.runtime_providers.clone()
     } else {
-        RuntimeProviderState::Unavailable
+        unavailable_provider_slots()
     };
+    if same_source && !same_collection_evidence(&cache.snapshot, &updated.snapshot) {
+        mark_network_observation_stale(&mut updated.runtime_providers);
+    }
     updated.runtime_map = runtime_map_for_snapshot(&updated.snapshot, &updated.runtime_providers);
     updated.revision = cache.revision.clone();
     updated.assign_revision();
     *cache = updated;
-    (cache.snapshot.clone(), cache.health.mode.clone())
+    (
+        cache.snapshot.clone(),
+        cache.health.mode.clone(),
+        cache.source_generation,
+    )
 }
 
 /// Returns the cached gateway collector, connecting only to the configured
@@ -287,7 +400,8 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     snapshot,
                     health,
                     runtime_map: empty_runtime_map(0),
-                    runtime_providers: RuntimeProviderState::Unavailable,
+                    runtime_providers: unavailable_provider_slots(),
+                    source_generation: 0,
                     revision: PublicationRevision::new(),
                 }
             }
@@ -311,68 +425,183 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     cache
 }
 
-async fn mark_runtime_collection_started(state: &AppState) {
+const MAX_CONCURRENT_PROVIDER_SLOTS: usize = 2;
+
+fn monotonic_now() -> Duration {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed()
+}
+
+fn unavailable_provider_slots() -> RuntimeProviderSlots {
+    STATIC_PROVIDER_SLOTS
+        .iter()
+        .copied()
+        .map(|slot| (slot, SlotRuntimeState::default()))
+        .collect()
+}
+
+/// Claims immediately due fixed slots, capped by the policy's total worker
+/// bound. A collection is due on first startup or only after its completion
+/// interval; slow/timeout work never creates catch-up runs.
+#[cfg(test)]
+fn claim_due_slots(
+    slots: &mut RuntimeProviderSlots,
+    now: Duration,
+    max_concurrency: usize,
+) -> Vec<ProviderSlot> {
+    claim_due_slots_with_active_workers(slots, now, max_concurrency, 0)
+}
+
+fn claim_due_slots_with_active_workers(
+    slots: &mut RuntimeProviderSlots,
+    now: Duration,
+    max_concurrency: usize,
+    active_workers: usize,
+) -> Vec<ProviderSlot> {
+    let occupied = slots
+        .values()
+        .filter(|slot| matches!(slot.observation, RuntimeProviderState::Collecting(_)))
+        .count();
+    // Cache state can be TimedOut while its blocking worker still unwinds.
+    // Count the guards as well as publication state, taking the larger value
+    // to avoid double-counting a normal collecting worker.
+    let mut remaining = max_concurrency.saturating_sub(occupied.max(active_workers));
+    let mut claimed = Vec::new();
+    for slot in STATIC_PROVIDER_SLOTS.iter().copied() {
+        if remaining == 0 {
+            break;
+        }
+        let current = slots.get_mut(&slot).expect("fixed slot state exists");
+        if matches!(current.observation, RuntimeProviderState::Collecting(_)) {
+            continue;
+        }
+        let due = current
+            .completed_at
+            .map(|at| now.saturating_sub(at) >= slot_interval(slot))
+            .unwrap_or(true);
+        if !due {
+            continue;
+        }
+        // Disabled is a profile fact. It is allowed one initial probe so the
+        // diagnostic is observable, but is never queued thereafter.
+        if matches!(current.observation, RuntimeProviderState::Fresh(ref collection) if collection.states().iter().any(|state| state.slot == slot && state.state == ProviderStateKind::Disabled))
+        {
+            continue;
+        }
+        let retained = retained_collection(&current.observation);
+        current.observation = RuntimeProviderState::Collecting(retained);
+        claimed.push(slot);
+        remaining -= 1;
+    }
+    claimed
+}
+
+async fn claim_due_provider_slots(state: &AppState, now: Duration) -> Vec<ProviderSlot> {
     let mut cache = state.cache.write().await;
-    let retained = match &cache.runtime_providers {
+    let due = claim_due_slots_with_active_workers(
+        &mut cache.runtime_providers,
+        now,
+        MAX_CONCURRENT_PROVIDER_SLOTS,
+        state.provider_slot_in_flight.active_count(),
+    );
+    if !due.is_empty() {
+        cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
+        cache.assign_revision();
+    }
+    due
+}
+
+fn retained_collection(state: &RuntimeProviderState) -> Option<ProviderCollection> {
+    match state {
         RuntimeProviderState::Fresh(collection)
         | RuntimeProviderState::Collecting(Some(collection))
         | RuntimeProviderState::Degraded(Some(collection))
         | RuntimeProviderState::TimedOut(Some(collection)) => Some(collection.clone()),
-        RuntimeProviderState::Unavailable
-        | RuntimeProviderState::Collecting(None)
-        | RuntimeProviderState::Degraded(None)
-        | RuntimeProviderState::TimedOut(None) => None,
-    };
-    cache.runtime_providers = RuntimeProviderState::Collecting(retained);
-    cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
-    cache.assign_revision();
+        _ => None,
+    }
 }
 
-async fn apply_runtime_collection_outcome(
+async fn apply_provider_slot_outcome(
     state: &AppState,
+    slot: ProviderSlot,
     observed_snapshot: DockerSnapshot,
     observed_mode: RuntimeMode,
+    observed_generation: u64,
     outcome: ProviderCollectionOutcome,
+    completed_at: Duration,
 ) {
     let mut cache = state.cache.write().await;
     // Never apply observations across a live/mock transition. The current
     // map remains explicitly unavailable until a collection for that source
     // completes.
-    if cache.health.mode != observed_mode {
+    if cache.health.mode != observed_mode || cache.source_generation != observed_generation {
         return;
     }
+    let same_evidence = same_collection_evidence(&cache.snapshot, &observed_snapshot);
+    let Some(slot_state) = cache.runtime_providers.get_mut(&slot) else {
+        return;
+    };
     match outcome {
-        ProviderCollectionOutcome::Collected(collection)
-            if same_collection_evidence(&cache.snapshot, &observed_snapshot) =>
-        {
-            cache.runtime_providers =
+        ProviderCollectionOutcome::Collected(collection) if same_evidence => {
+            slot_state.observation =
                 RuntimeProviderState::Fresh(collection.sanitized_for_retention());
+            slot_state.completed_at = Some(completed_at);
         }
         ProviderCollectionOutcome::Collected(collection) => {
             // Docker changed while the bounded optional pass was in flight.
             // Preserve it only as explicitly stale evidence; the next tick
             // collects against the new snapshot.
-            cache.runtime_providers =
+            slot_state.observation =
                 RuntimeProviderState::Degraded(Some(collection.sanitized_for_retention()));
+            slot_state.completed_at = Some(completed_at);
         }
-        ProviderCollectionOutcome::InFlight => return,
+        // A prior timed-out worker still owns the per-slot guard. Restore an
+        // explicit timeout state rather than leaving a false `collecting`
+        // claim forever; its next retry remains completion-relative.
+        ProviderCollectionOutcome::InFlight => {
+            let retained = retained_collection(&slot_state.observation);
+            slot_state.observation = RuntimeProviderState::TimedOut(retained);
+        }
         ProviderCollectionOutcome::Failed | ProviderCollectionOutcome::TimedOut => {
-            let retained = match &cache.runtime_providers {
-                RuntimeProviderState::Collecting(retained)
-                | RuntimeProviderState::Degraded(retained)
-                | RuntimeProviderState::TimedOut(retained) => retained.clone(),
-                RuntimeProviderState::Fresh(collection) => Some(collection.clone()),
-                RuntimeProviderState::Unavailable => None,
-            };
-            cache.runtime_providers = if matches!(outcome, ProviderCollectionOutcome::TimedOut) {
+            let retained = retained_collection(&slot_state.observation);
+            slot_state.observation = if matches!(outcome, ProviderCollectionOutcome::TimedOut) {
                 RuntimeProviderState::TimedOut(retained)
             } else {
                 RuntimeProviderState::Degraded(retained)
             };
+            slot_state.completed_at = Some(completed_at);
         }
     }
     cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
     cache.assign_revision();
+    let current_snapshot = cache.snapshot.clone();
+    let current_mode = cache.health.mode.clone();
+    drop(cache);
+    // If an initial fast slot finished, admit the next initial slot without
+    // waiting for the two-second Docker tick. This remains globally bounded.
+    if current_mode == RuntimeMode::Docker {
+        let due = claim_due_provider_slots(state, monotonic_now()).await;
+        spawn_provider_slots(
+            state.clone(),
+            current_snapshot,
+            current_mode,
+            cache_generation(state).await,
+            due,
+        );
+    }
+}
+
+async fn cache_generation(state: &AppState) -> u64 {
+    state.cache.read().await.source_generation
+}
+
+fn mark_network_observation_stale(slots: &mut RuntimeProviderSlots) {
+    let network = slots
+        .get_mut(&ProviderSlot::NetworkInfrastructure)
+        .expect("fixed network slot exists");
+    if let RuntimeProviderState::Fresh(collection) = &network.observation {
+        network.observation = RuntimeProviderState::Degraded(Some(collection.clone()));
+    }
 }
 
 /// A provider pass is bound to Docker evidence, not its cache-publication
@@ -391,61 +620,49 @@ fn same_collection_evidence(left: &DockerSnapshot, right: &DockerSnapshot) -> bo
     left == right
 }
 
-fn runtime_map_for_snapshot(snapshot: &DockerSnapshot, state: &RuntimeProviderState) -> RuntimeMap {
-    let (collection, diagnostic) = match state {
-        RuntimeProviderState::Fresh(collection) => (collection.clone(), None),
-        RuntimeProviderState::Collecting(Some(collection)) => (
-            collection.clone(),
-            Some("Runtime provider refresh is in progress; serving retained provider observations (stale)"),
-        ),
-        RuntimeProviderState::Degraded(Some(collection)) => (
-            collection.clone(),
-            Some("Runtime provider refresh failed, timed out, or observed an older snapshot; serving retained provider observations (stale)"),
-        ),
-        RuntimeProviderState::Collecting(None) => (
-            ProviderCollection::default(),
-            Some("Runtime provider refresh is in progress; no successful provider observations are available"),
-        ),
-        RuntimeProviderState::Degraded(None) => (
-            ProviderCollection::default(),
-            Some("Runtime provider refresh failed or timed out; no successful provider observations are available"),
-        ),
-        RuntimeProviderState::TimedOut(Some(collection)) => (
-            collection.clone(),
-            Some("Runtime provider refresh timed out; serving retained provider observations (stale)"),
-        ),
-        RuntimeProviderState::TimedOut(None) => (
-            ProviderCollection::default(),
-            Some("Runtime provider refresh timed out; no successful provider observations are available"),
-        ),
-        RuntimeProviderState::Unavailable => (
-            ProviderCollection::default(),
-            Some("Runtime provider observations are unavailable until the first successful collection"),
-        ),
-    };
-    let mut runtime_map = runtime_map_from_collection(snapshot, &collection);
-    runtime_map.provider_states = provider_states_for(state, &collection);
-    if let Some(message) = diagnostic {
-        runtime_map.diagnostics.push(RuntimeMapDiagnostic {
-            provider: RuntimeProviderKind::Other,
-            severity: DiagnosticSeverity::Warning,
-            message: message.into(),
-        });
+fn runtime_map_for_snapshot(snapshot: &DockerSnapshot, slots: &RuntimeProviderSlots) -> RuntimeMap {
+    let mut combined = ProviderCollection::default();
+    let mut extra_diagnostics = Vec::new();
+    for slot in STATIC_PROVIDER_SLOTS.iter().copied() {
+        let state = &slots[&slot].observation;
+        if let Some(collection) = retained_collection(state) {
+            let (nodes, edges, diagnostics) = collection.into_parts();
+            let (target_nodes, target_edges, target_diagnostics) = combined.parts_mut();
+            target_nodes.extend(nodes);
+            target_edges.extend(edges);
+            target_diagnostics.extend(diagnostics);
+        }
+        if !matches!(state, RuntimeProviderState::Fresh(_)) {
+            extra_diagnostics.push(RuntimeMapDiagnostic {
+                provider: RuntimeProviderKind::Other,
+                severity: DiagnosticSeverity::Warning,
+                message: slot_diagnostic(slot, state).into(),
+            });
+        }
     }
+    let mut runtime_map = runtime_map_from_collection(snapshot, &combined);
+    runtime_map.provider_states = provider_states_for(slots);
+    runtime_map.diagnostics.extend(extra_diagnostics);
     runtime_map
 }
 
-const STATIC_PROVIDER_SLOTS: [ProviderSlot; 5] = [
-    ProviderSlot::NetworkInfrastructure,
-    ProviderSlot::HostScoped,
-    ProviderSlot::PythonProcesses,
-    ProviderSlot::NativeProcesses,
-    ProviderSlot::ProjectNpm,
-];
+fn slot_diagnostic(_slot: ProviderSlot, state: &RuntimeProviderState) -> &'static str {
+    match state {
+        RuntimeProviderState::Collecting(Some(_)) => "Runtime provider slot refresh is in progress; serving retained observations (stale)",
+        RuntimeProviderState::Collecting(None) => "Runtime provider slot refresh is in progress; no successful observations are available",
+        RuntimeProviderState::Degraded(Some(_)) => "Runtime provider slot refresh failed or observed older Docker evidence; serving retained observations (stale)",
+        RuntimeProviderState::Degraded(None) => "Runtime provider slot refresh failed; no successful observations are available",
+        RuntimeProviderState::TimedOut(Some(_)) => "Runtime provider slot refresh timed out; serving retained observations (stale)",
+        RuntimeProviderState::TimedOut(None) => "Runtime provider slot refresh timed out; no successful observations are available",
+        RuntimeProviderState::Unavailable => "Runtime provider observations are unavailable until the first successful collection",
+        RuntimeProviderState::Fresh(_) => unreachable!("fresh slots have no degradation diagnostic"),
+    }
+}
 
 fn unavailable_provider_states() -> Vec<ProviderState> {
     STATIC_PROVIDER_SLOTS
-        .into_iter()
+        .iter()
+        .copied()
         .map(|slot| ProviderState {
             slot,
             state: ProviderStateKind::Unavailable,
@@ -456,20 +673,21 @@ fn unavailable_provider_states() -> Vec<ProviderState> {
 /// Retained successful slots stay explicitly stale while a new attempt runs or
 /// after a failed attempt. Disabled slots are configuration/profile facts, not
 /// transient freshness states, and remain disabled through those transitions.
-fn provider_states_for(
-    state: &RuntimeProviderState,
-    collection: &ProviderCollection,
-) -> Vec<ProviderState> {
+fn provider_states_for(slots: &RuntimeProviderSlots) -> Vec<ProviderState> {
     STATIC_PROVIDER_SLOTS
-        .into_iter()
+        .iter()
+        .copied()
         .map(|slot| {
-            let base = collection
-                .states()
+            let observation = &slots[&slot].observation;
+            let base = retained_collection(observation)
+                .as_ref()
+                .map(|collection| collection.states())
+                .unwrap_or(&[])
                 .iter()
                 .find(|candidate| candidate.slot == slot)
                 .map(|candidate| candidate.state)
                 .unwrap_or(ProviderStateKind::Unavailable);
-            let state = match state {
+            let state = match observation {
                 RuntimeProviderState::Fresh(_) => base,
                 RuntimeProviderState::Collecting(_) if base == ProviderStateKind::Disabled => {
                     ProviderStateKind::Disabled
@@ -513,11 +731,14 @@ fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
 }
 
 #[cfg(test)]
-mod tests {
+mod scheduler_tests {
     use super::*;
-    use crate::provider_contract::{ProviderCollection, ProviderDiagnostic};
-    use dockermap_core::{mock_snapshot, DiagnosticSeverity, RuntimeProviderKind};
-    use std::time::Duration;
+    use crate::provider_contract::ProviderDiagnostic;
+    use dockermap_core::{mock_snapshot, HealthState};
+
+    fn slots() -> RuntimeProviderSlots {
+        unavailable_provider_slots()
+    }
 
     fn docker_cache(snapshot: DockerSnapshot) -> DaemonCache {
         let last_updated = snapshot.last_updated;
@@ -533,405 +754,359 @@ mod tests {
                 message: Some("controlled Docker cache".into()),
             },
             runtime_map: empty_runtime_map(last_updated),
-            runtime_providers: RuntimeProviderState::Unavailable,
+            runtime_providers: unavailable_provider_slots(),
+            source_generation: 0,
             revision: PublicationRevision::new(),
         }
     }
 
     #[test]
-    fn static_refresh_cadence_is_explicit_and_not_a_provider_scheduler() {
-        assert_eq!(STATIC_REFRESH_INTERVAL, Duration::from_secs(2));
-        assert!(
-            !STATIC_REFRESH_INTERVAL.is_zero(),
-            "a zero cadence would turn the static sequential loop into a busy refresh loop"
-        );
-    }
-
-    #[test]
-    fn retained_provider_observations_are_explicitly_stale_but_fresh_docker_nodes_publish() {
-        let mut snapshot = mock_snapshot();
-        snapshot.last_updated = 101;
-        let mut providers = ProviderCollection::default();
-        providers.push_diagnostic(ProviderDiagnostic::new(
-            RuntimeProviderKind::Process,
-            DiagnosticSeverity::Info,
-            "controlled retained provider observation",
-        ));
-
-        let map =
-            runtime_map_for_snapshot(&snapshot, &RuntimeProviderState::Degraded(Some(providers)));
+    fn fixed_policy_is_completion_relative_and_bounded() {
+        assert_eq!(MAX_CONCURRENT_PROVIDER_SLOTS, 2);
         assert_eq!(
-            map.last_updated, 101,
-            "fresh Docker snapshot remains publishable"
+            slot_interval(ProviderSlot::NetworkInfrastructure),
+            Duration::from_secs(10)
         );
-        assert!(map
-            .nodes
-            .iter()
-            .any(|node| node.provider == RuntimeProviderKind::Docker));
-        assert!(map
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message == "controlled retained provider observation"));
+        assert_eq!(
+            slot_interval(ProviderSlot::HostScoped),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            slot_interval(ProviderSlot::PythonProcesses),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            slot_interval(ProviderSlot::NativeProcesses),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            slot_interval(ProviderSlot::ProjectNpm),
+            Duration::from_secs(60)
+        );
+
+        let mut slots = slots();
+        let first = claim_due_slots(&mut slots, Duration::ZERO, MAX_CONCURRENT_PROVIDER_SLOTS);
+        assert_eq!(
+            first,
+            vec![
+                ProviderSlot::NetworkInfrastructure,
+                ProviderSlot::HostScoped
+            ]
+        );
         assert!(
-            map.diagnostics.iter().any(|diagnostic| diagnostic
-                .message
-                .contains("retained provider observations (stale)")),
-            "retained observations must never masquerade as fresh"
+            claim_due_slots(
+                &mut slots,
+                Duration::from_secs(100),
+                MAX_CONCURRENT_PROVIDER_SLOTS
+            )
+            .is_empty(),
+            "collecting slots never overlap or catch up"
         );
     }
 
     #[test]
-    fn failed_first_provider_attempt_is_degraded_not_healthy_or_fresh() {
-        let mut snapshot = mock_snapshot();
-        snapshot.last_updated = 202;
-        let map = runtime_map_for_snapshot(&snapshot, &RuntimeProviderState::Degraded(None));
-        assert_eq!(map.last_updated, 202);
-        assert!(map
-            .nodes
-            .iter()
-            .any(|node| node.provider == RuntimeProviderKind::Docker));
-        assert!(map
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("failed or timed out")));
+    fn policy_makes_the_old_two_second_invocation_cost_measurable() {
+        let window = Duration::from_secs(60);
+        let old_whole_passes = 1 + window.as_secs() / STATIC_REFRESH_INTERVAL.as_secs();
+        assert_eq!(
+            old_whole_passes, 31,
+            "previous baseline invoked every slot every two seconds"
+        );
+        let invocations = |slot| 1 + window.as_secs() / slot_interval(slot).as_secs();
+        assert_eq!(invocations(ProviderSlot::NetworkInfrastructure), 7);
+        assert_eq!(invocations(ProviderSlot::HostScoped), 5);
+        assert_eq!(invocations(ProviderSlot::PythonProcesses), 7);
+        assert_eq!(invocations(ProviderSlot::NativeProcesses), 7);
+        assert_eq!(invocations(ProviderSlot::ProjectNpm), 2);
     }
 
-    #[tokio::test]
-    async fn failed_refresh_retains_prior_provider_observations_against_the_new_docker_snapshot() {
-        let mut previous = docker_cache(mock_snapshot());
-        let mut retained = ProviderCollection::default();
-        retained.push_diagnostic(ProviderDiagnostic::new(
-            RuntimeProviderKind::Npm,
-            DiagnosticSeverity::Info,
-            "controlled previously successful provider observation",
-        ));
-        previous.runtime_providers = RuntimeProviderState::Fresh(retained);
-
-        let state = AppState {
-            cache: Arc::new(RwLock::new(previous)),
-            docker: Arc::new(RwLock::new(None)),
-            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
-        };
-        let mut fresh_snapshot = mock_snapshot();
-        fresh_snapshot.last_updated = 303;
-        let (observed_snapshot, observed_mode) =
-            publish_docker_snapshot_cache(&state, docker_cache(fresh_snapshot.clone())).await;
-        mark_runtime_collection_started(&state).await;
-
-        apply_runtime_collection_outcome(
-            &state,
-            observed_snapshot,
-            observed_mode,
-            ProviderCollectionOutcome::TimedOut,
+    #[test]
+    fn completion_time_not_start_time_controls_next_due_claim() {
+        let mut slots = slots();
+        let slot = ProviderSlot::NetworkInfrastructure;
+        let entry = slots.get_mut(&slot).unwrap();
+        entry.observation = RuntimeProviderState::Fresh(ProviderCollection::default());
+        entry.completed_at = Some(Duration::from_secs(100));
+        assert!(!claim_due_slots(
+            &mut slots,
+            Duration::from_secs(109),
+            STATIC_PROVIDER_SLOTS.len()
         )
-        .await;
-
-        let cache = state.cache.read().await;
-        assert_eq!(cache.runtime_map.last_updated, 303);
-        assert!(cache
-            .runtime_map
-            .nodes
-            .iter()
-            .any(|node| node.provider == RuntimeProviderKind::Docker));
-        assert!(cache
-            .runtime_map
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message
-                == "controlled previously successful provider observation"));
-        assert!(cache
-            .runtime_map
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic
-                .message
-                .contains("retained provider observations (stale)")));
+        .contains(&slot));
+        assert!(claim_due_slots(
+            &mut slots,
+            Duration::from_secs(110),
+            STATIC_PROVIDER_SLOTS.len()
+        )
+        .contains(&slot));
     }
 
-    #[tokio::test]
-    async fn prior_docker_provider_result_cannot_cross_a_mock_source_transition() {
-        let mut initial_snapshot = mock_snapshot();
-        initial_snapshot.last_updated = 401;
-        let mut previous = docker_cache(initial_snapshot);
-        let mut retained = ProviderCollection::default();
-        retained.push_diagnostic(ProviderDiagnostic::new(
-            RuntimeProviderKind::Process,
-            DiagnosticSeverity::Info,
-            "controlled live provider observation",
-        ));
-        previous.runtime_providers = RuntimeProviderState::Fresh(retained);
-        let state = AppState {
-            cache: Arc::new(RwLock::new(previous)),
-            docker: Arc::new(RwLock::new(None)),
-            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
-        };
-        // This is the same cache-publication seam `refresh_cache` uses after
-        // a gateway failure returns mock bytes.
-        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
-        apply_runtime_collection_outcome(
-            &state,
-            mock_snapshot(),
-            RuntimeMode::Docker,
-            ProviderCollectionOutcome::Collected(ProviderCollection::default()),
-        )
-        .await;
-        let cache = state.cache.read().await;
-        assert!(matches!(
-            cache.runtime_providers,
-            RuntimeProviderState::Unavailable
-        ));
-        assert_eq!(cache.health.mode, RuntimeMode::Mock);
+    #[test]
+    fn disabled_slots_are_never_queued_after_profile_fact_is_observed() {
+        let mut slots = slots();
+        let slot = ProviderSlot::HostScoped;
+        let mut collection = ProviderCollection::default();
+        collection.set_state(slot, ProviderStateKind::Disabled);
+        let entry = slots.get_mut(&slot).unwrap();
+        entry.observation = RuntimeProviderState::Fresh(collection);
+        entry.completed_at = Some(Duration::ZERO);
+        assert!(!claim_due_slots(&mut slots, Duration::from_secs(300), 2).contains(&slot));
+    }
+
+    #[test]
+    fn timeout_retains_sanitized_evidence_and_never_claims_fresh() {
+        let snapshot = mock_snapshot();
+        let mut slots = slots();
+        let slot = ProviderSlot::NetworkInfrastructure;
+        let mut collection = ProviderCollection::default();
+        collection.set_state(slot, ProviderStateKind::Fresh);
+        slots.get_mut(&slot).unwrap().observation =
+            RuntimeProviderState::TimedOut(Some(collection));
+        let map = runtime_map_for_snapshot(&snapshot, &slots);
+        assert!(map
+            .provider_states
+            .iter()
+            .any(|item| item.slot == slot && item.state == ProviderStateKind::TimedOut));
+        assert!(map
+            .diagnostics
+            .iter()
+            .any(|item| item.message.contains("timed out")));
+    }
+
+    #[test]
+    fn timed_out_unwinding_workers_consume_the_global_two_worker_budget() {
+        let mut slots = slots();
+        for slot in [
+            ProviderSlot::NetworkInfrastructure,
+            ProviderSlot::HostScoped,
+        ] {
+            slots.get_mut(&slot).unwrap().observation = RuntimeProviderState::TimedOut(None);
+        }
         assert!(
-            !cache
-                .runtime_map
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic
-                    .message
-                    .contains("controlled live provider observation")),
-            "mock cache must not receive live provider observations"
+            claim_due_slots_with_active_workers(
+                &mut slots,
+                Duration::from_secs(120),
+                MAX_CONCURRENT_PROVIDER_SLOTS,
+                2,
+            )
+            .is_empty(),
+            "timed-out workers still unwinding cannot be replaced"
         );
     }
 
     #[tokio::test]
-    async fn provider_result_from_an_older_snapshot_is_retained_only_as_stale() {
-        let mut old_snapshot = mock_snapshot();
-        old_snapshot.last_updated = 501;
+    async fn changed_sanitized_docker_evidence_stales_only_network_observations() {
+        let mut previous = docker_cache(mock_snapshot());
+        let mut network = ProviderCollection::default();
+        network.set_state(
+            ProviderSlot::NetworkInfrastructure,
+            ProviderStateKind::Fresh,
+        );
+        previous
+            .runtime_providers
+            .get_mut(&ProviderSlot::NetworkInfrastructure)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(network);
+        let mut python = ProviderCollection::default();
+        python.set_state(ProviderSlot::PythonProcesses, ProviderStateKind::Fresh);
+        previous
+            .runtime_providers
+            .get_mut(&ProviderSlot::PythonProcesses)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(python);
         let state = AppState {
-            cache: Arc::new(RwLock::new(docker_cache(old_snapshot.clone()))),
+            cache: Arc::new(RwLock::new(previous)),
             docker: Arc::new(RwLock::new(None)),
-            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
         };
-        let (observed_snapshot, observed_mode) =
-            publish_docker_snapshot_cache(&state, docker_cache(old_snapshot)).await;
-        let mut newer_snapshot = mock_snapshot();
-        newer_snapshot.last_updated = 502;
-        publish_docker_snapshot_cache(&state, docker_cache(newer_snapshot)).await;
-
-        apply_runtime_collection_outcome(
-            &state,
-            observed_snapshot,
-            observed_mode,
-            ProviderCollectionOutcome::Collected(ProviderCollection::default()),
-        )
-        .await;
-
+        let mut changed = mock_snapshot();
+        changed.containers[0].name = "sanitized-docker-change".into();
+        publish_docker_snapshot_cache(&state, docker_cache(changed)).await;
         let cache = state.cache.read().await;
-        assert_eq!(cache.runtime_map.last_updated, 502);
         assert!(matches!(
-            cache.runtime_providers,
+            cache.runtime_providers[&ProviderSlot::NetworkInfrastructure].observation,
             RuntimeProviderState::Degraded(Some(_))
         ));
+        assert!(matches!(
+            cache.runtime_providers[&ProviderSlot::PythonProcesses].observation,
+            RuntimeProviderState::Fresh(_)
+        ));
         assert!(cache
+            .runtime_map
+            .provider_states
+            .iter()
+            .any(|state| state.slot == ProviderSlot::NetworkInfrastructure
+                && state.state == ProviderStateKind::Stale));
+    }
+
+    #[tokio::test]
+    async fn old_docker_generation_cannot_complete_after_mock_round_trip() {
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        let (observed, mode, generation) =
+            publish_docker_snapshot_cache(&state, docker_cache(mock_snapshot())).await;
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        publish_docker_snapshot_cache(&state, docker_cache(mock_snapshot())).await;
+        let mut late = ProviderCollection::default();
+        late.push_diagnostic(ProviderDiagnostic::new(
+            RuntimeProviderKind::Network,
+            DiagnosticSeverity::Info,
+            "late old generation",
+        ));
+        late.set_state(
+            ProviderSlot::NetworkInfrastructure,
+            ProviderStateKind::Fresh,
+        );
+        apply_provider_slot_outcome(
+            &state,
+            ProviderSlot::NetworkInfrastructure,
+            observed,
+            mode,
+            generation,
+            ProviderCollectionOutcome::Collected(late),
+            Duration::from_secs(1),
+        )
+        .await;
+        let cache = state.cache.read().await;
+        assert_eq!(cache.source_generation, generation + 2);
+        assert!(!cache
+            .runtime_map
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("late old generation")));
+    }
+
+    #[test]
+    fn stale_slot_does_not_relabel_fresh_docker_topology() {
+        let snapshot = mock_snapshot();
+        let mut slots = slots();
+        let slot = ProviderSlot::ProjectNpm;
+        let mut collection = ProviderCollection::default();
+        collection.set_state(slot, ProviderStateKind::Fresh);
+        slots.get_mut(&slot).unwrap().observation =
+            RuntimeProviderState::Degraded(Some(collection));
+        let map = runtime_map_for_snapshot(&snapshot, &slots);
+        assert!(map
+            .nodes
+            .iter()
+            .any(|node| node.provider == RuntimeProviderKind::Docker));
+        assert!(map
+            .provider_states
+            .iter()
+            .any(|item| item.slot == slot && item.state == ProviderStateKind::Stale));
+    }
+
+    #[tokio::test]
+    async fn source_transition_discards_slot_observations_and_claims_advance_revision() {
+        let mut previous = docker_cache(mock_snapshot());
+        let slot = ProviderSlot::NetworkInfrastructure;
+        let mut collection = ProviderCollection::default();
+        collection.push_diagnostic(ProviderDiagnostic::new(
+            RuntimeProviderKind::Network,
+            DiagnosticSeverity::Info,
+            "controlled live slot observation",
+        ));
+        collection.set_state(slot, ProviderStateKind::Fresh);
+        previous
+            .runtime_providers
+            .get_mut(&slot)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(collection);
+        let state = AppState {
+            cache: Arc::new(RwLock::new(previous)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        let before = state.cache.read().await.snapshot.model_revision.clone();
+        let claimed = claim_due_provider_slots(&state, Duration::ZERO).await;
+        assert_eq!(claimed.len(), MAX_CONCURRENT_PROVIDER_SLOTS);
+        assert_ne!(before, state.cache.read().await.snapshot.model_revision);
+
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let cache = state.cache.read().await;
+        assert_eq!(cache.health.mode, RuntimeMode::Mock);
+        assert!(cache
+            .runtime_providers
+            .values()
+            .all(|slot| matches!(slot.observation, RuntimeProviderState::Unavailable)));
+        assert!(!cache
             .runtime_map
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic
                 .message
-                .contains("retained provider observations (stale)")));
+                .contains("controlled live slot observation")));
     }
 
     #[tokio::test]
-    async fn normal_provider_completion_for_the_same_docker_evidence_is_fresh() {
+    async fn older_snapshot_completion_is_retained_only_as_stale_network_evidence() {
         let state = AppState {
             cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
             docker: Arc::new(RwLock::new(None)),
-            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
         };
-        let (observed_snapshot, observed_mode) =
-            publish_docker_snapshot_cache(&state, docker_cache(mock_snapshot())).await;
-        mark_runtime_collection_started(&state).await;
-
-        apply_runtime_collection_outcome(
-            &state,
-            observed_snapshot,
-            observed_mode,
-            ProviderCollectionOutcome::Collected(ProviderCollection::default()),
-        )
-        .await;
-
-        assert!(matches!(
-            state.cache.read().await.runtime_providers,
-            RuntimeProviderState::Fresh(_)
-        ));
-    }
-
-    #[tokio::test]
-    async fn secret_only_midflight_snapshot_change_keeps_provider_completion_fresh() {
-        let mut first_snapshot = mock_snapshot();
-        first_snapshot.containers[0].role = "token=DOCKERMAP_TEST_FAKE_MIDFLIGHT_A".into();
-        let mut second_snapshot = first_snapshot.clone();
-        second_snapshot.containers[0].role = "token=DOCKERMAP_TEST_FAKE_MIDFLIGHT_B".into();
-
-        let state = AppState {
-            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
-            docker: Arc::new(RwLock::new(None)),
-            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
-        };
-        let (observed_snapshot, observed_mode) =
-            publish_docker_snapshot_cache(&state, docker_cache(first_snapshot)).await;
-        mark_runtime_collection_started(&state).await;
-        let collecting_revision = state.cache.read().await.snapshot.model_revision.clone();
-
-        publish_docker_snapshot_cache(&state, docker_cache(second_snapshot)).await;
-        assert_eq!(
-            state.cache.read().await.snapshot.model_revision,
-            collecting_revision,
-            "redacted-only raw inventory must not publish a new revision"
-        );
-
-        apply_runtime_collection_outcome(
-            &state,
-            observed_snapshot,
-            observed_mode,
-            ProviderCollectionOutcome::Collected(ProviderCollection::default()),
-        )
-        .await;
-        assert!(matches!(
-            state.cache.read().await.runtime_providers,
-            RuntimeProviderState::Fresh(_)
-        ));
-    }
-
-    #[test]
-    fn snapshot_version_is_only_the_snapshot_observation_token() {
-        assert_eq!(snapshot_observation_token(42), "42");
-        assert_eq!(
-            snapshot_observation_token(42),
-            snapshot_observation_token(42),
-            "the existing field has no per-publication uniqueness guarantee"
-        );
-    }
-
-    #[tokio::test]
-    async fn coherent_model_revision_is_stable_for_unchanged_publication_and_monotonic_for_state_change(
-    ) {
-        let initial = docker_cache(mock_snapshot());
-        let state = AppState {
-            cache: Arc::new(RwLock::new(initial)),
-            docker: Arc::new(RwLock::new(None)),
-            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
-        };
-
-        let same = docker_cache(mock_snapshot());
-        publish_docker_snapshot_cache(&state, same.clone()).await;
-        let first = state.cache.read().await.clone();
-        assert_eq!(first.snapshot.model_revision, first.health.model_revision);
-        assert_eq!(
-            first.health.model_revision,
-            first.runtime_map.model_revision
-        );
-
-        publish_docker_snapshot_cache(&state, same).await;
-        let stable = state.cache.read().await.clone();
-        assert_eq!(
-            stable.snapshot.model_revision,
-            first.snapshot.model_revision
-        );
-
-        mark_runtime_collection_started(&state).await;
-        let changed = state.cache.read().await.clone();
-        assert_ne!(
-            changed.snapshot.model_revision,
-            stable.snapshot.model_revision
-        );
-        assert_eq!(
-            changed.snapshot.model_revision,
-            changed.health.model_revision
-        );
-        assert_eq!(
-            changed.health.model_revision,
-            changed.runtime_map.model_revision
-        );
-    }
-
-    #[tokio::test]
-    async fn secret_only_raw_inventory_change_does_not_advance_public_revision() {
-        let mut first_snapshot = mock_snapshot();
-        first_snapshot.containers[0].role = "token=DOCKERMAP_TEST_FAKE_REVISION_A".into();
-        let mut second_snapshot = first_snapshot.clone();
-        second_snapshot.containers[0].role = "token=DOCKERMAP_TEST_FAKE_REVISION_B".into();
-        assert_ne!(first_snapshot, second_snapshot);
-
-        let state = AppState {
-            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
-            docker: Arc::new(RwLock::new(None)),
-            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
-        };
-        publish_docker_snapshot_cache(&state, docker_cache(first_snapshot)).await;
-        let first_revision = state.cache.read().await.snapshot.model_revision.clone();
-        publish_docker_snapshot_cache(&state, docker_cache(second_snapshot)).await;
-        let second_revision = state.cache.read().await.snapshot.model_revision.clone();
-
-        assert_eq!(first_revision, second_revision);
-    }
-
-    #[test]
-    fn model_revision_has_an_opaque_boot_component_and_monotonic_sequence() {
-        let mut first = PublicationRevision {
-            boot: "boot-a".into(),
-            sequence: 0,
-            last_observable: None,
-        };
-        let second = PublicationRevision {
-            boot: "boot-b".into(),
-            sequence: 0,
-            last_observable: None,
-        };
-        assert_ne!(
-            first.current(),
-            second.current(),
-            "distinct daemon boot instances must not share revisions"
-        );
-        first.sequence = 1;
-        assert_eq!(first.current(), "boot-a-1");
-        assert_eq!(
-            boot_instance_component().len(),
-            32,
-            "boot component is 128 bits of CSPRNG output encoded as hex"
-        );
-    }
-
-    #[test]
-    fn provider_states_are_fixed_and_timeout_and_failure_do_not_masquerade_as_fresh() {
-        let initial = DaemonCache::mock();
-        assert_eq!(
-            initial.runtime_map.provider_states.len(),
-            STATIC_PROVIDER_SLOTS.len()
-        );
-        assert!(initial
-            .runtime_map
-            .provider_states
-            .iter()
-            .all(|state| state.state == ProviderStateKind::Unavailable));
-
-        let snapshot = mock_snapshot();
-        let failed = runtime_map_for_snapshot(&snapshot, &RuntimeProviderState::Degraded(None));
-        assert_eq!(failed.provider_states.len(), STATIC_PROVIDER_SLOTS.len());
-        assert!(failed
-            .provider_states
-            .iter()
-            .all(|state| state.state == ProviderStateKind::Unavailable));
-
-        let timed_out = runtime_map_for_snapshot(&snapshot, &RuntimeProviderState::TimedOut(None));
-        assert!(timed_out
-            .provider_states
-            .iter()
-            .all(|state| state.state == ProviderStateKind::TimedOut));
-
+        let mut old = mock_snapshot();
+        old.last_updated = 10;
+        let (observed, mode, generation) =
+            publish_docker_snapshot_cache(&state, docker_cache(old)).await;
+        let mut newer = mock_snapshot();
+        newer.last_updated = 11;
+        publish_docker_snapshot_cache(&state, docker_cache(newer)).await;
         let mut collection = ProviderCollection::default();
-        collection.set_state(ProviderSlot::HostScoped, ProviderStateKind::Disabled);
-        let retained =
-            runtime_map_for_snapshot(&snapshot, &RuntimeProviderState::Degraded(Some(collection)));
-        assert!(retained
-            .provider_states
-            .iter()
-            .any(|state| state.slot == ProviderSlot::HostScoped
-                && state.state == ProviderStateKind::Disabled));
-        assert!(retained
-            .provider_states
-            .iter()
-            .any(|state| state.slot == ProviderSlot::ProjectNpm
-                && state.state == ProviderStateKind::Stale));
+        collection.set_state(
+            ProviderSlot::NetworkInfrastructure,
+            ProviderStateKind::Fresh,
+        );
+        apply_provider_slot_outcome(
+            &state,
+            ProviderSlot::NetworkInfrastructure,
+            observed,
+            mode,
+            generation,
+            ProviderCollectionOutcome::Collected(collection),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(matches!(
+            state.cache.read().await.runtime_providers[&ProviderSlot::NetworkInfrastructure]
+                .observation,
+            RuntimeProviderState::Degraded(Some(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn secret_only_docker_change_keeps_network_observation_and_revision_stable() {
+        let mut first = mock_snapshot();
+        first.containers[0].role = "token=DOCKERMAP_TEST_SCHEDULER_SECRET_A".into();
+        let mut second = first.clone();
+        second.containers[0].role = "token=DOCKERMAP_TEST_SCHEDULER_SECRET_B".into();
+        let mut previous = docker_cache(first.clone());
+        let mut collection = ProviderCollection::default();
+        collection.set_state(
+            ProviderSlot::NetworkInfrastructure,
+            ProviderStateKind::Fresh,
+        );
+        previous
+            .runtime_providers
+            .get_mut(&ProviderSlot::NetworkInfrastructure)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(collection);
+        let state = AppState {
+            cache: Arc::new(RwLock::new(previous)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(first)).await;
+        let revision = state.cache.read().await.snapshot.model_revision.clone();
+        publish_docker_snapshot_cache(&state, docker_cache(second)).await;
+        let cache = state.cache.read().await;
+        assert_eq!(cache.snapshot.model_revision, revision);
+        assert!(matches!(
+            cache.runtime_providers[&ProviderSlot::NetworkInfrastructure].observation,
+            RuntimeProviderState::Fresh(_)
+        ));
     }
 }

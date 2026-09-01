@@ -1,16 +1,18 @@
 # Provider scheduling and model revisions
 
-Status: implemented coherence baseline for #66. This ADR records the fixed
-collection boundary and its public coherence contract; it is not a proposal
-for a generic job framework.
+Status: implemented fixed-slot scheduling policy for #66. This ADR records
+the bounded collection boundary and public coherence contract; it is not a
+proposal for a generic job framework.
 
 ## Decision
 
-DockerMap currently has one static Docker-inventory refresh loop. Each cycle
-publishes the Docker snapshot immediately, then starts at most one bounded
-runtime-provider observation pass in the background. There are no separate
-provider timers, no persisted telemetry, no conditional browser fetch policy,
-and no provider plugin or policy DSL.
+DockerMap keeps the two-second Docker-inventory refresh loop. Each cycle
+publishes the Docker snapshot immediately, then claims due fixed provider
+slots in the background. The private completion-relative policy is: network
+infrastructure 10 seconds, host-scoped 15 seconds, Python processes 10
+seconds, native processes 10 seconds, and project npm 60 seconds. At most two
+slots run at once. There are no user-configurable timers, persisted telemetry,
+conditional browser fetch policy, provider plugin, or policy DSL.
 
 The fixed runtime collection stages, in order, are:
 
@@ -22,10 +24,11 @@ The fixed runtime collection stages, in order, are:
 5. Native-process projection.
 6. Bounded project-root npm discovery.
 
-`STATIC_PROVIDER_SLOTS` and `STATIC_REFRESH_INTERVAL` are code-level baseline
-instrumentation. They are not a scheduling API. Changing their order, adding a
-slot, or allowing an independent collection cadence requires a new ADR,
-focused regressions, and a review of source, redaction, and cache coherence.
+`STATIC_PROVIDER_SLOTS`, its fixed cadence table, and `STATIC_REFRESH_INTERVAL`
+are code-level implementation policy. They are not a scheduling API. Changing
+their order, cadence, adding a slot, or allowing a configurable cadence
+requires a new ADR, focused regressions, and a review of source, redaction,
+and cache coherence.
 
 ## Provider state vocabulary
 
@@ -91,11 +94,19 @@ health event still triggers the existing paired browser refetch.
 ## Concurrency and bounds
 
 The refresh loop does not await optional collection before publishing Docker
-evidence. Runtime collection has a single-flight atomic guard. If a blocking
-collection times out, its guard remains held until the task unwinds; no second
-host-provider collection starts in the meantime. A provider result completing
-after a newer snapshot is retained only as explicitly stale evidence. The
-15-second runtime budget and fixed process/filesystem bounds remain unchanged.
+evidence. Each slot has a single-flight atomic guard, and the scheduler admits
+at most two. If a blocking slot times out, its guard remains held until its
+task unwinds; no same-slot overlap starts in the meantime. Due time is measured
+from completion, not start, so slow work does not create catch-up bursts.
+Disabled profile slots are not re-queued. A provider result completing after a
+newer snapshot is retained only as explicitly stale evidence. The 15-second
+per-slot runtime budget and fixed process/filesystem bounds remain unchanged.
+
+For a 60-second healthy interval, the old static pass invoked every slot 31
+times. The fixed policy has deterministic maximum attempts of 7 network, 5
+host-scoped, 7 Python, 7 native, and 2 npm attempts (initial attempt included).
+This is a timing/cost comparison only: completed observations still retain
+their existing source, redaction, profile, and stale-state semantics.
 
 No raw provider result bypasses `publication` redaction or source stamping.
 No new command, network egress, Docker authority, filesystem root, route, SSE
@@ -103,7 +114,10 @@ event, or browser behavior is introduced by this baseline.
 
 ## Regression evidence
 
-Rust tests assert the two-second static cadence, exact collection-stage order,
+Rust tests assert the two-second Docker cadence, exact fixed policy intervals,
+deterministic due/not-due claims, two-slot concurrency, no overlap,
+completion-relative timing, disabled-slot suppression, timeout/stale retention,
+and source isolation, alongside
 revision monotonicity/stability and sanitized evidence comparison,
 restricted-PID omission behavior, no-overlap guard, fresh Docker publication
 with retained stale provider observations, timeout degradation, and

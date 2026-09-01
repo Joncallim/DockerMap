@@ -41,12 +41,8 @@ use std::{
 /// the async runtime.
 const RUNTIME_MAP_COLLECTION_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Static collection slots in their observed collection order.
-///
-/// This is baseline instrumentation, not a scheduler or plugin interface.
-/// Each refresh invokes the fixed implementation below at most once. A future
-/// scheduling change must explicitly revise this list, its contract ADR, and
-/// the single-flight tests rather than silently introducing a background job.
+/// Fixed, daemon-owned provider slots. This is deliberately not a plugin or
+/// scheduling configuration surface.
 pub(crate) type StaticProviderSlot = ProviderSlot;
 
 pub(crate) const STATIC_PROVIDER_SLOTS: &[StaticProviderSlot] = &[
@@ -57,26 +53,15 @@ pub(crate) const STATIC_PROVIDER_SLOTS: &[StaticProviderSlot] = &[
     StaticProviderSlot::ProjectNpm,
 ];
 
-/// Debug-only instrumentation for the static collection baseline. It is never
-/// persisted or emitted through the API: diagnostics remain the public evidence
-/// surface until a future schema-backed provider-state contract.
-#[cfg(debug_assertions)]
-#[derive(Default)]
-struct StaticCollectionTrace {
-    observed: Vec<StaticProviderSlot>,
-}
-
-#[cfg(debug_assertions)]
-impl StaticCollectionTrace {
-    fn record(&mut self, slot: StaticProviderSlot) {
-        self.observed.push(slot);
-    }
-
-    fn assert_complete(&self) {
-        debug_assert_eq!(
-            self.observed, STATIC_PROVIDER_SLOTS,
-            "static runtime collection changed without revising its declared baseline"
-        );
+/// Completion-relative cadence for each fixed slot. The values are private
+/// implementation policy, intentionally not environment-configurable.
+pub(crate) fn slot_interval(slot: StaticProviderSlot) -> Duration {
+    match slot {
+        StaticProviderSlot::NetworkInfrastructure => Duration::from_secs(10),
+        StaticProviderSlot::HostScoped => Duration::from_secs(15),
+        StaticProviderSlot::PythonProcesses => Duration::from_secs(10),
+        StaticProviderSlot::NativeProcesses => Duration::from_secs(10),
+        StaticProviderSlot::ProjectNpm => Duration::from_secs(60),
     }
 }
 
@@ -95,8 +80,9 @@ pub(crate) enum ProviderCollectionOutcome {
 /// blocking `std::process` calls, so they must never run on a Tokio worker
 /// thread. The collection is single-flight and bounded so pathological
 /// providers cannot stall Docker snapshot publication.
-pub(crate) async fn collect_provider_observations_bounded(
+pub(crate) async fn collect_provider_slot_bounded(
     in_flight: Arc<AtomicBool>,
+    slot: StaticProviderSlot,
     snapshot: &DockerSnapshot,
 ) -> ProviderCollectionOutcome {
     let snapshot = snapshot.clone();
@@ -108,7 +94,7 @@ pub(crate) async fn collect_provider_observations_bounded(
         let snapshot = snapshot.clone();
         tokio::task::spawn_blocking(move || {
             let _collection_guard = collection_guard;
-            collect_provider_observations(&snapshot)
+            collect_provider_slot(slot, &snapshot)
         })
     };
     match tokio::time::timeout(RUNTIME_MAP_COLLECTION_TIMEOUT, work).await {
@@ -134,86 +120,87 @@ pub(crate) fn runtime_map_from_collection(
     runtime_map
 }
 
-fn collect_provider_observations(snapshot: &DockerSnapshot) -> ProviderCollection {
+/// Runs exactly one fixed slot. Each slot returns a self-contained collection
+/// with a single state entry so cache retention never mixes freshness claims.
+fn collect_provider_slot(
+    slot: StaticProviderSlot,
+    snapshot: &DockerSnapshot,
+) -> ProviderCollection {
     let mut collection = ProviderCollection::default();
-    #[cfg(debug_assertions)]
-    let mut baseline_trace = StaticCollectionTrace::default();
     let project_root = project_root().ok();
     let pid_namespace = daemon_pid_namespace_scope();
-
-    if let Some(message) = pid_namespace.diagnostic() {
-        collection.push_diagnostic(ProviderDiagnostic::new(
-            RuntimeProviderKind::Process,
-            DiagnosticSeverity::Info,
-            message,
-        ));
+    match slot {
+        StaticProviderSlot::NetworkInfrastructure => {
+            let (nodes, edges, diagnostics) = collection.parts_mut();
+            collect_network_infrastructure(pid_namespace, snapshot, nodes, edges, diagnostics);
+            collection.set_state(slot, ProviderStateKind::Fresh);
+        }
+        StaticProviderSlot::HostScoped => {
+            if let Some(message) = pid_namespace.diagnostic() {
+                collection.push_diagnostic(ProviderDiagnostic::new(
+                    RuntimeProviderKind::Process,
+                    DiagnosticSeverity::Info,
+                    message,
+                ));
+            }
+            if pid_namespace.is_restricted() {
+                collection.push_diagnostic(ProviderDiagnostic::new(
+                    RuntimeProviderKind::Host,
+                    DiagnosticSeverity::Info,
+                    "Host node omitted because the daemon runs in a restricted PID namespace",
+                ));
+            } else {
+                collect_host_node(project_root.as_deref(), collection.nodes_mut());
+            }
+            collect_host_scoped_runtime_providers(pid_namespace, &mut collection);
+            collection.set_state(
+                slot,
+                if pid_namespace.is_restricted() {
+                    ProviderStateKind::Disabled
+                } else {
+                    ProviderStateKind::Fresh
+                },
+            );
+        }
+        StaticProviderSlot::PythonProcesses => {
+            let (nodes, _, diagnostics) = collection.parts_mut();
+            collect_python_processes(pid_namespace.is_restricted(), nodes, diagnostics);
+            collection.set_state(
+                slot,
+                if pid_namespace.is_restricted() {
+                    ProviderStateKind::Disabled
+                } else {
+                    ProviderStateKind::Fresh
+                },
+            );
+        }
+        StaticProviderSlot::NativeProcesses => {
+            let (nodes, _, diagnostics) = collection.parts_mut();
+            collect_native_processes_with_scope(pid_namespace.is_restricted(), nodes, diagnostics);
+            collection.set_state(
+                slot,
+                if pid_namespace.is_restricted() {
+                    ProviderStateKind::Disabled
+                } else {
+                    ProviderStateKind::Fresh
+                },
+            );
+        }
+        StaticProviderSlot::ProjectNpm => {
+            if let Some(root) = project_root.as_deref() {
+                let (nodes, edges, diagnostics) = collection.parts_mut();
+                collect_npm_projects(root, pid_namespace, nodes, edges, diagnostics);
+                collection.set_state(slot, ProviderStateKind::Fresh);
+            } else {
+                collection.push_diagnostic(ProviderDiagnostic::new(
+                    RuntimeProviderKind::Npm,
+                    DiagnosticSeverity::Info,
+                    "npm discovery skipped: project root unavailable",
+                ));
+                collection.set_state(slot, ProviderStateKind::Disabled);
+            }
+        }
     }
-
-    if pid_namespace.is_restricted() {
-        collection.push_diagnostic(ProviderDiagnostic::new(
-            RuntimeProviderKind::Host,
-            DiagnosticSeverity::Info,
-            "Host node omitted because the daemon runs in a restricted PID namespace",
-        ));
-    } else {
-        collect_host_node(project_root.as_deref(), collection.nodes_mut());
-    }
-    {
-        let (nodes, edges, diagnostics) = collection.parts_mut();
-        collect_network_infrastructure(pid_namespace, snapshot, nodes, edges, diagnostics);
-    }
-    collection.set_state(
-        StaticProviderSlot::NetworkInfrastructure,
-        // This slot still derives bounded Docker network classifications in a
-        // restricted PID namespace, so it remains fresh. Host listener
-        // discovery is separately represented by the disabled HostScoped slot.
-        ProviderStateKind::Fresh,
-    );
-    #[cfg(debug_assertions)]
-    baseline_trace.record(StaticProviderSlot::NetworkInfrastructure);
-    collect_host_scoped_runtime_providers(pid_namespace, &mut collection);
-    collection.set_state(
-        StaticProviderSlot::HostScoped,
-        if pid_namespace.is_restricted() {
-            ProviderStateKind::Disabled
-        } else {
-            ProviderStateKind::Fresh
-        },
-    );
-    #[cfg(debug_assertions)]
-    baseline_trace.record(StaticProviderSlot::HostScoped);
-    {
-        let (nodes, _, diagnostics) = collection.parts_mut();
-        collect_python_processes(pid_namespace.is_restricted(), nodes, diagnostics);
-        #[cfg(debug_assertions)]
-        baseline_trace.record(StaticProviderSlot::PythonProcesses);
-        collect_native_processes_with_scope(pid_namespace.is_restricted(), nodes, diagnostics);
-        #[cfg(debug_assertions)]
-        baseline_trace.record(StaticProviderSlot::NativeProcesses);
-    }
-    let process_state = if pid_namespace.is_restricted() {
-        ProviderStateKind::Disabled
-    } else {
-        ProviderStateKind::Fresh
-    };
-    collection.set_state(StaticProviderSlot::PythonProcesses, process_state);
-    collection.set_state(StaticProviderSlot::NativeProcesses, process_state);
-    if let Some(root) = project_root.as_deref() {
-        let (nodes, edges, diagnostics) = collection.parts_mut();
-        collect_npm_projects(root, pid_namespace, nodes, edges, diagnostics);
-        collection.set_state(StaticProviderSlot::ProjectNpm, ProviderStateKind::Fresh);
-    } else {
-        collection.push_diagnostic(ProviderDiagnostic::new(
-            RuntimeProviderKind::Npm,
-            DiagnosticSeverity::Info,
-            "npm discovery skipped: project root unavailable",
-        ));
-        collection.set_state(StaticProviderSlot::ProjectNpm, ProviderStateKind::Disabled);
-    }
-    #[cfg(debug_assertions)]
-    baseline_trace.record(StaticProviderSlot::ProjectNpm);
-    #[cfg(debug_assertions)]
-    baseline_trace.assert_complete();
     collection
 }
 
