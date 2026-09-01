@@ -897,6 +897,60 @@ mod scheduler_tests {
     use super::*;
     use crate::provider_contract::ProviderDiagnostic;
     use dockermap_core::{mock_snapshot, HealthState, RuntimeProviderKind};
+    use std::{
+        collections::BTreeMap as TestBTreeMap, fs, os::unix::fs::PermissionsExt, process::Command,
+    };
+
+    const SCHEDULER_CHURN_CHILD_ENV: &str = "DOCKERMAP_SCHEDULER_CHURN_CHILD";
+    const SCHEDULER_CHURN_ATTESTATION_PATH_ENV: &str = "DOCKERMAP_SCHEDULER_CHURN_ATTESTATION_PATH";
+    const SCHEDULER_CHURN_ATTESTATION_TOKEN_ENV: &str =
+        "DOCKERMAP_SCHEDULER_CHURN_ATTESTATION_TOKEN";
+
+    fn new_scheduler_churn_attestation() -> String {
+        let mut bytes = [0_u8; 32];
+        getrandom::fill(&mut bytes).expect("OS CSPRNG for isolated test attestation");
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// A test child may run real collectors only after its parent creates an
+    /// unguessable, temporary file attestation and passes the matching token.
+    /// An ambient profile flag is deliberately insufficient: it returns to
+    /// the test harness without starting a collector.
+    fn attested_scheduler_churn_profile() -> Option<String> {
+        let profile = std::env::var(SCHEDULER_CHURN_CHILD_ENV).ok()?;
+        let path = std::env::var(SCHEDULER_CHURN_ATTESTATION_PATH_ENV).ok()?;
+        let token = std::env::var(SCHEDULER_CHURN_ATTESTATION_TOKEN_ENV).ok()?;
+        let stored = fs::read_to_string(path).ok()?;
+        (scheduler_churn_attestation_matches(&profile, &token, &stored)
+            && scheduler_churn_parent_is_current_test_exe())
+        .then_some(profile)
+    }
+
+    fn scheduler_churn_attestation_matches(profile: &str, token: &str, stored: &str) -> bool {
+        matches!(profile, "full-host" | "restricted") && token.len() == 64 && stored == token
+    }
+
+    /// Linux-only test-child lineage guard. `Command::new(current_exe())`
+    /// makes the parent executable the same test binary. An ambient process
+    /// (including Cargo, a shell, or a CI wrapper) cannot satisfy this just by
+    /// creating a token-shaped file and exporting matching variables.
+    fn scheduler_churn_parent_is_current_test_exe() -> bool {
+        let Ok(current) = std::env::current_exe().and_then(fs::canonicalize) else {
+            return false;
+        };
+        let Ok(status) = fs::read_to_string("/proc/self/status") else {
+            return false;
+        };
+        let Some(parent_pid) = status
+            .lines()
+            .find_map(|line| line.strip_prefix("PPid:")?.trim().parse::<u32>().ok())
+        else {
+            return false;
+        };
+        fs::canonicalize(format!("/proc/{parent_pid}/exe"))
+            .map(|parent| parent == current)
+            .unwrap_or(false)
+    }
 
     fn slots() -> RuntimeProviderSlots {
         unavailable_provider_slots()
@@ -1111,6 +1165,264 @@ mod scheduler_tests {
         let legacy_slot_passes =
             (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * STATIC_PROVIDER_SLOTS.len() as u64;
         assert_eq!(legacy_slot_passes, 155);
+    }
+
+    /// The scheduler's timing trace above deliberately counts claims rather
+    /// than doing host work. This companion test is a controlled, separate
+    /// process which puts only fixed harmless command stubs on `PATH` and
+    /// drives those same claims through the real slot collectors. Keeping the
+    /// environment in a child prevents PATH/PID-profile changes from racing
+    /// the rest of the Rust suite.
+    #[test]
+    fn scheduler_process_churn_uses_fixed_path_stubs_in_isolated_child() {
+        const TEST_NAME: &str = "cache_refresh::scheduler_tests::scheduler_process_churn_uses_fixed_path_stubs_in_isolated_child";
+
+        if std::env::var_os(SCHEDULER_CHURN_CHILD_ENV).is_some() {
+            let Some(profile) = attested_scheduler_churn_profile() else {
+                // Fail safe for ambient/malformed child flags. In particular,
+                // do not run any provider collector using the test process's
+                // ordinary PATH or PID-namespace settings.
+                return;
+            };
+            let starts = tokio::runtime::Runtime::new()
+                .expect("test runtime")
+                .block_on(run_real_collector_churn_trace(&profile));
+            match profile.as_str() {
+                "full-host" => {
+                    assert_eq!(starts.values().sum::<usize>(), 28);
+                    let legacy_starts = (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs())
+                        * STATIC_PROVIDER_SLOTS.len() as u64;
+                    assert_eq!(legacy_starts, 155);
+                    assert_eq!(legacy_starts * 8 / STATIC_PROVIDER_SLOTS.len() as u64, 248);
+                }
+                "restricted" => {
+                    assert_eq!(starts.values().sum::<usize>(), 12);
+                    assert_eq!(starts[&ProviderSlot::HostScoped], 1);
+                    assert_eq!(starts[&ProviderSlot::PythonProcesses], 1);
+                    assert_eq!(starts[&ProviderSlot::NativeProcesses], 1);
+                }
+                unexpected => panic!("unknown scheduler churn profile: {unexpected}"),
+            }
+            return;
+        }
+
+        for (profile, expected_children) in [("full-host", 48_usize), ("restricted", 0)] {
+            let fixture = tempfile::tempdir().expect("temporary scheduler churn fixture");
+            let bin = fixture.path().join("fixed-bin");
+            let project_root = fixture.path().join("empty-project-root");
+            let counter = fixture.path().join("fixed-command-count");
+            let attestation_path = fixture.path().join("parent-attestation");
+            let attestation = new_scheduler_churn_attestation();
+            fs::create_dir(&bin).expect("fixed stub directory");
+            fs::create_dir(&project_root).expect("empty project root");
+            fs::write(&counter, "").expect("empty stub counter");
+            fs::write(&attestation_path, &attestation).expect("parent attestation");
+            fs::set_permissions(&attestation_path, fs::Permissions::from_mode(0o600))
+                .expect("private parent attestation");
+            for command in [
+                "tailscale",
+                "headscale",
+                "systemctl",
+                "crontab",
+                "pm2",
+                "tmux",
+                "ps",
+            ] {
+                let stub = bin.join(command);
+                fs::write(
+                    &stub,
+                    "#!/bin/sh\nprintf '%s\\n' \"${0##*/}\" >> \"$DOCKERMAP_SCHEDULER_CHURN_COUNTER\"\n",
+                )
+                .expect("fixed command stub");
+                fs::set_permissions(&stub, fs::Permissions::from_mode(0o755))
+                    .expect("executable fixed command stub");
+            }
+
+            // Regression: a profile flag without the parent attestation must
+            // be a no-op, even with otherwise tempting host/PATH inputs.
+            let invalid_status = Command::new(std::env::current_exe().expect("test executable"))
+                .args(["--exact", TEST_NAME, "--nocapture", "--test-threads=1"])
+                .env(SCHEDULER_CHURN_CHILD_ENV, "full-host")
+                .env_remove(SCHEDULER_CHURN_ATTESTATION_PATH_ENV)
+                .env_remove(SCHEDULER_CHURN_ATTESTATION_TOKEN_ENV)
+                .env("DOCKERMAP_PID_NAMESPACE", "host")
+                .env("DOCKERMAP_SCHEDULER_CHURN_COUNTER", &counter)
+                .env("PATH", &bin)
+                .status()
+                .expect("unattested churn child starts");
+            assert!(invalid_status.success(), "unattested child safely exits");
+            assert!(
+                fs::read_to_string(&counter)
+                    .expect("unattested counter")
+                    .is_empty(),
+                "an ambient child profile cannot start a host collector"
+            );
+
+            // Even a matching, private 0600 sentinel/token pair is not
+            // enough under a normal non-test parent (as cargo or a CI wrapper
+            // would be). The shell is deliberately the direct parent here.
+            let forged_status = Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "\"$1\" --exact \"$2\" --nocapture --test-threads=1",
+                    "scheduler-churn-forge",
+                ])
+                .arg(std::env::current_exe().expect("test executable"))
+                .arg(TEST_NAME)
+                .env(SCHEDULER_CHURN_CHILD_ENV, "full-host")
+                .env(SCHEDULER_CHURN_ATTESTATION_PATH_ENV, &attestation_path)
+                .env(SCHEDULER_CHURN_ATTESTATION_TOKEN_ENV, &attestation)
+                .env("DOCKERMAP_PID_NAMESPACE", "host")
+                .env("DOCKERMAP_SCHEDULER_CHURN_COUNTER", &counter)
+                .env("PATH", &bin)
+                .status()
+                .expect("forged churn child starts");
+            assert!(forged_status.success(), "forged child safely exits");
+            assert!(
+                fs::read_to_string(&counter)
+                    .expect("forged counter")
+                    .is_empty(),
+                "a forged matching attestation under a non-test parent cannot start a host collector"
+            );
+
+            let status = Command::new(std::env::current_exe().expect("test executable"))
+                .args(["--exact", TEST_NAME, "--nocapture", "--test-threads=1"])
+                .env(SCHEDULER_CHURN_CHILD_ENV, profile)
+                .env(SCHEDULER_CHURN_ATTESTATION_PATH_ENV, &attestation_path)
+                .env(SCHEDULER_CHURN_ATTESTATION_TOKEN_ENV, &attestation)
+                .env(
+                    "DOCKERMAP_PID_NAMESPACE",
+                    if profile == "full-host" {
+                        "host"
+                    } else {
+                        "restricted"
+                    },
+                )
+                .env("DOCKERMAP_PROJECT_ROOT", &project_root)
+                .env("DOCKERMAP_ENABLE_TAILSCALE", "true")
+                .env("DOCKERMAP_ENABLE_HEADSCALE", "true")
+                .env("DOCKERMAP_SCHEDULER_CHURN_COUNTER", &counter)
+                .env("PATH", &bin)
+                .status()
+                .expect("isolated scheduler churn child starts");
+            assert!(status.success(), "isolated {profile} churn child passes");
+
+            let commands = fs::read_to_string(&counter)
+                .expect("fixed command counter")
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            assert_eq!(commands.len(), expected_children, "{profile} child count");
+            if profile == "full-host" {
+                let by_command =
+                    commands
+                        .into_iter()
+                        .fold(TestBTreeMap::new(), |mut counts, name| {
+                            *counts.entry(name).or_insert(0_usize) += 1;
+                            counts
+                        });
+                assert_eq!(by_command.get("tailscale"), Some(&7));
+                assert_eq!(by_command.get("headscale"), Some(&7));
+                assert_eq!(by_command.get("systemctl"), Some(&5));
+                assert_eq!(by_command.get("crontab"), Some(&5));
+                assert_eq!(by_command.get("pm2"), Some(&5));
+                assert_eq!(by_command.get("tmux"), Some(&5));
+                assert_eq!(by_command.get("ps"), Some(&14));
+            }
+        }
+    }
+
+    #[test]
+    fn scheduler_churn_attestation_requires_parent_token_and_known_profile() {
+        let token = new_scheduler_churn_attestation();
+        assert_eq!(token.len(), 64);
+        assert!(token.as_bytes().iter().all(u8::is_ascii_hexdigit));
+        for (profile, supplied, stored) in [
+            ("full-host", token.as_str(), token.as_str()),
+            ("restricted", token.as_str(), token.as_str()),
+        ] {
+            assert!(scheduler_churn_attestation_matches(
+                profile, supplied, stored
+            ));
+        }
+        for (profile, supplied, stored) in [
+            ("full-host", "", token.as_str()),
+            ("unknown", token.as_str(), token.as_str()),
+            ("restricted", token.as_str(), "different-parent-attestation"),
+        ] {
+            assert!(!scheduler_churn_attestation_matches(
+                profile, supplied, stored
+            ));
+        }
+    }
+
+    async fn run_real_collector_churn_trace(profile: &str) -> BTreeMap<ProviderSlot, usize> {
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        let snapshot = state.cache.read().await.snapshot.clone();
+        let mut starts = BTreeMap::new();
+        for second in 0..=60 {
+            let now = Duration::from_secs(second);
+            loop {
+                let claimed = claim_due_provider_slots(&state, now).await;
+                if claimed.is_empty() {
+                    break;
+                }
+                assert!(claimed.len() <= MAX_CONCURRENT_PROVIDER_SLOTS);
+                for slot in claimed {
+                    *starts.entry(slot).or_insert(0_usize) += 1;
+                    // Deliberately invoke the actual bounded fixed collector.
+                    // Only its command resolution is substituted by the child
+                    // PATH; the scheduler claim and profile branches are
+                    // production code. The test records a virtual immediate
+                    // completion after the real collector returns.
+                    let ProviderCollectionOutcome::Collected(collection) =
+                        collect_provider_slot_bounded(
+                            state.provider_slot_in_flight.for_slot(slot),
+                            slot,
+                            &snapshot,
+                        )
+                        .await
+                    else {
+                        panic!("fixed stub collector completes within its bounded test window");
+                    };
+                    let collection = collection.sanitized_for_retention();
+                    let mut cache = state.cache.write().await;
+                    let slot_state = cache
+                        .runtime_providers
+                        .get_mut(&slot)
+                        .expect("static slot remains present");
+                    slot_state.observation = RuntimeProviderState::Fresh(collection);
+                    slot_state.completed_at = Some(now);
+                }
+            }
+        }
+
+        let cache = state.cache.read().await;
+        if profile == "restricted" {
+            for slot in [
+                ProviderSlot::HostScoped,
+                ProviderSlot::PythonProcesses,
+                ProviderSlot::NativeProcesses,
+            ] {
+                assert!(matches!(
+                    cache.runtime_providers[&slot].observation,
+                    RuntimeProviderState::Fresh(ref collection)
+                        if collection.states().iter().any(|state| state.slot == slot && state.state == ProviderStateKind::Disabled)
+                ));
+            }
+        } else {
+            assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
+            assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+            assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);
+            assert_eq!(starts[&ProviderSlot::NativeProcesses], 7);
+            assert_eq!(starts[&ProviderSlot::ProjectNpm], 2);
+        }
+        drop(cache);
+        starts
     }
 
     #[tokio::test]
