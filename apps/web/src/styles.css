@@ -4,24 +4,26 @@
    =========================================================================== */
 
 :root {
-  --bg: #0e1116;
-  --bg-2: #12161d;
-  --surface: #181d25;
-  --surface-2: #202733;
+  --bg: var(--hearth-canvas);
+  --bg-2: var(--hearth-canvas-raised);
+  --surface: var(--hearth-surface);
+  --surface-2: var(--hearth-surface-raised);
   --surface-3: #2b3443;
-  --border: rgba(226, 232, 240, 0.12);
-  --border-strong: rgba(226, 232, 240, 0.24);
+  --border: var(--hearth-border);
+  --border-strong: var(--hearth-border-strong);
 
-  --ink: #f4f7fb;
-  --ink-soft: #d5dde8;
-  --muted: #a9b4c4;
-  --muted-deep: #8794a8;
+  --ink: var(--hearth-text);
+  --ink-soft: var(--hearth-text-soft);
+  --muted: var(--hearth-muted);
+  --muted-deep: var(--hearth-muted-deep);
 
-  --accent: #73d2f6;
-  --on-accent: #071016;
-  --focus-ring: #73d2f6;
-  --accent-soft: rgba(115, 210, 246, 0.16);
-  --chrome: rgba(14, 17, 22, 0.78);
+  --accent: var(--hearth-azure-text);
+  --accent-fill: var(--hearth-azure-strong);
+  --accent-text: var(--hearth-azure-text);
+  --on-accent: #ffffff;
+  --focus-ring: var(--hearth-azure);
+  --accent-soft: var(--hearth-azure-soft);
+  --chrome: rgb(11 15 26 / 78%);
 
   /* State system — the single source of meaning for color. */
   --s-healthy: #50df95;
@@ -42,11 +44,11 @@
   --s5: 24px;
   --s6: 32px;
 
-  --shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  --shadow: var(--hearth-shadow);
   --t: 140ms cubic-bezier(0.22, 0.61, 0.36, 1);
 
-  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", monospace;
+  --font: var(--hearth-font);
+  --mono: var(--hearth-mono);
 
   color-scheme: dark;
 }
@@ -63,7 +65,7 @@ body,
 }
 
 body {
-  background: radial-gradient(1200px 700px at 80% -10%, #202733 0%, var(--bg) 55%);
+  background: radial-gradient(1200px 700px at 80% -10%, var(--surface-2) 0%, var(--bg) 55%);
   color: var(--ink);
   font-family: var(--font);
   font-size: 14px;
@@ -90,7 +92,7 @@ body {
 .auth-card h1 { margin: var(--s2) 0 var(--s2); }
 .auth-card form { display: grid; gap: var(--s2); margin-top: var(--s5); }
 .auth-card input { padding: 10px 12px; color: var(--ink); background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: var(--r-sm); }
-.auth-card button { padding: 10px 12px; color: var(--on-accent); background: var(--accent); border: 0; border-radius: var(--r-sm); font-weight: 700; }
+.auth-card button { padding: 10px 12px; color: var(--on-accent); background: var(--accent-fill); border: 0; border-radius: var(--r-sm); font-weight: 700; }
 .auth-card button:disabled { opacity: .65; cursor: wait; }
 .auth-error { color: var(--s-offline); }
 
@@ -123,7 +125,7 @@ button {
   transform: translateY(-160%);
   padding: var(--s2) var(--s3);
   border-radius: var(--r-sm);
-  background: var(--accent);
+  background: var(--accent-fill);
   color: var(--on-accent);
   font-weight: 700;
 }
@@ -216,7 +218,7 @@ code,
   width: 34px;
   height: 34px;
   border-radius: var(--r-sm);
-  background: linear-gradient(135deg, var(--accent), #14b8a6);
+  background: linear-gradient(135deg, var(--accent-fill), #14b8a6);
   color: #fff;
 }
 
@@ -600,8 +602,8 @@ kbd {
 }
 
 .tag-accent {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent-text);
+  border-color: color-mix(in srgb, var(--accent-text) 35%, transparent);
   background: var(--accent-soft);
 }
 
@@ -658,7 +660,7 @@ kbd {
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: var(--c, var(--accent));
+  background: var(--c, var(--accent-fill));
 }
 
 .spark {
@@ -1896,7 +1898,7 @@ kbd {
   padding: 7px 16px;
   border-radius: var(--r-sm);
   border: none;
-  background: var(--accent);
+  background: var(--accent-fill);
   color: var(--on-accent);
   font-weight: 700;
   font-size: 13px;
@@ -2144,8 +2146,8 @@ kbd {
 }
 
 .switch.is-on {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
 }
 
 .switch-knob {
@@ -2183,23 +2185,25 @@ kbd {
 
 /* Light theme override -------------------------------------------------------*/
 :root[data-theme="light"] {
-  --bg: #f7f8fb;
-  --bg-2: #eef2f7;
-  --surface: #ffffff;
-  --surface-2: #f2f5f9;
+  --bg: var(--hearth-canvas);
+  --bg-2: var(--hearth-canvas-raised);
+  --surface: var(--hearth-surface);
+  --surface-2: var(--hearth-surface-raised);
   --surface-3: #e2e8f0;
-  --border: rgba(15, 23, 42, 0.09);
-  --border-strong: rgba(15, 23, 42, 0.2);
+  --border: var(--hearth-border);
+  --border-strong: var(--hearth-border-strong);
 
-  --ink: #111827;
-  --ink-soft: #334155;
-  --muted: #5f6c7f;
-  --muted-deep: #596579;
+  --ink: var(--hearth-text);
+  --ink-soft: var(--hearth-text-soft);
+  --muted: var(--hearth-muted);
+  --muted-deep: var(--hearth-muted-deep);
 
-  --accent: #006d9c;
+  --accent: var(--hearth-azure-text);
+  --accent-fill: var(--hearth-azure-strong);
+  --accent-text: var(--hearth-azure-text);
   --on-accent: #ffffff;
-  --focus-ring: #005a82;
-  --accent-soft: rgba(0, 109, 156, 0.12);
+  --focus-ring: var(--hearth-azure);
+  --accent-soft: var(--hearth-azure-soft);
   --chrome: rgba(255, 255, 255, 0.78);
   --s-healthy: #08783e;
   --s-warning: #7a4b00;
@@ -2213,7 +2217,7 @@ kbd {
 }
 
 :root[data-theme="light"] body {
-  background: radial-gradient(1200px 700px at 80% -10%, #ffffff 0%, var(--bg) 55%);
+  background: radial-gradient(1200px 700px at 80% -10%, var(--surface) 0%, var(--bg) 55%);
 }
 
 /* Compact density -------------------------------------------------------------*/
