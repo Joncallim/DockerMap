@@ -87,6 +87,9 @@ daemon, provider, auth, deployment, or write-mode behavior.
 
 - [architecture/ARCHITECTURE.md](architecture/ARCHITECTURE.md): system layout,
   data flow, runtime-map model, and provider rules.
+- [architecture/CONTRACT_AUTHORITY.md](architecture/CONTRACT_AUTHORITY.md):
+  canonical ownership, deterministic schema strategy, compatibility policy, and
+  the current contract-validation limitation (#144 / #65).
 - [architecture/PAGE_LOGIC.md](architecture/PAGE_LOGIC.md): intended UI routes,
   page behavior, and cross-page navigation.
 - [planning/PYTHON_AND_PROCESS_PROVIDERS.md](planning/PYTHON_AND_PROCESS_PROVIDERS.md):
