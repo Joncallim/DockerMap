@@ -17,6 +17,7 @@
   },
   "devDependencies": {
     "ajv": "8.20.0",
+    "json-schema-to-typescript": "^15.0.4",
     "typescript": "^5.9.2",
     "vitest": "^4.1.9"
   }

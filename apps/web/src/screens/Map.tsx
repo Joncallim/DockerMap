@@ -157,7 +157,7 @@ function ServiceDirectory({ model, services, selectedId, onSelect, buttonRefs }:
 function NamedVolumes({ model, service }: { model: NonNullable<ReturnType<typeof useApp>["model"]>; service: Service }) {
   return <div className="inspector-section"><h4>Observed named volumes</h4><p className="muted-line">Mounting the same volume does not establish data direction or a service dependency.</p><div className="tag-wrap">{service.mounts.map((mount, index) => {
     if (mount.kind !== "named_volume") return null;
-    const source = mount.source;
+    const source = mount.source ?? null;
     const routable = source !== null && source !== "" && model.volumeByName.has(source);
     const collided = source !== null && source !== "" && model.volumeNameCollisions.has(source);
     return routable ? <Link key={`${mount.id}-${index}`} className="ref-chip" to={`/volumes/${encodeURIComponent(source)}`}>{source}</Link> : <Fragment key={`${mount.id}-${index}`}><Tag icon="storage">{collided ? <span className="collision-identity" title={COLLISION_HINT}>{source}</span> : <span>{source === "" ? UNAVAILABLE_VOLUME : source ?? "anonymous"}</span>}</Tag>{collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}</Fragment>;

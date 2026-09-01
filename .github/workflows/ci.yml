@@ -29,6 +29,9 @@ jobs:
       - name: Audit dependencies
         run: npm audit --omit=dev
 
+      - name: Check generated contracts
+        run: npm run check:contracts
+
       - name: Typecheck
         run: npm run typecheck
 

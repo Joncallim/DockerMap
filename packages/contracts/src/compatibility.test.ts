@@ -17,10 +17,9 @@ import statusFixture from "../../../tests/fixtures/contracts/status.json";
 
 describe("contract fixtures", () => {
   it("match the TypeScript API contracts", () => {
-    // JSON module imports intentionally widen string literals. Runtime schema
-    // validation below is the source-of-truth fixture check; these casts keep
-    // the existing consumer-oriented assertions typechecked until generated
-    // TypeScript declarations land in the next ADR phase.
+    // JSON module imports intentionally widen string literals. Generated Rust
+    // declarations and runtime schema validation are the contract authority;
+    // these casts only recover literal precision for consumer assertions.
     const snapshot = snapshotFixture as DockerSnapshot;
     const composeScan = composeScanFixture as ComposeScan;
     const composeGraph = composeGraphFixture as ComposeGraph;

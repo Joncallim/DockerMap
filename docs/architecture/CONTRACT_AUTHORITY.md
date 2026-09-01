@@ -106,6 +106,24 @@ missing-mapping tests fail closed if a Rust route loses its schema association,
 and a real Node API process validates emitted pass-through responses against
 the standalone generated schemas.
 
+### Implemented Rust declaration authority (#156)
+
+`json-schema-to-typescript` `15.0.4` renders the committed Rust/Schemars
+documents into `packages/contracts/src/rustModels.ts`. The file is committed,
+deterministic, and never hand-edited; `npm run check:contracts` first checks
+the Rust schema bytes, then fails if the generated declarations are stale.
+`packages/contracts/src/index.ts` re-exports those daemon models rather than
+maintaining a second structural copy. A regression simulates adding a public
+Rust `ContainerRecord` field, runs the real declaration generator, and proves
+the committed declarations fail freshness until regenerated.
+
+The browser's Demo Mode is Node-owned. It deliberately permits JSON scalar
+metadata values that the current Rust daemon's `BTreeMap<String, String>` does
+not emit. The only handwritten overlay is therefore the explicitly documented
+API union for that Node-owned metadata field; every daemon model field remains
+generated from Rust. This preserves the existing response bytes without
+misrepresenting demo data as daemon serialization.
+
 ### Implemented version authority (#150)
 
 `VERSION` is now the strict SemVer product authority. The dependency-free
