@@ -13,6 +13,7 @@ import {
   RUST_ROUTE_RESPONSE_SCHEMAS
 } from "../src/openapi.js";
 import { ROUTE_MANIFEST } from "../src/routes.js";
+import { SSE_EVENT_PAYLOAD_SCHEMAS, assertSseEventSchemaCoverage } from "../src/sseProtocol.js";
 
 function toOpenApiPath(path: string) {
   return path.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
@@ -146,6 +147,30 @@ test("OpenAPI references generated Rust and Node response components exactly", (
       "application/json": { schema: { $ref: "#/components/schemas/ApiError" } }
     }, `${path} must document route-dependent daemon errors`);
   }
+});
+
+test("OpenAPI derives the SSE named-event payload contract without duplicate schemas", () => {
+  const document = buildOpenApiDocument();
+  for (const path of ["/api/events/stream", "/api/v1/events/stream"]) {
+    const stream = document.paths[path]?.get?.responses["200"];
+    assert.equal(stream?.description.includes("Server-Sent Events"), true, path);
+    const content = stream?.content?.["text/event-stream"];
+    assert.deepEqual(content?.schema, { type: "string", description: "UTF-8 Server-Sent Events framing; see x-dockermap-sse-events." });
+    assert.deepEqual(content?.["x-dockermap-sse-events"], [
+      { event: "snapshot", data: { $ref: "#/components/schemas/HealthResponse" }, "x-dockermap-schema-authority": "rust" },
+      { event: "error", data: { $ref: "#/components/schemas/ApiError" }, "x-dockermap-schema-authority": "node" }
+    ], path);
+    assert.deepEqual(content?.["x-dockermap-sse-comment-frames"], ["ping"], path);
+  }
+  assert.deepEqual(SSE_EVENT_PAYLOAD_SCHEMAS.snapshot, { authority: "rust", schema: "HealthResponse" });
+});
+
+test("rejects SSE event-to-schema mapping drift", () => {
+  const drift = {
+    ...SSE_EVENT_PAYLOAD_SCHEMAS,
+    snapshot: { authority: "node", schema: "ApiError" }
+  } as unknown as typeof SSE_EVENT_PAYLOAD_SCHEMAS;
+  assert.throws(() => assertSseEventSchemaCoverage(drift), /SSE event schema mapping drift: snapshot must be rust:HealthResponse/);
 });
 
 test("every Rust-owned route and alias has a declared generated schema reference", () => {

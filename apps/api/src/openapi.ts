@@ -7,6 +7,7 @@ import {
   type NodeEnvelopeSchemaId,
   type RustResponseSchemaId
 } from "@dockermap/contracts";
+import { SSE_EVENT_PAYLOAD_SCHEMAS, assertSseEventSchemaCoverage, ssePayloadSchemaRef } from "./sseProtocol.js";
 
 type OpenApiParameter = Readonly<{
   name: string;
@@ -19,8 +20,10 @@ type OpenApiParameter = Readonly<{
 
 type OpenApiResponse = Readonly<{
   description: string;
-  content?: Readonly<Record<"application/json", Readonly<{
+  content?: Readonly<Record<string, Readonly<{
     schema: Readonly<Record<string, unknown>>;
+    "x-dockermap-sse-events"?: readonly Readonly<Record<string, unknown>>[];
+    "x-dockermap-sse-comment-frames"?: readonly string[];
   }>>>;
 }>;
 type OpenApiResponses = Readonly<Record<string, OpenApiResponse>>;
@@ -60,6 +63,26 @@ function rustJsonResponse(schema: RustResponseSchemaId, description = "Successfu
       description,
       content: {
         "application/json": { schema: { $ref: `#/components/schemas/${schema}` } }
+      }
+    }
+  } as const;
+}
+
+function sseResponse() {
+  assertSseEventSchemaCoverage();
+  return {
+    "200": {
+      description: "A long-lived Server-Sent Events stream. Named event data is JSON; comment frames are keepalives and have no JSON payload.",
+      content: {
+        "text/event-stream": {
+          schema: { type: "string", description: "UTF-8 Server-Sent Events framing; see x-dockermap-sse-events." },
+          "x-dockermap-sse-events": Object.entries(SSE_EVENT_PAYLOAD_SCHEMAS).map(([event, contract]) => ({
+            event,
+            data: { $ref: ssePayloadSchemaRef(contract) },
+            "x-dockermap-schema-authority": contract.authority
+          })),
+          "x-dockermap-sse-comment-frames": ["ping"]
+        }
       }
     }
   } as const;
@@ -172,7 +195,7 @@ export const ROUTE_OPERATION_METADATA = {
     ],
     responses: withApiErrors(rustJsonResponseFor("compose-edit-plan"), ["400", "401", "500"])
   },
-  "events-stream": { summary: "Server-sent event stream of health snapshots", tags: ["system"], responses: withApiErrors(successfulResponse, ["401", "429", "500", "503"]) },
+  "events-stream": { summary: "Server-sent event stream of health snapshots", tags: ["system"], responses: withApiErrors(sseResponse(), ["401", "429", "500", "503"]) },
   "auth-session": {
     summary: "Create a browser session from a bearer token",
     tags: ["auth"],
@@ -235,6 +258,7 @@ function operationFor(route: (typeof ROUTE_MANIFEST)[number], path: string): Ope
 
 export function buildOpenApiDocument() {
   assertRustRouteSchemaCoverage();
+  assertSseEventSchemaCoverage();
   const paths: Record<string, OpenApiPathItem> = {};
   for (const route of ROUTE_MANIFEST) {
     for (const routePath of route.paths) {
