@@ -17,7 +17,9 @@ pub use logs::{
     MAX_LOG_PAGE_SIZE,
 };
 pub use models::*;
-pub use snapshot_runtime::{derive_graph, derive_images, derive_runtime_map};
+pub use snapshot_runtime::{
+    derive_graph, derive_images, derive_runtime_map, derive_runtime_map_with_evidence_revision,
+};
 
 pub fn service_entity_kind_name(kind: &ServiceEntityKind) -> &'static str {
     match kind {
@@ -686,7 +688,7 @@ mod tests {
             assert_eq!(edge.evidence_refs.len(), 1);
             let evidence = &edge.evidence_refs[0];
             assert_eq!(evidence.version, 1);
-            assert_eq!(evidence.provider, RuntimeProviderKind::Docker);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Docker);
             assert_eq!(
                 evidence.assertion_kind,
                 RuntimeEvidenceAssertionKind::Observed
@@ -719,7 +721,13 @@ mod tests {
         // into provider evidence.
         snapshot.model_revision = "daemon-publication-999".into();
 
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map_with_evidence_revision(
+            &snapshot,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            "opaque-docker-observation-17",
+        );
         let evidence = runtime_map
             .edges
             .iter()
@@ -728,8 +736,34 @@ mod tests {
             .expect("mock snapshot emits Docker evidence");
 
         assert_eq!(evidence.collected_at, 42);
-        assert_eq!(evidence.provider_revision, "42");
+        assert_eq!(evidence.provider_revision, "opaque-docker-observation-17");
         assert_ne!(evidence.provider_revision, snapshot.model_revision);
+    }
+
+    #[test]
+    fn version_one_evidence_rejects_non_docker_or_non_observed_claims() {
+        let snapshot = mock_snapshot();
+        let evidence = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new())
+            .edges
+            .into_iter()
+            .flat_map(|edge| edge.evidence_refs)
+            .next()
+            .expect("mock snapshot emits version-one evidence");
+        let valid = serde_json::to_value(evidence).expect("evidence serializes");
+
+        for (field, invalid) in [
+            ("provider", serde_json::json!("systemd")),
+            ("assertionKind", serde_json::json!("inferred")),
+            ("freshness", serde_json::json!("stale")),
+            ("kind", serde_json::json!("systemd_requires")),
+        ] {
+            let mut malformed = valid.clone();
+            malformed[field] = invalid;
+            assert!(
+                serde_json::from_value::<RuntimeEvidenceRef>(malformed).is_err(),
+                "v1 must reject fabricated {field} evidence"
+            );
+        }
     }
 
     #[test]

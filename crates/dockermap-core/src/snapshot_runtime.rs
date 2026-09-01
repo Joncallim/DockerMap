@@ -9,9 +9,9 @@ use crate::{
     collision_resistant_id_component, service_entity_kind_name, ContainerRecord,
     DiagnosticSeverity, DockerSnapshot, GraphEdge, GraphNode, GraphResponse, ImageRecord, NodeKind,
     RelationshipKind, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
-    RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode,
-    RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind, RuntimeRelationshipKind,
-    RuntimeServiceEntity, RuntimeServiceStatus,
+    RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
+    RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
+    RuntimeRelationshipKind, RuntimeServiceEntity, RuntimeServiceStatus,
 };
 
 pub fn derive_images(snapshot: &DockerSnapshot) -> Vec<ImageRecord> {
@@ -316,6 +316,7 @@ fn docker_runtime_evidence(
     source: &str,
     target: &str,
     kind: RuntimeEvidenceKind,
+    provider_revision: &str,
 ) -> RuntimeEvidenceRef {
     let kind_id = match kind {
         RuntimeEvidenceKind::DockerNetworkMembership => "network-membership",
@@ -329,11 +330,6 @@ fn docker_runtime_evidence(
         RuntimeEvidenceKind::DockerVolumeMount => "Docker reported volume attachment",
         RuntimeEvidenceKind::DockerPortPublication => "Docker reported container port publication",
     };
-    // `modelRevision` is assigned only after runtime-map derivation and means
-    // cache publication identity. Evidence must instead attest the Docker
-    // observation it was derived from. The fixed decimal form is nonempty,
-    // bounded, deterministic, and contains no Docker source text.
-    let provider_revision = snapshot.last_updated.to_string();
     RuntimeEvidenceRef {
         version: 1,
         id: format!(
@@ -341,22 +337,43 @@ fn docker_runtime_evidence(
             kind_id,
             collision_resistant_id_component(&format!("{source}\u{1f}{target}"))
         ),
-        provider: RuntimeProviderKind::Docker,
+        provider: RuntimeEvidenceProvider::Docker,
         kind,
         assertion_kind: RuntimeEvidenceAssertionKind::Observed,
         summary: summary.into(),
         subject_ref: source.into(),
         collected_at: snapshot.last_updated,
-        provider_revision,
+        provider_revision: provider_revision.into(),
         freshness: RuntimeEvidenceFreshness::Fresh,
     }
 }
 
 pub fn derive_runtime_map(
     snapshot: &DockerSnapshot,
+    nodes: Vec<RuntimeMapNode>,
+    edges: Vec<RuntimeMapEdge>,
+    diagnostics: Vec<RuntimeMapDiagnostic>,
+) -> RuntimeMap {
+    // Direct core callers have no daemon observation-token lifecycle. The
+    // daemon uses the explicit variant below; this compatibility projection is
+    // still nonempty and contains no raw Docker source text.
+    derive_runtime_map_with_evidence_revision(
+        snapshot,
+        nodes,
+        edges,
+        diagnostics,
+        &snapshot.last_updated.to_string(),
+    )
+}
+
+/// Derive runtime topology with the daemon-owned opaque Docker observation
+/// token that attests the bounded snapshot used for this map.
+pub fn derive_runtime_map_with_evidence_revision(
+    snapshot: &DockerSnapshot,
     mut nodes: Vec<RuntimeMapNode>,
     mut edges: Vec<RuntimeMapEdge>,
     mut diagnostics: Vec<RuntimeMapDiagnostic>,
+    evidence_provider_revision: &str,
 ) -> RuntimeMap {
     for container in &snapshot.containers {
         let mut metadata = BTreeMap::new();
@@ -403,6 +420,7 @@ pub fn derive_runtime_map(
                     &source,
                     &target,
                     RuntimeEvidenceKind::DockerNetworkMembership,
+                    evidence_provider_revision,
                 )],
                 source,
                 target,
@@ -444,6 +462,7 @@ pub fn derive_runtime_map(
                     &source,
                     &listener_id,
                     RuntimeEvidenceKind::DockerPortPublication,
+                    evidence_provider_revision,
                 )],
                 source,
                 target: listener_id,
@@ -514,6 +533,7 @@ pub fn derive_runtime_map(
                         &source,
                         &target,
                         RuntimeEvidenceKind::DockerVolumeMount,
+                        evidence_provider_revision,
                     )],
                     source,
                     target,
