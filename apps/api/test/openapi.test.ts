@@ -13,6 +13,15 @@ import {
   RUST_ROUTE_RESPONSE_SCHEMAS
 } from "../src/openapi.js";
 import { ROUTE_MANIFEST } from "../src/routes.js";
+import {
+  SSE_CONTENT_TYPE,
+  SSE_EVENT,
+  SSE_EVENT_PAYLOAD_SCHEMAS,
+  SSE_HEARTBEAT_COMMENT,
+  assertSseEventSchemaCoverage,
+  formatSseEvent,
+  formatSseHeartbeat
+} from "../src/sseProtocol.js";
 
 function toOpenApiPath(path: string) {
   return path.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
@@ -146,6 +155,42 @@ test("OpenAPI references generated Rust and Node response components exactly", (
       "application/json": { schema: { $ref: "#/components/schemas/ApiError" } }
     }, `${path} must document route-dependent daemon errors`);
   }
+});
+
+test("OpenAPI derives the SSE named-event payload contract without duplicate schemas", () => {
+  const document = buildOpenApiDocument();
+  for (const path of ["/api/events/stream", "/api/v1/events/stream"]) {
+    const stream = document.paths[path]?.get?.responses["200"];
+    assert.equal(stream?.description.includes("Server-Sent Events"), true, path);
+    const content = stream?.content?.[SSE_CONTENT_TYPE];
+    assert.deepEqual(content?.schema, { type: "string", description: "UTF-8 Server-Sent Events framing; see x-dockermap-sse-events." });
+    assert.deepEqual(content?.["x-dockermap-sse-events"], [
+      { event: "snapshot", data: { $ref: "#/components/schemas/HealthResponse" }, "x-dockermap-schema-authority": "rust" },
+      { event: "error", data: { $ref: "#/components/schemas/ApiError" }, "x-dockermap-schema-authority": "node" }
+    ], path);
+    assert.deepEqual(content?.["x-dockermap-sse-comment-frames"], [SSE_HEARTBEAT_COMMENT], path);
+  }
+  assert.deepEqual(SSE_EVENT_PAYLOAD_SCHEMAS.snapshot, { authority: "rust", schema: "HealthResponse" });
+});
+
+test("rejects SSE event-to-schema mapping drift", () => {
+  const drift = {
+    ...SSE_EVENT_PAYLOAD_SCHEMAS,
+    snapshot: { authority: "node", schema: "ApiError" }
+  } as unknown as typeof SSE_EVENT_PAYLOAD_SCHEMAS;
+  assert.throws(() => assertSseEventSchemaCoverage(drift), /SSE event schema mapping drift: snapshot must be rust:HealthResponse/);
+  assert.throws(
+    () => assertSseEventSchemaCoverage({ ...SSE_EVENT_PAYLOAD_SCHEMAS, unexpected: SSE_EVENT_PAYLOAD_SCHEMAS.error }),
+    /SSE event schema mapping has unexpected event names: error, snapshot, unexpected/
+  );
+});
+
+test("SSE wire formatting derives named events and control frames from the protocol declaration", () => {
+  assert.equal(SSE_CONTENT_TYPE, "text/event-stream");
+  assert.deepEqual(SSE_EVENT, { snapshot: "snapshot", error: "error" });
+  assert.equal(formatSseEvent(SSE_EVENT.snapshot, { status: "ok" }), "event: snapshot\ndata: {\"status\":\"ok\"}\n\n");
+  assert.equal(formatSseEvent(SSE_EVENT.error, { code: "stream_error" }), "event: error\ndata: {\"code\":\"stream_error\"}\n\n");
+  assert.equal(formatSseHeartbeat(), `: ${SSE_HEARTBEAT_COMMENT}\n\n`);
 });
 
 test("every Rust-owned route and alias has a declared generated schema reference", () => {

@@ -18,6 +18,7 @@ import {
   routePolicyForRequest,
   ROUTE_MANIFEST
 } from "../src/routes.js";
+import { SSE_EVENT_PAYLOAD_SCHEMAS, parseSseFrames } from "../src/sseProtocol.js";
 
 type ApiProcess = {
   port: number;
@@ -936,6 +937,56 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     daemon.requests.every((entry) => entry.authorization === "Bearer test-token"),
     "every validated pass-through request must use the authenticated daemon boundary"
   );
+});
+
+test("actual canonical and v1 SSE snapshot/error frames use their declared payload schemas", async () => {
+  const health = JSON.parse(await readFile(new URL("../../../tests/fixtures/contracts/health-response.json", import.meta.url), "utf8"));
+  const healthyDaemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") return sendJson(res, 200, health);
+    return sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${healthyDaemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+  const auth = { Authorization: "Bearer test-token" };
+  const rustValidator = new Ajv2020({ allErrors: true, strict: true, formats: { uint64: true } })
+    .compile(RUST_RESPONSE_SCHEMAS.HealthResponse);
+
+  for (const path of ["/api/events/stream", "/api/v1/events/stream"]) {
+    const stream = await request(api, path, { headers: auth });
+    assert.equal(stream.headers.get("content-type"), "text/event-stream", path);
+    const snapshot = parseSseFrames(await readFirstChunk(stream)).find((frame) => frame.kind === "event");
+    assert.deepEqual(snapshot?.kind === "event" ? snapshot.event : undefined, "snapshot", path);
+    assert.equal(snapshot?.kind === "event" && rustValidator(snapshot.data), true, `${path}: ${JSON.stringify(rustValidator.errors)}`);
+  }
+
+  await stopApi(api);
+  processes.splice(processes.indexOf(api), 1);
+  const failingDaemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") {
+      res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("daemon secret must not reach SSE");
+      return;
+    }
+    sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const failingApi = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${failingDaemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+  const nodeValidator = new Ajv2020({ allErrors: true, strict: true }).compile(NODE_ENVELOPE_SCHEMAS.ApiError);
+  for (const path of ["/api/events/stream", "/api/v1/events/stream"]) {
+    const stream = await request(failingApi, path, { headers: auth });
+    const error = parseSseFrames(await readFirstChunk(stream)).find((frame) => frame.kind === "event");
+    assert.deepEqual(error?.kind === "event" ? error.event : undefined, "error", path);
+    assert.equal(error?.kind === "event" && nodeValidator(error.data), true, `${path}: ${JSON.stringify(nodeValidator.errors)}`);
+    assert.doesNotMatch(JSON.stringify(error), /daemon secret must not reach SSE/);
+  }
+  assert.deepEqual(SSE_EVENT_PAYLOAD_SCHEMAS, {
+    snapshot: { authority: "rust", schema: "HealthResponse" },
+    error: { authority: "node", schema: "ApiError" }
+  });
 });
 
 test("status endpoint classifies free-form docker status texts", async () => {
