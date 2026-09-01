@@ -23,7 +23,7 @@
     },
     "lastUpdated": {
       "format": "uint64",
-      "maximum": 18446744073709551615,
+      "maximum": 9007199254740991,
       "minimum": 0,
       "type": "integer"
     },

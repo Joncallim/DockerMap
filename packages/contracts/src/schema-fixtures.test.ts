@@ -49,6 +49,19 @@ describe("Rust-owned daemon schema baseline", () => {
     expect(validator.errors?.some((error) => error.instancePath === "/lastUpdated")).toBe(true);
   });
 
+  it("rejects integers above the browser-safe JSON range", async () => {
+    const schema = await readSchema(`${repoRoot}packages/contracts/generated/rust/docker-snapshot.schema.json`);
+    const validator = new Ajv2020({ allErrors: true, formats: { uint64: true } }).compile(schema);
+    const fixture = await readJson(`${repoRoot}tests/fixtures/contracts/mock-snapshot.json`) as {
+      lastUpdated: unknown;
+    };
+
+    fixture.lastUpdated = Number.MAX_SAFE_INTEGER + 1;
+
+    expect(validator(fixture)).toBe(false);
+    expect(validator.errors?.some((error) => error.instancePath === "/lastUpdated")).toBe(true);
+  });
+
   it("rejects an undeclared response field instead of letting fixtures redefine the contract", async () => {
     const schema = await readSchema(`${repoRoot}packages/contracts/generated/rust/health-response.schema.json`);
     const validator = new Ajv2020({ allErrors: true, formats: { uint64: true } }).compile(schema);

@@ -1,7 +1,7 @@
 //! Deterministic JSON Schema artifacts for daemon-owned public responses.
 //!
 //! Rust serialization remains the authority. This module deliberately exports
-//! only the seven daemon response roots that cross the browser/daemon boundary.
+//! only the eight daemon response roots that cross the browser/daemon boundary.
 
 use crate::{
     ComposeEditPlan, ComposeGraph, ComposeScan, DockerSnapshot, GraphResponse, HealthResponse,
@@ -20,6 +20,12 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 8] = [
     "logs-response",
     "health-response",
 ];
+
+/// Largest integer that JavaScript JSON consumers can represent exactly.
+/// Rust still stores the source fields as `u64`; the public JSON Schema makes
+/// the browser-compatible subset explicit instead of promising a precision
+/// that standard `JSON.parse` cannot preserve.
+pub const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
 pub fn daemon_schemas() -> [Schema; 8] {
     [
@@ -59,7 +65,7 @@ fn deny_unknown_object_properties(value: &mut Value) {
             if object.get("format").and_then(Value::as_str) == Some("uint64") {
                 object.insert(
                     "maximum".into(),
-                    Value::Number(serde_json::Number::from(u64::MAX)),
+                    Value::Number(serde_json::Number::from(JSON_SAFE_INTEGER_MAX)),
                 );
             }
         }
@@ -69,7 +75,7 @@ fn deny_unknown_object_properties(value: &mut Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{daemon_schema_documents, DAEMON_SCHEMA_NAMES};
+    use super::{daemon_schema_documents, DAEMON_SCHEMA_NAMES, JSON_SAFE_INTEGER_MAX};
 
     #[test]
     fn public_schema_generation_is_deterministic() {
@@ -84,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn uint64_schema_bounds_reject_values_above_the_rust_range() {
+    fn public_integer_schema_bounds_reject_values_above_the_json_safe_range() {
         let snapshot_schema = DAEMON_SCHEMA_NAMES
             .iter()
             .zip(daemon_schema_documents())
@@ -93,17 +99,17 @@ mod tests {
         let validator = jsonschema::validator_for(&snapshot_schema).expect("valid schema");
         let valid = serde_json::json!({
             "containers": [], "images": [], "networks": [], "volumes": [],
-            "lastUpdated": u64::MAX,
+            "lastUpdated": JSON_SAFE_INTEGER_MAX,
         });
-        let above_u64 = serde_json::from_str(
-            r#"{"containers":[],"images":[],"networks":[],"volumes":[],"lastUpdated":18446744073709551616}"#,
+        let above_json_safe = serde_json::from_str(
+            r#"{"containers":[],"images":[],"networks":[],"volumes":[],"lastUpdated":9007199254740992}"#,
         )
-        .expect("out-of-range JSON number parses without lossy conversion");
+        .expect("first unsafe JSON integer parses exactly");
 
         assert!(validator.is_valid(&valid));
         assert!(
-            !validator.is_valid(&above_u64),
-            "schema must enforce the Rust u64 maximum, not only label the format"
+            !validator.is_valid(&above_json_safe),
+            "schema must reject integers that browser JSON consumers cannot represent exactly"
         );
     }
 }
