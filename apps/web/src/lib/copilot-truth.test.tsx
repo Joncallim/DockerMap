@@ -157,6 +157,19 @@ describe("B. user-facing copy must be source-neutral", () => {
   });
 });
 
+describe("B1. Copilot has a dedicated AI surface", () => {
+  it("marks the answer panel for the AI-only purple treatment", () => {
+    const model = buildModel(snapshot([healthy("api", { status: "Exited (1)" })]), runtime);
+    const value: AppContextValue = { model, modelProvenance: "live", loading: false, error: null, health: null, tick: 0, evidenceMode: "live", openCommand: () => {} };
+    const html = renderToStaticMarkup(
+      <AppContext.Provider value={value}>
+        <MemoryRouter initialEntries={["/copilot?q=why+is+api+offline"]}><Copilot /></MemoryRouter>
+      </AppContext.Provider>
+    );
+    expect(html).toContain('class="panel copilot-answer-panel"');
+  });
+});
+
 describe("C. evidence kinds must be accurate", () => {
   it("an aggregated health conclusion is derived, not observed", () => {
     const model = buildModel(snapshot([healthy("api")]), runtime);
