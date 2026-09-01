@@ -71,9 +71,8 @@ Separate build-time downloads from DockerMap runtime behavior:
   Cloudflare API, or generic external-API lookups today. Advisory/update fields may
   appear in contracts and fixtures, but the daemon does not populate them from a live
   registry or advisory service.
-- The web UI currently loads Google Fonts from `fonts.googleapis.com` and
-  `fonts.gstatic.com` when a browser opens it. Package the fonts locally before release
-  if the review environment must avoid browser egress.
+- The web bundle uses its local/system font stack and does not request a hosted
+  font service at runtime.
 
 Current runtime provider behavior:
 

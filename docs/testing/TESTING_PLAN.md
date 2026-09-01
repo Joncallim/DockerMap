@@ -12,8 +12,10 @@ containers, or services.
 - Rust formatting and linting.
 - Rust unit tests for the core Docker and Compose model plus daemon helpers.
 - Runtime-map contracts for Docker and non-Docker provider signals.
-- Shared contract examples in `tests/fixtures/contracts`, read by both Rust and
-  TypeScript tests so the backend and browser-facing types do not drift apart.
+- Rust-owned JSON Schema and generated TypeScript declarations, Node-owned
+  envelope/request/SSE schemas, and readable contract fixtures. The contract
+  check fails on stale generated output, invalid fixtures, incomplete
+  route/schema associations, or malformed declared requests.
 - API security tests for bearer auth, CORS, daemon URL restrictions, query limits,
   mock fallback, read-only verb enforcement, fixed daemon route shaping, and error
   detail exposure.
@@ -106,15 +108,15 @@ external services with real credentials:
 
 ```bash
 rg -n "advisory|registry|external|network|Tailscale|Headscale|token|auth" docs crates apps packages
-rg -n "fetch\\(|Command::new|npm audit|npm view|registry|advisory|fonts.googleapis|fonts.gstatic" apps crates packages docs -g '!**/package-lock.json' -g '!**/Cargo.lock'
+rg -n "fetch\\(|Command::new|npm audit|npm view|registry|advisory" apps crates packages docs -g '!**/package-lock.json' -g '!**/Cargo.lock'
 ```
 
 Expected current result: DockerMap runtime has no package registry, package advisory,
-DNS-provider API, Cloudflare API, or generic external-API lookup. Tailscale and Headscale
+DNS-provider API, Cloudflare API, generic external-API lookup, or hosted-font request.
+Tailscale and Headscale
 are fixed delegated CLI calls when installed, inherit the daemon environment, and may use
 the operator's configured control plane. The API talks to a loopback daemon unless remote
-daemon access is explicitly enabled, and the browser shell loads Google-hosted fonts unless
-assets are packaged locally.
+daemon access is explicitly enabled.
 
 The daemon unit suite includes fake-only provider redaction fixtures for systemd, tmux,
 npm/package metadata, native-process-shaped command output, reverse-proxy markers, DNS
@@ -247,10 +249,10 @@ live `/api/events/stream` snapshot event.
 - Broaden browser end-to-end tests beyond the current smoke flows.
 - Run and record live-Docker integration evidence on the release host.
 - Add reverse-proxy integration tests for bearer-token injection and SSE streaming.
-- [x] Add OpenAPI schema checks once the versioned API spec exists.
-  `/api/openapi.json` (OpenAPI 3.0.3) ships on the read-only API surface (commit
-  `5fcadd3`); schema-validation of the document itself is covered, and the
-  remaining gap is drift-checking the manifest against it.
+- [x] Add generated OpenAPI and contract-drift checks for the versioned API.
+  `/api/openapi.json` is an OpenAPI 3.1.1 artifact derived from the route
+  manifest, request declarations, and response-schema associations. Its
+  structural validation and drift checks run through `npm run check:contracts`.
 - Add fixture-driven provider redaction tests for any future reverse-proxy
   config-content, DNS config-content, package advisory, registry, or
   external-API collectors.

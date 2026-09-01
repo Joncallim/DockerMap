@@ -96,8 +96,8 @@ Protections:
   installed. DockerMap does not add tokens, URLs, or user input, but those commands inherit
   the daemon environment and the installed tools may use the operator's existing daemon/config
   to contact their configured control plane.
-- The browser UI currently loads Google Fonts from Google-hosted font endpoints. Treat
-  that as browser asset egress, separate from daemon/provider egress.
+- The browser UI uses its local/system font stack and does not request a hosted
+  font service at runtime.
 - Sensitive values from env files, process args, unit files, proxy configs, and package auth
   settings must be redacted or omitted before returning API responses.
 - Security validation for provider routes must run locally without Docker, systemd, tmux, or a
@@ -156,8 +156,9 @@ Security checks that still require release evidence:
 - Live-Docker E2E on a Docker-capable Linux host.
 - Reverse-proxy bearer-token injection and SSE streaming through the public review URL.
 - Direct remote inaccessibility of the daemon port.
-- A release decision on whether Tailscale/Headscale delegated CLI collection and
-  Google-hosted web fonts are acceptable defaults for the private review environment.
+- A release decision on whether Tailscale/Headscale delegated CLI collection is
+  enabled for the candidate. The local/system browser font stack has no
+  hosted-font exception.
 - Package/advisory network-egress behavior for package, Python/native-process, DNS, and
   external-API collectors if those routes later land or become configurable.
 
