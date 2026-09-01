@@ -196,6 +196,12 @@ pub(crate) fn redact_runtime_edges(edges: &mut [RuntimeMapEdge]) {
             *value = redact_runtime_display_text(value);
         }
         redact_runtime_evidence_refs(&mut edge.evidence_refs);
+        // Provider collections are internal, but retain this second
+        // fail-closed check after normalization: no evidence is better than a
+        // structurally plausible fact attached to the wrong relationship.
+        if !edge.has_valid_evidence_refs() {
+            edge.evidence_refs.clear();
+        }
     }
 }
 

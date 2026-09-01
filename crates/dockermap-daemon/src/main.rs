@@ -1594,14 +1594,14 @@ mod tests {
             kind: RuntimeEvidenceKind::DockerNetworkMembership,
             assertion_kind: RuntimeEvidenceAssertionKind::Observed,
             summary,
-            subject_ref: "container\u{202e}id".into(),
+            subject_ref: "docker_container_\u{202e}id".into(),
             collected_at: 1,
             provider_revision: oversized.clone(),
             freshness: RuntimeEvidenceFreshness::Fresh,
         };
         let mut edges = vec![RuntimeMapEdge {
-            source: "container\u{202e}id".into(),
-            target: "network".into(),
+            source: "docker_container_\u{202e}id".into(),
+            target: "docker_network_network".into(),
             relationship: RuntimeRelationshipKind::ConnectedTo,
             metadata: BTreeMap::new(),
             evidence_refs: vec![
@@ -1629,6 +1629,35 @@ mod tests {
         assert!(!serialized.contains("DOCKERMAP_TEST_FAKE_EVIDENCE_TOKEN"));
         assert!(!serialized.contains('\u{202e}'));
         assert!(serialized.contains(REDACTED_VALUE));
+    }
+
+    #[test]
+    fn publication_retains_only_evidence_that_attests_its_docker_edge() {
+        let snapshot = mock_snapshot();
+        let mut map = derive_runtime_map(
+            &snapshot,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            "opaque-observation",
+        );
+        let expected = map
+            .edges
+            .iter()
+            .map(|edge| edge.evidence_refs.len())
+            .sum::<usize>();
+        assert!(expected > 0, "mock Docker snapshot emits evidence");
+
+        redact_runtime_map(&mut map);
+
+        assert_eq!(
+            map.edges
+                .iter()
+                .map(|edge| edge.evidence_refs.len())
+                .sum::<usize>(),
+            expected,
+            "publication must retain correctly bound Docker evidence"
+        );
     }
 
     #[test]
@@ -2039,7 +2068,7 @@ mod tests {
     #[test]
     fn docker_container_nodes_carry_layer_and_service_entity() {
         let snapshot = mock_snapshot();
-        let map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
 
         let container = map
             .nodes

@@ -884,7 +884,7 @@ pub enum RuntimeEvidenceFreshness {
     Fresh,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeMapEdge {
     pub source: String,
     pub target: String,
@@ -896,6 +896,79 @@ pub struct RuntimeMapEdge {
     #[serde(rename = "evidenceRefs")]
     #[schemars(required, length(max = 8))]
     pub evidence_refs: Vec<RuntimeEvidenceRef>,
+}
+
+impl RuntimeMapEdge {
+    /// Version-one evidence is attached only to the semantic edge it directly
+    /// observes. Keep this at the canonical model boundary so a structurally
+    /// valid Docker fact cannot be re-used to attest a different relationship.
+    pub fn has_valid_evidence_refs(&self) -> bool {
+        self.evidence_refs
+            .iter()
+            .all(|evidence| self.evidence_ref_matches_edge(evidence))
+    }
+
+    fn evidence_ref_matches_edge(&self, evidence: &RuntimeEvidenceRef) -> bool {
+        const MAX_EVIDENCE_TEXT_CHARS: usize = 259;
+        if evidence.version != 1
+            || evidence.id.is_empty()
+            || evidence.summary.is_empty()
+            || evidence.provider_revision.is_empty()
+            || evidence.id.chars().count() > MAX_EVIDENCE_TEXT_CHARS
+            || evidence.summary.chars().count() > MAX_EVIDENCE_TEXT_CHARS
+            || evidence.provider_revision.chars().count() > MAX_EVIDENCE_TEXT_CHARS
+            || evidence.subject_ref != self.source
+        {
+            return false;
+        }
+
+        match evidence.kind {
+            RuntimeEvidenceKind::DockerNetworkMembership => {
+                self.relationship == RuntimeRelationshipKind::ConnectedTo
+                    && self.source.starts_with("docker_container_")
+                    && self.target.starts_with("docker_network_")
+            }
+            RuntimeEvidenceKind::DockerVolumeMount => {
+                self.relationship == RuntimeRelationshipKind::Mounts
+                    && self.source.starts_with("docker_container_")
+                    && self.target.starts_with("docker_volume_")
+            }
+            RuntimeEvidenceKind::DockerPortPublication => {
+                self.relationship == RuntimeRelationshipKind::Exposes
+                    && self.source.starts_with("docker_container_")
+                    && self.target.starts_with("network_listener_")
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct RuntimeMapEdgeWire {
+    source: String,
+    target: String,
+    relationship: RuntimeRelationshipKind,
+    metadata: BTreeMap<String, String>,
+    #[serde(rename = "evidenceRefs")]
+    evidence_refs: Vec<RuntimeEvidenceRef>,
+}
+
+impl<'de> Deserialize<'de> for RuntimeMapEdge {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = RuntimeMapEdgeWire::deserialize(deserializer)?;
+        let edge = Self {
+            source: wire.source,
+            target: wire.target,
+            relationship: wire.relationship,
+            metadata: wire.metadata,
+            evidence_refs: wire.evidence_refs,
+        };
+        edge.has_valid_evidence_refs()
+            .then_some(edge)
+            .ok_or_else(|| serde::de::Error::custom("runtime evidence does not attest this edge"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
