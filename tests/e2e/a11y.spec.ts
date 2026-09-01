@@ -649,14 +649,21 @@ test.describe("responsive and accessibility matrix", () => {
     // redirects the fresh boot (Landing -> /map) and the /api/snapshot
     // response is delayed, so the destination h1 mounts only AFTER focus has
     // settled on the #main-content fallback.
-    const delaySnapshot = (page: Page, milliseconds: number) => {
+    const delaySnapshot = async (page: Page, milliseconds: number) => {
       // The SSE stream drives refresh ticks that would ABORT the delayed
       // snapshot fetch before it settles (each tick restarts the clock), so
       // the stream is stalled for the duration of both scenarios.
       void page.route("**/api/events/stream*", (route) => route.abort());
+      await page.route("**/api/runtime/map", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json() as Record<string, unknown>;
+        await route.fulfill({ response, json: { ...body, modelRevision: "a11y-delayed-model" } });
+      });
       return page.route("**/api/snapshot", async (route) => {
         await new Promise((resolve) => setTimeout(resolve, milliseconds));
-        await route.continue();
+        const response = await route.fetch();
+        const body = await response.json() as Record<string, unknown>;
+        await route.fulfill({ response, json: { ...body, modelRevision: "a11y-delayed-model" } });
       });
     };
     const contextWithMapDefault = async () => {

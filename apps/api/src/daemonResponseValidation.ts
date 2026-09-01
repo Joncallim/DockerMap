@@ -1,6 +1,7 @@
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import {
   RUST_RESPONSE_SCHEMAS,
+  type ProviderSlot,
   type RustResponseSchemaId,
 } from "@dockermap/contracts";
 import { RUST_ROUTE_RESPONSE_SCHEMAS } from "./rustResponseContracts.js";
@@ -37,6 +38,30 @@ const validators = new Map<RustResponseSchemaId, ValidateFunction>(
     .map(([schema, definition]) => [schema, ajv.compile(definition)]),
 );
 
+// JSON Schema bounds the vector length and item shape.  It cannot express the
+// finite "each named slot exactly once" invariant, so enforce that one
+// generated-contract typed set at the untrusted daemon boundary.  This is not
+// a policy surface: provider slots remain daemon-owned and closed-world.
+const PROVIDER_STATE_SLOT_SET = {
+  network_infrastructure: true,
+  host_scoped: true,
+  python_processes: true,
+  native_processes: true,
+  project_npm: true,
+} as const satisfies Record<ProviderSlot, true>;
+const PROVIDER_STATE_SLOTS = Object.keys(PROVIDER_STATE_SLOT_SET) as ProviderSlot[];
+
+function hasCompleteProviderStateVector(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const providerStates = (payload as { providerStates?: unknown }).providerStates;
+  if (!Array.isArray(providerStates) || providerStates.length !== PROVIDER_STATE_SLOTS.length) return false;
+  const slots = new Set(
+    providerStates.map((state) => state && typeof state === "object" ? (state as { slot?: unknown }).slot : undefined),
+  );
+  return slots.size === PROVIDER_STATE_SLOTS.length
+    && PROVIDER_STATE_SLOTS.every((slot) => slots.has(slot));
+}
+
 export function daemonResponseSchemaId(path: string): RustResponseSchemaId | undefined {
   const pathname = path.split("?", 1)[0];
   if (pathname === "/daemon/containers") return "ContainersResponse";
@@ -68,7 +93,7 @@ export class DaemonResponseValidationError extends Error {
 export function validateDaemonResponse(path: string, payload: unknown) {
   const schema = daemonResponseSchemaId(path);
   const validator = schema && validators.get(schema);
-  if (!validator || !validator(payload)) {
+  if (!validator || !validator(payload) || (schema === "RuntimeMap" && !hasCompleteProviderStateVector(payload))) {
     throw new DaemonResponseValidationError();
   }
   return payload;

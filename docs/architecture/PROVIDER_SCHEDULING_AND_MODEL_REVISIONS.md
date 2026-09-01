@@ -37,6 +37,11 @@ only its slot and one of `fresh`, `stale`, `collecting`, `unavailable`,
 diagnostic, secret, timestamp, or configurable policy. Diagnostics remain the
 human-readable, publication-sanitized explanation.
 
+The schema enforces item shape and a five-item bound; the Node daemon-response
+boundary additionally rejects a vector unless every fixed slot appears exactly
+once. This is a closed, typed contract invariant rather than a configurable
+policy.
+
 | State | Current meaning | Publication behaviour |
 | --- | --- | --- |
 | fresh | The fixed collector completed against the current published Docker evidence. | Its normalized nodes/edges may be published. |

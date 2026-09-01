@@ -988,7 +988,12 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/snapshot", { ...snapshot, modelRevision: "" }],
     ["/daemon/snapshot", (() => { const value = structuredClone(snapshot); delete value.modelRevision; return value; })()],
     ["/daemon/runtime/map", (() => { const value = structuredClone(runtime); delete value.providerStates; return value; })()],
-    ["/daemon/runtime/map", { ...runtime, providerStates: [] }]
+    ["/daemon/runtime/map", { ...runtime, providerStates: [] }],
+    ["/daemon/runtime/map", (() => {
+      const value = structuredClone(runtime);
+      value.providerStates[4].slot = value.providerStates[0].slot;
+      return value;
+    })()]
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
