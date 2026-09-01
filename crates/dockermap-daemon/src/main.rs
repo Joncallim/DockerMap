@@ -72,10 +72,14 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::CString,
     fs,
     io::Read,
     net::SocketAddr,
-    os::unix::fs::OpenOptionsExt,
+    os::unix::{
+        ffi::OsStrExt,
+        io::{AsRawFd, FromRawFd},
+    },
     path::{Component, Path as StdPath, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -854,27 +858,7 @@ fn summarize_npm_project(
     directory: &StdPath,
     lockfiles: &[String],
 ) -> Result<Option<NpmProjectSummary>, String> {
-    let package_json_path = directory.join("package.json");
-    // `Path::is_file` follows links. Do not allow a manifest discovered under
-    // the bounded project root to redirect this collector to arbitrary host
-    // files; a replacement link is rejected again by O_NOFOLLOW at open.
-    let manifest = match fs::symlink_metadata(&package_json_path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            return Err(format!(
-                "cannot inspect `{}`: package manifest must not be a symlink",
-                package_json_path.display()
-            ));
-        }
-        Ok(metadata) if metadata.is_file() => Some(read_package_manifest(&package_json_path)?),
-        Ok(_) => None,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(format!(
-                "cannot inspect `{}`: {error}",
-                package_json_path.display()
-            ));
-        }
-    };
+    let manifest = read_package_manifest_beneath(project_root, directory)?;
 
     if manifest.is_none() && lockfiles.is_empty() {
         return Ok(None);
@@ -1009,59 +993,116 @@ fn classify_package_frameworks(manifest: &PackageManifestDocument) -> Vec<String
     hints
 }
 
-fn read_package_manifest(path: &StdPath) -> Result<PackageManifestDocument, String> {
-    // Reject a link before open, then use O_NOFOLLOW so a link substituted
-    // between this check and open fails closed. Metadata comes from the opened
-    // handle so a replacement cannot widen the size check.
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|error| format!("cannot inspect `{}`: {error}", path.display()))?;
-    if metadata.file_type().is_symlink() {
-        return Err(format!(
-            "cannot inspect `{}`: package manifest must not be a symlink",
-            path.display()
-        ));
+/// Opens a package manifest descriptor-relatively from the configured project
+/// root. Every directory component and the final file use O_NOFOLLOW, so a
+/// symlink (including one swapped in after discovery) cannot redirect npm
+/// collection outside that root.
+fn read_package_manifest_beneath(
+    project_root: &StdPath,
+    directory: &StdPath,
+) -> Result<Option<PackageManifestDocument>, String> {
+    let relative_directory = directory.strip_prefix(project_root).map_err(|_| {
+        format!(
+            "npm project `{}` is outside configured project root",
+            directory.display()
+        )
+    })?;
+    let canonical_root = fs::canonicalize(project_root)
+        .map_err(|error| format!("cannot resolve configured project root: {error}"))?;
+    let mut parent = open_canonical_directory_no_follow(&canonical_root)?;
+
+    for component in relative_directory.components() {
+        let Component::Normal(component) = component else {
+            return Err("npm project path is ambiguous".into());
+        };
+        parent = open_directory_at_no_follow(&parent, component)?;
     }
-    if !metadata.is_file() {
-        return Err(format!(
-            "cannot inspect `{}`: not a regular file",
-            path.display()
-        ));
-    }
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
+
+    let file = match open_file_at_no_follow(&parent, "package.json") {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot open package manifest: {error}")),
+    };
     let metadata = file
         .metadata()
-        .map_err(|error| format!("cannot inspect `{}`: {error}", path.display()))?;
+        .map_err(|error| format!("cannot inspect package manifest: {error}"))?;
     if !metadata.is_file() {
-        return Err(format!(
-            "cannot inspect `{}`: not a regular file",
-            path.display()
-        ));
+        return Err("package manifest is not a regular file".into());
     }
     if metadata.len() > MAX_PACKAGE_JSON_BYTES {
         return Err(format!(
-            "`{}` exceeds {} bytes",
-            path.display(),
-            MAX_PACKAGE_JSON_BYTES
+            "package manifest exceeds {MAX_PACKAGE_JSON_BYTES} bytes"
         ));
     }
     let mut content = String::new();
     let mut reader = file.take(MAX_PACKAGE_JSON_BYTES.saturating_add(1));
     reader
         .read_to_string(&mut content)
-        .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
+        .map_err(|error| format!("cannot read package manifest: {error}"))?;
     if content.len() > MAX_PACKAGE_JSON_BYTES as usize {
         return Err(format!(
-            "`{}` exceeds {} bytes",
-            path.display(),
-            MAX_PACKAGE_JSON_BYTES
+            "package manifest exceeds {MAX_PACKAGE_JSON_BYTES} bytes"
         ));
     }
     serde_json::from_str(&content)
-        .map_err(|error| format!("invalid JSON in `{}`: {error}", path.display()))
+        .map(Some)
+        .map_err(|error| format!("invalid package manifest JSON: {error}"))
+}
+
+fn open_canonical_directory_no_follow(path: &StdPath) -> Result<fs::File, String> {
+    if !path.is_absolute() {
+        return Err("configured project root is not absolute".into());
+    }
+    let mut current =
+        fs::File::open("/").map_err(|error| format!("cannot open filesystem root: {error}"))?;
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(component) => {
+                current = open_directory_at_no_follow(&current, component)?;
+            }
+            _ => return Err("configured project root is ambiguous".into()),
+        }
+    }
+    Ok(current)
+}
+
+fn open_directory_at_no_follow(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> Result<fs::File, String> {
+    let name = CString::new(name.as_bytes()).map_err(|_| "npm project path contains NUL")?;
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        )
+    };
+    if descriptor < 0 {
+        return Err(format!(
+            "cannot open npm project directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: openat returned an owned non-negative descriptor.
+    Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+}
+
+fn open_file_at_no_follow(parent: &fs::File, name: &str) -> std::io::Result<fs::File> {
+    let name = CString::new(name).expect("fixed package manifest filename has no NUL");
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: openat returned an owned non-negative descriptor.
+    Ok(unsafe { fs::File::from_raw_fd(descriptor) })
 }
 
 fn package_manifest_dependencies(
@@ -4370,10 +4411,45 @@ mod tests {
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.provider == RuntimeProviderKind::Npm
                 && diagnostic.severity == DiagnosticSeverity::Warning
-                && diagnostic
-                    .message
-                    .contains("package manifest must not be a symlink")
+                && diagnostic.message.contains("cannot open package manifest")
         }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_manifest_open_rejects_parent_directory_symlink_escapes() {
+        let project_root = tempfile::tempdir().expect("temporary npm project root");
+        let outside_root = tempfile::tempdir().expect("temporary outside root");
+        fs::write(
+            outside_root.path().join("package.json"),
+            r#"{"name":"must-not-be-read"}"#,
+        )
+        .expect("outside manifest");
+        let linked_application = project_root.path().join("application");
+        std::os::unix::fs::symlink(outside_root.path(), &linked_application)
+            .expect("parent directory symlink");
+
+        let error = read_package_manifest_beneath(project_root.path(), &linked_application)
+            .expect_err("parent symlink must not be followed");
+
+        assert!(error.contains("cannot open npm project directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_manifest_open_rejects_fifos_without_reading_them() {
+        let project_root = tempfile::tempdir().expect("temporary npm project root");
+        let application = project_root.path().join("application");
+        fs::create_dir(&application).expect("application directory");
+        let fifo = application.join("package.json");
+        let fifo_name =
+            std::ffi::CString::new(fifo.as_os_str().as_bytes()).expect("temporary path has no NUL");
+        assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+
+        let error = read_package_manifest_beneath(project_root.path(), &application)
+            .expect_err("FIFO must be rejected without blocking");
+
+        assert_eq!(error, "package manifest is not a regular file");
     }
 
     #[test]
