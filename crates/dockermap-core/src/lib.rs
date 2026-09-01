@@ -184,6 +184,216 @@ mod tests {
     }
 
     #[test]
+    fn omits_dependency_edges_for_ambiguous_or_cross_alias_container_references() {
+        let container = |id: &str, name: &str, role: &str, depends_on: Vec<&str>| ContainerRecord {
+            id: id.into(),
+            name: name.into(),
+            image: "test:latest".into(),
+            status: "running".into(),
+            role: role.into(),
+            networks: vec![],
+            ports: vec![],
+            mounts: vec![],
+            depends_on: depends_on.into_iter().map(str::to_string).collect(),
+        };
+        let snapshot = DockerSnapshot {
+            containers: vec![
+                container(
+                    "consumer",
+                    "consumer",
+                    "consumer",
+                    vec!["container_foo", "duplicate-name", "shared-id", ""],
+                ),
+                // `container_foo` is a normal compose role ref for this
+                // record, but it is also the raw ID of the next record. The
+                // graph must not choose either one based on lookup order.
+                container("role-target", "role-target", "foo", vec![]),
+                container("container_foo", "raw-id-target", "other", vec![]),
+                container("name-one", "duplicate-name", "one", vec![]),
+                container("name-two", "duplicate-name", "two", vec![]),
+                container("shared-id", "id-one", "three", vec![]),
+                container("shared-id", "id-two", "four", vec![]),
+                // Empty aliases are never resolution candidates.
+                container("", "", "", vec![]),
+            ],
+            ..Default::default()
+        };
+
+        let graph = derive_graph(&snapshot);
+        assert_eq!(graph.nodes.len(), snapshot.containers.len());
+        assert!(graph.edges.is_empty());
+    }
+
+    #[test]
+    fn graph_omits_self_dependency_edges() {
+        let snapshot = DockerSnapshot {
+            containers: vec![ContainerRecord {
+                id: "self".into(),
+                name: "self".into(),
+                image: "test:latest".into(),
+                status: "running".into(),
+                role: "self".into(),
+                networks: vec![],
+                ports: vec![],
+                mounts: vec![],
+                depends_on: vec!["container_self".into()],
+            }],
+            ..Default::default()
+        };
+
+        assert!(derive_graph(&snapshot).edges.is_empty());
+    }
+
+    #[test]
+    fn graph_omits_ambiguous_membership_edges_and_is_stable_when_reordered() {
+        let container = |id: &str, name: &str, networks: Vec<&str>| ContainerRecord {
+            id: id.into(),
+            name: name.into(),
+            image: "test:latest".into(),
+            status: "running".into(),
+            role: name.into(),
+            networks: networks.into_iter().map(str::to_string).collect(),
+            ports: vec![],
+            mounts: vec![],
+            depends_on: vec![],
+        };
+        let mut snapshot = DockerSnapshot {
+            containers: vec![
+                container(
+                    "container-unique",
+                    "unique-name",
+                    vec!["network-unique", "network-ambiguous", "missing-network"],
+                ),
+                // The duplicate container ID leaves both visible but makes
+                // their outgoing graph relations non-routable.
+                container(
+                    "container-collision",
+                    "collision-one",
+                    vec!["network-unique"],
+                ),
+                container(
+                    "container-collision",
+                    "collision-two",
+                    vec!["network-unique"],
+                ),
+                // Mount correlation by this name is ambiguous.
+                container("container-name-one", "duplicate-name", vec![]),
+                container("container-name-two", "duplicate-name", vec![]),
+            ],
+            networks: vec![
+                NetworkRecord {
+                    id: "network-unique".into(),
+                    name: "network-unique".into(),
+                    driver: "bridge".into(),
+                    internal: false,
+                    members: vec![],
+                },
+                NetworkRecord {
+                    id: "network-ambiguous".into(),
+                    name: "network-ambiguous-one".into(),
+                    driver: "bridge".into(),
+                    internal: false,
+                    members: vec![],
+                },
+                NetworkRecord {
+                    id: "network-ambiguous".into(),
+                    name: "network-ambiguous-two".into(),
+                    driver: "bridge".into(),
+                    internal: false,
+                    members: vec![],
+                },
+            ],
+            volumes: vec![
+                VolumeRecord {
+                    id: "volume-unique".into(),
+                    name: "volume-unique".into(),
+                    attached_to: vec!["unique-name".into(), "unique-name".into()],
+                },
+                VolumeRecord {
+                    id: "volume-ambiguous-mount".into(),
+                    name: "volume-ambiguous-mount".into(),
+                    attached_to: vec!["duplicate-name".into()],
+                },
+            ],
+            ..Default::default()
+        };
+
+        let graph = derive_graph(&snapshot);
+        assert_eq!(
+            graph
+                .edges
+                .iter()
+                .filter(|edge| edge.source == "container-unique")
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![
+                GraphEdge {
+                    source: "container-unique".into(),
+                    target: "network-unique".into(),
+                    relationship: RelationshipKind::ConnectedTo,
+                },
+                GraphEdge {
+                    source: "container-unique".into(),
+                    target: "volume-unique".into(),
+                    relationship: RelationshipKind::Mounts,
+                },
+            ]
+        );
+        assert!(graph
+            .edges
+            .iter()
+            .all(|edge| edge.source != "container-collision"));
+        assert!(graph
+            .edges
+            .iter()
+            .all(|edge| edge.target != "network-ambiguous"
+                && edge.target != "volume-ambiguous-mount"));
+
+        snapshot.containers.reverse();
+        snapshot.networks.reverse();
+        snapshot.volumes.reverse();
+        assert_eq!(
+            serde_json::to_vec(&graph).expect("graph serializes"),
+            serde_json::to_vec(&derive_graph(&snapshot)).expect("reordered graph serializes"),
+            "equivalent snapshots must publish stable graph bytes"
+        );
+    }
+
+    #[test]
+    fn graph_omits_edges_when_node_ids_collide_across_kinds() {
+        let snapshot = DockerSnapshot {
+            containers: vec![ContainerRecord {
+                id: "container".into(),
+                name: "container".into(),
+                image: "test:latest".into(),
+                status: "running".into(),
+                role: "container".into(),
+                networks: vec!["shared-id".into()],
+                ports: vec![],
+                mounts: vec![],
+                depends_on: vec![],
+            }],
+            networks: vec![NetworkRecord {
+                id: "shared-id".into(),
+                name: "network".into(),
+                driver: "bridge".into(),
+                internal: false,
+                members: vec![],
+            }],
+            volumes: vec![VolumeRecord {
+                id: "shared-id".into(),
+                name: "volume".into(),
+                attached_to: vec![],
+            }],
+            ..Default::default()
+        };
+
+        let graph = derive_graph(&snapshot);
+        assert_eq!(graph.nodes.len(), 3, "colliding nodes remain visible");
+        assert!(graph.edges.is_empty());
+    }
+
+    #[test]
     fn filters_mock_logs_by_service_and_query() {
         let snapshot = mock_snapshot();
         let logs = mock_logs(
