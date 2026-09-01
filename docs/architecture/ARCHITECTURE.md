@@ -18,8 +18,12 @@ epics rather than being deferred wholesale.
 - `apps/api`: Express browser-facing API. It adapts browser requests to daemon endpoints and owns SSE heartbeat polling.
 - `crates/dockermap-core`: Rust domain model and derivation logic. This is the canonical runtime model for Docker and host runtime resources.
 - `crates/dockermap-daemon`: Rust HTTP daemon. It talks to Docker through `bollard`,
-  reads host runtime signals with fixed read-only commands, caches snapshots, and falls
-  back to mock data when Docker is unavailable.
+  but reaches the raw Docker socket only through the Docker Read Gateway. It reads host
+  runtime signals with fixed read-only commands in the explicit full-host profile,
+  caches snapshots, and can fall back to explicitly stamped mock data when configured.
+- `crates/dockermap-docker-gateway`: Rust default-deny proxy. It is the only DockerMap
+  component with the raw Docker socket and permits only the measured inventory and
+  bounded-log Docker requests.
 - `packages/contracts`: TypeScript API contracts consumed by the web and API workspaces.
 
 ## Source Of Truth
@@ -27,17 +31,20 @@ epics rather than being deferred wholesale.
 Runtime data flows from the Rust daemon outward:
 
 ```text
-Docker, Compose, and host runtime signals -> dockermap-daemon -> apps/api -> apps/web
-                                                   |
-                                                   v
-                                           dockermap-core
+Docker Engine -> Docker Read Gateway -> dockermap-daemon -> apps/api -> apps/web
+Compose and bounded host signals ------------------^
+                                                     |
+                                                     v
+                                             dockermap-core
 ```
 
-The Rust model is currently mirrored manually in `packages/contracts`. To keep those two
-sides honest, shared JSON examples live in `tests/fixtures/contracts`. Rust tests
-deserialize them, and TypeScript tests import the same files. The planned canonical
-ownership and deterministic schema strategy, including the known limits of this interim
-check, is recorded in [`CONTRACT_AUTHORITY.md`](CONTRACT_AUTHORITY.md) (#144 / #65).
+Rust owns daemon response models. Deterministic Schemars JSON Schema and generated
+TypeScript declarations are committed under `packages/contracts`; the handwritten
+TypeScript layer is limited to Node-owned envelopes and browser Demo Mode metadata.
+Shared JSON examples remain readable regression fixtures and are validated against the
+generated schemas rather than defining them. Route, request, and response associations
+derive the OpenAPI 3.1.1 document. The ownership map, drift checks, and remaining #65
+acceptance work are recorded in [`CONTRACT_AUTHORITY.md`](CONTRACT_AUTHORITY.md).
 
 ## Runtime Map
 

@@ -26,8 +26,9 @@ Working:
 - Runtime map for Docker plus optional host signals such as systemd, cron, PM2,
   tmux, listening sockets, Tailscale, Headscale, reverse-proxy markers, local
   DNS markers, Python applications, and native processes.
-- Shared Rust and TypeScript contract fixtures, including an OpenAPI route
-  document (`/api/openapi.json`).
+- Rust-owned response schemas and generated TypeScript declarations, Node-owned
+  envelope and request schemas, and a generated OpenAPI 3.1.1 document
+  (`/api/openapi.json`).
 - API security tests, Rust tests, TypeScript checks, Playwright smoke tests,
   and a live-Docker GUI fixture suite.
 - Evidence-backed live-state vocabulary across the UI (#61 epic): every claim
@@ -59,18 +60,26 @@ The active roadmap is filed as GitHub issues #61-#70 (each `epic`+`enhancement`)
 sequenced in each epic body. They are the source of truth for what comes next;
 this document stays a summary, not a second roadmap.
 
-- **#61 Evidence-backed live state** — implemented through child issues #71-#76;
-  the remaining #77 documentation reconciliation is this roadmap update.
-  Closure evidence is posted; maintainer closure remains pending.
-- **#62 Docker authority isolation** — implemented and deployed: only the Docker
-  Read Gateway holds the raw socket. Closure evidence is posted; maintainer
-  closure remains pending.
+- **#61 Evidence-backed live state** — its implementation is present on `main`:
+  live, mock, demo, inferred, and unavailable claims are source/provenance
+  gated. Resolution evidence is posted and recommends maintainer closure. The
+  remaining open child issues are #71-#75 and #77; #76 is closed. That is
+  closure bookkeeping, not evidence that the shipped implementation is absent.
+- **#62 Docker authority isolation** — the Docker Read Gateway, split
+  Docker-only deployment, and native full-host separation are implemented.
+  The recorded private-alpha baseline includes the deployment authority
+  checks. Resolution evidence is posted and recommends maintainer closure; the
+  epic remains open for that maintainer action.
 - **#63 v0.1 alpha certification** — `v0.1.0-alpha.1` is a published prerelease.
   #15 live-Docker and #16 reverse-proxy boundary evidence are recorded. Clean-host
   installation and host-reboot recovery remain the open alpha evidence.
-- **#64 Backend decomposition** — split the daemon's monolithic `main.rs`.
-- **#65 Canonical contract/schema authority** — generate contracts from Rust
-  or add a CI drift check.
+- **#64 Backend decomposition** — a behavior-preserving extraction sequence
+  landed through PR #143; the epic remains open for its final parity and
+  acceptance audit.
+- **#65 Canonical contract/schema authority** — the generated Rust schema and
+  TypeScript pipeline, route-derived OpenAPI, Node envelope/SSE schemas, and
+  shared request contracts landed through PR #161. The epic remains open for
+  its final acceptance audit.
 - **#66 Provider scheduler/freshness**.
 - **#67 Hearth Design System** — source-boundary audit is complete; product UI
   adoption remains planned work.

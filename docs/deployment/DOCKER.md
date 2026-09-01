@@ -10,7 +10,11 @@ socket and the bounded project mount.
 - [`Dockerfile`](../../Dockerfile): multi-stage build (Rust daemon, Node/web build, runtime image).
 - [`docker-compose.yml`](../../docker-compose.yml): split Docker-only deployment.
 - [`deploy/docker/nginx.conf`](../../deploy/docker/nginx.conf): serves the web app and proxies `/api/*`.
-- [`deploy/docker/entrypoint.sh`](../../deploy/docker/entrypoint.sh): starts the daemon, the API, then nginx in the foreground.
+- [`deploy/docker/frontend-entrypoint.sh`](../../deploy/docker/frontend-entrypoint.sh):
+  starts the frontend API and nginx for the Compose `dockermap` service.
+- [`deploy/docker/entrypoint.sh`](../../deploy/docker/entrypoint.sh): compatibility
+  image entrypoint that starts gateway, collector, API, and nginx together; it is
+  not the split Compose authority profile.
 
 ## Run With Docker Compose
 

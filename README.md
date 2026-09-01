@@ -42,8 +42,11 @@ port on the interface of your choice, e.g. `-p 3233:3233`. If the Rust daemon is
 also intentionally bound off-host, set `DOCKERMAP_DAEMON_TOKEN` (or use the API
 token fallback); its routes, including health, require that bearer credential.
 
-That Docker socket mount is read-only. DockerMap needs it so it can inspect
-containers, images, networks, volumes, and logs.
+That Docker socket mount is passed to the Docker Read Gateway. A read-only
+mount does not make the Docker API read-only, so the gateway independently
+limits it to the reviewed inventory and bounded-log reads. Plain Docker is a
+local compatibility profile; use the split Compose deployment for component
+isolation.
 
 ## Run From Source
 
@@ -117,8 +120,9 @@ If the app opens but looks empty:
    http://127.0.0.1:4100/daemon/health
    ```
 
-If Docker is not reachable, DockerMap should still start with safe fallback data
-so the UI can be inspected.
+If Docker is not reachable and `DOCKERMAP_ALLOW_MOCK=true`, DockerMap can serve
+explicitly stamped mock fallback data so the UI can be inspected. With that
+setting disabled, unavailable Docker routes fail rather than fabricate data.
 
 ## Status Widget
 

@@ -7,15 +7,27 @@ This decision gives each DockerMap public API surface one owner. It prevents a p
 - Parent epic: [#65](https://github.com/Joncallim/DockerMap/issues/65)
 - Scope: architecture and validation strategy only; it changes no endpoint or response.
 
-## Current fact and motivating gap
+## Historical motivating gap and current state
 
-DockerMap currently has useful but separate declarations: Rust public domain structures in `crates/dockermap-core/src/models.rs`; handwritten browser-facing TypeScript in `packages/contracts/src/index.ts`; Express policy in `apps/api/src/routes.ts` as `ROUTE_MANIFEST`; browser-only envelopes, query parsing, version descriptor, and a hand-built OpenAPI object in `apps/api/src/readHandlers.ts`; and readable shared JSON examples in `tests/fixtures/contracts`.
+At #65 creation, Rust models, handwritten browser-facing TypeScript, Express
+policy, request parsing, OpenAPI, and readable fixtures were separately
+maintained. That made a plausible fixture or declaration insufficient evidence
+that the daemon, Node API, and documented route agreed.
+
+Current `main` assigns those responsibilities explicitly: Rust models generate
+`packages/contracts/src/rustModels.ts` and JSON Schema; Node-owned envelopes
+are declared in `nodeSchemas.ts`; `ROUTE_MANIFEST` owns browser routes;
+`requestContracts.ts` owns bounded Logs/Compose requests; `sseProtocol.ts`
+owns named event frames; and `openapi.ts` derives the OpenAPI document. The
+fixtures in `tests/fixtures/contracts` remain readable validation examples,
+not a second schema authority.
 
 The earlier status-fixture drift has been corrected: `status.json` now uses the
 attested `"docker"`/`"mock"` vocabulary and includes `sourceCoherent` and
 `snapshotSource`. The contracts workspace now typechecks and validates fixtures
-at runtime. Remaining work is to associate every route with the appropriate
-Rust or Node schema without inventing a duplicate owner for daemon bytes.
+at runtime. Rust/Node response associations, SSE event contracts, and bounded
+request declarations are implemented; #65 remains open for its final
+cross-boundary acceptance audit, not for a missing schema association.
 
 Existing route-manifest completeness tests remain valuable: they prove that registered Express templates and declared templates agree. They do not prove OpenAPI paths, request metadata, response schemas, or daemon serialization agree with them.
 
@@ -136,6 +148,17 @@ release packaging performs the same mirror check and rejects any tag other than
 `vVERSION` before creating a staging directory. Docker Engine API and snapshot
 versions are deliberately outside this product-version authority.
 
+### Implemented SSE and request authority (#159 and #161)
+
+`apps/api/src/sseProtocol.ts` owns the closed set of named SSE event frames and
+maps each payload to its Rust or Node schema authority. The generated OpenAPI
+stream annotation and API-process tests consume that same declaration; heartbeat
+comments remain an explicit non-JSON protocol frame. `apps/api/src/requestContracts.ts`
+owns the supported Logs and Compose query declarations used by fail-closed
+parsing, daemon forwarding, and OpenAPI parameters. The tests include malformed
+encoding, duplicate/unknown fields, bounded values, and forwarding regressions
+so a readable OpenAPI parameter cannot silently diverge from enforcement.
+
 ## Determinism and CI contract
 
 - A clean checkout generates all committed artifacts with pinned public dependencies. No private registry, network fetch, current time, random ID, absolute build path, or platform ordering may affect output.
@@ -154,4 +177,4 @@ The stable surface is v1. Adding an optional response field, a new enum value wh
 
 ## Boundaries and non-goals
 
-This ADR does not redesign models, add GraphQL, remove aliases, or create a generic SDK program. It does not weaken redaction, source-stamp, auth, query-bound, or dry-run-only invariants. Until these phases land, TypeScript contracts and fixtures are helpful regression evidence, not complete cross-language contract proof.
+This ADR does not redesign models, add GraphQL, remove aliases, or create a generic SDK program. It does not weaken redaction, source-stamp, auth, query-bound, or dry-run-only invariants. Generated artifacts and their validation prove the declared contract paths; the remaining #65 work is a final cross-boundary acceptance audit, including the live-Docker/release evidence required by the epic, rather than a return to independently handwritten daemon models.

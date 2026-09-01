@@ -1,18 +1,19 @@
 # Docker authority boundary decision (#62)
 
-Status: accepted; measured contract, gateway, Docker-only runtime split, and
-native full-host identity separation are implemented. Deployment rollout and
-final certification remain pending.
+Status: accepted and implemented. The measured contract, gateway, Docker-only
+runtime split, native full-host identity separation, and private-alpha
+deployment evidence are recorded. Issue #62 remains open for maintainer
+closure; this status is not a claim that every later release gate is complete.
 
 ## Decision
 
-DockerMap will use a small DockerMap-owned **Docker Read Gateway**. It is the
+DockerMap uses a small DockerMap-owned **Docker Read Gateway**. It is the
 only workload with the raw Docker Unix socket. The browser-facing frontend
 (nginx plus Node API) and the Rust collector will not mount or fall back to
 the raw socket.
 
 ```text
-Caddy / Authentik
+Caddy / browser-facing authentication boundary
         |
 frontend: nginx + Node API          (no Docker socket)
         |
@@ -23,18 +24,19 @@ Docker Read Gateway                 (only raw-socket mount)
 Docker Engine
 ```
 
-The gateway will be a deliberately narrow HTTP proxy in the existing Rust
-workspace, built with established HTTP parsing/proxy primitives. It will have
+The gateway is a deliberately narrow HTTP proxy in the existing Rust
+workspace, built with established HTTP parsing/proxy primitives. It has
 no UI, no policy DSL, no user-configurable wildcard permissions, and no Docker
-mutation implementation. It must reject requests before forwarding them to
-Docker.
+mutation implementation. It rejects requests before forwarding them to Docker.
 
 ## Why this boundary
 
-The current all-in-one image starts nginx, Node, and the Rust daemon in one
-root container. The container mounts `/var/run/docker.sock`; `:ro` makes the
-mount entry read-only but does not constrain Docker API methods. A browser/API
-compromise can therefore open the socket without using DockerMap's routes.
+The pre-#62 all-in-one deployment started nginx, Node, and the Rust daemon in
+one root container with `/var/run/docker.sock`. `:ro` made the mount entry
+read-only but did not constrain Docker API methods: a browser/API compromise
+could open the socket without using DockerMap's routes. The current Compose
+deployment moves that authority to the gateway; the compatibility image is not
+the production authority model.
 
 Separating only a raw-socket collector would reduce exposure but would not
 block a collector compromise from mutating Docker. A Docker daemon authorization
@@ -129,13 +131,14 @@ Gateway regression tests use a fake raw Unix Docker endpoint to establish that
 allowed targets are forwarded verbatim and denied method, route, query,
 framing, upgrade, and encoded-path forms never reach Docker. They cover the
 representative mutation, inspect/archive/top/exec/events/stats/image/build, and
-request-ambiguity classes enumerated below. Slice 3 will add the isolated
-real-Docker and container-mount/network proof when the services are split.
+request-ambiguity classes enumerated below. The isolated live-Docker and
+production-image suites cover allowed reads, denied mutations, and the split
+mount/network profile.
 
-The pre-split compatibility image starts the gateway before its collector so
-the collector already exercises the filtered contract. It is **not** the final
-authority boundary: gateway and collector still share that image's raw-socket
-mount until Slice 3 removes it from the frontend/collector runtime.
+The single-container compatibility image starts the gateway before its
+collector and therefore exercises the filtered contract, but it is **not** the
+production isolation profile: its processes share one container namespace and
+raw-socket mount. Use the split Compose deployment for Docker-only operation.
 
 This policy intentionally excludes container archive/export, top/processes,
 inspect, exec, events, stats, images, builds, plugin APIs and every mutation.
@@ -171,23 +174,24 @@ with the documented privacy/trust trade-off. Tailscale and Headscale are
 separately opt-in and off by default; #62 adds neither credentials nor
 control-plane permissions.
 
-## Read-only Hearth discovery (2026-08-28)
+## Read-only Hearth discovery (2026-08-28, pre-cutover record)
 
-Live Docker evidence, not deployment intent, shows the current `dockermap`
-container is rootful Docker on the default context. The socket is
-`/var/run/docker.sock`, owned by UID 0/GID 973 with mode 0660. The running
-container uses image `dockermap:hearth`, runs as the image default user (empty
-`Config.User`, therefore root today), mounts the socket and project root
-read-only, and is only on the external `proxy` network. Its Compose metadata
-points to the tracked Hearth infrastructure stack. It currently has no
-read-only root filesystem and retains several capabilities despite dropping
+Before the #62 cutover, live Docker evidence—not deployment intent—showed the
+then-current `dockermap` container was rootful Docker on the default context.
+The socket was `/var/run/docker.sock`, owned by UID 0/GID 973 with mode 0660.
+At capture, the running container used image `dockermap:hearth`, ran as the
+image default user (empty `Config.User`, therefore root), mounted the socket
+and project root read-only, and was only on the external `proxy` network. Its
+Compose metadata pointed to the tracked Hearth infrastructure stack. It had no
+read-only root filesystem and retained several capabilities despite dropping
 `ALL`.
 
-These facts guide the eventual canary but do not authorize a deployment. The
-implementation must re-inspect them immediately before rollout and preserve the
-current Compose/image revision as rollback.
+These facts informed the canary and rollback preparation. The post-cutover
+authority and recovery evidence is recorded in the private-alpha baseline and
+#62 resolution evidence; operators must still inspect their own socket
+ownership and Compose revision before deployment.
 
-## Required negative tests before switching topology
+## Negative-test evidence for the split topology
 
 Using only test-owned Docker resources, prove:
 
@@ -204,15 +208,15 @@ Using only test-owned Docker resources, prove:
 6. Docker-only profile leaves host providers unavailable while inventory, logs,
    live-Docker E2E and normal browser workflows continue to work.
 
-## Delivery and rollback
+## Delivery and rollback record
 
-1. This ADR and measured contract.
-2. Gateway plus read/deny integration tests.
-3. Frontend/collector/gateway runtime split and production-E2E migration.
-4. Native full-host separation and hardening.
-5. Separate canary, deployment evidence, and hostile final certification.
+1. This ADR and measured contract (PR #92).
+2. Gateway plus read/deny integration tests (PR #93).
+3. Frontend/collector/gateway runtime split and production-E2E migration (PR #94).
+4. Native full-host separation and hardening (PR #95).
+5. Isolated live-Docker evidence and the private-alpha deployment baseline (PRs #96–#99).
 
-Do not modify Caddy/Authentik for slices 1–4. Before slice 5, run the full
-repository gate, live-Docker and production-image tests, privilege-boundary
-tests, browser workflows and deployment smoke. Keep the current deployment
-revision available until the canary is accepted.
+The public proxy authentication mechanism was intentionally left outside this
+authority split. Deployment evidence records its browser-facing boundary
+separately; a future change must not broaden Docker authority to solve a proxy
+configuration problem.

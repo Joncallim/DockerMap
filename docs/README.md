@@ -38,7 +38,8 @@ Working now:
   and native-process collection.
 - A Runtime Map page in the web app that consumes `/api/runtime/map` and shows
   provider diagnostics, layer filters, and cross-provider relationships.
-- Shared Rust and TypeScript contract fixtures.
+- Rust-owned response schemas and generated TypeScript declarations, plus
+  Node-owned envelope, request, and SSE schemas.
 - API security tests, Playwright smoke/accessibility tests, production-image
   tests, and an isolated live-Docker fixture suite.
 - Versioned API routes and an OpenAPI document at `/api/openapi.json`.
@@ -56,9 +57,11 @@ Use [planning/ROADMAP.md](planning/ROADMAP.md) for the current short roadmap.
 The practical direction is:
 
 - Now: complete the private-alpha clean-host/recovery evidence and maintainer
-  closure of the completed #61/#62 work.
-- Next: backend decomposition (#64), canonical contracts (#65), provider
-  freshness (#66), and the later provenance/findings/telemetry epics.
+  closure of the implemented #61/#62 work.
+- In progress: finalize the parity/acceptance evidence for backend decomposition
+  (#64) and canonical contract authority (#65).
+- Next: provider freshness (#66), the Hearth design-system adoption (#67), then
+  provenance (#68), findings (#69), and observed history/telemetry (#70).
 - Later: add safe edit mode only after validation, backups, confirmation, and
   rollback are designed and tested.
 
@@ -88,8 +91,8 @@ daemon, provider, auth, deployment, or write-mode behavior.
 - [architecture/ARCHITECTURE.md](architecture/ARCHITECTURE.md): system layout,
   data flow, runtime-map model, and provider rules.
 - [architecture/CONTRACT_AUTHORITY.md](architecture/CONTRACT_AUTHORITY.md):
-  canonical ownership, deterministic schema strategy, compatibility policy, and
-  the current contract-validation limitation (#144 / #65).
+  canonical ownership, generated schema/declaration pipeline, compatibility
+  policy, and the remaining #65 acceptance work.
 - [architecture/PAGE_LOGIC.md](architecture/PAGE_LOGIC.md): intended UI routes,
   page behavior, and cross-page navigation.
 - [planning/PYTHON_AND_PROCESS_PROVIDERS.md](planning/PYTHON_AND_PROCESS_PROVIDERS.md):

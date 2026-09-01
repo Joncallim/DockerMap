@@ -1,5 +1,12 @@
 # DockerMap Backend And Runtime Map Build Summary
 
+> Historical record. This summary describes an earlier backend/runtime-map
+> milestone and its then-current verification run; it is not a statement of
+> the current architecture, release status, or remaining roadmap. Use
+> [`docs/planning/ROADMAP.md`](../planning/ROADMAP.md),
+> [`docs/release/RELEASE_CHECKLIST.md`](../release/RELEASE_CHECKLIST.md), and
+> the current architecture/deployment documents for current-state claims.
+
 ## Executive Summary
 
 DockerMap has been advanced through the backend-focused roadmap phases and now has a

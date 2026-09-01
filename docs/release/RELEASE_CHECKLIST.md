@@ -22,8 +22,9 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 - [x] Make package advisory, registry, or other external-network behavior opt-in or document it explicitly in release notes and deployment docs.
   Current runtime docs state that package registry/advisory, DNS-provider API,
   Cloudflare API, and generic external-API lookups are disabled or not implemented.
-  Tailscale/Headscale delegated CLI behavior and Google-hosted browser fonts are
-  documented as release decisions.
+  Tailscale/Headscale delegated CLI behavior is documented as a release
+  decision; the browser uses a local/system font stack and makes no hosted-font
+  request.
 - [x] Verify package, service, process, unit, proxy, and DNS inspection does not leak env vars, secrets, credentials, or inline auth URLs.
   Fixture evidence (`npm run test:rust:daemon`) covers current provider outputs
   including Python/native-process-shaped sentinels; config-content collectors
@@ -58,8 +59,6 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
   [ALPHA_BASELINE.md](ALPHA_BASELINE.md). Final release notes must be refreshed
   for the exact tagged candidate after the remaining #16/#63 proxy gate.
 
-## Execute After Next Commit
-
 ## Docker authority isolation (#62)
 
 - [x] Docker-only deployment keeps the raw Docker socket exclusively in the
@@ -76,8 +75,7 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
   evidence. The independent browser authentication choice is recorded by #16/#63
   and is not evidence for this authority boundary.
 
-After the next implementation commit is completed, open follow-up work items for these
-tasks before starting new GUI work:
+## Follow-up evidence and product work
 
 - [x] Add provider-specific redaction fixtures for systemd, tmux, npm/package metadata,
   native process inspection, reverse-proxy config, and DNS collectors.
@@ -89,9 +87,10 @@ tasks before starting new GUI work:
   notes and deployment docs.
   Documented current behavior: no runtime package registry/advisory/external-API lookup,
   build/release tooling may contact registries, Tailscale/Headscale use installed CLI
-  configuration, and the browser loads Google-hosted fonts unless packaged locally.
-- [ ] Capture live-Docker evidence on the release host with `npm run test:live-docker`,
-  including Docker and Compose versions.
+  configuration, and the browser makes no hosted-font request.
+- [x] Capture live-Docker evidence on the release host with `npm run test:live-docker`,
+  including Docker and Compose versions. The recorded Docker/Compose versions are in
+  [the alpha baseline](ALPHA_BASELINE.md); every later candidate must rerun it.
 - [x] Capture reverse-proxy smoke evidence on the release host: bearer-session
   browser access, SSE streaming, anonymous denial, spoofed-identity-header denial,
   and no public daemon port were recorded on 2026-08-29.
@@ -105,14 +104,20 @@ tasks before starting new GUI work:
 These tasks are not required for the first private review release, but should be closed
 before a broader beta.
 
-- [ ] Generate TypeScript API contracts from Rust models or add a CI drift check that fails when fixtures and types diverge.
-  Tracked as epic #65 (canonical contract/schema authority).
+- [x] Generate daemon TypeScript declarations from Rust models and fail CI on
+  schema/declaration drift. Its composed schema and contract tests validate
+  Node envelopes, SSE events, bounded requests, fixtures, and route/OpenAPI
+  associations. #65 remains open for final epic acceptance, not because the
+  generated pipeline is absent.
 - [ ] Add reverse-proxy integration tests for bearer-token injection and SSE streaming.
   Tracked as part of epic #63 (v0.1 alpha certification).
 - [x] Add OpenAPI or equivalent machine-readable route documentation for read-only endpoints.
-  `/api/openapi.json` (OpenAPI 3.0.3) ships on the read-only API surface; see commit `5fcadd3`.
-- [ ] Split `crates/dockermap-daemon/src/main.rs` into route, config, Docker collector, host-provider, and CLI modules.
-  Tracked as epic #64 (backend decomposition).
+  `/api/openapi.json` is generated as OpenAPI 3.1.1; its structural and
+  route/schema completeness checks are part of `npm run check:contracts`.
+- [x] Extract route, configuration, Docker collector, host-provider, and core
+  boundaries from the former monolith. The cumulative behavior-parity ledger is
+  [`BACKEND_REFACTOR_PARITY.md`](../architecture/BACKEND_REFACTOR_PARITY.md);
+  #64 remains open for its final parity/acceptance audit.
 - [ ] Add parser-level tests for systemd, cron, PM2, tmux, Tailscale, Headscale, reverse-proxy, DNS, and listener provider output fixtures.
   Tracked in the roadmap (Runtime Providers).
 - [ ] Add provider-fixture redaction tests for npm/package metadata, Python apps, native processes, and service/unit inspection before enabling those routes by default.
@@ -121,7 +126,10 @@ before a broader beta.
 - [ ] Add browser tests for error states, token/proxy behavior, logs filtering, Compose edit-plan display, and responsive navigation.
   Tracked as part of epic #63 (v0.1 alpha certification).
 - [ ] Add a clean-host install test for systemd units and Nginx/Caddy proxy config.
-- [ ] Add release automation for tagged builds and checksums.
+- [x] Add tag-triggered release automation for deploy artifacts and SHA-256
+  checksums. [`.github/workflows/release.yml`](../../.github/workflows/release.yml)
+  validates the tag/version, builds, packages, checksums, and publishes the
+  prerelease assets (PR #98).
 - [x] Add a documented support policy for Linux distro, Node, Rust, Docker, and browser versions.
   See [SUPPORT_POLICY.md](SUPPORT_POLICY.md); each release must still rerun the
   relevant gates against its exact candidate.
@@ -142,7 +150,7 @@ Store this evidence in release notes or the release PR.
 - Reverse-proxy smoke result.
 - Provider-network behavior note stating whether any package/advisory or other external API calls were enabled.
   Current docs record no runtime package registry/advisory/external-API lookup; note the
-  Tailscale/Headscale delegated CLI caveat and Google Fonts browser egress in release notes.
+  Tailscale/Headscale delegated CLI caveat in release notes.
 - Provider-redaction evidence for any new systemd, tmux, package, Python/native-process, reverse-proxy, DNS, or external-API routes shipped in the release.
   Current fixture evidence is `npm run test:rust:daemon`, covering fake systemd, tmux,
   npm/package, native-process-shaped, reverse-proxy marker, DNS marker, diagnostic, and
