@@ -36,6 +36,10 @@
     "mode": {
       "$ref": "#/$defs/RuntimeMode"
     },
+    "modelRevision": {
+      "minLength": 1,
+      "type": "string"
+    },
     "snapshotVersion": {
       "type": "string"
     },
@@ -48,7 +52,8 @@
     "mode",
     "dockerReachable",
     "lastUpdated",
-    "snapshotVersion"
+    "snapshotVersion",
+    "modelRevision"
   ],
   "title": "HealthResponse",
   "type": "object"

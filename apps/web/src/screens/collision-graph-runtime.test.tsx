@@ -34,8 +34,8 @@ const fixture: DockerSnapshot = {
   images: [],
   networks: [],
   volumes: [],
-  lastUpdated: 0
-};
+  modelRevision: "test-revision", lastUpdated: 0,
+  };
 
 const runtimeFixture: RuntimeMap = {
   nodes: [
@@ -45,8 +45,10 @@ const runtimeFixture: RuntimeMap = {
   ],
   edges: [],
   diagnostics: [],
-  lastUpdated: 0
-};
+  providerStates: [],
+    lastUpdated: 0,
+  modelRevision: "test-revision"
+  };
 
 const model = buildModel(fixture, runtimeFixture);
 

@@ -5,7 +5,7 @@ import { getDemoResponse } from "./demoData";
 import { buildModel, summarize } from "./model";
 import { changeFeed, type ChangeEvent } from "./stubs";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
 
 /**
  * Live-shaped payload in the shape the daemon mock emits for /api/snapshot
@@ -65,8 +65,9 @@ const liveSnapshot: DockerSnapshot = {
     { id: "network_data", name: "data", driver: "bridge", internal: false, members: ["container_api", "container_db"] }
   ],
   volumes: [{ id: "volume_postgres_data", name: "postgres_data", attachedTo: ["container_db"] }],
-  lastUpdated: 0
-};
+  lastUpdated: 0,
+  modelRevision: "test-revision"
+  };
 
 /**
  * Recursive key collector (U4): a renamed claim can hide on a NESTED object

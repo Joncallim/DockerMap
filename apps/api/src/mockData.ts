@@ -8,6 +8,7 @@ import type {
 } from "@dockermap/contracts";
 
 export const snapshot: DockerSnapshot = {
+  modelRevision: "node-mock-v1",
   containers: [
     {
       id: "container_gateway",

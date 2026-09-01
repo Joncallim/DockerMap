@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { DockerSnapshot, RuntimeMap, RuntimeMapNode } from "@dockermap/contracts";
 import { buildModel, stateForStatus } from "./model";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
-const emptySnapshot: DockerSnapshot = { containers: [], images: [], networks: [], volumes: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const emptySnapshot: DockerSnapshot = { containers: [], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 
 describe("D1. Docker health-suffix false-green", () => {
   it("'Up 3 hours (unhealthy)' is degraded, not healthy", () => {
@@ -28,7 +28,7 @@ describe("D1. Docker health-suffix false-green", () => {
 
   it("a container with 'Up ... (unhealthy)' never feeds an all-healthy Home claim", () => {
     const model = buildModel(
-      { containers: [{ id: "c1", name: "web", image: "nginx:1", status: "Up 3 hours (unhealthy)", role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], lastUpdated: 0 },
+      { containers: [{ id: "c1", name: "web", image: "nginx:1", status: "Up 3 hours (unhealthy)", role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 },
       runtime
     );
     expect(model.services[0].state).toBe("degraded");
@@ -38,7 +38,7 @@ describe("D1. Docker health-suffix false-green", () => {
 
 describe("D2. negative-state overclassification and bucket precision", () => {
   function runtimeStateFor(nodes: RuntimeMapNode[], id: string): string | undefined {
-    const model = buildModel(emptySnapshot, { nodes, edges: [], diagnostics: [], lastUpdated: 0 });
+    const model = buildModel(emptySnapshot, { nodes, edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 });
     return model.runtime.nodes.find((n) => n.id === id)?.state;
   }
 
@@ -66,7 +66,7 @@ describe("D2. negative-state overclassification and bucket precision", () => {
   it("explicit health.state unhealthy maps to degraded, not offline", () => {
     const model = buildModel(emptySnapshot, {
       nodes: [{ id: "svc", provider: "docker", type: "service", label: "svc", status: "running", metadata: {}, service: { name: "svc", status: "running", dependencies: [], dependents: [], health: { state: "unhealthy" }, logs: [], events: [], owner: null, location: null } }],
-      edges: [], diagnostics: [], lastUpdated: 0
+      edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0
     });
     expect(model.runtime.nodes.find((n) => n.id === "svc")?.state).toBe("degraded");
   });
@@ -74,7 +74,7 @@ describe("D2. negative-state overclassification and bucket precision", () => {
   it("explicit health.state unknown is preserved as unknown, never healthy", () => {
     const model = buildModel(emptySnapshot, {
       nodes: [{ id: "svc", provider: "docker", type: "service", label: "svc", status: "running", metadata: {}, service: { name: "svc", status: "running", dependencies: [], dependents: [], health: { state: "unknown" }, logs: [], events: [], owner: null, location: null } }],
-      edges: [], diagnostics: [], lastUpdated: 0
+      edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0
     });
     expect(model.runtime.nodes.find((n) => n.id === "svc")?.state).toBe("unknown");
   });

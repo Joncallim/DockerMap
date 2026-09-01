@@ -99,6 +99,13 @@ export type RuntimeNodeKind =
   | 'process'
   | 'network_listener'
   | 'orchestrator_workload';
+/**
+ * Fixed, schema-backed host-provider slots. This is not a plugin or policy
+ * interface: the daemon owns the complete finite list.
+ */
+export type ProviderSlot =
+  'network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm';
+export type ProviderStateKind = 'fresh' | 'stale' | 'collecting' | 'unavailable' | 'timed_out' | 'disabled';
 export type MountCorrelationStatus = 'matched' | 'missing' | 'extra';
 export type ComposeRelationshipKind = 'declares_mount' | 'mounted_at';
 export type ComposeNodeKind = 'service' | 'host_path' | 'container_path' | 'named_volume' | 'anonymous_volume';
@@ -109,6 +116,11 @@ export interface DockerSnapshot {
   containers: ContainerRecord[];
   images: ImageRecord[];
   lastUpdated: number;
+  /**
+   * Opaque daemon-publication revision. This is a process-instance scoped,
+   * monotonic cache revision, not a timestamp and not a content hash.
+   */
+  modelRevision: string;
   networks: NetworkRecord[];
   /**
    * ACTUAL source of these bytes: "docker" (live daemon collection) or
@@ -173,7 +185,9 @@ export interface RuntimeMap {
   diagnostics: RuntimeMapDiagnostic[];
   edges: RuntimeMapEdge[];
   lastUpdated: number;
+  modelRevision: string;
   nodes: RuntimeMapNode[];
+  providerStates: ProviderState[];
   /**
    * ACTUAL source of these bytes: "docker" or "mock" (#85 A3). Stamped by
    * the daemon route layer from the cache's runtime mode.
@@ -293,6 +307,10 @@ export interface RuntimeLogRef {
   level?: RuntimeLogLevel | null;
   source: string;
 }
+export interface ProviderState {
+  slot: ProviderSlot;
+  state: ProviderStateKind;
+}
 export interface ComposeScan {
   correlations: MountCorrelation[];
   diagnostics: ComposeDiagnostic[];
@@ -390,6 +408,7 @@ export interface HealthResponse {
   lastUpdated: number;
   message?: string | null;
   mode: RuntimeMode;
+  modelRevision: string;
   snapshotVersion: string;
   status: HealthState;
 }

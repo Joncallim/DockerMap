@@ -13,6 +13,7 @@ import type {
 } from "@dockermap/contracts";
 
 const demoSnapshot: DockerSnapshot = {
+  modelRevision: "demo-v1",
   containers: [
     {
       id: "container_gateway",
@@ -176,6 +177,7 @@ const demoHealth: HealthResponse = {
   mode: "mock",
   dockerReachable: true,
   lastUpdated: Date.now(),
+  modelRevision: "demo-v1",
   snapshotVersion: "demo",
   message: "Demo mode — showing sample data, no Docker host connected"
 };
@@ -227,6 +229,8 @@ const demoComposeScan: ComposeScan = {
 };
 
 const demoRuntimeMap: RuntimeMap = {
+  modelRevision: "demo-v1",
+  providerStates: [],
   nodes: [
     {
       id: "runtime_gateway",

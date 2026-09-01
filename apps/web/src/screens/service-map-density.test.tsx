@@ -7,7 +7,7 @@ import ServiceMap from "../components/ServiceMap";
 import { buildModel } from "../lib/model";
 import MapScreen from "./Map";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
 const containers = Array.from({ length: 32 }, (_, index) => ({
   id: `service-${String(index).padStart(2, "0")}`,
   name: `service-${String(index).padStart(2, "0")}`,
@@ -24,8 +24,8 @@ const snapshot = (records = containers): DockerSnapshot => ({
   images: [],
   networks: [{ id: "network-main", name: "main", driver: "bridge", internal: false, members: records.map((service) => service.name) }],
   volumes: [],
-  lastUpdated: 0
-});
+  modelRevision: "test-revision", lastUpdated: 0,
+  });
 
 function renderMap(source: DockerSnapshot) {
   const value: AppContextValue = { model: buildModel(source, runtime), modelProvenance: "live", loading: false, error: null, health: null, tick: 0, evidenceMode: "live", openCommand: () => {} };

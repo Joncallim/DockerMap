@@ -12,12 +12,12 @@ import type { Settings } from "../lib/settingsStore";
 import Changes from "./Changes";
 import Home from "./Home";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
 // Offline live fixture named EXACTLY prod-secret-host (DM-05 sentinel):
 // authority-only gating would deterministically fabricate a leaking failure
 // row under demo authority; the provenance gate must keep this real host
 // name off every sample-labelled surface until demo bytes actually land.
-const liveSnapshot: DockerSnapshot = { containers: [{ id: "prod-secret-host", name: "prod-secret-host", image: "nginx:1", status: "Exited (1)", role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], lastUpdated: 0 };
+const liveSnapshot: DockerSnapshot = { containers: [{ id: "prod-secret-host", name: "prod-secret-host", image: "nginx:1", status: "Exited (1)", role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 const demoModel = buildModel(getDemoResponse("/api/snapshot"), runtime);
 const liveModel = buildModel(liveSnapshot, runtime);
 
@@ -38,7 +38,7 @@ function rerender(path: "/" | "/changes") { act(() => root!.render(shell(path)))
 describe("history wiring — model/provenance held fixed while ONLY the mode flips (G-36)", () => {
   it.each([["/"], ["/changes"]] as const)("live→demo: retained live model stays off the sample surface until demo bytes land (%s)", (path) => {
     state.demoMode = false;
-    state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "live" };
+    state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, modelRevision: "test-revision", snapshotVersion: "live" };
     state.model = liveModel;
     state.modelProvenance = "live";
     const target = render(path);
@@ -76,7 +76,7 @@ describe("history wiring — model/provenance held fixed while ONLY the mode fli
 
   it.each([["/"], ["/changes"]] as const)("demo→live fails closed with the demo model still held (%s)", (path) => {
     state.demoMode = true;
-    state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "live" };
+    state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, modelRevision: "test-revision", snapshotVersion: "live" };
     state.model = demoModel;
     state.modelProvenance = "demo";
     const target = render(path);
@@ -96,14 +96,14 @@ describe("history wiring — model/provenance held fixed while ONLY the mode fli
 
   it.each([["/"], ["/changes"]] as const)("docker→mock fallback keeps retained live identifiers unavailable until mock bytes land (%s)", (path) => {
     state.demoMode = false;
-    state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "live" };
+    state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, modelRevision: "test-revision", snapshotVersion: "live" };
     state.model = liveModel;
     state.modelProvenance = "live";
     const target = render(path);
     expect(target.textContent).toContain("Not collected");
 
     // Health changes first in production; retain the live model/source stamp.
-    state.health = { status: "ok", mode: "mock", dockerReachable: false, lastUpdated: 2, snapshotVersion: "fallback" };
+    state.health = { status: "ok", mode: "mock", dockerReachable: false, lastUpdated: 2, modelRevision: "test-revision", snapshotVersion: "fallback" };
     rerender(path);
     expect(target.querySelector(".conn-mode")!.textContent).toBe("Mock Engine");
     expect(target.querySelectorAll(".feed-row, .timeline-row").length).toBe(0);
@@ -129,7 +129,7 @@ describe("history wiring — model/provenance held fixed while ONLY the mode fli
 
   it("distinguishes a filtered-empty sample feed from a truly empty sample feed", () => {
     state.demoMode = true;
-    state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, snapshotVersion: "demo" };
+    state.health = { status: "ok", mode: "docker", dockerReachable: true, lastUpdated: 1, modelRevision: "test-revision", snapshotVersion: "demo" };
     state.model = demoModel;
     state.modelProvenance = "demo";
     const target = render("/changes");

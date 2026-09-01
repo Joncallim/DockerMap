@@ -7,7 +7,7 @@ import { buildModel } from "../lib/model";
 import Networking from "./Networking";
 import Storage from "./Storage";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
 
 const networks = [
   { id: "network_b", name: "beta", driver: "bridge", internal: false, members: [] },
@@ -19,7 +19,7 @@ const volumes = [
 ];
 
 function snapshot(networkRecords = networks, volumeRecords = volumes): DockerSnapshot {
-  return { containers: [], images: [], networks: networkRecords, volumes: volumeRecords, lastUpdated: 0 };
+  return { containers: [], images: [], networks: networkRecords, volumes: volumeRecords, modelRevision: "test-revision", lastUpdated: 0 };
 }
 
 function renderInventory(path: "/networking" | "/storage", value: AppContextValue): string {

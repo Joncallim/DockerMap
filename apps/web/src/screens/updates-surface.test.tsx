@@ -11,8 +11,8 @@ import Changes from "./Changes";
 import Home from "./Home";
 import ServiceDetail from "./ServiceDetail";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
-const liveSnapshot: DockerSnapshot = { containers: [{ id: "live-api", name: "api", image: "nginx:1", status: "running", role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const liveSnapshot: DockerSnapshot = { containers: [{ id: "live-api", name: "api", image: "nginx:1", status: "running", role: "api", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 function render(mode: AppContextValue["evidenceMode"], snapshot: DockerSnapshot, path: string, screen: ReactElement) {
   const context: AppContextValue = { model: buildModel(snapshot, runtime), modelProvenance: mode === "demo" ? "demo" : mode === "mock" ? "mock" : "live", loading: false, error: null, health: null, tick: 0, evidenceMode: mode, openCommand: () => {} };
   return renderToStaticMarkup(<AppContext.Provider value={context}><MemoryRouter initialEntries={[path]}><Routes><Route path={path === "/" ? "/" : "/services/:name"} element={screen} /></Routes></MemoryRouter></AppContext.Provider>);

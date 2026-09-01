@@ -201,6 +201,11 @@
       "minimum": 0,
       "type": "integer"
     },
+    "modelRevision": {
+      "description": "Opaque daemon-publication revision. This is a process-instance scoped,\nmonotonic cache revision, not a timestamp and not a content hash.",
+      "minLength": 1,
+      "type": "string"
+    },
     "networks": {
       "items": {
         "$ref": "#/$defs/NetworkRecord"
@@ -230,7 +235,8 @@
     "images",
     "networks",
     "volumes",
-    "lastUpdated"
+    "lastUpdated",
+    "modelRevision"
   ],
   "title": "DockerSnapshot",
   "type": "object"

@@ -52,6 +52,7 @@ export type {
   RuntimePackageEntity,
   RuntimePackageManager,
   RuntimePackageUpdate,
+  ProviderState,
   RuntimeProviderKind,
   RuntimeRelationshipKind,
   RuntimeServiceEntity,

@@ -10,7 +10,7 @@ import type { EvidenceMode, ModelProvenance } from "../lib/evidence";
 import Changes from "./Changes";
 import Home from "./Home";
 
-const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
+const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
 
 function baseContainer(partial: Partial<DockerSnapshot["containers"][number]>): DockerSnapshot["containers"][number] {
   return {
@@ -42,8 +42,8 @@ const emptyNameSnapshot: DockerSnapshot = {
   images: [],
   networks: [],
   volumes: [],
-  lastUpdated: 0
-};
+  modelRevision: "test-revision", lastUpdated: 0,
+  };
 
 /**
  * Collided-name fixture: two distinct services that both publish "dup" (the
@@ -59,8 +59,8 @@ const collidedNameSnapshot: DockerSnapshot = {
   images: [],
   networks: [],
   volumes: [],
-  lastUpdated: 0
-};
+  modelRevision: "test-revision", lastUpdated: 0,
+  };
 
 function contextFor(snapshot: DockerSnapshot, mode: EvidenceMode, modelProvenance: ModelProvenance): AppContextValue {
   return {

@@ -5,8 +5,8 @@ import type { EvidenceMode, ModelProvenance } from "./evidence";
 import { CAUSAL_CHAIN_CLAIM, CHANGE_HISTORY_CLAIM } from "./history";
 import { causalChain, changeFeed, type ChangeEvent } from "./stubs";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
-const snapshot: DockerSnapshot = { containers: [{ id: "offline", name: "db", image: "postgres", status: "Exited (1)", role: "database", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const snapshot: DockerSnapshot = { containers: [{ id: "offline", name: "db", image: "postgres", status: "Exited (1)", role: "database", networks: [], ports: [], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 const model: SystemModel = buildModel(snapshot, runtime);
 
 afterEach(() => {

@@ -35,17 +35,19 @@ const snapV1: DockerSnapshot = {
   images: [],
   networks: [],
   volumes: [],
-  lastUpdated: 1
+  lastUpdated: 1,
+  modelRevision: "revision-1"
 };
 const snapV2: DockerSnapshot = {
   ...snapV1,
   containers: [
     { id: "c1", name: "web-v2", image: "nginx:2", status: "running", role: "web", networks: [], ports: [], mounts: [], dependsOn: [] }
   ],
-  lastUpdated: 2
+  lastUpdated: 2,
+  modelRevision: "revision-2"
 };
-const runtimeV1: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 1 };
-const runtimeV2: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 2 };
+const runtimeV1: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 1, modelRevision: "revision-1", providerStates: [] };
+const runtimeV2: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 2, modelRevision: "revision-2", providerStates: [] };
 
 type PendingRequest = { url: string; resolve: (value: Response) => void; reject: (reason: Error) => void };
 const pending: PendingRequest[] = [];
@@ -175,6 +177,27 @@ describe("useSystemModel retains the last model across refresh failures", () => 
 });
 
 describe("useSystemModel rebuilds only from a same-generation pair", () => {
+  it("requires equal non-empty daemon model revisions without changing fetch cadence", async () => {
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
+    await hook.mount();
+    expect(pending).toHaveLength(2);
+    const [s1, r1] = pending.splice(0);
+    s1.resolve(dockerResponse(snapV1));
+    r1.resolve(dockerResponse({ ...runtimeV1, modelRevision: "different" }));
+    await flush();
+    expect(hook.result.current.model).toBeNull();
+
+    await hook.rerender(1);
+    // Revisions gate publication only; both resources keep their normal
+    // request cadence and are fetched again together.
+    expect(pending).toHaveLength(2);
+    const [s2, r2] = pending.splice(0);
+    s2.resolve(dockerResponse({ ...snapV2, modelRevision: "" }));
+    r2.resolve(dockerResponse(runtimeV2));
+    await flush();
+    expect(hook.result.current.model).toBeNull();
+  });
+
   it("keeps the previous model while one resource settles ahead of the other", async () => {
     const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
     await hook.mount();

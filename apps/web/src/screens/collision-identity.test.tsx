@@ -15,7 +15,7 @@ import ServiceDetail from "./ServiceDetail";
 import Storage from "./Storage";
 import VolumeDetail from "./VolumeDetail";
 
-const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
+const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
 
 /**
  * Collision fixture: DISTINCT records whose identities sanitize to the SAME
@@ -70,8 +70,9 @@ const fixture: DockerSnapshot = {
     { id: "vol_a", name: "[redacted]", attachedTo: ["gateway"] },
     { id: "vol_b", name: "[redacted]", attachedTo: ["api"] }
   ],
-  lastUpdated: 0
-};
+  lastUpdated: 0,
+  modelRevision: "test-revision"
+  };
 
 const model = buildModel(fixture, emptyRuntime);
 

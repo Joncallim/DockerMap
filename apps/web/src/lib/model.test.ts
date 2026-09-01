@@ -8,7 +8,7 @@ import type {
 } from "@dockermap/contracts";
 import { buildModel, computeImpact, hashString, stateForStatus, summarize } from "./model";
 
-const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
+const emptyRuntime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
 
 function container(partial: Partial<ContainerRecord> & Pick<ContainerRecord, "id" | "name">): ContainerRecord {
   return {
@@ -28,7 +28,7 @@ function snapshot(
   networks: NetworkRecord[] = [],
   volumes: VolumeRecord[] = []
 ): DockerSnapshot {
-  return { containers, images: [], networks, volumes, lastUpdated: 0 };
+  return { containers, images: [], networks, volumes, lastUpdated: 0, modelRevision: "test-revision" };
 }
 
 describe("stateForStatus", () => {
@@ -242,8 +242,9 @@ describe("empty schema-valid identities stay visible and non-routable", () => {
         images: [{ image: "", containers: [""], status: "" }],
         networks: [{ id: "net1", name: "", driver: "bridge", internal: false, members: [""] }],
         volumes: [{ id: "vol1", name: "", attachedTo: [""] }],
-        lastUpdated: 0
-      },
+        lastUpdated: 0,
+        modelRevision: "test-revision"
+        },
       emptyRuntime
     );
     // The contract permits empty strings and the model keeps the recorded
@@ -329,8 +330,10 @@ describe("service and runtime identity indexes", () => {
       ],
       edges: [],
       diagnostics: [],
-      lastUpdated: 0
-    };
+      providerStates: [],
+            lastUpdated: 0,
+      modelRevision: "test-revision"
+      };
     const model = buildModel(snapshot([]), runtime);
 
     expect(model.runtime.nodes).toHaveLength(3);
@@ -479,8 +482,9 @@ describe("collision-safe redacted identities", () => {
       { id: "vol_a", name: "[redacted]", attachedTo: ["svc-a"] },
       { id: "vol_b", name: "[redacted]", attachedTo: ["svc-b"] }
     ],
-    lastUpdated: 0
-  };
+    lastUpdated: 0,
+    modelRevision: "test-revision"
+    };
   const model = buildModel(collided, emptyRuntime);
 
   it("keeps EVERY collided record in the arrays so both rows stay visible", () => {

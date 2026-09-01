@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { DockerSnapshot, RuntimeMap, RuntimeMapNode } from "@dockermap/contracts";
 import { buildModel } from "./model";
 
-const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 0 };
-const emptySnapshot: DockerSnapshot = { containers: [], images: [], networks: [], volumes: [], lastUpdated: 0 };
+const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 };
+const emptySnapshot: DockerSnapshot = { containers: [], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 
 function node(id: string, status: string | null): RuntimeMapNode {
   return {
@@ -19,7 +19,7 @@ function node(id: string, status: string | null): RuntimeMapNode {
 
 /** Build a runtime model and return the state of the node with the given id. */
 function runtimeStateFor(nodes: RuntimeMapNode[], id: string): string | undefined {
-  const model = buildModel(emptySnapshot, { nodes, edges: [], diagnostics: [], lastUpdated: 0 });
+  const model = buildModel(emptySnapshot, { nodes, edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: [], lastUpdated: 0 });
   return model.runtime.nodes.find((n) => n.id === id)?.state;
 }
 
