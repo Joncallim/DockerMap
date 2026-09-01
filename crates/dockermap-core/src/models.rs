@@ -784,6 +784,7 @@ pub struct RuntimeMap {
     #[schemars(length(min = 1))]
     pub model_revision: String,
     #[serde(rename = "providerStates")]
+    #[schemars(length(min = 5, max = 5))]
     pub provider_states: Vec<ProviderState>,
     /// ACTUAL source of these bytes: "docker" or "mock" (#85 A3). Stamped by
     /// the daemon route layer from the cache's runtime mode.

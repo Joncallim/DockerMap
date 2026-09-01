@@ -172,6 +172,7 @@ impl DaemonCache {
                 edges: Vec::new(),
                 diagnostics: Vec::new(),
                 last_updated,
+                provider_states: unavailable_provider_states(),
                 ..Default::default()
             },
             runtime_providers: RuntimeProviderState::Unavailable,
@@ -442,6 +443,16 @@ const STATIC_PROVIDER_SLOTS: [ProviderSlot; 5] = [
     ProviderSlot::ProjectNpm,
 ];
 
+fn unavailable_provider_states() -> Vec<ProviderState> {
+    STATIC_PROVIDER_SLOTS
+        .into_iter()
+        .map(|slot| ProviderState {
+            slot,
+            state: ProviderStateKind::Unavailable,
+        })
+        .collect()
+}
+
 /// Retained successful slots stay explicitly stale while a new attempt runs or
 /// after a failed attempt. Disabled slots are configuration/profile facts, not
 /// transient freshness states, and remain disabled through those transitions.
@@ -496,6 +507,7 @@ fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
         edges: Vec::new(),
         diagnostics: Vec::new(),
         last_updated,
+        provider_states: unavailable_provider_states(),
         ..Default::default()
     }
 }
@@ -882,6 +894,17 @@ mod tests {
 
     #[test]
     fn provider_states_are_fixed_and_timeout_and_failure_do_not_masquerade_as_fresh() {
+        let initial = DaemonCache::mock();
+        assert_eq!(
+            initial.runtime_map.provider_states.len(),
+            STATIC_PROVIDER_SLOTS.len()
+        );
+        assert!(initial
+            .runtime_map
+            .provider_states
+            .iter()
+            .all(|state| state.state == ProviderStateKind::Unavailable));
+
         let snapshot = mock_snapshot();
         let failed = runtime_map_for_snapshot(&snapshot, &RuntimeProviderState::Degraded(None));
         assert_eq!(failed.provider_states.len(), STATIC_PROVIDER_SLOTS.len());
