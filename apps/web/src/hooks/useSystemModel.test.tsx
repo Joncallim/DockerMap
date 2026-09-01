@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
 import type { Settings } from "../lib/settingsStore";
+import { answer } from "../lib/copilot";
 import { useSystemModel } from "./useSystemModel";
 
 // Settings demoMode is hoisted so a test can flip the transport mid-run and
@@ -51,6 +52,15 @@ const pending: PendingRequest[] = [];
 
 function jsonResponse(data: unknown): Response {
   return { ok: true, json: async () => data } as Response;
+}
+
+/** Normal non-demo model fixtures must attest the daemon bytes they model. */
+function dockerResponse(data: object): Response {
+  return jsonResponse({ ...data, source: "docker" });
+}
+
+function mockResponse(data: object): Response {
+  return jsonResponse({ ...data, source: "mock" });
 }
 
 function renderHook<Props, Result>(hook: (props: Props) => Result, initialProps: Props) {
@@ -118,8 +128,8 @@ describe("useSystemModel retains the last model across refresh failures", () => 
     await hook.mount();
     expect(pending).toHaveLength(2);
     const [snapshotReq, runtimeReq] = pending.splice(0);
-    snapshotReq.resolve(jsonResponse(snapV1));
-    runtimeReq.resolve(jsonResponse(runtimeV1));
+    snapshotReq.resolve(dockerResponse(snapV1));
+    runtimeReq.resolve(dockerResponse(runtimeV1));
     await flush();
     expect(hook.result.current.model?.lastUpdated).toBe(1);
     expect(hook.result.current.model?.services[0].name).toBe("web");
@@ -130,7 +140,7 @@ describe("useSystemModel retains the last model across refresh failures", () => 
     expect(pending).toHaveLength(2);
     const [snapshotReq2, runtimeReq2] = pending.splice(0);
     snapshotReq2.reject(new Error("snapshot exploded"));
-    runtimeReq2.resolve(jsonResponse(runtimeV2));
+    runtimeReq2.resolve(dockerResponse(runtimeV2));
     await flush();
 
     // The model is retained with the PRIOR data, and the error is surfaced.
@@ -142,8 +152,8 @@ describe("useSystemModel retains the last model across refresh failures", () => 
     // A later successful refresh clears the error and publishes the new model.
     await hook.rerender(2);
     const [snapshotReq3, runtimeReq3] = pending.splice(0);
-    snapshotReq3.resolve(jsonResponse(snapV2));
-    runtimeReq3.resolve(jsonResponse(runtimeV2));
+    snapshotReq3.resolve(dockerResponse(snapV2));
+    runtimeReq3.resolve(dockerResponse(runtimeV2));
     await flush();
     expect(hook.result.current.model?.lastUpdated).toBe(2);
     expect(hook.result.current.model?.services[0].name).toBe("web-v2");
@@ -169,8 +179,8 @@ describe("useSystemModel rebuilds only from a same-generation pair", () => {
     const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
     await hook.mount();
     const [s1, r1] = pending.splice(0);
-    s1.resolve(jsonResponse(snapV1));
-    r1.resolve(jsonResponse(runtimeV1));
+    s1.resolve(dockerResponse(snapV1));
+    r1.resolve(dockerResponse(runtimeV1));
     await flush();
     expect(hook.result.current.model?.lastUpdated).toBe(1);
 
@@ -179,13 +189,13 @@ describe("useSystemModel rebuilds only from a same-generation pair", () => {
     // from the mixed pair (new snapshot + old runtime map).
     await hook.rerender(1);
     const [s2, r2] = pending.splice(0);
-    s2.resolve(jsonResponse(snapV2));
+    s2.resolve(dockerResponse(snapV2));
     await flush();
     expect(hook.result.current.model?.lastUpdated).toBe(1);
     expect(hook.result.current.model?.services[0].name).toBe("web");
 
     // The runtime map settles on the same generation → atomic replacement.
-    r2.resolve(jsonResponse(runtimeV2));
+    r2.resolve(dockerResponse(runtimeV2));
     await flush();
     expect(hook.result.current.model?.lastUpdated).toBe(2);
     expect(hook.result.current.model?.services[0].name).toBe("web-v2");
@@ -196,8 +206,8 @@ describe("useSystemModel rebuilds only from a same-generation pair", () => {
     const hook = renderHook(({ tick, mode }: Props) => useSystemModel(tick, mode), { tick: 0, mode: "live" });
     await hook.mount();
     const [s1, r1] = pending.splice(0);
-    s1.resolve(jsonResponse(snapV1));
-    r1.resolve(jsonResponse(runtimeV1));
+    s1.resolve(dockerResponse(snapV1));
+    r1.resolve(dockerResponse(runtimeV1));
     await flush();
     expect(hook.result.current.model?.services[0].name).toBe("web");
     expect(hook.result.current.modelProvenance).toBe("live");
@@ -210,12 +220,12 @@ describe("useSystemModel rebuilds only from a same-generation pair", () => {
     expect(hook.result.current.modelProvenance).toBe("live");
 
     const [s2, r2] = pending.splice(0);
-    s2.resolve(jsonResponse(snapV2));
+    s2.resolve(mockResponse(snapV2));
     await flush();
     expect(hook.result.current.model?.services[0].name).toBe("web");
     expect(hook.result.current.modelProvenance).toBe("live");
 
-    r2.resolve(jsonResponse(runtimeV2));
+    r2.resolve(mockResponse(runtimeV2));
     await flush();
     expect(hook.result.current.model?.services[0].name).toBe("web-v2");
     expect(hook.result.current.modelProvenance).toBe("mock");
@@ -225,8 +235,8 @@ describe("useSystemModel rebuilds only from a same-generation pair", () => {
     const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
     await hook.mount();
     const [s1, r1] = pending.splice(0);
-    s1.resolve(jsonResponse(snapV1));
-    r1.resolve(jsonResponse(runtimeV1));
+    s1.resolve(dockerResponse(snapV1));
+    r1.resolve(dockerResponse(runtimeV1));
     await flush();
     expect(hook.result.current.model?.lastUpdated).toBe(1);
 
@@ -236,7 +246,7 @@ describe("useSystemModel rebuilds only from a same-generation pair", () => {
     await hook.rerender(1);
     const [s2, r2] = pending.splice(0);
     s2.reject(new Error("snapshot exploded"));
-    r2.resolve(jsonResponse(runtimeV2));
+    r2.resolve(dockerResponse(runtimeV2));
     await flush();
     expect(hook.result.current.model?.lastUpdated).toBe(1);
     expect(hook.result.current.model?.services[0].name).toBe("web");
@@ -245,12 +255,41 @@ describe("useSystemModel rebuilds only from a same-generation pair", () => {
     // Next refresh succeeds on both sides → the pair realigns atomically.
     await hook.rerender(2);
     const [s3, r3] = pending.splice(0);
-    s3.resolve(jsonResponse(snapV2));
-    r3.resolve(jsonResponse(runtimeV2));
+    s3.resolve(dockerResponse(snapV2));
+    r3.resolve(dockerResponse(runtimeV2));
     await flush();
     expect(hook.result.current.model?.lastUpdated).toBe(2);
     expect(hook.result.current.model?.services[0].name).toBe("web-v2");
     expect(hook.result.current.error).toBeNull();
+  });
+
+  it("retains the prior attested pair while a refresh races into unresolved provenance", async () => {
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
+    await hook.mount();
+    const [s1, r1] = pending.splice(0);
+    s1.resolve(jsonResponse({ ...snapV1, source: "docker" }));
+    r1.resolve(jsonResponse({ ...runtimeV1, source: "docker" }));
+    await flush();
+    expect(hook.result.current.model?.lastUpdated).toBe(1);
+    expect(hook.result.current.modelProvenance).toBe("live");
+
+    // The snapshot settles first without a stamp.  It must not combine with
+    // the older attested runtime response or relabel that newer snapshot as
+    // live while the pair is in flight.
+    await hook.rerender(1);
+    const [s2, r2] = pending.splice(0);
+    s2.resolve(jsonResponse(snapV2));
+    await flush();
+    expect(hook.result.current.model?.lastUpdated).toBe(1);
+    expect(hook.result.current.modelProvenance).toBe("live");
+
+    // Once the matching un-stamped peer lands, the new bytes publish only as
+    // unresolved and Copilot refuses to make a host claim from them.
+    r2.resolve(jsonResponse(runtimeV2));
+    await flush();
+    expect(hook.result.current.model?.lastUpdated).toBe(2);
+    expect(hook.result.current.modelProvenance).toBeNull();
+    expect(answer(hook.result.current.model!, "show unhealthy services", "live", hook.result.current.modelProvenance).authorityUnresolved).toBe(true);
   });
 
   it("stamps route-local mock bytes as mock even when live was requested", async () => {
@@ -276,6 +315,71 @@ describe("useSystemModel rebuilds only from a same-generation pair", () => {
     s1.resolve(jsonResponse({ ...snapV1, source: "docker" }));
     r1.resolve(jsonResponse({ ...runtimeV1, source: "docker" }));
     await flush();
+    expect(hook.result.current.modelProvenance).toBe("live");
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["invalid", "docker-ish"]
+  ] as const)("fails closed when a live model response has a %s source stamp", async (_kind, source) => {
+    // A requested live mode is only transport intent.  A response without an
+    // exact daemon source stamp must remain renderable but unresolved, so it
+    // cannot become a live-labelled Copilot claim (#165).
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
+    await hook.mount();
+    const [snapshotRequest, runtimeRequest] = pending.splice(0);
+    snapshotRequest.resolve(jsonResponse({ ...snapV1, ...(source === undefined ? {} : { source }) }));
+    runtimeRequest.resolve(jsonResponse({ ...runtimeV1, ...(source === undefined ? {} : { source }) }));
+    await flush();
+
+    expect(hook.result.current.model).not.toBeNull();
+    expect(hook.result.current.modelProvenance).toBeNull();
+    const response = answer(hook.result.current.model!, "show unhealthy services", "live", hook.result.current.modelProvenance);
+    expect(response.authorityUnresolved).toBe(true);
+    expect(response.evidence).toBe("unavailable");
+  });
+
+  it("rejects a prototype-provided docker stamp", async () => {
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
+    await hook.mount();
+    const [snapshotRequest, runtimeRequest] = pending.splice(0);
+    const inheritedSnapshot = Object.assign(Object.create({ source: "docker" }), snapV1);
+    const inheritedRuntime = Object.assign(Object.create({ source: "docker" }), runtimeV1);
+    snapshotRequest.resolve(jsonResponse(inheritedSnapshot));
+    runtimeRequest.resolve(jsonResponse(inheritedRuntime));
+    await flush();
+
+    expect(hook.result.current.modelProvenance).toBeNull();
+    expect(answer(hook.result.current.model!, "show unhealthy services", "live", hook.result.current.modelProvenance).authorityUnresolved).toBe(true);
+  });
+
+  it("keeps Demo Mode deterministic when its fixture does not carry a daemon source stamp", async () => {
+    settings.demoMode = true;
+    const hook = renderHook((tick: number) => useSystemModel(tick, "demo"), 0 as number);
+    await hook.mount();
+    const [snapshotRequest, runtimeRequest] = pending.splice(0);
+    snapshotRequest.resolve(jsonResponse(snapV1));
+    runtimeRequest.resolve(jsonResponse(runtimeV1));
+    await flush();
+
+    expect(hook.result.current.model).not.toBeNull();
+    expect(hook.result.current.modelProvenance).toBe("demo");
+  });
+
+  it("does not relabel an in-flight live response as demo when settings change", async () => {
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live"), 0 as number);
+    await hook.mount();
+    const [snapshotRequest, runtimeRequest] = pending.splice(0);
+
+    // Model the setting changing after the request began but before its
+    // callbacks settle.  The request's captured source context remains live;
+    // response bytes must never acquire a Demo label merely because the UI has
+    // started transitioning.
+    settings.demoMode = true;
+    snapshotRequest.resolve(dockerResponse(snapV1));
+    runtimeRequest.resolve(dockerResponse(runtimeV1));
+    await flush();
+
     expect(hook.result.current.modelProvenance).toBe("live");
   });
 });

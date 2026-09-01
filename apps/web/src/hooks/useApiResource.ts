@@ -50,14 +50,18 @@ export function useApiResource<T>(
   const attemptRef = useRef(0);
 
   useEffect(() => {
-    const provenance = requestedProvenance === undefined
-      ? (settings.demoMode ? "demo" : "live")
-      : requestedProvenance;
-
-    // Before heartbeat establishes live vs mock, fetch may proceed with a null
-    // source stamp. That preserves the existing API error/first-load behavior,
-    // while every evidence-gated sample surface remains fail-closed. Once mode
-    // resolves, the dependency change starts an accurately stamped refetch.
+    const isModelResource = requestedProvenance !== undefined;
+    // Capture at request start.  The source semantics are properties of the
+    // bytes requested, not of a later settings render while a response is in
+    // flight; this also makes the demo/live transition invariant explicit.
+    const demoModeAtRequest = settings.demoMode;
+    const fallbackProvenance = demoModeAtRequest ? "demo" : "live";
+    // `requestedProvenance` records the authority the caller was trying to
+    // fetch under, not authority for the bytes returned.  Outside Demo Mode a
+    // model response MUST attest its own source.  In particular, do not turn
+    // an omitted or malformed `source` into the requested live authority:
+    // malformed/stale bytes are usable for rendering, but their provenance is
+    // unresolved and Copilot must refuse host claims from them (#165).
 
     // Abort on unmount/path change: a slow response can never clobber newer
     // state, and the underlying fetch is actually cancelled instead of just
@@ -78,9 +82,26 @@ export function useApiResource<T>(
           // ("docker" from the daemon route layer, "mock" from its own
           // route-local fallback). A route-local fallback can therefore never
           // be mislabelled "live" because the client REQUESTED live (#85 A3).
-          const stamped = (data as { source?: "docker" | "mock" } | null)?.source;
-          const actualProvenance: ModelProvenance | null =
-            stamped === "docker" ? "live" : stamped === "mock" ? "mock" : provenance;
+          // Do not accept a prototype-provided source: this is untrusted JSON
+          // shaped data at the authority boundary, and an inherited value must
+          // not manufacture Docker authority.
+          const stamped = typeof data === "object" && data !== null && Object.hasOwn(data, "source")
+            ? (data as { source?: unknown }).source
+            : undefined;
+          // Demo Mode is a local deterministic transport short-circuit, so
+          // its bytes are sample data regardless of any field embedded in a
+          // fixture.  Every non-demo response instead needs an exact, own
+          // `docker` or `mock` stamp.  There is intentionally no fallback to
+          // requestedProvenance here: it is a request intent, not evidence.
+          const actualProvenance: ModelProvenance | null = demoModeAtRequest
+            ? "demo"
+            : stamped === "docker" ? "live"
+              : stamped === "mock" ? "mock"
+                // Only snapshot/runtime pass requestedProvenance.  Preserve
+                // the legacy non-model resource state for callers such as
+                // auth, logs and diagnostics; their provenance does not
+                // authorize the combined model.
+                : isModelResource ? null : fallbackProvenance;
           setState({ data, error: null, loading: false, generation: attempt, provenance: actualProvenance });
         }
       })
