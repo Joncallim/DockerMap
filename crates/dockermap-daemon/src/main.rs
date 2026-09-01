@@ -15,13 +15,12 @@ mod pid_namespace;
 mod process_runner;
 mod providers;
 mod publication;
+mod runtime_collection;
 use auth::require_daemon_bearer_token;
 #[cfg(test)]
 use bollard::Docker;
 use compose_api::{get_compose_edit_plan, get_compose_graph, get_compose_scan, run_cli};
-use config::{
-    project_root, read_bind_host_env, read_daemon_token_env, read_port_env, DaemonAuthToken,
-};
+use config::{read_bind_host_env, read_daemon_token_env, read_port_env, DaemonAuthToken};
 #[cfg(test)]
 use docker_collector::{
     log_entry_id, log_tail_count, log_until_seconds, parse_depends_on_label,
@@ -29,24 +28,23 @@ use docker_collector::{
 };
 use docker_collector::{publish_log_response, DockerCollector};
 use dockermap_core::{
-    derive_graph, derive_images, derive_runtime_map, mock_log_entries, mock_snapshot,
-    service_entity_kind_name, ContainerRecord, DiagnosticSeverity, DockerSnapshot, GraphResponse,
-    HealthResponse, HealthState, LogCursor, LogsResponse, RuntimeMap, RuntimeMapDiagnostic,
-    RuntimeMapEdge, RuntimeMapNode, RuntimeMode, RuntimeNodeKind, RuntimeNodeLayer,
-    RuntimeProviderKind, ServiceEntityKind, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+    derive_graph, derive_images, mock_log_entries, mock_snapshot, ContainerRecord, DockerSnapshot,
+    GraphResponse, HealthResponse, HealthState, LogCursor, LogsResponse, RuntimeMap, RuntimeMode,
+    DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 #[cfg(test)]
 use dockermap_core::{
-    page_log_entries, ComposeFileOrigin, ComposeMountKind, ContainerMount, LogEntry, NetworkRecord,
-    RuntimeOwnership, RuntimePackageEntity, RuntimeRelationshipKind, RuntimeServiceEntity,
-    RuntimeServiceStatus, VolumeRecord,
+    derive_runtime_map, page_log_entries, ComposeFileOrigin, ComposeMountKind, ContainerMount,
+    DiagnosticSeverity, LogEntry, NetworkRecord, RuntimeMapDiagnostic, RuntimeMapEdge,
+    RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeOwnership, RuntimePackageEntity,
+    RuntimeProviderKind, RuntimeRelationshipKind, RuntimeServiceEntity, RuntimeServiceStatus,
+    VolumeRecord,
 };
 #[cfg(test)]
 use pid_namespace::{
     cgroup_implies_container, pid_namespace_scope_from_evidence, restricted_pid_namespace_evidence,
-    PidNamespaceMode,
+    PidNamespaceMode, PidNamespaceScope,
 };
-use pid_namespace::{daemon_pid_namespace_scope, PidNamespaceScope};
 #[cfg(test)]
 use process_runner::read_bounded;
 #[cfg(test)]
@@ -58,31 +56,19 @@ use providers::processes::{
     python_entry, python_nodes_from_ps_output, python_nodes_from_ps_output_with_container_filter,
     real_comm, MAX_NATIVE_PROCESSES, MAX_PYTHON_PROCESSES,
 };
-use providers::{
-    cron::collect_scheduled_jobs,
-    listeners::collect_network_listeners,
-    network_infrastructure::collect_network_infrastructure,
-    npm::collect_npm_projects,
-    pm2::collect_pm2_apps,
-    processes::{collect_native_processes_with_scope, collect_python_processes},
-    systemd::collect_systemd_services,
-    tmux::collect_tmux_sessions,
-};
 use publication::*;
+use runtime_collection::collect_runtime_map_bounded;
 use serde::Deserialize;
 #[cfg(test)]
-use std::collections::HashMap;
-#[cfg(test)]
 use std::path::PathBuf;
+#[cfg(test)]
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs,
+};
+use std::{
     net::SocketAddr,
-    path::Path as StdPath,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
 use tokio::{net::TcpListener, sync::RwLock, time::sleep};
@@ -312,7 +298,11 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
         let mut cache = DaemonCache::mock();
         cache.health.message = Some("Mock mode forced by DOCKERMAP_FORCE_MOCK".into());
         redact_health_response(&mut cache.health);
-        cache.runtime_map = collect_runtime_map_bounded(state, &cache.snapshot).await;
+        cache.runtime_map = collect_runtime_map_bounded(
+            state.runtime_collection_in_flight.clone(),
+            &cache.snapshot,
+        )
+        .await;
         return cache;
     }
 
@@ -353,7 +343,9 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     // and must never run on a Tokio worker thread, so it is computed once per
     // refresh cycle — same cadence as the snapshot — and served from the
     // cache by `get_runtime_map`.
-    cache.runtime_map = collect_runtime_map_bounded(state, &cache.snapshot).await;
+    cache.runtime_map =
+        collect_runtime_map_bounded(state.runtime_collection_in_flight.clone(), &cache.snapshot)
+            .await;
     // Docker failure details are provider-controlled text. Sanitize before the
     // cache becomes observable through health, API proxy, or SSE routes.
     redact_health_response(&mut cache.health);
@@ -370,221 +362,6 @@ fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
     }
 }
 
-fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
-    let mut diagnostics = Vec::new();
-    let project_root = project_root().ok();
-    let pid_namespace = daemon_pid_namespace_scope();
-
-    if let Some(message) = pid_namespace.diagnostic() {
-        push_provider_diagnostic(
-            &mut diagnostics,
-            RuntimeProviderKind::Process,
-            DiagnosticSeverity::Info,
-            message.into(),
-        );
-    }
-
-    if pid_namespace.is_restricted() {
-        push_provider_diagnostic(
-            &mut diagnostics,
-            RuntimeProviderKind::Host,
-            DiagnosticSeverity::Info,
-            "Host node omitted because the daemon runs in a restricted PID namespace".into(),
-        );
-    } else {
-        collect_host_node(project_root.as_deref(), &mut nodes);
-    }
-    collect_network_infrastructure(
-        pid_namespace,
-        snapshot,
-        &mut nodes,
-        &mut edges,
-        &mut diagnostics,
-    );
-    collect_host_scoped_runtime_providers(pid_namespace, &mut nodes, &mut edges, &mut diagnostics);
-    collect_python_processes(pid_namespace.is_restricted(), &mut nodes, &mut diagnostics);
-    collect_native_processes_with_scope(
-        pid_namespace.is_restricted(),
-        &mut nodes,
-        &mut diagnostics,
-    );
-    if let Some(root) = project_root.as_deref() {
-        // This root is an explicit project mount/configuration target rather
-        // than namespace-global discovery, so npm remains available even to a
-        // containerized daemon (and is documented as mounted project data).
-        collect_npm_projects(
-            root,
-            pid_namespace,
-            &mut nodes,
-            &mut edges,
-            &mut diagnostics,
-        );
-    } else {
-        push_provider_diagnostic(
-            &mut diagnostics,
-            RuntimeProviderKind::Npm,
-            DiagnosticSeverity::Info,
-            "npm discovery skipped: project root unavailable".into(),
-        );
-    }
-
-    let mut runtime_map = derive_runtime_map(snapshot, nodes, edges, diagnostics);
-    redact_runtime_map(&mut runtime_map);
-    runtime_map
-}
-
-/// Overall budget for one full runtime-map collection (all provider
-/// subprocesses, the npm filesystem walk, and /proc reads) when it runs off
-/// the async runtime.
-const RUNTIME_MAP_COLLECTION_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Collect the runtime map off the async runtime: the provider commands are
-/// blocking `std::process` calls, so they must never run on a Tokio worker
-/// thread, and the whole collection is bounded so a pathological provider (or
-/// npm walk) degrades the map instead of stalling refresh.
-struct RuntimeCollectionGuard(Arc<AtomicBool>);
-
-impl RuntimeCollectionGuard {
-    fn acquire(in_flight: Arc<AtomicBool>) -> Option<Self> {
-        in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-            .then_some(Self(in_flight))
-    }
-}
-
-impl Drop for RuntimeCollectionGuard {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
-async fn collect_runtime_map_bounded(state: &AppState, snapshot: &DockerSnapshot) -> RuntimeMap {
-    let snapshot = snapshot.clone();
-    let Some(collection_guard) =
-        RuntimeCollectionGuard::acquire(state.runtime_collection_in_flight.clone())
-    else {
-        eprintln!("runtime map collection skipped: previous collection is still in flight");
-        return fallback_runtime_map_with_message(
-            &snapshot,
-            "Runtime map collection is still in progress; host provider nodes omitted",
-        );
-    };
-    let work = {
-        let snapshot = snapshot.clone();
-        tokio::task::spawn_blocking(move || {
-            let _collection_guard = collection_guard;
-            collect_runtime_map(&snapshot)
-        })
-    };
-    match tokio::time::timeout(RUNTIME_MAP_COLLECTION_TIMEOUT, work).await {
-        Ok(Ok(runtime_map)) => runtime_map,
-        Ok(Err(join_error)) => {
-            eprintln!("runtime map collection task failed: {join_error}");
-            fallback_runtime_map(&snapshot)
-        }
-        Err(_elapsed) => {
-            eprintln!("runtime map collection timed out after {RUNTIME_MAP_COLLECTION_TIMEOUT:?}");
-            fallback_runtime_map(&snapshot)
-        }
-    }
-}
-
-/// Minimal runtime map served when provider collection fails or times out:
-/// the Docker-derived nodes are still useful, and a warning diagnostic
-/// explains why host providers are missing.
-fn fallback_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
-    fallback_runtime_map_with_message(
-        snapshot,
-        "Runtime map collection failed or timed out; host provider nodes omitted",
-    )
-}
-
-fn fallback_runtime_map_with_message(snapshot: &DockerSnapshot, message: &str) -> RuntimeMap {
-    let mut runtime_map = derive_runtime_map(
-        snapshot,
-        Vec::new(),
-        Vec::new(),
-        vec![RuntimeMapDiagnostic {
-            provider: RuntimeProviderKind::Other,
-            severity: DiagnosticSeverity::Warning,
-            message: message.into(),
-        }],
-    );
-    redact_runtime_map(&mut runtime_map);
-    runtime_map
-}
-
-fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapNode>) {
-    let hostname = local_hostname();
-    let mut metadata = BTreeMap::new();
-    metadata.insert("hostname".into(), hostname.clone());
-    metadata.insert(
-        "serviceEntityKind".into(),
-        service_entity_kind_name(&ServiceEntityKind::Host).into(),
-    );
-    if let Some(root) = project_root {
-        metadata.insert("projectRoot".into(), root.display().to_string());
-    }
-    nodes.push(RuntimeMapNode {
-        id: "host_local".into(),
-        provider: RuntimeProviderKind::Host,
-        kind: RuntimeNodeKind::Host,
-        label: hostname,
-        status: Some("online".into()),
-        layer: Some(RuntimeNodeLayer::Host),
-        metadata,
-        service: None,
-        package: None,
-    });
-}
-
-/// `/proc/net`, init-service managers, schedulers, PM2, and tmux all expose
-/// only the daemon container's view in a restricted PID namespace. Keep them
-/// out of a host topology rather than relabeling container-local evidence.
-fn collect_host_scoped_runtime_providers(
-    pid_namespace: PidNamespaceScope,
-    nodes: &mut Vec<RuntimeMapNode>,
-    edges: &mut Vec<RuntimeMapEdge>,
-    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
-) {
-    if pid_namespace.is_restricted() {
-        for (provider, message) in [
-            (
-                RuntimeProviderKind::Network,
-                "Network listener discovery omitted because the daemon runs in a restricted PID namespace",
-            ),
-            (
-                RuntimeProviderKind::Systemd,
-                "systemd discovery omitted because the daemon runs in a restricted PID namespace",
-            ),
-            (
-                RuntimeProviderKind::ScheduledJob,
-                "Scheduled job discovery omitted because the daemon runs in a restricted PID namespace",
-            ),
-            (
-                RuntimeProviderKind::Pm2,
-                "PM2 discovery omitted because the daemon runs in a restricted PID namespace",
-            ),
-            (
-                RuntimeProviderKind::Tmux,
-                "tmux discovery omitted because the daemon runs in a restricted PID namespace",
-            ),
-        ] {
-            push_provider_diagnostic(diagnostics, provider, DiagnosticSeverity::Info, message.into());
-        }
-        return;
-    }
-
-    collect_network_listeners(nodes, diagnostics);
-    collect_systemd_services(nodes, edges, diagnostics);
-    collect_scheduled_jobs(nodes, diagnostics);
-    collect_pm2_apps(nodes, diagnostics);
-    collect_tmux_sessions(nodes, diagnostics);
-}
-
 pub(crate) fn looks_like_ai_agent(value: &str) -> bool {
     [
         "openai",
@@ -598,19 +375,6 @@ pub(crate) fn looks_like_ai_agent(value: &str) -> bool {
     ]
     .into_iter()
     .any(|needle| value.contains(needle))
-}
-
-fn local_hostname() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            fs::read_to_string("/etc/hostname")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "localhost".into())
-        })
 }
 
 pub(crate) fn non_empty_string(value: &str) -> Option<String> {
@@ -2988,16 +2752,9 @@ mod tests {
     }
 
     #[test]
-    fn restricted_namespace_omits_host_scoped_collectors_and_python() {
+    fn restricted_namespace_omits_python_collection() {
         let mut nodes = Vec::new();
-        let mut edges = Vec::new();
         let mut diagnostics = Vec::new();
-        collect_host_scoped_runtime_providers(
-            PidNamespaceScope::Restricted,
-            &mut nodes,
-            &mut edges,
-            &mut diagnostics,
-        );
         let mut python_command = Command::new("sh");
         python_command
             .arg("-c")
@@ -3010,19 +2767,9 @@ mod tests {
         );
 
         assert!(nodes.is_empty());
-        assert!(edges.is_empty());
-        for provider in [
-            RuntimeProviderKind::Network,
-            RuntimeProviderKind::Systemd,
-            RuntimeProviderKind::ScheduledJob,
-            RuntimeProviderKind::Pm2,
-            RuntimeProviderKind::Tmux,
-            RuntimeProviderKind::Python,
-        ] {
-            assert!(diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.provider == provider));
-        }
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.provider == RuntimeProviderKind::Python));
     }
 
     #[test]
@@ -3050,22 +2797,6 @@ mod tests {
         assert!(!api_message.contains(sentinel));
         assert!(!captured_stderr.contains(sentinel));
         assert!(captured_stderr.contains(REDACTED_VALUE));
-    }
-
-    #[test]
-    fn runtime_collection_guard_prevents_two_rapid_refreshes() {
-        let in_flight = Arc::new(AtomicBool::new(false));
-        let first = RuntimeCollectionGuard::acquire(in_flight.clone())
-            .expect("first refresh starts one collection");
-        assert!(
-            RuntimeCollectionGuard::acquire(in_flight.clone()).is_none(),
-            "a second refresh must skip while the first blocking collection remains in flight"
-        );
-        drop(first);
-        assert!(
-            RuntimeCollectionGuard::acquire(in_flight).is_some(),
-            "the next refresh may run after the original collection finishes"
-        );
     }
 
     #[test]
