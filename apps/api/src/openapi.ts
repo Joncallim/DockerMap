@@ -1,4 +1,5 @@
 import { ROUTE_MANIFEST, type RouteId, type RouteManifestEntry } from "./routes.js";
+import { PRODUCT_VERSION } from "./generated/productVersion.js";
 
 type OpenApiParameter = Readonly<{
   name: string;
@@ -162,7 +163,7 @@ export function buildOpenApiDocument() {
     openapi: "3.0.3",
     info: {
       title: "DockerMap Read-Only API",
-      version: "0.1.0",
+      version: PRODUCT_VERSION,
       description:
         "Read-only inventory, topology, runtime, compose, logs, and diagnostics endpoints. All /api/v1/* routes alias these paths. Protected routes require the deployment's configured authentication boundary."
     },

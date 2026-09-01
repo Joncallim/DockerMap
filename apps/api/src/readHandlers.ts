@@ -20,6 +20,7 @@ import type {
 import { HttpError } from "./daemonClient.js";
 import { OPENAPI_DOCUMENT } from "./openapi.js";
 import { publishApiPayload } from "./publication.js";
+import { PRODUCT_VERSION } from "./generated/productVersion.js";
 
 export type FetchDaemon = <T>(path: string) => Promise<T>;
 export type SendError = (res: express.Response, error: unknown) => void;
@@ -42,7 +43,7 @@ const maxLogPageSize = 500;
 export const VERSION_DESCRIPTOR = {
   service: "dockermap",
   apiVersion: "v1",
-  version: "0.1.0"
+  version: PRODUCT_VERSION
 } as const;
 
 export { OPENAPI_DOCUMENT } from "./openapi.js";
@@ -177,7 +178,7 @@ export function createReadHandlers({ fetchDaemon, sendError, port }: ReadHandler
         const offline = snapshot.containers.filter((container) => containerStatusKind(container.status) === "offline").length;
         const attention = snapshot.containers.filter((container) => containerStatusKind(container.status) === "attention").length;
         const healthy = containers - offline - attention;
-        res.json({ service: "dockermap", status: !health.dockerReachable ? health.mode === "mock" ? "degraded" : "offline" : attention + offline > 0 ? "degraded" : coherent ? "ok" : "degraded", mode: coherent ? health.mode : "mixed", sourceCoherent: coherent, snapshotSource, dockerReachable: health.dockerReachable, containers, containersRunning, networks: snapshot.networks.length, volumes: snapshot.volumes.length, images: snapshot.images.length, healthy, attention, offline, version: "0.1.0" } satisfies StatusResponse);
+        res.json({ service: "dockermap", status: !health.dockerReachable ? health.mode === "mock" ? "degraded" : "offline" : attention + offline > 0 ? "degraded" : coherent ? "ok" : "degraded", mode: coherent ? health.mode : "mixed", sourceCoherent: coherent, snapshotSource, dockerReachable: health.dockerReachable, containers, containersRunning, networks: snapshot.networks.length, volumes: snapshot.volumes.length, images: snapshot.images.length, healthy, attention, offline, version: PRODUCT_VERSION } satisfies StatusResponse);
       } catch (error) { sendError(res, error); }
     },
     openapi: (_req, res) => { res.json(OPENAPI_DOCUMENT); },

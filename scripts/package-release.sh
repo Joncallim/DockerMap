@@ -5,14 +5,35 @@ set -euo pipefail
 # This intentionally does not publish an image or alter a registry: publication
 # remains a separately authenticated release decision.
 
-version="${1:?usage: scripts/package-release.sh <version>}"
-output_dir="${DOCKERMAP_RELEASE_DIR:-dist/release}"
-stage_dir="$output_dir/dockermap-$version-linux-x86_64"
+version="${1:?usage: scripts/package-release.sh <version> [--check]}"
+check_only="${2:-}"
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]]; then
+if [[ "$version" != v* ]]; then
   echo "release version must be a v-prefixed semantic version" >&2
   exit 2
 fi
+
+if [[ -n "$check_only" && "$check_only" != "--check" ]]; then
+  echo "usage: scripts/package-release.sh <version> [--check]" >&2
+  exit 2
+fi
+
+# Check every product-version mirror before touching the release directory. The
+# root checker owns SemVer grammar, including valid `+build` metadata.
+(cd "$root_dir" && node scripts/check-version-authority.mjs >/dev/null)
+IFS= read -r product_version < "$root_dir/VERSION"
+if [[ "$version" != "v$product_version" ]]; then
+  echo "release tag $version must exactly match v$product_version from VERSION" >&2
+  exit 2
+fi
+
+if [[ "$check_only" == "--check" ]]; then
+  exit 0
+fi
+
+output_dir="${DOCKERMAP_RELEASE_DIR:-dist/release}"
+stage_dir="$output_dir/dockermap-$version-linux-x86_64"
 
 rm -rf "$stage_dir"
 mkdir -p "$stage_dir/bin" "$stage_dir/web" "$stage_dir/deploy"

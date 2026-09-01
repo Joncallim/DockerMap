@@ -29,6 +29,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Validate product version and release tag
+        run: scripts/package-release.sh "${GITHUB_REF_NAME}" --check
+
       - name: Build deploy artifacts
         run: npm run build:deploy
 

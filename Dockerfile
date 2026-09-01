@@ -6,6 +6,7 @@ WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY crates ./crates
+COPY VERSION ./VERSION
 COPY rust-toolchain.toml ./
 RUN cargo build --release --manifest-path crates/Cargo.toml \
     -p dockermap-daemon -p dockermap-docker-gateway
@@ -18,6 +19,11 @@ COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 RUN npm ci
+COPY VERSION ./VERSION
+COPY scripts/check-version-authority.mjs scripts/check-version-authority.mjs
+# The version checker validates every Rust package mirror too. These sources
+# remain builder-only and never reach the runtime image.
+COPY crates ./crates
 COPY tsconfig.base.json ./
 COPY apps ./apps
 COPY packages ./packages
@@ -27,7 +33,7 @@ COPY packages ./packages
 # localhost:4000, which never exists inside this container — an empty string
 # is not nullish, so apiUrl() yields same-origin paths the proxy can serve.
 ENV VITE_API_BASE_URL=""
-RUN npm run build
+RUN npm run check:version && npm run build
 
 # ---- Runtime image ----------------------------------------------------------
 FROM node:22-bookworm-slim AS runtime
