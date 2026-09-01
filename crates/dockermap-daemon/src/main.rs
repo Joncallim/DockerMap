@@ -73,7 +73,9 @@ use std::collections::HashMap;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Read,
     net::SocketAddr,
+    os::unix::fs::OpenOptionsExt,
     path::{Component, Path as StdPath, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -853,10 +855,25 @@ fn summarize_npm_project(
     lockfiles: &[String],
 ) -> Result<Option<NpmProjectSummary>, String> {
     let package_json_path = directory.join("package.json");
-    let manifest = if package_json_path.is_file() {
-        Some(read_package_manifest(&package_json_path)?)
-    } else {
-        None
+    // `Path::is_file` follows links. Do not allow a manifest discovered under
+    // the bounded project root to redirect this collector to arbitrary host
+    // files; a replacement link is rejected again by O_NOFOLLOW at open.
+    let manifest = match fs::symlink_metadata(&package_json_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!(
+                "cannot inspect `{}`: package manifest must not be a symlink",
+                package_json_path.display()
+            ));
+        }
+        Ok(metadata) if metadata.is_file() => Some(read_package_manifest(&package_json_path)?),
+        Ok(_) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect `{}`: {error}",
+                package_json_path.display()
+            ));
+        }
     };
 
     if manifest.is_none() && lockfiles.is_empty() {
@@ -993,8 +1010,37 @@ fn classify_package_frameworks(manifest: &PackageManifestDocument) -> Vec<String
 }
 
 fn read_package_manifest(path: &StdPath) -> Result<PackageManifestDocument, String> {
-    let metadata = fs::metadata(path)
+    // Reject a link before open, then use O_NOFOLLOW so a link substituted
+    // between this check and open fails closed. Metadata comes from the opened
+    // handle so a replacement cannot widen the size check.
+    let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("cannot inspect `{}`: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "cannot inspect `{}`: package manifest must not be a symlink",
+            path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!(
+            "cannot inspect `{}`: not a regular file",
+            path.display()
+        ));
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect `{}`: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "cannot inspect `{}`: not a regular file",
+            path.display()
+        ));
+    }
     if metadata.len() > MAX_PACKAGE_JSON_BYTES {
         return Err(format!(
             "`{}` exceeds {} bytes",
@@ -1002,8 +1048,18 @@ fn read_package_manifest(path: &StdPath) -> Result<PackageManifestDocument, Stri
             MAX_PACKAGE_JSON_BYTES
         ));
     }
-    let content = fs::read_to_string(path)
+    let mut content = String::new();
+    let mut reader = file.take(MAX_PACKAGE_JSON_BYTES.saturating_add(1));
+    reader
+        .read_to_string(&mut content)
         .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
+    if content.len() > MAX_PACKAGE_JSON_BYTES as usize {
+        return Err(format!(
+            "`{}` exceeds {} bytes",
+            path.display(),
+            MAX_PACKAGE_JSON_BYTES
+        ));
+    }
     serde_json::from_str(&content)
         .map_err(|error| format!("invalid JSON in `{}`: {error}", path.display()))
 }
@@ -4269,6 +4325,55 @@ mod tests {
             Some(package.version.as_str()),
             "package entity version matches the node metadata"
         );
+    }
+
+    #[test]
+    fn npm_discovery_reads_regular_manifests_under_the_configured_root() {
+        let project_root = tempfile::tempdir().expect("temporary npm project root");
+        let application = project_root.path().join("application");
+        fs::create_dir(&application).expect("application directory");
+        fs::write(
+            application.join("package.json"),
+            r#"{"name":"ordinary-in-root-app","dependencies":{"hono":"^4"}}"#,
+        )
+        .expect("ordinary package manifest");
+        let mut diagnostics = Vec::new();
+
+        let projects = discover_npm_projects(project_root.path(), &mut diagnostics);
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            projects[0].package_name.as_deref(),
+            Some("ordinary-in-root-app")
+        );
+        assert!(diagnostics.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_discovery_rejects_manifests_symlinked_outside_the_configured_root() {
+        let project_root = tempfile::tempdir().expect("temporary npm project root");
+        let outside_root = tempfile::tempdir().expect("temporary outside root");
+        let application = project_root.path().join("application");
+        fs::create_dir(&application).expect("application directory");
+        fs::write(application.join("package-lock.json"), "{}")
+            .expect("lockfile keeps this directory eligible for discovery");
+        let outside_manifest = outside_root.path().join("package.json");
+        fs::write(&outside_manifest, r#"{"name":"must-not-be-read"}"#).expect("outside manifest");
+        std::os::unix::fs::symlink(&outside_manifest, application.join("package.json"))
+            .expect("manifest symlink");
+        let mut diagnostics = Vec::new();
+
+        let projects = discover_npm_projects(project_root.path(), &mut diagnostics);
+
+        assert!(projects.is_empty(), "symlinked manifests fail closed");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::Npm
+                && diagnostic.severity == DiagnosticSeverity::Warning
+                && diagnostic
+                    .message
+                    .contains("package manifest must not be a symlink")
+        }));
     }
 
     #[test]
