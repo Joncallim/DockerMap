@@ -39,9 +39,9 @@ Within the daemon, dependencies flow inward from the entrypoint to focused
 boundaries, then to `dockermap-core` and fixed system/Docker interfaces:
 
 ```text
-main.rs (bootstrap, cache refresh, cached Docker reads)
+main.rs (bootstrap and CLI dispatch)
   -> auth / config / docker_config / pid_namespace
-  -> daemon_api / docker_collector / runtime_collection / compose_api
+  -> cache_refresh / daemon_api / docker_collector / runtime_collection / compose_api
        -> providers/* / process_runner
        -> publication
        -> dockermap-core
@@ -52,7 +52,10 @@ handlers call it before data becomes a public response, but it does not call
 providers, routes, or Docker. `runtime_collection`
 coordinates provider order and bounded execution; individual provider modules
 own their fixed commands, parsers, and provider-specific bounds. `main.rs`
-owns daemon cache lifecycle, Docker-collector reuse, and server bootstrap.
+owns server bootstrap and CLI dispatch. `cache_refresh` owns daemon cache
+lifecycle, filtered Docker-collector reuse, mock fallback, and periodic
+snapshot/runtime refresh; its gateway client is invalidated after a Docker
+interaction failure without attempting a direct-socket alternative.
 `daemon_api` owns Axum router construction, cached read publication routes,
 and bounded log-query parsing, while delegating Compose request handling to
 `compose_api`. This is the current module map, not a claim that the entrypoint
@@ -100,10 +103,11 @@ behavior. In particular, preserve:
 At the original baseline, `crates/dockermap-daemon/src/main.rs` contained
 bootstrap, daemon auth/routes/cache, Docker collection, Compose handling,
 provider execution/parsers, publication, CLI, and tests. Through merged PR
-#139, Docker collection, Compose request handling, runtime orchestration,
-publication, daemon read HTTP handling, and every then-existing host provider
-have moved to named daemon modules. The entrypoint retains the
-authority-sensitive cache lifecycle described above.
+#142, Docker collection, Compose request handling, runtime orchestration,
+publication, daemon read HTTP handling, cache refresh, and every then-existing
+host provider have moved to named daemon modules. The entrypoint retains
+bootstrap, CLI dispatch, and tests; cache refresh remains an
+authority-sensitive boundary described above.
 
 `crates/dockermap-core/src/lib.rs` re-exports models, Compose operations,
 snapshot/runtime derivations, graphs, logs, and fixtures from focused modules.
@@ -145,6 +149,8 @@ modules.
 | Daemon cached read HTTP boundary | `crates/dockermap-daemon/src/daemon_api.rs` | daemon route, bearer, bounded log-query, source-stamp, and sanitized-404 regressions |
 | Browser API daemon-backed read handlers | `apps/api/src/readHandlers.ts` | focused query/status tests plus API route-manifest coverage |
 | Core Compose operations | `crates/dockermap-core/src/compose.rs` | core Compose fixture and dry-run tests plus daemon Compose coverage |
+| Daemon cache refresh and gateway-client lifecycle | `crates/dockermap-daemon/src/cache_refresh.rs` | daemon cache-refresh, mock-fallback, gateway-invalidation, and runtime-refresh regressions |
+| Core deterministic mock fixtures | `crates/dockermap-core/src/fixtures.rs` | core sample snapshot/log shape, stable mock-log cursor, and crate-root re-export tests |
 
 The PID namespace slice also corrected a discovered security defect rather
 than silently preserving it: `auto` and invalid namespace configuration are
@@ -159,7 +165,8 @@ Completed work followed the authority-sensitive sequence: configuration and
 auth; core domains and process execution; Docker collection; individual
 providers; publication; Compose request handling; runtime orchestration; core
 snapshot/runtime derivation; daemon HTTP reads; browser API reads; and core
-Compose operations. Future #64 slices must update this record from the merged
-code rather than assuming the original extraction order remains a plan. The
-refactor remains a module-boundary effort: it must not introduce a plugin
-system or silently change behavior.
+Compose operations; daemon cache refresh; and core deterministic fixtures.
+Future #64 slices must update this record from the merged code rather than
+assuming the original extraction order remains a plan. The refactor remains a
+module-boundary effort: it must not introduce a plugin system or silently
+change behavior.
