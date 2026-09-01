@@ -140,6 +140,37 @@ test.describe("DockerMap GUI", () => {
     await expect(page.getByRole("main")).toContainText("Dependencies");
   });
 
+  test("default mock fallback does not fabricate change history", async ({ page }) => {
+    stack = await startMockStack();
+
+    await page.goto(`${stack.webUrl}/changes`, { waitUntil: "domcontentloaded" });
+    await expect(page.locator(".conn-mode")).toHaveText("Mock Engine");
+    const timeline = page.locator(".panel-change-timeline");
+    await expect(timeline.locator(".panel-hint")).toHaveText("Not collected");
+    await expect(timeline.locator(".timeline-row")).toHaveCount(0);
+    await expect(page.locator(".filter-chip")).toHaveCount(0);
+    await expect(timeline.getByText("Sample data", { exact: true })).toHaveCount(0);
+
+    await page.goto(`${stack.webUrl}/`, { waitUntil: "domcontentloaded" });
+    await expect(page.locator(".conn-mode")).toHaveText("Mock Engine");
+    for (const panel of [page.locator(".panel-recent-change"), page.locator(".panel-causal-chain")]) {
+      await expect(panel.locator(".panel-hint")).toHaveText("Not collected");
+      await expect(panel).toContainText("Not collected");
+      await expect(panel.locator(".feed-row, .chain-step")).toHaveCount(0);
+      await expect(panel.getByText("Sample data", { exact: true })).toHaveCount(0);
+    }
+
+    await page.goto(`${stack.webUrl}/copilot`, { waitUntil: "domcontentloaded" });
+    const askCopilot = page.getByRole("textbox", { name: "Ask Copilot" });
+    await askCopilot.fill("what changed recently?");
+    await askCopilot.press("Enter");
+    const answer = page.locator(".copilot-answer");
+    await expect(answer).toContainText("Update status: Not collected — Update checks not wired — DockerMap does not query registries.");
+    await expect(answer).toContainText("Change history: Not collected — Change collectors not wired — DockerMap does not record deploy, restart or failure events.");
+    await expect(page.locator(".copilot-evidence")).toContainText("Not collected");
+    await expect(page.getByText("Sample data", { exact: true })).toHaveCount(0);
+  });
+
   test("runtime relation navigation widens filters, keeps the destination selected and focused", async ({ page }) => {
     stack = await startMockStack();
 

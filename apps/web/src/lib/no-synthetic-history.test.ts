@@ -24,7 +24,7 @@ const PROVENANCE_MATRIX: [EvidenceMode | null, ModelProvenance | null, "demo" | 
   ["live", "mock", "unavailable"],
   ["live", "demo", "unavailable"],
   ["mock", "live", "unavailable"],
-  ["mock", "mock", "demo"],
+  ["mock", "mock", "unavailable"],
   ["mock", "demo", "unavailable"],
   ["demo", "live", "unavailable"],
   ["demo", "mock", "unavailable"],
@@ -62,19 +62,17 @@ describe("synthetic history is unavailable outside the allow-listed mode/provena
     }
   });
 
-  it("reads the clock ONLY for authorized changeFeed pairs (demo/demo, mock/mock)", () => {
+  it("reads the clock ONLY for the authorized Demo Mode pair (demo/demo)", () => {
     const now = vi.spyOn(Date, "now");
     try {
-      // Authorized pairs may roll the clock once per emitted event.
+      // The sole authorized pair may roll the clock once per emitted event.
       changeFeed(model, "demo", "demo");
-      changeFeed(model, "mock", "mock");
       const authorizedCalls = now.mock.calls.length;
       expect(authorizedCalls).toBeGreaterThan(0);
       // Every mismatch and every causalChain call must be clock-free: the
       // guard runs before the generator body, so no pair may reach Date.now().
       for (const [mode, provenance] of PROVENANCE_MATRIX) {
         if (mode === "demo" && provenance === "demo") continue;
-        if (mode === "mock" && provenance === "mock") continue;
         changeFeed(model, mode, provenance);
         causalChain(model, mode, provenance);
       }
