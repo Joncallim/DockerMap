@@ -35,6 +35,27 @@ browser -> nginx + Node API -> token-protected Rust daemon -> filtered Docker ga
   fixtures, and log pagination. API and daemon may depend on core; core must
   not depend on either server.
 
+Within the daemon, dependencies flow inward from the entrypoint to focused
+boundaries, then to `dockermap-core` and fixed system/Docker interfaces:
+
+```text
+main.rs (bootstrap, router, cache, cached Docker reads)
+  -> auth / config / docker_config / pid_namespace
+  -> docker_collector / runtime_collection / compose_api
+       -> providers/* / process_runner
+       -> publication
+       -> dockermap-core
+```
+
+`publication` is a terminal publishing boundary: collectors and request
+handlers call it before data becomes a public response, but it does not call
+providers, routes, or Docker. `runtime_collection`
+coordinates provider order and bounded execution; individual provider modules
+own their fixed commands, parsers, and provider-specific bounds. `main.rs`
+still owns the Axum router, daemon cache lifecycle, Docker-collector reuse,
+cached inventory/log handlers, and server bootstrap. This is the current
+module map, not a claim that the entrypoint has been fully decomposed.
+
 ## Route parity
 
 The daemon exposes thirteen `GET` routes below `/daemon/`, all behind its
@@ -72,15 +93,21 @@ behavior. In particular, preserve:
 4. Each slice records moved responsibilities and runs the narrowest relevant
    tests before the full CI gate.
 
-## Initial concentration map
+## Refactor progress map
 
-At this baseline, `crates/dockermap-daemon/src/main.rs` contains bootstrap,
-daemon auth/routes/cache, Docker collection, Compose handling, provider
-execution/parsers, publication, CLI, and tests. `crates/dockermap-core/src/lib.rs`
-contains models, Compose, graphs, logs, and fixtures. `apps/api/src/index.ts`
-contains configuration, auth/session, daemon client, mock responses, handlers,
-SSE, and server startup; its route manifest and publication boundary are
-already separate modules.
+At the original baseline, `crates/dockermap-daemon/src/main.rs` contained
+bootstrap, daemon auth/routes/cache, Docker collection, Compose handling,
+provider execution/parsers, publication, CLI, and tests. Through merged PR
+#134, Docker collection, Compose request handling, runtime orchestration,
+publication, and every then-existing host provider have moved to named daemon
+modules. The entrypoint retains the authority-sensitive cache and route
+assembly described above.
+
+`crates/dockermap-core/src/lib.rs` exposes models, Compose, graphs, logs, and
+fixtures through focused modules. `apps/api/src/index.ts` still owns the
+browser-facing server flow (configuration, auth/session, daemon client, mock
+responses, handlers, SSE, and startup); its route manifest and publication
+boundary remain separate modules.
 
 ## Completed extraction ledger
 
@@ -96,6 +123,19 @@ already separate modules.
 | Core topology identity | `crates/dockermap-core/src/identity.rs` | collision-resistant runtime/Compose identity regression |
 | Provider command execution | `crates/dockermap-daemon/src/process_runner.rs` | timeout, descendant cleanup, null-stdin, and bounded-output regressions |
 | Core public domain models | `crates/dockermap-core/src/models.rs` | core serialization, contract, and crate-root re-export tests |
+| Docker inventory and bounded logs | `crates/dockermap-daemon/src/docker_collector.rs` | Docker collector unit tests, gateway/config regressions, and live-Docker coverage |
+| systemd provider | `crates/dockermap-daemon/src/providers/systemd.rs` | fixed-command parsing and provider diagnostic regressions |
+| overlay-network providers | `crates/dockermap-daemon/src/providers/overlay_network.rs` | bounded provider parsing and diagnostic regressions |
+| cron provider | `crates/dockermap-daemon/src/providers/cron.rs` | bounded cron discovery, malformed input, and diagnostic regressions |
+| PM2 provider | `crates/dockermap-daemon/src/providers/pm2.rs` | fixed-command parsing and provider diagnostic regressions |
+| tmux provider | `crates/dockermap-daemon/src/providers/tmux.rs` | fixed-command parsing and provider diagnostic regressions |
+| network listener provider | `crates/dockermap-daemon/src/providers/listeners.rs` | listener parsing and provider diagnostic regressions |
+| network infrastructure provider | `crates/dockermap-daemon/src/providers/network_infrastructure.rs` | bounded infrastructure collection, correlation, and diagnostic regressions |
+| Python and native process providers | `crates/dockermap-daemon/src/providers/processes.rs` | process parsing, caps, PID-namespace suppression, and diagnostic regressions |
+| npm project provider | `crates/dockermap-daemon/src/providers/npm.rs` | bounded project discovery, manifest no-follow/openat, FIFO, and redaction regressions |
+| Daemon publication and normalization | `crates/dockermap-daemon/src/publication.rs` | redaction, Unicode/collision, stable-order, and public-model regressions |
+| Compose HTTP/CLI request boundary | `crates/dockermap-daemon/src/compose_api.rs` | root confinement, symlink denial, request validation, and dry-run regressions |
+| Runtime-map collection orchestration | `crates/dockermap-daemon/src/runtime_collection.rs` | PID-restricted omissions, single-flight/timeout fallback, provider-order, and runtime-redaction regressions |
 
 The PID namespace slice also corrected a discovered security defect rather
 than silently preserving it: `auto` and invalid namespace configuration are
@@ -106,7 +146,10 @@ change.
 The ledger is cumulative: later #64 slices must add their boundary and
 focused evidence here before the epic's final parity certification.
 
-The intended extraction order is config/auth/publication and daemon transport;
-then Docker/Compose; then individual providers; then core domains and API
-handlers. This order keeps authority-sensitive seams reviewable first without
-introducing a plugin system or behavior change.
+Completed work followed the authority-sensitive sequence: configuration and
+auth; core domains and process execution; Docker collection; individual
+providers; publication; Compose request handling; and runtime orchestration.
+Future #64 slices must update this record from the merged code rather than
+assuming the original extraction order remains a plan. The refactor remains a
+module-boundary effort: it must not introduce a plugin system or silently
+change behavior.
