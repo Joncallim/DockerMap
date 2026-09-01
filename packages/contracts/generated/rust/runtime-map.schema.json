@@ -23,16 +23,75 @@
     "ProviderState": {
       "additionalProperties": false,
       "properties": {
+        "consecutiveFailureCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dataRevision": {
+          "description": "Opaque, per-slot data identity. It is absent before a successful pass\nand after a source reset, and otherwise advances only for sanitized\nobservable slot-data changes.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastAttemptMs": {
+          "description": "Wall-clock collection timestamps are nullable because a slot can have\nno attempt yet (or its source was reset).  The upper bound preserves\nlossless JSON transport through JavaScript's numeric representation.",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lastDurationMs": {
+          "description": "Duration of the last successful collection. Failed and timed-out\npasses deliberately retain this last known-good evidence.",
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lastSuccessMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "slot": {
           "$ref": "#/$defs/ProviderSlot"
         },
         "state": {
           "$ref": "#/$defs/ProviderStateKind"
+        },
+        "statusReason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderStatusReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Null for fresh and initial-unavailable slots. Non-null values are the\nclosed, safe transitional/exceptional reasons above, never raw errors."
         }
       },
       "required": [
         "slot",
-        "state"
+        "state",
+        "lastAttemptMs",
+        "lastSuccessMs",
+        "lastDurationMs",
+        "consecutiveFailureCount",
+        "dataRevision",
+        "statusReason"
       ],
       "type": "object"
     },
@@ -43,6 +102,18 @@
         "collecting",
         "unavailable",
         "timed_out",
+        "disabled"
+      ],
+      "type": "string"
+    },
+    "ProviderStatusReason": {
+      "description": "A deliberately small, non-diagnostic explanation for a provider slot that\nis not currently serving fresh observations.  This is a closed enum rather\nthan provider supplied text: command lines, paths, error output and other\nhost details must never cross the runtime-map boundary through this field.",
+      "enum": [
+        "initial",
+        "refreshing",
+        "collection_failed",
+        "collection_timed_out",
+        "source_reset",
         "disabled"
       ],
       "type": "string"

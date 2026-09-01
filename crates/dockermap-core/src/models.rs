@@ -169,10 +169,66 @@ pub enum ProviderStateKind {
     Disabled,
 }
 
+/// A deliberately small, non-diagnostic explanation for a provider slot that
+/// is not currently serving fresh observations.  This is a closed enum rather
+/// than provider supplied text: command lines, paths, error output and other
+/// host details must never cross the runtime-map boundary through this field.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderStatusReason {
+    Initial,
+    Refreshing,
+    CollectionFailed,
+    CollectionTimedOut,
+    SourceReset,
+    Disabled,
+}
+
+/// Schema-only representation for a required JSON field whose value may be a
+/// closed status reason or null. The wire type remains `Option` below.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum ProviderStatusReasonOrNull {
+    Reason(ProviderStatusReason),
+    Null(()),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ProviderState {
     pub slot: ProviderSlot,
     pub state: ProviderStateKind,
+    /// Wall-clock collection timestamps are nullable because a slot can have
+    /// no attempt yet (or its source was reset).  The upper bound preserves
+    /// lossless JSON transport through JavaScript's numeric representation.
+    #[serde(rename = "lastAttemptMs")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    #[schemars(required, extend("type" = ["integer", "null"]))]
+    pub last_attempt_ms: Option<u64>,
+    #[serde(rename = "lastSuccessMs")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    #[schemars(required, extend("type" = ["integer", "null"]))]
+    pub last_success_ms: Option<u64>,
+    /// Duration of the last successful collection. Failed and timed-out
+    /// passes deliberately retain this last known-good evidence.
+    #[serde(rename = "lastDurationMs")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    #[schemars(required, extend("type" = ["integer", "null"]))]
+    pub last_duration_ms: Option<u64>,
+    #[serde(rename = "consecutiveFailureCount")]
+    pub consecutive_failure_count: u32,
+    /// Opaque, per-slot data identity. It is absent before a successful pass
+    /// and after a source reset, and otherwise advances only for sanitized
+    /// observable slot-data changes.
+    #[serde(rename = "dataRevision")]
+    #[schemars(length(min = 1))]
+    #[schemars(required, extend("type" = ["string", "null"]))]
+    pub data_revision: Option<String>,
+    /// Null for fresh and initial-unavailable slots. Non-null values are the
+    /// closed, safe transitional/exceptional reasons above, never raw errors.
+    #[serde(rename = "statusReason")]
+    #[schemars(required, with = "ProviderStatusReasonOrNull")]
+    pub status_reason: Option<ProviderStatusReason>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

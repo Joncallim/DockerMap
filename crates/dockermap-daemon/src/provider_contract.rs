@@ -93,13 +93,34 @@ impl ProviderCollection {
         {
             existing.state = state;
         } else {
-            self.states.push(ProviderState { slot, state });
+            // These collection-local values are later projected through the
+            // cache scheduler, which supplies public freshness metadata. A
+            // provider implementation cannot forge timestamps or revisions.
+            self.states.push(ProviderState {
+                slot,
+                state,
+                last_attempt_ms: None,
+                last_success_ms: None,
+                last_duration_ms: None,
+                consecutive_failure_count: 0,
+                data_revision: None,
+                status_reason: None,
+            });
             self.states.sort_by_key(|state| state.slot);
         }
     }
 
     pub(crate) fn states(&self) -> &[ProviderState] {
         &self.states
+    }
+
+    /// A private equality key for an already-sanitized retained collection.
+    /// It is intentionally not a hash and never leaves the daemon: the public
+    /// cache exposes only an opaque CSPRNG-backed revision when this safe
+    /// observable evidence changes.
+    pub(crate) fn sanitized_observable_identity(&self) -> String {
+        serde_json::to_string(&(&self.nodes, &self.edges, &self.diagnostics, &self.states))
+            .expect("sanitized provider collection is serializable")
     }
 
     /// The cache can retain a successful provider pass across later failures.
