@@ -257,7 +257,10 @@ export async function startLiveDockerStack(): Promise<Stack> {
     docker,
     dockerLabelFilter: fixture.labelFilter,
     gatewaySocket,
-    pathPrefix: fixture.stubBinDir
+    pathPrefix: fixture.stubBinDir,
+    // Match the recommended Docker-only deployment: it must never use the
+    // daemon process's partial PID namespace as host evidence.
+    pidNamespace: "restricted"
   }));
   await waitForDockerHealth(`http://127.0.0.1:${ports.daemon}/daemon/health`);
   await waitForFixtureSnapshot(`http://127.0.0.1:${ports.daemon}/daemon/snapshot`, fixture.projectName);
@@ -396,6 +399,7 @@ function startDaemon(options: {
   dockerLabelFilter?: string;
   gatewaySocket?: string;
   pathPrefix?: string;
+  pidNamespace?: "host" | "restricted";
   daemonToken?: string;
   apiToken?: string;
 }): ProcessHandle {
@@ -409,6 +413,7 @@ function startDaemon(options: {
     ...(options.dockerLabelFilter ? { DOCKERMAP_DOCKER_LABEL_FILTER: options.dockerLabelFilter } : {}),
     ...(options.gatewaySocket ? { DOCKERMAP_DOCKER_GATEWAY_SOCKET: options.gatewaySocket } : {}),
     ...(options.pathPrefix ? { PATH: `${options.pathPrefix}:${process.env.PATH}` } : {}),
+    ...(options.pidNamespace ? { DOCKERMAP_PID_NAMESPACE: options.pidNamespace } : {}),
     ...(options.useDockerAccess ? {} : { DOCKERMAP_FORCE_MOCK: "true" })
   };
 

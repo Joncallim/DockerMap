@@ -387,13 +387,44 @@ test.describe("DockerMap GUI", () => {
       "live graph should contain the worker→api depends_on edge"
     ).toBe(true);
 
-    const runtimeMap = await (await request.get(`${stack.apiUrl}/api/runtime/map`)).json();
+    const runtimeMap = await (await request.get(`${stack.apiUrl}/api/runtime/map`)).json() as {
+      source: string;
+      nodes: { provider: string; label: string }[];
+      diagnostics: { provider: string; severity: string; message: string }[];
+    };
     const runtimeProviders = new Set(runtimeMap.nodes.map((node: { provider: string }) => node.provider));
-    for (const provider of ["docker", "reverse_proxy", "local_dns", "tailscale", "headscale", "npm", "tmux", "systemd", "pm2", "scheduled_job"]) {
-      expect(runtimeProviders.has(provider), `expected runtime provider ${provider}`).toBe(true);
+    expect(runtimeMap.source).toBe("docker");
+    expect(runtimeProviders.has("docker"), "expected Docker-derived runtime inventory").toBe(true);
+    expect(runtimeMap.nodes.some((node) => node.provider === "docker" && node.label === apiName)).toBe(true);
+    expect(runtimeMap.nodes.some((node) => node.provider === "docker" && node.label === workerName)).toBe(true);
+
+    // Docker-only is deliberately PID-restricted. Docker-derived container
+    // classifications can retain their own provider labels; the host-scoped
+    // collectors must not publish nodes. Their diagnostics are required so
+    // this is not silently misrepresented as "nothing found".
+    for (const provider of ["host", "systemd", "scheduled_job", "pm2", "tmux", "process", "python"]) {
+      expect(runtimeProviders.has(provider), `restricted Docker-only profile must omit ${provider} nodes`).toBe(false);
     }
-    if (process.platform === "linux") {
-      expect(runtimeProviders.has("network"), "expected network listener provider on Linux").toBe(true);
+    for (const [provider, message] of [
+      ["host", "Host node omitted because the daemon runs in a restricted PID namespace"],
+      ["network", "Network listener discovery omitted because the daemon runs in a restricted PID namespace"],
+      ["systemd", "systemd discovery omitted because the daemon runs in a restricted PID namespace"],
+      ["scheduled_job", "Scheduled job discovery omitted because the daemon runs in a restricted PID namespace"],
+      ["pm2", "PM2 discovery omitted because the daemon runs in a restricted PID namespace"],
+      ["tmux", "tmux discovery omitted because the daemon runs in a restricted PID namespace"],
+      ["process", "Native process discovery omitted because the daemon runs in a restricted PID namespace; only the container's own processes would be visible"],
+      ["python", "Python process discovery omitted because the daemon runs in a restricted PID namespace; only the container's own processes would be visible"],
+      ["tailscale", "Tailscale discovery skipped in restricted PID namespace"],
+      ["headscale", "Headscale discovery skipped in restricted PID namespace"],
+      ["reverse_proxy", "Reverse-proxy configuration marker discovery skipped in restricted PID namespace"],
+      ["local_dns", "Local DNS configuration marker discovery skipped in restricted PID namespace"]
+    ]) {
+      expect(
+        runtimeMap.diagnostics.some((diagnostic) =>
+          diagnostic.provider === provider && diagnostic.severity === "info" && diagnostic.message === message
+        ),
+        `restricted Docker-only profile must publish ${provider} omission evidence`
+      ).toBe(true);
     }
 
     await page.goto(stack.webUrl);
