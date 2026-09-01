@@ -168,6 +168,18 @@ describe("C. evidence kinds must be accurate", () => {
     const response = answer(model, "why is api offline", "live", "live");
     expect(response.evidence).toBe("inferred");
   });
+
+  it("renders the visible Inferred evidence label for a causal answer", () => {
+    const model = buildModel(snapshot([healthy("api", { status: "Exited (1)" })]), runtime);
+    const value: AppContextValue = { model, modelProvenance: "live", loading: false, error: null, health: null, tick: 0, evidenceMode: "live", openCommand: () => {} };
+    const html = renderToStaticMarkup(
+      <AppContext.Provider value={value}>
+        <MemoryRouter initialEntries={["/copilot?q=why+is+api+offline"]}><Copilot /></MemoryRouter>
+      </AppContext.Provider>
+    );
+    expect(html).toContain(">Inferred<");
+    expect(html).toContain("A heuristic guess, not measured");
+  });
 });
 
 describe("A4. direct-vs-transitive downstream claims", () => {
