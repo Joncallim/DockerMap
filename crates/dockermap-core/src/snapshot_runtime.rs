@@ -68,22 +68,8 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
         });
     }
 
-    let container_by_name: BTreeMap<&str, &ContainerRecord> = snapshot
-        .containers
-        .iter()
-        .map(|container| (container.name.as_str(), container))
-        .collect();
-
-    // Compose depends_on refs name the compose SERVICE, which the daemon
-    // records as the container's `role` (the com.docker.compose.service
-    // label) — live container names are project-prefixed (`immich_redis`)
-    // and never match the ref directly. Resolve by role first, then by
-    // name, then by full id.
-    let container_by_role: BTreeMap<&str, &ContainerRecord> = snapshot
-        .containers
-        .iter()
-        .map(|container| (container.role.as_str(), container))
-        .collect();
+    let container_aliases = ContainerAliases::from_containers(&snapshot.containers);
+    let graph_ids = GraphIdentityIndex::from_snapshot(snapshot);
 
     let volume_by_attached_container: BTreeMap<&str, Vec<&crate::VolumeRecord>> = {
         let mut mapping: BTreeMap<&str, Vec<&crate::VolumeRecord>> = BTreeMap::new();
@@ -97,37 +83,50 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
 
     for container in &snapshot.containers {
         for network_id in &container.networks {
-            edges.push(GraphEdge {
-                source: container.id.clone(),
-                target: network_id.clone(),
-                relationship: RelationshipKind::ConnectedTo,
-            });
-        }
-
-        if let Some(volumes) = volume_by_attached_container.get(container.name.as_str()) {
-            for volume in volumes {
+            // Network membership is also semantic topology. It must name one
+            // actual network and both public graph endpoints must have unique
+            // non-empty IDs; otherwise retain the nodes but omit the edge.
+            if graph_ids.has_unique_container_id(container)
+                && graph_ids.has_unique_network_id(network_id)
+                && graph_ids.has_unique_node_id(network_id)
+            {
                 edges.push(GraphEdge {
                     source: container.id.clone(),
-                    target: volume.id.clone(),
-                    relationship: RelationshipKind::Mounts,
+                    target: network_id.clone(),
+                    relationship: RelationshipKind::ConnectedTo,
                 });
             }
         }
 
-        for dependency in &container.depends_on {
-            let dependency_name = dependency.strip_prefix("container_").unwrap_or(dependency);
-            let target = container_by_role
-                .get(dependency_name)
-                .copied()
-                .or_else(|| container_by_name.get(dependency_name).copied())
-                .or_else(|| {
-                    snapshot
-                        .containers
-                        .iter()
-                        .find(|item| item.id == *dependency)
-                });
+        if container_aliases.has_unique_name(container) {
+            if let Some(volumes) = volume_by_attached_container.get(container.name.as_str()) {
+                for volume in volumes {
+                    if graph_ids.has_unique_container_id(container)
+                        && graph_ids.has_unique_node_id(volume.id.as_str())
+                    {
+                        edges.push(GraphEdge {
+                            source: container.id.clone(),
+                            target: volume.id.clone(),
+                            relationship: RelationshipKind::Mounts,
+                        });
+                    }
+                }
+            }
+        }
 
-            if let Some(target) = target {
+        for dependency in &container.depends_on {
+            // A dependency is semantic topology, so fail closed when either
+            // endpoint lacks one unambiguous, non-empty raw Docker identity.
+            // Do not make a duplicate compose role/name appear to point at an
+            // arbitrary container merely because a different alias happens to
+            // be unique.
+            if let Some(target) = container_aliases.resolve_dependency(dependency) {
+                if !graph_ids.has_unique_container_id(container)
+                    || !graph_ids.has_unique_container_id(target)
+                    || std::ptr::eq(container, target)
+                {
+                    continue;
+                }
                 edges.push(GraphEdge {
                     source: container.id.clone(),
                     target: target.id.clone(),
@@ -137,7 +136,155 @@ pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
         }
     }
 
+    nodes.sort_by_key(graph_node_sort_key);
+    nodes.dedup();
+    edges.sort_by_key(graph_edge_sort_key);
+    edges.dedup();
+
     GraphResponse { nodes, edges }
+}
+
+/// The public graph uses one `id` namespace across its node kinds. A graph
+/// edge is valid only if the referenced ID identifies exactly one retained
+/// node, not merely one record in a particular Docker collection.
+struct GraphIdentityIndex<'a> {
+    node_ids: BTreeMap<&'a str, usize>,
+    network_ids: BTreeMap<&'a str, usize>,
+    container_ids: BTreeMap<&'a str, usize>,
+}
+
+impl<'a> GraphIdentityIndex<'a> {
+    fn from_snapshot(snapshot: &'a DockerSnapshot) -> Self {
+        let mut index = Self {
+            node_ids: BTreeMap::new(),
+            network_ids: BTreeMap::new(),
+            container_ids: BTreeMap::new(),
+        };
+        for container in &snapshot.containers {
+            Self::count(&mut index.node_ids, container.id.as_str());
+            Self::count(&mut index.container_ids, container.id.as_str());
+        }
+        for network in &snapshot.networks {
+            Self::count(&mut index.node_ids, network.id.as_str());
+            Self::count(&mut index.network_ids, network.id.as_str());
+        }
+        for volume in &snapshot.volumes {
+            Self::count(&mut index.node_ids, volume.id.as_str());
+        }
+        index
+    }
+
+    fn count(counts: &mut BTreeMap<&'a str, usize>, id: &'a str) {
+        if !id.is_empty() {
+            *counts.entry(id).or_default() += 1;
+        }
+    }
+
+    fn has_unique_node_id(&self, id: &str) -> bool {
+        self.node_ids.get(id) == Some(&1)
+    }
+
+    fn has_unique_network_id(&self, id: &str) -> bool {
+        self.network_ids.get(id) == Some(&1)
+    }
+
+    fn has_unique_container_id(&self, container: &ContainerRecord) -> bool {
+        self.container_ids.get(container.id.as_str()) == Some(&1)
+            && self.has_unique_node_id(container.id.as_str())
+    }
+}
+
+/// A raw Docker identity can be safely used for graph resolution only when it
+/// occurs exactly once and is non-empty. `None` deliberately represents both
+/// duplicate and absent values, neither of which may route a semantic edge.
+struct ContainerAliases<'a> {
+    ids: BTreeMap<&'a str, Option<&'a ContainerRecord>>,
+    names: BTreeMap<&'a str, Option<&'a ContainerRecord>>,
+    roles: BTreeMap<&'a str, Option<&'a ContainerRecord>>,
+}
+
+impl<'a> ContainerAliases<'a> {
+    fn from_containers(containers: &'a [ContainerRecord]) -> Self {
+        let mut aliases = Self {
+            ids: BTreeMap::new(),
+            names: BTreeMap::new(),
+            roles: BTreeMap::new(),
+        };
+        for container in containers {
+            Self::insert(&mut aliases.ids, container.id.as_str(), container);
+            Self::insert(&mut aliases.names, container.name.as_str(), container);
+            Self::insert(&mut aliases.roles, container.role.as_str(), container);
+        }
+        aliases
+    }
+
+    fn insert(
+        aliases: &mut BTreeMap<&'a str, Option<&'a ContainerRecord>>,
+        alias: &'a str,
+        container: &'a ContainerRecord,
+    ) {
+        if alias.is_empty() {
+            return;
+        }
+        match aliases.entry(alias) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Some(container));
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.insert(None);
+            }
+        }
+    }
+
+    fn has_unique_name(&self, container: &ContainerRecord) -> bool {
+        !container.name.is_empty()
+            && self
+                .names
+                .get(container.name.as_str())
+                .and_then(|candidate| *candidate)
+                .is_some_and(|candidate| std::ptr::eq(candidate, container))
+    }
+
+    fn resolve_dependency(&self, dependency: &str) -> Option<&'a ContainerRecord> {
+        if dependency.is_empty() {
+            return None;
+        }
+
+        let dependency_name = dependency.strip_prefix("container_").unwrap_or(dependency);
+        if dependency_name.is_empty() {
+            return None;
+        }
+
+        // Existing Compose semantics resolve a `container_<service>` ref by
+        // service role/name and a raw value by any raw identity. Any matching
+        // ambiguous alias makes the reference unsafe, even if another alias
+        // would otherwise select one container.
+        let lookups = [
+            self.roles.get(dependency_name),
+            self.names.get(dependency_name),
+            self.ids.get(dependency),
+        ];
+        let mut candidate: Option<&ContainerRecord> = None;
+        for lookup in lookups.into_iter().flatten() {
+            let resolved = (*lookup)?;
+            if let Some(existing) = candidate {
+                if !std::ptr::eq(existing, resolved) {
+                    return None;
+                }
+            } else {
+                candidate = Some(resolved);
+            }
+        }
+        candidate
+    }
+}
+
+fn graph_node_sort_key(node: &GraphNode) -> String {
+    serde_json::to_string(node).expect("graph nodes must serialize")
+}
+
+fn graph_edge_sort_key(edge: &GraphEdge) -> String {
+    serde_json::to_string(edge).expect("graph edges must serialize")
 }
 
 fn duplicate_runtime_node_ids(nodes: &[RuntimeMapNode]) -> BTreeSet<String> {
