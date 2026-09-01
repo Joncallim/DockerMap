@@ -1085,6 +1085,42 @@ test("actual canonical and v1 SSE snapshot/error frames use their declared paylo
   });
 });
 
+test("SSE emits the initial health revision but suppresses timestamp-only duplicate revisions", async () => {
+  const health = {
+    status: "ok",
+    mode: "docker",
+    dockerReachable: true,
+    lastUpdated: 1,
+    snapshotVersion: "1",
+    modelRevision: "revision-one",
+    message: "stub daemon"
+  };
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/health") return sendJson(res, 200, health);
+    return sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token",
+    DOCKERMAP_SSE_INTERVAL_MS: "1000"
+  });
+  const stream = await request(api, "/api/events/stream", { headers: { Authorization: "Bearer test-token" } });
+  const reader = stream.body?.getReader();
+  assert.ok(reader, "expected a streaming response body");
+  const first = await reader.read();
+  assert.equal(first.done, false);
+  assert.match(new TextDecoder().decode(first.value), /event: snapshot/);
+
+  await delay(1_100); // prove the next daemon poll occurred before asserting no second frame.
+  assert.ok(daemon.requests.filter((request) => request.url === "/daemon/health").length >= 2);
+  const noDuplicate = await Promise.race([
+    reader.read().then(() => false),
+    delay(100).then(() => true)
+  ]);
+  assert.equal(noDuplicate, true, "unchanged modelRevision must not emit another snapshot frame");
+  await reader.cancel();
+});
+
 test("status endpoint classifies free-form docker status texts", async () => {
   const daemon = await startStubDaemon((req, res) => {
     if (req.url === "/daemon/health") {

@@ -316,9 +316,25 @@ test.describe("DockerMap GUI", () => {
   test("refreshing a selected directory service into a collision clears selection and keeps evidence visible", async ({ page }) => {
     stack = await startMockStack();
     let collided = false;
+    // This fixture models two coherent daemon publications. The collision is
+    // semantic snapshot evidence, not a timestamp tick, so all three model
+    // envelopes must move to the same new revision before the browser is
+    // expected to refetch and clear its selected identity.
+    const modelRevision = () => collided ? "e2e-selected-collision-v2" : "e2e-selected-base-v1";
+    await page.route("**/api/events/stream*", async (route) => {
+      const revision = modelRevision();
+      await route.fulfill({
+        contentType: "text/event-stream",
+        // A completed test stream reconnects quickly. Before `collided` this
+        // deliberately repeats the same revision; after it, the next frame
+        // advances the coherent publication and drives exactly one refetch.
+        body: `retry: 100\nevent: snapshot\ndata: {"status":"ok","mode":"mock","dockerReachable":false,"message":"test fixture","lastUpdated":0,"snapshotVersion":"${revision}","modelRevision":"${revision}"}\n\n`
+      });
+    });
     await page.route("**/api/snapshot", async (route) => {
       const response = await route.fetch();
-      const snapshot = (await response.json()) as { containers: Array<Record<string, unknown>> };
+      const snapshot = (await response.json()) as { containers: Array<Record<string, unknown>>; modelRevision: string };
+      snapshot.modelRevision = modelRevision();
       if (!snapshot.containers.some((container) => container.name === "unique")) {
         snapshot.containers.push({ id: "c_ok", name: "unique", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] });
       }
@@ -326,6 +342,12 @@ test.describe("DockerMap GUI", () => {
         snapshot.containers.unshift({ id: "c_ok", name: "unique-clone", image: "busybox:1", status: "running", role: "", networks: [], ports: [], mounts: [], dependsOn: [] });
       }
       await route.fulfill({ response, json: snapshot });
+    });
+    await page.route("**/api/runtime/map", async (route) => {
+      const response = await route.fetch();
+      const runtimeMap = (await response.json()) as Record<string, unknown>;
+      runtimeMap.modelRevision = modelRevision();
+      await route.fulfill({ response, json: runtimeMap });
     });
 
     await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });

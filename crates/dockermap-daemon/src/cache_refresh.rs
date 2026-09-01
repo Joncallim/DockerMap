@@ -104,9 +104,11 @@ impl PublicationRevision {
         let mut published_runtime_map = runtime_map.clone();
         redact_health_response(&mut published_health);
         redact_runtime_map(&mut published_runtime_map);
-        published_snapshot.model_revision.clear();
-        published_health.model_revision.clear();
-        published_runtime_map.model_revision.clear();
+        clear_volatile_observation_markers(
+            &mut published_snapshot,
+            &mut published_health,
+            &mut published_runtime_map,
+        );
         let observable = serde_json::to_string(&(
             &published_snapshot,
             &published_health,
@@ -125,6 +127,25 @@ impl PublicationRevision {
         health.model_revision = revision.clone();
         runtime_map.model_revision = revision;
     }
+}
+
+/// Remove only fields which record when Docker was observed from the cloned,
+/// already-public model used to decide whether a semantic publication changed.
+/// The cache and HTTP responses retain the original values. In particular,
+/// `snapshotVersion` is currently the string form of `lastUpdated`, so it is
+/// another observation marker rather than model evidence.
+fn clear_volatile_observation_markers(
+    snapshot: &mut DockerSnapshot,
+    health: &mut HealthResponse,
+    runtime_map: &mut RuntimeMap,
+) {
+    snapshot.model_revision.clear();
+    health.model_revision.clear();
+    runtime_map.model_revision.clear();
+    snapshot.last_updated = 0;
+    health.last_updated = 0;
+    health.snapshot_version.clear();
+    runtime_map.last_updated = 0;
 }
 
 fn boot_instance_component() -> String {
@@ -997,6 +1018,39 @@ mod scheduler_tests {
             .provider_states
             .iter()
             .any(|item| item.slot == slot && item.state == ProviderStateKind::Stale));
+    }
+
+    #[test]
+    fn revision_ignores_only_observation_markers_without_mutating_responses() {
+        let mut revision = PublicationRevision::new();
+        let mut snapshot = mock_snapshot();
+        snapshot.last_updated = 10;
+        let mut health = HealthResponse {
+            status: HealthState::Ok,
+            mode: RuntimeMode::Docker,
+            docker_reachable: true,
+            last_updated: 10,
+            snapshot_version: "10".into(),
+            model_revision: String::new(),
+            message: Some("controlled Docker cache".into()),
+        };
+        let mut runtime_map = empty_runtime_map(10);
+        revision.assign(&mut snapshot, &mut health, &mut runtime_map);
+        let first = snapshot.model_revision.clone();
+
+        snapshot.last_updated = 11;
+        health.last_updated = 11;
+        health.snapshot_version = "11".into();
+        runtime_map.last_updated = 11;
+        revision.assign(&mut snapshot, &mut health, &mut runtime_map);
+
+        assert_eq!(snapshot.model_revision, first);
+        assert_eq!(health.model_revision, first);
+        assert_eq!(runtime_map.model_revision, first);
+        assert_eq!(snapshot.last_updated, 11);
+        assert_eq!(health.last_updated, 11);
+        assert_eq!(health.snapshot_version, "11");
+        assert_eq!(runtime_map.last_updated, 11);
     }
 
     #[tokio::test]

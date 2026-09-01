@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { HealthResponse } from "@dockermap/contracts";
 import { apiUrl } from "../utils/api";
 import { fetchJson, notifyBearerUnauthorized, ApiResponseError } from "../utils/api";
@@ -9,6 +9,7 @@ export function useDaemonHeartbeat() {
   const { settings } = useSettings();
   const [tick, setTick] = useState(0);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const lastStreamRevision = useRef<string | null>(null);
 
   useEffect(() => {
     if (settings.demoMode) {
@@ -30,12 +31,19 @@ export function useDaemonHeartbeat() {
     // order (demo timer cleared, then this effect run) guarantees the null
     // lands after the last demo tick.
     setHealth(null);
+    lastStreamRevision.current = null;
     const source = new EventSource(apiUrl("/api/events/stream"));
 
     source.addEventListener("snapshot", (event) => {
       const message = JSON.parse((event as MessageEvent).data) as HealthResponse;
       setHealth(message);
-      setTick((value) => value + 1);
+      // Health remains current even when only an observation marker changed,
+      // but paired snapshot/runtime fetches are driven only by the first or a
+      // new coherent daemon publication revision.
+      if (message.modelRevision && message.modelRevision !== lastStreamRevision.current) {
+        lastStreamRevision.current = message.modelRevision;
+        setTick((value) => value + 1);
+      }
     });
 
     source.addEventListener("error", () => {

@@ -67,7 +67,7 @@ the publication-sanitized observable model or provider-state evidence changes;
 identical publication bytes retain it. It is not a timestamp, hash, secret
 oracle, or ordering value across daemon restarts. Browser model composition
 requires matching non-empty snapshot/runtime revisions, while retaining the
-existing paired fetch and SSE cadence.
+existing paired fetch coherence requirement.
 
 `HealthResponse.snapshotVersion` is an opaque snapshot-observation token: the
 current implementation is the decimal string form of the Docker snapshot's
@@ -87,9 +87,21 @@ Docker/mock source transition rather than being relabelled as sample data.
 
 The current implementation publication-sanitizes provider observations before
 retaining them behind `DaemonCache` and rebuilds the public runtime map against
-each current Docker snapshot. It emits the coherence revision but does not add
-conditional HTTP fetching or revision-driven SSE behavior: each received
-health event still triggers the existing paired browser refetch.
+each current Docker snapshot. Its semantic comparator uses cloned sanitized
+response models and clears only the volatile Docker observation markers
+(`lastUpdated` on all three models and health's timestamp-derived
+`snapshotVersion`) plus the self-referential revision. It never mutates the
+cached or response bytes while comparing them. Consequently, an unchanged
+model observed at a new time retains its revision, while source, inventory,
+provider state, diagnostics, or any other published field advances it.
+
+The API sends a valid health snapshot immediately to each SSE stream, then
+suppresses duplicate non-empty revisions for that stream while retaining its
+keepalive comments, auth/session checks, stream caps, logout closure, and
+redacted error frames. The browser always accepts valid health updates so its
+connection state remains current, but increments its model refresh tick only
+for the first or a changed non-empty revision. No ETag, new route,
+Last-Event-ID, or SSE payload shape is introduced.
 
 ## Concurrency and bounds
 
