@@ -55,6 +55,7 @@ use process_runner::{
 use providers::{
     cron::collect_scheduled_jobs,
     overlay_network::{collect_headscale, collect_tailscale, provider_opt_in},
+    pm2::collect_pm2_apps,
     systemd::collect_systemd_services,
 };
 use serde::Deserialize;
@@ -959,95 +960,6 @@ fn classify_local_dns(value: &str) -> Option<&'static str> {
 
 fn path_exists(path: &str) -> bool {
     StdPath::new(path).exists()
-}
-
-fn collect_pm2_apps(nodes: &mut Vec<RuntimeMapNode>, diagnostics: &mut Vec<RuntimeMapDiagnostic>) {
-    let output = match run_command_with_timeout(
-        {
-            let mut command = Command::new("pm2");
-            command.arg("jlist");
-            command
-        },
-        PROVIDER_COMMAND_TIMEOUT,
-    ) {
-        Ok(output) => output,
-        Err(error) => {
-            push_provider_diagnostic(
-                diagnostics,
-                RuntimeProviderKind::Pm2,
-                DiagnosticSeverity::Info,
-                format!("PM2 discovery skipped: {error}"),
-            );
-            return;
-        }
-    };
-
-    if !output.status.success() {
-        push_provider_diagnostic(
-            diagnostics,
-            RuntimeProviderKind::Pm2,
-            DiagnosticSeverity::Warning,
-            "PM2 discovery command failed".into(),
-        );
-        return;
-    }
-
-    match pm2_app_nodes_from_jlist(&String::from_utf8_lossy(&output.stdout)) {
-        Some(app_nodes) => nodes.extend(app_nodes),
-        None => push_provider_diagnostic(
-            diagnostics,
-            RuntimeProviderKind::Pm2,
-            DiagnosticSeverity::Warning,
-            "PM2 discovery returned invalid JSON".into(),
-        ),
-    }
-}
-
-fn pm2_app_nodes_from_jlist(value: &str) -> Option<Vec<RuntimeMapNode>> {
-    let Ok(apps) = serde_json::from_str::<Vec<serde_json::Value>>(value) else {
-        return None;
-    };
-
-    let mut nodes = Vec::with_capacity(apps.len());
-    for app in apps {
-        let id = value_to_string(app.get("pm_id")).unwrap_or_else(|| "unknown".into());
-        let env = app.get("pm2_env").unwrap_or(&serde_json::Value::Null);
-        let name = env
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| app.get("name").and_then(serde_json::Value::as_str))
-            .unwrap_or("pm2-app");
-        let status = env
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-        let mut metadata = BTreeMap::new();
-        if let Some(cwd) = env.get("pm_cwd").and_then(serde_json::Value::as_str) {
-            metadata.insert("cwd".into(), cwd.into());
-        }
-        if let Some(script) = env.get("pm_exec_path").and_then(serde_json::Value::as_str) {
-            metadata.insert("script".into(), script.into());
-        }
-        if let Some(restarts) = env.get("restart_time").and_then(serde_json::Value::as_i64) {
-            metadata.insert("restartCount".into(), restarts.to_string());
-        }
-        metadata.insert(
-            "serviceEntityKind".into(),
-            service_entity_kind_name(&ServiceEntityKind::NodeApplication).into(),
-        );
-        nodes.push(RuntimeMapNode {
-            id: format!("pm2_app_{}", collision_resistant_id_component(&id)),
-            provider: RuntimeProviderKind::Pm2,
-            kind: RuntimeNodeKind::Pm2App,
-            label: name.into(),
-            status,
-            layer: Some(RuntimeNodeLayer::Process),
-            metadata,
-            service: None,
-            package: None,
-        });
-    }
-    Some(nodes)
 }
 
 struct PythonProcessRecord {
@@ -2863,14 +2775,6 @@ fn parse_proc_net_local_address(value: &str) -> Option<(String, u16)> {
     Some((address, port))
 }
 
-fn value_to_string(value: Option<&serde_json::Value>) -> Option<String> {
-    match value {
-        Some(serde_json::Value::String(value)) => Some(value.clone()),
-        Some(serde_json::Value::Number(value)) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
 pub(crate) fn push_provider_diagnostic(
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
     provider: RuntimeProviderKind,
@@ -3964,40 +3868,6 @@ mod tests {
         assert_eq!(nodes[0].label, REDACTED_VALUE);
         assert_eq!(nodes[1].label, "safe-worker");
         assert_no_raw_secrets(&nodes, &["DOCKERMAP_TEST_FAKE_TMUX_SESSION_SECRET"]);
-    }
-
-    #[test]
-    fn builds_pm2_nodes_from_fixture_jlist() {
-        let nodes = pm2_app_nodes_from_jlist(include_str!(
-            "../../../tests/fixtures/providers/parser/pm2-jlist.json"
-        ))
-        .expect("fixture jlist must parse");
-
-        assert_eq!(nodes.len(), 3);
-        assert!(nodes[0].id.starts_with("pm2_app_0--"));
-        assert_eq!(nodes[0].label, "web");
-        assert_eq!(nodes[0].status.as_deref(), Some("online"));
-        assert_eq!(nodes[0].layer, Some(RuntimeNodeLayer::Process));
-        assert_eq!(
-            nodes[0].metadata.get("cwd").map(String::as_str),
-            Some("/srv/app")
-        );
-        assert_eq!(
-            nodes[0].metadata.get("script").map(String::as_str),
-            Some("/srv/app/dist/index.js")
-        );
-        assert_eq!(
-            nodes[0].metadata.get("restartCount").map(String::as_str),
-            Some("3")
-        );
-
-        assert_eq!(nodes[1].status.as_deref(), Some("stopped"));
-        assert!(nodes[2].id.starts_with("pm2_app_2--"));
-        assert_eq!(nodes[2].status.as_deref(), Some("errored"));
-        assert_eq!(
-            nodes[2].metadata.get("restartCount").map(String::as_str),
-            Some("12")
-        );
     }
 
     #[test]
