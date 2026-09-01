@@ -379,8 +379,12 @@ async fn apply_runtime_collection_outcome(
 /// published, so comparing the complete envelope would incorrectly make every
 /// normal successful collection look stale.
 fn same_collection_evidence(left: &DockerSnapshot, right: &DockerSnapshot) -> bool {
-    let mut left = left.clone();
-    let mut right = right.clone();
+    // The cache deliberately retains raw Docker identifiers for internal
+    // correlation. A provider pass must be tied to the same public evidence
+    // that its completion can affect, otherwise a redacted-only raw change can
+    // falsely turn a normal completion stale and expose a change oracle.
+    let mut left = publish_docker_snapshot(left);
+    let mut right = publish_docker_snapshot(right);
     left.model_revision.clear();
     right.model_revision.clear();
     left == right
@@ -734,6 +738,43 @@ mod tests {
         )
         .await;
 
+        assert!(matches!(
+            state.cache.read().await.runtime_providers,
+            RuntimeProviderState::Fresh(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn secret_only_midflight_snapshot_change_keeps_provider_completion_fresh() {
+        let mut first_snapshot = mock_snapshot();
+        first_snapshot.containers[0].role = "token=DOCKERMAP_TEST_FAKE_MIDFLIGHT_A".into();
+        let mut second_snapshot = first_snapshot.clone();
+        second_snapshot.containers[0].role = "token=DOCKERMAP_TEST_FAKE_MIDFLIGHT_B".into();
+
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            runtime_collection_in_flight: Arc::new(AtomicBool::new(false)),
+        };
+        let (observed_snapshot, observed_mode) =
+            publish_docker_snapshot_cache(&state, docker_cache(first_snapshot)).await;
+        mark_runtime_collection_started(&state).await;
+        let collecting_revision = state.cache.read().await.snapshot.model_revision.clone();
+
+        publish_docker_snapshot_cache(&state, docker_cache(second_snapshot)).await;
+        assert_eq!(
+            state.cache.read().await.snapshot.model_revision,
+            collecting_revision,
+            "redacted-only raw inventory must not publish a new revision"
+        );
+
+        apply_runtime_collection_outcome(
+            &state,
+            observed_snapshot,
+            observed_mode,
+            ProviderCollectionOutcome::Collected(ProviderCollection::default()),
+        )
+        .await;
         assert!(matches!(
             state.cache.read().await.runtime_providers,
             RuntimeProviderState::Fresh(_)
