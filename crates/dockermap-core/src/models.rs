@@ -847,12 +847,14 @@ pub struct RuntimeEvidenceRef {
     /// version.  It lets future additions remain explicit and reviewable.
     #[schemars(range(min = 1, max = 1))]
     pub version: u8,
+    #[schemars(length(min = 1, max = 259))]
     pub id: String,
     pub provider: RuntimeProviderKind,
     pub kind: RuntimeEvidenceKind,
     #[serde(rename = "assertionKind")]
     pub assertion_kind: RuntimeEvidenceAssertionKind,
     /// A bounded, curated explanation; it is never copied from a raw source.
+    #[schemars(length(min = 1, max = 259))]
     pub summary: String,
     /// The already-public runtime entity whose Docker fact was observed.
     #[serde(rename = "subjectRef")]
@@ -860,8 +862,10 @@ pub struct RuntimeEvidenceRef {
     #[serde(rename = "collectedAt")]
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub collected_at: u64,
-    /// Opaque Docker observation revision, not a timestamp or source dump.
+    /// Opaque Docker observation token, not a cache-publication revision or
+    /// source dump.
     #[serde(rename = "providerRevision")]
+    #[schemars(length(min = 1, max = 259))]
     pub provider_revision: String,
     /// The Docker snapshot is observed as a single current publication. Host
     /// provider freshness remains represented by `providerStates` (#66).

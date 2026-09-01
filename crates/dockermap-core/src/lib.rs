@@ -694,6 +694,10 @@ mod tests {
             assert_eq!(evidence.freshness, RuntimeEvidenceFreshness::Fresh);
             assert_eq!(evidence.subject_ref, edge.source);
             assert_eq!(evidence.collected_at, snapshot.last_updated);
+            assert_eq!(
+                evidence.provider_revision,
+                snapshot.last_updated.to_string()
+            );
             assert!(!evidence.summary.contains(&snapshot.containers[0].name));
         }
 
@@ -704,6 +708,28 @@ mod tests {
             !serialized.contains("confidence"),
             "observed Docker facts must not imply numerical confidence"
         );
+    }
+
+    #[test]
+    fn docker_evidence_provider_revision_attests_observation_not_cache_publication() {
+        let mut snapshot = mock_snapshot();
+        snapshot.last_updated = 42;
+        // The daemon assigns this after runtime derivation. Supplying a
+        // plausible publication value here proves it cannot leak backward
+        // into provider evidence.
+        snapshot.model_revision = "daemon-publication-999".into();
+
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let evidence = runtime_map
+            .edges
+            .iter()
+            .flat_map(|edge| &edge.evidence_refs)
+            .next()
+            .expect("mock snapshot emits Docker evidence");
+
+        assert_eq!(evidence.collected_at, 42);
+        assert_eq!(evidence.provider_revision, "42");
+        assert_ne!(evidence.provider_revision, snapshot.model_revision);
     }
 
     #[test]

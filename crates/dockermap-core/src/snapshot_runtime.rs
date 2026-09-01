@@ -329,11 +329,11 @@ fn docker_runtime_evidence(
         RuntimeEvidenceKind::DockerVolumeMount => "Docker reported volume attachment",
         RuntimeEvidenceKind::DockerPortPublication => "Docker reported container port publication",
     };
-    let provider_revision = if snapshot.model_revision.is_empty() {
-        format!("docker-observation-{}", snapshot.last_updated)
-    } else {
-        snapshot.model_revision.clone()
-    };
+    // `modelRevision` is assigned only after runtime-map derivation and means
+    // cache publication identity. Evidence must instead attest the Docker
+    // observation it was derived from. The fixed decimal form is nonempty,
+    // bounded, deterministic, and contains no Docker source text.
+    let provider_revision = snapshot.last_updated.to_string();
     RuntimeEvidenceRef {
         version: 1,
         id: format!(
