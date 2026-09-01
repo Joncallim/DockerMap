@@ -29,6 +29,16 @@ For the explicit full-host profile, create separate service identities. Only
 the gateway account belongs to the host's `docker` group; the collector has no
 raw Docker authority.
 
+The supplied `dockermap-daemon.service` deliberately forces
+`DOCKERMAP_PID_NAMESPACE=host` at its final `ExecStart` boundary. This is an
+intentional native/full-host choice, not an automatic fallback: it enables the
+bounded host-provider collection described below. The force is necessary
+because the shared environment file keeps the Docker-only-safe
+`DOCKERMAP_PID_NAMESPACE=restricted` default and systemd environment files
+take precedence over `Environment=`. The recommended Docker-only Compose
+profile also pins the collector to `DOCKERMAP_PID_NAMESPACE=restricted`, so
+host providers stay unavailable even if container markers are ambiguous.
+
 ```bash
 sudo groupadd --system dockermap-gateway
 sudo useradd --system --gid dockermap-gateway --home /nonexistent --shell /usr/sbin/nologin dockermap-gateway
@@ -128,13 +138,19 @@ Docker socket. The gateway owns `/run/dockermap/docker-read.sock` and the collec
 gets only that filtered socket through its `dockermap-gateway` supplemental group.
 Do not add `dockermap-collector` or `dockermap-api` to Docker's group.
 
+The collector unit has `ProtectSystem=strict` and explicitly keeps
+`/opt/dockermap` read-only. It has no `ReadWritePaths` exception: the daemon
+does not persist cache, logs, or scan output. The gateway is the only unit that
+writes a runtime path (`/run/dockermap`) to create its filtered Unix socket;
+systemd supplies and owns that runtime directory.
+
 ## Profiles and full-host trade-offs
 
 | Profile | Docker authority | Host-provider visibility |
 | --- | --- | --- |
 | Demo | None; sample data only. | None. |
-| Docker-only (recommended) | Gateway-only raw socket; collector gets a filtered Unix socket and bounded project mount. | Restricted PID namespace; host providers unavailable. |
-| Full-host (this systemd profile) | Gateway-only raw socket; collector never joins Docker's group. | Intentional access to bounded host providers and fixed read-only commands. |
+| Docker-only (recommended) | Gateway-only raw socket; collector gets a filtered Unix socket and bounded project mount. | `DOCKERMAP_PID_NAMESPACE=restricted`; host providers unavailable. |
+| Full-host (this systemd profile) | Gateway-only raw socket; collector never joins Docker's group. | `DOCKERMAP_PID_NAMESPACE=host`; intentional access to bounded host providers and fixed read-only commands. |
 
 Full-host inspection is not a claim of perfect sandboxing: it intentionally sees
 host `/proc`, fixed system locations, and selected local commands. Tailscale and
