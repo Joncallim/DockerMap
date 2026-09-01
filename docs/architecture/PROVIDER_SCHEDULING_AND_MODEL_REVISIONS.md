@@ -148,6 +148,26 @@ host-scoped, 7 Python, 7 native, and 2 npm attempts (initial attempt included).
 This is a timing/cost comparison only: completed observations still retain
 their existing source, redaction, profile, and stale-state semantics.
 
+## Deterministic large-host evidence
+
+The daemon unit suite drives the fixed policy through a 0–60 second virtual
+healthy trace with synthetic immediate completions. It records 7, 5, 7, 7,
+and 2 provider execution opportunities respectively (28 total), never more
+than two concurrently admitted slots. Its explicit former-policy baseline is
+31 two-second passes multiplied by five slots: 155 opportunities. This is an
+execution-opportunity comparison, not a claim about CPU consumption,
+subprocess creation, or wall-clock work on a particular host.
+
+The same deterministic suite publishes generated 500-container Docker
+snapshots at all 31 two-second positions, verifies the five-slot runtime
+vector remains coherent and renderable, and proves that this larger inventory
+does not increase host-provider opportunities. A separate occupied-guard
+trace retains both timeout and stale evidence while later Docker snapshots
+continue publishing. Measuring physical CPU or process creation requires a
+separate controlled runner harness; DockerMap intentionally adds no runtime
+telemetry, configuration, route, command, or production benchmark for that
+purpose.
+
 No raw provider result bypasses `publication` redaction or source stamping.
 No new command, network egress, Docker authority, filesystem root, route, SSE
 event, or browser behavior is introduced by this baseline.
@@ -165,6 +185,12 @@ source-transition isolation. Generated schema/API tests require non-empty
 revisions and a five-item `providerStates` vector; web hook regressions retain
 the current fetch cadence while refusing generation-, provenance-, or
 revision-mismatched model pairs.
+
+The scheduler evidence additionally exercises the full 60-second fixed-policy
+opportunity trace, the explicit 155-opportunity legacy baseline, 31
+publications of a generated 500-container snapshot, inventory-independent
+provider starts, and occupied timeout/stale slots while Docker publication
+continues.
 
 ## Consequences
 
