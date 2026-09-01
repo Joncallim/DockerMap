@@ -41,8 +41,11 @@ class FakeEventSource {
 }
 
 let probeHealth: HealthResponse | null = null;
+let probeTick = 0;
 function Probe() {
-  probeHealth = useDaemonHeartbeat().health;
+  const heartbeat = useDaemonHeartbeat();
+  probeHealth = heartbeat.health;
+  probeTick = heartbeat.tick;
   return null;
 }
 
@@ -100,5 +103,33 @@ describe("useDaemonHeartbeat demo→live transition (P1-1)", () => {
       FakeEventSource.instances[0].fire("snapshot", { data: JSON.stringify(liveSnapshot) });
     });
     expect(probeHealth?.mode).toBe("docker");
+  });
+
+  it("accepts every health update but refreshes only for the first and new revisions", () => {
+    mountProbe();
+    const stream = FakeEventSource.instances[0];
+    expect(probeTick).toBe(0);
+
+    act(() => {
+      stream.fire("snapshot", { data: JSON.stringify(liveSnapshot) });
+    });
+    expect(probeHealth?.lastUpdated).toBe(4);
+    expect(probeTick).toBe(1);
+
+    act(() => {
+      stream.fire("snapshot", {
+        data: JSON.stringify({ ...liveSnapshot, lastUpdated: 5, snapshotVersion: "5" })
+      });
+    });
+    expect(probeHealth?.lastUpdated).toBe(5);
+    expect(probeTick).toBe(1);
+
+    act(() => {
+      stream.fire("snapshot", {
+        data: JSON.stringify({ ...liveSnapshot, lastUpdated: 6, modelRevision: "new-revision" })
+      });
+    });
+    expect(probeHealth?.lastUpdated).toBe(6);
+    expect(probeTick).toBe(2);
   });
 });

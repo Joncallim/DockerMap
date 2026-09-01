@@ -610,6 +610,10 @@ registerRoute("events-stream", async (req, res) => {
   // catch block writing AGAIN becomes an unhandled rejection (a crash on
   // Node >= 15), so every write path checks writableEnded/destroyed first.
   let busy = false;
+  // A stream still sends the first valid health payload immediately. After
+  // that, health observation timestamps alone do not generate browser work:
+  // the daemon's opaque model revision is the coherence boundary.
+  let lastEmittedRevision: string | null = null;
 
   const emit = async () => {
     if (busy || res.writableEnded || res.destroyed) {
@@ -626,6 +630,10 @@ registerRoute("events-stream", async (req, res) => {
         if (!res.writableEnded && !res.destroyed) res.end();
         return;
       }
+      if (!health.modelRevision || health.modelRevision === lastEmittedRevision) {
+        return;
+      }
+      lastEmittedRevision = health.modelRevision;
       res.write(formatSseEvent(SSE_EVENT.snapshot, publishApiPayload(health)));
     } catch (error) {
       if (res.writableEnded || res.destroyed || (cookieSession && !validSession(cookieSession))) {
