@@ -28,7 +28,7 @@ Exactly one authority owns each concern. A generated artifact is evidence of its
 | Response-to-route association | Typed Node route-contract table referencing a Rust or Node schema ID and shared API-error schema | OpenAPI responses and route/schema completeness checks | This closes the current path-list/schema-list gap. |
 | OpenAPI | Derived artifact, not an editable source | Committed deterministic OpenAPI JSON (optional rendered YAML) | Derived from manifest, request metadata, response association, and schemas. |
 | Fixtures | `tests/fixtures/contracts` | Handwritten readable examples validated against schemas | Retain collision, redaction, and realistic regression value; never define the API. |
-| API compatibility version | Tracked root `VERSION` file, introduced in the version phase | Rust build value, Node descriptor/status/OpenAPI value, release metadata | Current repeated `0.1.0` literals are temporary duplication, not authority. |
+| API compatibility version | Tracked root `VERSION` file | Checked Cargo/npm/package-lock mirrors; generated API-local version module; daemon build guard; Node descriptor/status/OpenAPI; release tag metadata | `scripts/check-version-authority.mjs` is the dependency-free checker/generator. |
 
 ## Options considered
 
@@ -61,7 +61,19 @@ OpenAPI follows schema and route association deliberately: generating it first w
 
 The first phase is deliberately narrow. `schemars` `=1.2.1` derives the daemon-owned response roots from their Rust serialization definitions: Docker snapshot and graph, runtime map, Compose scan/graph/edit plan, logs, and health. The committed artifacts live in `packages/contracts/generated/rust/` and are regenerated with `npm run generate:contracts`; `npm run check:contracts` renders twice and fails when the byte streams, checked-in bytes, or expected artifact set drift. Rust `u64` fields serialize as JSON integers, but public schemas cap them at JavaScript's exact integer limit (`9007199254740991`): JavaScript `JSON.parse` cannot preserve every larger integer. Current public uses are timestamps and remain inside that range; a future endpoint that needs a larger value must serialize it as a string or introduce a separately documented representation rather than claiming lossless browser compatibility.
 
-The contracts workspace validates every matching readable fixture using Ajv against the committed generated schema, including a negative regression that makes a Rust-owned integer field invalid. This validates schema/fixture agreement without treating a fixture as schema authority. Browser/API-only envelopes, route associations, generated TypeScript, OpenAPI, and release-version authority remain later phases of this ADR.
+The contracts workspace validates every matching readable fixture using Ajv against the committed generated schema, including a negative regression that makes a Rust-owned integer field invalid. This validates schema/fixture agreement without treating a fixture as schema authority. Browser/API-only envelopes, route associations, generated TypeScript, and OpenAPI follow in later phases of this ADR.
+
+### Implemented version authority (#150)
+
+`VERSION` is now the strict SemVer product authority. The dependency-free
+`scripts/check-version-authority.mjs` checks all DockerMap Cargo manifests,
+workspace package manifests, workspace dependency mirrors, and the exact
+`package-lock.json` metadata. It emits and checks the committed API-local
+`PRODUCT_VERSION` module used by `/api/v1`, `/api/status`, and OpenAPI. The
+daemon build script rejects a Cargo package version that differs from `VERSION`;
+release packaging performs the same mirror check and rejects any tag other than
+`vVERSION` before creating a staging directory. Docker Engine API and snapshot
+versions are deliberately outside this product-version authority.
 
 ## Determinism and CI contract
 
