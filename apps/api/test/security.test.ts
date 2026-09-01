@@ -1156,6 +1156,15 @@ test("runtime evidence is required and fails closed before browser publication",
   const timestampAlias = structuredClone(fixture);
   timestampAlias.edges[0].evidenceRefs[0].providerRevision = String(timestampAlias.edges[0].evidenceRefs[0].collectedAt);
   assert.throws(() => validateDaemonResponse("/daemon/runtime/map", timestampAlias));
+  const wrongSubject = structuredClone(fixture);
+  wrongSubject.edges[0].evidenceRefs[0].subjectRef = "docker_container_not_the_edge_source";
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongSubject));
+  for (const field of ["source", "target"] as const) {
+    const wrongEndpoint = structuredClone(fixture);
+    wrongEndpoint.edges[0][field] = `runtime_${field}_not_docker`;
+    if (field === "source") wrongEndpoint.edges[0].evidenceRefs[0].subjectRef = wrongEndpoint.edges[0].source;
+    assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongEndpoint));
+  }
 
   for (const [kind, relationship] of [
     ["docker_network_membership", "mounts"],
@@ -1179,7 +1188,8 @@ test("fabricated runtime evidence is rejected over the authenticated API boundar
   ));
   const sentinel = "DOCKERMAP_TEST_FAKE_RUNTIME_EVIDENCE_SECRET";
   const hostile = structuredClone(fixture);
-  hostile.edges[0].evidenceRefs[0].provider = `token=${sentinel}`;
+  hostile.edges[0].source = `token=${sentinel}`;
+  hostile.edges[0].evidenceRefs[0].subjectRef = hostile.edges[0].source;
   const daemon = await startStubDaemon((req, res) => {
     if (req.url === "/daemon/runtime/map") return sendJson(res, 200, hostile);
     return sendJson(res, 404, { code: "not_found", message: "missing" });
@@ -2058,8 +2068,8 @@ test("API publishes redacted and normalized daemon data on every response route"
       sendJson(res, 200, {
         nodes: [{ id: hostile, provider: "other", type: "service", label: hostile, status: hostile, metadata: { [hostile]: hostile } }],
         edges: [{
-          source: hostile,
-          target: hostile,
+          source: `docker_container_${hostile}`,
+          target: `docker_network_${hostile}`,
           relationship: "connected_to",
           metadata: { [hostile]: hostile },
           evidenceRefs: [{
@@ -2069,7 +2079,7 @@ test("API publishes redacted and normalized daemon data on every response route"
             kind: "docker_network_membership",
             assertionKind: "observed",
             summary: hostile,
-            subjectRef: hostile,
+            subjectRef: `docker_container_${hostile}`,
             collectedAt: 1,
             providerRevision: hostile,
             freshness: "fresh"
