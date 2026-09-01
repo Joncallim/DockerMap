@@ -193,6 +193,16 @@ test.describe("DockerMap GUI", () => {
     const applicationNode = page.locator("button.runtime-node-btn", { hasText: "application" }).filter({ hasText: "docker network" });
     await expect(applicationNode).toHaveCount(0);
 
+    // Edge evidence is selected independently of endpoint navigation. The
+    // inspector must expose the canonical Docker fact, not reconstruct a
+    // rationale from the two visible labels.
+    const inspectEvidence = page.getByRole("button", { name: "Inspect evidence" }).first();
+    await inspectEvidence.click();
+    await expect(inspectEvidence).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByText("Relationship evidence", { exact: true })).toBeVisible();
+    await expect(page.getByText("Observed fact", { exact: true })).toBeVisible();
+    await expect(page.getByText("Docker reported container network membership", { exact: true })).toBeVisible();
+
     // Follow the relation anyway: the destination must become visible (the
     // incompatible layer filter is widened), stay SELECTED, and receive FOCUS
     // on its persistent row button — never BODY. Previously the visibility

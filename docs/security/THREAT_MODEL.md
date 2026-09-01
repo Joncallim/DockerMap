@@ -41,6 +41,11 @@ changes them:
   documented before release.
 - Package, service, process, unit, and proxy inspection must not leak secrets from env vars,
   command lines, service files, credentials, or inline auth URLs.
+- Runtime relationship evidence is a separate publication surface. It is a closed, bounded
+  record with no generic metadata/config/argv field; evidence values pass the same
+  redaction and control-character publication boundary as all other daemon response text.
+  A malformed evidence record is rejected at the API schema boundary rather than
+  partially published.
 
 ## Main Risks And Protections
 
@@ -144,6 +149,8 @@ Automated tests currently cover:
 - Symlink bind-source detection without following the symlink during validation.
 - Provider redaction fixtures for systemd, tmux, npm/package metadata, native-process-shaped
   output, reverse-proxy markers, DNS markers, provider diagnostics, and provider edge metadata.
+- Runtime-edge evidence schema rejection and publication redaction, including malformed
+  provenance fields and secret/control-character-bearing evidence summaries or references.
 - GUI smoke coverage against daemon fallback mode.
 - Route and middleware completeness: every Express layer must be wrapped in
   `trackedMiddleware()` and every route registered through `registerRoute()` with

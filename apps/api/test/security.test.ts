@@ -902,7 +902,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
     DOCKERMAP_API_TOKEN: "test-token"
   });
-  const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } });
+  const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint8: true, uint32: true, uint64: true } });
   const validators = new Map<RustResponseSchemaId, ReturnType<Ajv2020["compile"]>>();
   for (const [schemaName, schema] of Object.entries(RUST_RESPONSE_SCHEMAS) as [RustResponseSchemaId, (typeof RUST_RESPONSE_SCHEMAS)[RustResponseSchemaId]][]) {
     validators.set(schemaName, ajv.compile(schema));
@@ -1112,6 +1112,27 @@ test("daemon response validator maps every generated Rust response root and reje
   assert.throws(() => validateDaemonResponse("/daemon/not-documented", {}));
 });
 
+test("runtime evidence is required and fails closed before browser publication", async () => {
+  const { validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json", import.meta.url),
+    "utf8"
+  ));
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
+
+  const missing = structuredClone(fixture);
+  delete missing.edges[0].evidenceRefs;
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", missing));
+
+  const malformed = structuredClone(fixture);
+  malformed.edges[0].evidenceRefs[0].summary = { unexpected: "object" };
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", malformed));
+
+  const extra = structuredClone(fixture);
+  extra.edges[0].evidenceRefs[0].rawConfig = "must never become a public field";
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", extra));
+});
+
 test("actual canonical and v1 SSE snapshot/error frames use their declared payload schemas", async () => {
   const health = JSON.parse(await readFile(new URL("../../../tests/fixtures/contracts/health-response.json", import.meta.url), "utf8"));
   const healthyDaemon = await startStubDaemon((req, res) => {
@@ -1123,7 +1144,7 @@ test("actual canonical and v1 SSE snapshot/error frames use their declared paylo
     DOCKERMAP_API_TOKEN: "test-token"
   });
   const auth = { Authorization: "Bearer test-token" };
-  const rustValidator = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } })
+  const rustValidator = new Ajv2020({ allErrors: true, strict: true, formats: { uint8: true, uint32: true, uint64: true } })
     .compile(RUST_RESPONSE_SCHEMAS.HealthResponse);
 
   for (const path of ["/api/events/stream", "/api/v1/events/stream"]) {
@@ -1974,7 +1995,24 @@ test("API publishes redacted and normalized daemon data on every response route"
     if (req.url === "/daemon/runtime/map") {
       sendJson(res, 200, {
         nodes: [{ id: hostile, provider: "other", type: "service", label: hostile, status: hostile, metadata: { [hostile]: hostile } }],
-        edges: [{ source: hostile, target: hostile, relationship: "depends_on", metadata: { [hostile]: hostile } }],
+        edges: [{
+          source: hostile,
+          target: hostile,
+          relationship: "depends_on",
+          metadata: { [hostile]: hostile },
+          evidenceRefs: [{
+            version: 1,
+            id: hostile,
+            provider: "docker",
+            kind: "docker_network_membership",
+            assertionKind: "observed",
+            summary: hostile,
+            subjectRef: hostile,
+            collectedAt: 1,
+            providerRevision: hostile,
+            freshness: "fresh"
+          }]
+        }],
         diagnostics: [{ provider: "other", severity: "warning", message: hostile }],
         lastUpdated: 1,
         modelRevision: "revision-1",
