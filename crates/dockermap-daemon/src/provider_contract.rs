@@ -7,7 +7,10 @@
 //! future scheduler one bounded unit to run without route, cache, or
 //! publication authority.
 
-use crate::publication::push_provider_diagnostic;
+use crate::publication::{
+    push_provider_diagnostic, redact_runtime_diagnostics, redact_runtime_edges,
+    redact_runtime_nodes,
+};
 use dockermap_core::{
     DiagnosticSeverity, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode, RuntimeProviderKind,
 };
@@ -36,7 +39,7 @@ impl ProviderDiagnostic {
 /// Accumulates only provider observations for one refresh. Diagnostics enter
 /// through this boundary so they retain the existing redaction-before-storage
 /// invariant even before publication.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ProviderCollection {
     nodes: Vec<RuntimeMapNode>,
     edges: Vec<RuntimeMapEdge>,
@@ -76,11 +79,26 @@ impl ProviderCollection {
     ) {
         (self.nodes, self.edges, self.diagnostics)
     }
+
+    /// The cache can retain a successful provider pass across later failures.
+    /// Provider implementations may add node, edge, and diagnostic fields
+    /// directly, so sanitize every retained field before it becomes
+    /// long-lived. Do not run topology normalization here: provider edges may
+    /// intentionally target Docker nodes that are added only when the public
+    /// map is derived from a snapshot.
+    pub(crate) fn sanitized_for_retention(mut self) -> Self {
+        redact_runtime_nodes(&mut self.nodes);
+        redact_runtime_edges(&mut self.edges);
+        redact_runtime_diagnostics(&mut self.diagnostics);
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dockermap_core::{RuntimeNodeKind, RuntimeRelationshipKind};
+    use std::collections::BTreeMap;
 
     #[test]
     fn diagnostics_are_redacted_before_the_collection_exposes_them() {
@@ -96,5 +114,45 @@ mod tests {
         assert!(!diagnostics[0]
             .message
             .contains("DOCKERMAP_TEST_PROVIDER_CONTRACT_SECRET"));
+    }
+
+    #[test]
+    fn retained_observations_sanitize_node_edge_and_diagnostic_fields_before_cache_storage() {
+        let secret = "DOCKERMAP_TEST_FAKE_RETAINED_PROVIDER_SECRET";
+        let mut collection = ProviderCollection::default();
+        let mut node_metadata = BTreeMap::new();
+        node_metadata.insert("token".into(), secret.into());
+        collection.nodes.push(RuntimeMapNode {
+            id: format!("provider-{secret}"),
+            provider: RuntimeProviderKind::Process,
+            kind: RuntimeNodeKind::Process,
+            label: secret.into(),
+            status: Some(secret.into()),
+            layer: None,
+            metadata: node_metadata,
+            service: None,
+            package: None,
+        });
+        let mut edge_metadata = BTreeMap::new();
+        edge_metadata.insert("credential".into(), secret.into());
+        collection.edges.push(RuntimeMapEdge {
+            source: format!("provider-{secret}"),
+            target: "docker_container_target".into(),
+            relationship: RuntimeRelationshipKind::RelatedTo,
+            metadata: edge_metadata,
+        });
+        collection.diagnostics.push(RuntimeMapDiagnostic {
+            provider: RuntimeProviderKind::Process,
+            severity: DiagnosticSeverity::Warning,
+            message: format!("provider failed with token={secret}"),
+        });
+
+        let (nodes, edges, diagnostics) = collection.sanitized_for_retention().into_parts();
+        let stored = serde_json::to_string(&(nodes, edges, diagnostics))
+            .expect("retained observations should serialize");
+        assert!(
+            !stored.contains(secret),
+            "raw provider data must not survive in the retained cache"
+        );
     }
 }
