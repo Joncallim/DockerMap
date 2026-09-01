@@ -7,6 +7,7 @@ mod docker_collector;
 mod docker_config;
 mod pid_namespace;
 mod process_runner;
+mod provider_contract;
 mod providers;
 mod publication;
 mod runtime_collection;
@@ -157,34 +158,6 @@ async fn shutdown_signal() {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
     }
-}
-
-pub(crate) fn looks_like_ai_agent(value: &str) -> bool {
-    [
-        "openai",
-        "anthropic",
-        "langchain",
-        "llamaindex",
-        "autogen",
-        "crewai",
-        "agent",
-        "@modelcontextprotocol/sdk",
-    ]
-    .into_iter()
-    .any(|needle| value.contains(needle))
-}
-
-pub(crate) fn non_empty_string(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
-    let mut output = value.chars().take(max_chars).collect::<String>();
-    if value.chars().count() > max_chars {
-        output.push_str("...");
-    }
-    output
 }
 
 #[cfg(test)]
@@ -665,12 +638,6 @@ mod tests {
             Vec::<String>::new(),
             "bare separators produce no refs"
         );
-    }
-
-    #[test]
-    fn truncates_log_messages_on_character_boundaries() {
-        assert_eq!(truncate_chars("abcdef", 3), "abc...");
-        assert_eq!(truncate_chars("ok", 3), "ok");
     }
 
     #[test]

@@ -7,6 +7,7 @@
 use crate::{
     config::project_root,
     pid_namespace::{daemon_pid_namespace_scope, PidNamespaceScope},
+    provider_contract::{ProviderCollection, ProviderDiagnostic},
     providers::{
         cron::collect_scheduled_jobs,
         listeners::collect_network_listeners,
@@ -17,12 +18,12 @@ use crate::{
         systemd::collect_systemd_services,
         tmux::collect_tmux_sessions,
     },
-    publication::{push_provider_diagnostic, redact_runtime_map},
+    publication::redact_runtime_map,
 };
 use dockermap_core::{
     derive_runtime_map, service_entity_kind_name, DiagnosticSeverity, DockerSnapshot, RuntimeMap,
-    RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer,
-    RuntimeProviderKind, ServiceEntityKind,
+    RuntimeMapDiagnostic, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
+    ServiceEntityKind,
 };
 use std::{
     collections::BTreeMap,
@@ -41,65 +42,52 @@ use std::{
 const RUNTIME_MAP_COLLECTION_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub(crate) fn collect_runtime_map(snapshot: &DockerSnapshot) -> RuntimeMap {
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
-    let mut diagnostics = Vec::new();
+    let mut collection = ProviderCollection::default();
     let project_root = project_root().ok();
     let pid_namespace = daemon_pid_namespace_scope();
 
     if let Some(message) = pid_namespace.diagnostic() {
-        push_provider_diagnostic(
-            &mut diagnostics,
+        collection.push_diagnostic(ProviderDiagnostic::new(
             RuntimeProviderKind::Process,
             DiagnosticSeverity::Info,
-            message.into(),
-        );
+            message,
+        ));
     }
 
     if pid_namespace.is_restricted() {
-        push_provider_diagnostic(
-            &mut diagnostics,
+        collection.push_diagnostic(ProviderDiagnostic::new(
             RuntimeProviderKind::Host,
             DiagnosticSeverity::Info,
-            "Host node omitted because the daemon runs in a restricted PID namespace".into(),
-        );
+            "Host node omitted because the daemon runs in a restricted PID namespace",
+        ));
     } else {
-        collect_host_node(project_root.as_deref(), &mut nodes);
+        collect_host_node(project_root.as_deref(), collection.nodes_mut());
     }
-    collect_network_infrastructure(
-        pid_namespace,
-        snapshot,
-        &mut nodes,
-        &mut edges,
-        &mut diagnostics,
-    );
-    collect_host_scoped_runtime_providers(pid_namespace, &mut nodes, &mut edges, &mut diagnostics);
-    collect_python_processes(pid_namespace.is_restricted(), &mut nodes, &mut diagnostics);
-    collect_native_processes_with_scope(
-        pid_namespace.is_restricted(),
-        &mut nodes,
-        &mut diagnostics,
-    );
+    {
+        let (nodes, edges, diagnostics) = collection.parts_mut();
+        collect_network_infrastructure(pid_namespace, snapshot, nodes, edges, diagnostics);
+    }
+    collect_host_scoped_runtime_providers(pid_namespace, &mut collection);
+    {
+        let (nodes, _, diagnostics) = collection.parts_mut();
+        collect_python_processes(pid_namespace.is_restricted(), nodes, diagnostics);
+        collect_native_processes_with_scope(pid_namespace.is_restricted(), nodes, diagnostics);
+    }
     if let Some(root) = project_root.as_deref() {
         // This root is an explicit project mount/configuration target rather
         // than namespace-global discovery, so npm remains available even to a
         // containerized daemon (and is documented as mounted project data).
-        collect_npm_projects(
-            root,
-            pid_namespace,
-            &mut nodes,
-            &mut edges,
-            &mut diagnostics,
-        );
+        let (nodes, edges, diagnostics) = collection.parts_mut();
+        collect_npm_projects(root, pid_namespace, nodes, edges, diagnostics);
     } else {
-        push_provider_diagnostic(
-            &mut diagnostics,
+        collection.push_diagnostic(ProviderDiagnostic::new(
             RuntimeProviderKind::Npm,
             DiagnosticSeverity::Info,
-            "npm discovery skipped: project root unavailable".into(),
-        );
+            "npm discovery skipped: project root unavailable",
+        ));
     }
 
+    let (nodes, edges, diagnostics) = collection.into_parts();
     let mut runtime_map = derive_runtime_map(snapshot, nodes, edges, diagnostics);
     redact_runtime_map(&mut runtime_map);
     runtime_map
@@ -195,9 +183,7 @@ fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapN
 /// of a host topology rather than relabeling container-local evidence.
 pub(crate) fn collect_host_scoped_runtime_providers(
     pid_namespace: PidNamespaceScope,
-    nodes: &mut Vec<RuntimeMapNode>,
-    edges: &mut Vec<RuntimeMapEdge>,
-    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+    collection: &mut ProviderCollection,
 ) {
     if pid_namespace.is_restricted() {
         for (provider, message) in [
@@ -222,11 +208,16 @@ pub(crate) fn collect_host_scoped_runtime_providers(
                 "tmux discovery omitted because the daemon runs in a restricted PID namespace",
             ),
         ] {
-            push_provider_diagnostic(diagnostics, provider, DiagnosticSeverity::Info, message.into());
+            collection.push_diagnostic(ProviderDiagnostic::new(
+                provider,
+                DiagnosticSeverity::Info,
+                message,
+            ));
         }
         return;
     }
 
+    let (nodes, edges, diagnostics) = collection.parts_mut();
     collect_network_listeners(nodes, diagnostics);
     collect_systemd_services(nodes, edges, diagnostics);
     collect_scheduled_jobs(nodes, diagnostics);
@@ -270,15 +261,9 @@ mod tests {
 
     #[test]
     fn restricted_namespace_omits_host_scoped_collectors() {
-        let mut nodes = Vec::new();
-        let mut edges = Vec::new();
-        let mut diagnostics = Vec::new();
-        collect_host_scoped_runtime_providers(
-            PidNamespaceScope::Restricted,
-            &mut nodes,
-            &mut edges,
-            &mut diagnostics,
-        );
+        let mut collection = ProviderCollection::default();
+        collect_host_scoped_runtime_providers(PidNamespaceScope::Restricted, &mut collection);
+        let (nodes, edges, diagnostics) = collection.into_parts();
 
         assert!(nodes.is_empty());
         assert!(edges.is_empty());

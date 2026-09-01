@@ -2,9 +2,10 @@
 //! project directory. No registry commands or external network calls occur.
 
 use crate::pid_namespace::PidNamespaceScope;
+use crate::providers::looks_like_ai_agent;
+use crate::publication::truncate_chars;
 use crate::{
-    looks_like_ai_agent, push_provider_diagnostic, redact_sensitive_text,
-    safe_runtime_id_component, truncate_chars, REDACTED_VALUE,
+    push_provider_diagnostic, redact_sensitive_text, safe_runtime_id_component, REDACTED_VALUE,
 };
 #[cfg(test)]
 use crate::{redact_runtime_diagnostics, redact_runtime_edges, redact_runtime_nodes};

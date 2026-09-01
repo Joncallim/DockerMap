@@ -1,7 +1,6 @@
 use crate::process_runner::{run_command_with_timeout, PROVIDER_COMMAND_TIMEOUT};
-use crate::{
-    looks_like_ai_agent, non_empty_string, push_provider_diagnostic, safe_runtime_id_component,
-};
+use crate::providers::{looks_like_ai_agent, non_empty_string};
+use crate::{push_provider_diagnostic, safe_runtime_id_component};
 #[cfg(test)]
 use crate::{redact_runtime_node, REDACTED_VALUE};
 use dockermap_core::{

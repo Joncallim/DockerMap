@@ -15,9 +15,10 @@ use dockermap_core::{
 use futures_util::stream::StreamExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::publication::truncate_chars;
 use crate::{
     docker_config::{docker_gateway_socket_from_env, docker_label_filter_from_env},
-    redact_runtime_display_text, truncate_chars,
+    redact_runtime_display_text,
 };
 
 #[derive(Clone)]

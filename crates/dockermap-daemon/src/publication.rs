@@ -13,6 +13,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const REDACTED_VALUE: &str = "[redacted]";
 
+/// Character-bounded display truncation shared by Docker logs and bounded
+/// project metadata. It lives at the publication boundary rather than the
+/// daemon entrypoint so collectors cannot acquire bootstrap responsibilities.
+pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut output = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        output.push_str("...");
+    }
+    output
+}
+
 pub(crate) fn redact_runtime_map(runtime_map: &mut RuntimeMap) {
     redact_runtime_nodes(&mut runtime_map.nodes);
     redact_runtime_edges(&mut runtime_map.edges);
@@ -548,4 +559,15 @@ pub(crate) fn write_provider_diagnostic(
         writer,
         "provider diagnostic ({provider:?}, {severity:?}): {message}"
     )
+}
+
+#[cfg(test)]
+mod shared_helper_tests {
+    use super::truncate_chars;
+
+    #[test]
+    fn truncates_log_messages_on_character_boundaries() {
+        assert_eq!(truncate_chars("abcdef", 3), "abc...");
+        assert_eq!(truncate_chars("ok", 3), "ok");
+    }
 }
