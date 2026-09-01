@@ -12,6 +12,10 @@ use dockermap_core::{
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const REDACTED_VALUE: &str = "[redacted]";
+/// Evidence is a compact explanation reference, not an alternate raw-source
+/// transport. Keep its human-facing fields independently bounded even if a
+/// future provider constructs it outside the Docker derivation path.
+const MAX_RUNTIME_EVIDENCE_TEXT_CHARS: usize = 256;
 
 /// Character-bounded display truncation shared by Docker logs and bounded
 /// project metadata. It lives at the publication boundary rather than the
@@ -191,7 +195,36 @@ pub(crate) fn redact_runtime_edges(edges: &mut [RuntimeMapEdge]) {
         for value in edge.metadata.values_mut() {
             *value = redact_runtime_display_text(value);
         }
+        redact_runtime_evidence_refs(&mut edge.evidence_refs);
     }
+}
+
+fn redact_runtime_evidence_refs(evidence_refs: &mut [dockermap_core::RuntimeEvidenceRef]) {
+    for evidence in evidence_refs.iter_mut() {
+        // `subjectRef` is a runtime edge endpoint rather than presentation
+        // detail, so do not truncate it independently of its owning edge.
+        // This preserves the existing collision/non-routability semantics.
+        evidence.subject_ref = redact_runtime_display_text(&evidence.subject_ref);
+        evidence.id = truncate_chars(
+            &redact_runtime_display_text(&evidence.id),
+            MAX_RUNTIME_EVIDENCE_TEXT_CHARS,
+        );
+        evidence.summary = truncate_chars(
+            &redact_runtime_display_text(&evidence.summary),
+            MAX_RUNTIME_EVIDENCE_TEXT_CHARS,
+        );
+        evidence.provider_revision = truncate_chars(
+            &redact_runtime_display_text(&evidence.provider_revision),
+            MAX_RUNTIME_EVIDENCE_TEXT_CHARS,
+        );
+    }
+    // Keep distinct post-redaction occurrences visible. Evidence IDs are not
+    // routing keys (each record remains inline with its edge), so deduping a
+    // normalized collision would silently erase an observation. Sorting gives
+    // clients deterministic output without selecting one collision winner.
+    evidence_refs.sort_by_key(|evidence| {
+        serde_json::to_string(evidence).expect("runtime evidence must serialize")
+    });
 }
 
 pub(crate) fn redact_runtime_diagnostics(diagnostics: &mut [RuntimeMapDiagnostic]) {

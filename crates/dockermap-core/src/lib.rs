@@ -646,6 +646,67 @@ mod tests {
     }
 
     #[test]
+    fn docker_runtime_edges_carry_bounded_observed_evidence_without_confidence() {
+        let snapshot = mock_snapshot();
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let network = runtime_map
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.relationship == RuntimeRelationshipKind::ConnectedTo
+                    && edge.evidence_refs.iter().any(|evidence| {
+                        evidence.kind == RuntimeEvidenceKind::DockerNetworkMembership
+                    })
+            })
+            .expect("mock snapshot has Docker network membership");
+        let port = runtime_map
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.relationship == RuntimeRelationshipKind::Exposes
+                    && edge
+                        .evidence_refs
+                        .iter()
+                        .any(|evidence| evidence.kind == RuntimeEvidenceKind::DockerPortPublication)
+            })
+            .expect("mock snapshot has Docker port publication");
+        let mount = runtime_map
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.relationship == RuntimeRelationshipKind::Mounts
+                    && edge
+                        .evidence_refs
+                        .iter()
+                        .any(|evidence| evidence.kind == RuntimeEvidenceKind::DockerVolumeMount)
+            })
+            .expect("mock snapshot has Docker volume attachment");
+
+        for edge in [network, port, mount] {
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 1);
+            assert_eq!(evidence.provider, RuntimeProviderKind::Docker);
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Observed
+            );
+            assert_eq!(evidence.freshness, RuntimeEvidenceFreshness::Fresh);
+            assert_eq!(evidence.subject_ref, edge.source);
+            assert_eq!(evidence.collected_at, snapshot.last_updated);
+            assert!(!evidence.summary.contains(&snapshot.containers[0].name));
+        }
+
+        let serialized = serde_json::to_string(&runtime_map).expect("runtime map serializes");
+        assert!(serialized.contains("evidenceRefs"));
+        assert!(serialized.contains("assertionKind"));
+        assert!(
+            !serialized.contains("confidence"),
+            "observed Docker facts must not imply numerical confidence"
+        );
+    }
+
+    #[test]
     fn collision_resistant_topology_ids_preserve_distinct_raw_identities() {
         // Every raw identity below used to collide after lowercasing and
         // punctuation/control replacement. Docker inventory, Compose services,

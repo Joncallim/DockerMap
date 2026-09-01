@@ -42,10 +42,11 @@ use dockermap_core::mock_log_entries;
 #[cfg(test)]
 use dockermap_core::{
     derive_runtime_map, page_log_entries, ComposeFileOrigin, ComposeMountKind, ContainerMount,
-    DiagnosticSeverity, LogCursor, LogEntry, NetworkRecord, RuntimeMapDiagnostic, RuntimeMapEdge,
-    RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeOwnership, RuntimePackageEntity,
-    RuntimeProviderKind, RuntimeRelationshipKind, RuntimeServiceEntity, RuntimeServiceStatus,
-    VolumeRecord, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+    DiagnosticSeverity, LogCursor, LogEntry, NetworkRecord, RuntimeEvidenceAssertionKind,
+    RuntimeEvidenceFreshness, RuntimeEvidenceKind, RuntimeEvidenceRef, RuntimeMapDiagnostic,
+    RuntimeMapEdge, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeOwnership,
+    RuntimePackageEntity, RuntimeProviderKind, RuntimeRelationshipKind, RuntimeServiceEntity,
+    RuntimeServiceStatus, VolumeRecord, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 #[cfg(test)]
 use dockermap_core::{mock_snapshot, HealthResponse, HealthState, RuntimeMap, RuntimeMode};
@@ -1525,6 +1526,7 @@ mod tests {
             target: "host_local".into(),
             relationship: RuntimeRelationshipKind::RunsOn,
             metadata: BTreeMap::from([("argv".into(), command.into())]),
+            evidence_refs: Vec::new(),
         }];
         let mut diagnostics = vec![RuntimeMapDiagnostic {
             provider: RuntimeProviderKind::Process,
@@ -1560,6 +1562,7 @@ mod tests {
                 "header".into(),
                 "Authorization: Bearer DOCKERMAP_TEST_FAKE_EDGE_TOKEN".into(),
             )]),
+            evidence_refs: Vec::new(),
         }];
         let mut diagnostics = vec![RuntimeMapDiagnostic {
             provider: RuntimeProviderKind::Other,
@@ -1577,6 +1580,54 @@ mod tests {
                 "DOCKERMAP_TEST_FAKE_DIAGNOSTIC_PASSWORD",
             ],
         );
+    }
+
+    #[test]
+    fn runtime_evidence_redacts_controls_and_secrets_bounds_text_and_preserves_collisions() {
+        let secret = "https://user:DOCKERMAP_TEST_FAKE_EVIDENCE_TOKEN@example.test/path";
+        let oversized = "x".repeat(800);
+        let evidence = |summary: String| RuntimeEvidenceRef {
+            version: 1,
+            id: format!("evidence-{oversized}"),
+            provider: RuntimeProviderKind::Docker,
+            kind: RuntimeEvidenceKind::DockerNetworkMembership,
+            assertion_kind: RuntimeEvidenceAssertionKind::Observed,
+            summary,
+            subject_ref: "container\u{202e}id".into(),
+            collected_at: 1,
+            provider_revision: oversized.clone(),
+            freshness: RuntimeEvidenceFreshness::Fresh,
+        };
+        let mut edges = vec![RuntimeMapEdge {
+            source: "container\u{202e}id".into(),
+            target: "network".into(),
+            relationship: RuntimeRelationshipKind::ConnectedTo,
+            metadata: BTreeMap::new(),
+            evidence_refs: vec![
+                evidence(secret.into()),
+                evidence("safe\u{202e}summary".into()),
+            ],
+        }];
+
+        redact_runtime_edges(&mut edges);
+
+        assert_eq!(edges[0].evidence_refs.len(), 2);
+        assert!(edges[0]
+            .evidence_refs
+            .iter()
+            .all(|evidence| evidence.summary.chars().count() <= 259));
+        assert!(edges[0]
+            .evidence_refs
+            .iter()
+            .all(|evidence| evidence.id.chars().count() <= 259));
+        assert!(edges[0].evidence_refs.iter().all(|evidence| {
+            evidence.provider_revision.chars().count() <= 259
+                && evidence.subject_ref == edges[0].source
+        }));
+        let serialized = serde_json::to_string(&edges).expect("evidence serializes");
+        assert!(!serialized.contains("DOCKERMAP_TEST_FAKE_EVIDENCE_TOKEN"));
+        assert!(!serialized.contains('\u{202e}'));
+        assert!(serialized.contains(REDACTED_VALUE));
     }
 
     #[test]
@@ -2492,6 +2543,7 @@ mod tests {
             target: unsafe_package_id.into(),
             relationship: RuntimeRelationshipKind::DependsOn,
             metadata: BTreeMap::new(),
+            evidence_refs: Vec::new(),
         };
         let mut map = RuntimeMap {
             nodes: vec![node, duplicate_after_normalization, package_node],
