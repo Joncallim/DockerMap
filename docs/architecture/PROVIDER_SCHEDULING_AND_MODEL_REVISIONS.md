@@ -103,9 +103,9 @@ revision monotonicity/stability and sanitized evidence comparison,
 restricted-PID omission behavior, no-overlap guard, fresh Docker publication
 with retained stale provider observations, timeout degradation, and
 source-transition isolation. Generated schema/API tests require non-empty
-revisions and complete state vectors; web hook regressions retain the current
-fetch cadence while refusing generation-, provenance-, or revision-mismatched
-model pairs.
+revisions and the bounded `providerStates` field; web hook regressions retain
+the current fetch cadence while refusing generation-, provenance-, or
+revision-mismatched model pairs.
 
 ## Consequences
 
