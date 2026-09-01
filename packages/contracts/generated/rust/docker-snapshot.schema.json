@@ -1,0 +1,236 @@
+{
+  "$defs": {
+    "ComposeMountKind": {
+      "enum": [
+        "bind",
+        "named_volume",
+        "anonymous_volume",
+        "unsupported"
+      ],
+      "type": "string"
+    },
+    "ContainerMount": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ComposeMountKind"
+        },
+        "readOnly": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "target",
+        "readOnly"
+      ],
+      "type": "object"
+    },
+    "ContainerRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "dependsOn": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "mounts": {
+          "items": {
+            "$ref": "#/$defs/ContainerMount"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "networks": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ports": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "role": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "image",
+        "status",
+        "role",
+        "networks",
+        "ports",
+        "mounts",
+        "dependsOn"
+      ],
+      "type": "object"
+    },
+    "ImageRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "containers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "image": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "image",
+        "containers",
+        "status"
+      ],
+      "type": "object"
+    },
+    "NetworkRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "driver": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "internal": {
+          "type": "boolean"
+        },
+        "members": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "driver",
+        "internal",
+        "members"
+      ],
+      "type": "object"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
+    },
+    "VolumeRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "attachedTo": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "attachedTo"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "containers": {
+      "items": {
+        "$ref": "#/$defs/ContainerRecord"
+      },
+      "type": "array"
+    },
+    "images": {
+      "items": {
+        "$ref": "#/$defs/ImageRecord"
+      },
+      "type": "array"
+    },
+    "lastUpdated": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "networks": {
+      "items": {
+        "$ref": "#/$defs/NetworkRecord"
+      },
+      "type": "array"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeMode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ACTUAL source of these bytes: \"docker\" (live daemon collection) or\n\"mock\" (daemon mock fallback). Stamped by the daemon route layer from\nthe cache's runtime mode so every model-bearing response attests its\nreal source (#85 A3). Optional so existing constructors compile\nuntouched; serialized only when present."
+    },
+    "volumes": {
+      "items": {
+        "$ref": "#/$defs/VolumeRecord"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "containers",
+    "images",
+    "networks",
+    "volumes",
+    "lastUpdated"
+  ],
+  "title": "DockerSnapshot",
+  "type": "object"
+}

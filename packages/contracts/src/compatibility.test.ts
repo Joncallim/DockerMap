@@ -17,13 +17,17 @@ import statusFixture from "../../../tests/fixtures/contracts/status.json";
 
 describe("contract fixtures", () => {
   it("match the TypeScript API contracts", () => {
-    const snapshot: DockerSnapshot = snapshotFixture;
-    const composeScan: ComposeScan = composeScanFixture;
-    const composeGraph: ComposeGraph = composeGraphFixture;
-    const runtimeMap: RuntimeMap = runtimeMapFixture;
-    const runtimeMapDaemon: RuntimeMap = runtimeMapDaemonFixture;
-    const status: StatusResponse = statusFixture;
-    const diagnostics: DiagnosticsReport = diagnosticsFixture;
+    // JSON module imports intentionally widen string literals. Runtime schema
+    // validation below is the source-of-truth fixture check; these casts keep
+    // the existing consumer-oriented assertions typechecked until generated
+    // TypeScript declarations land in the next ADR phase.
+    const snapshot = snapshotFixture as DockerSnapshot;
+    const composeScan = composeScanFixture as ComposeScan;
+    const composeGraph = composeGraphFixture as ComposeGraph;
+    const runtimeMap = runtimeMapFixture as unknown as RuntimeMap;
+    const runtimeMapDaemon = runtimeMapDaemonFixture as unknown as RuntimeMap;
+    const status = statusFixture as StatusResponse;
+    const diagnostics = diagnosticsFixture as DiagnosticsReport;
 
     expect(snapshot.containers[0]?.mounts[0]?.kind).toBe("bind");
     expect(composeScan.correlations[0]?.status).toBe("matched");
@@ -41,7 +45,7 @@ describe("contract fixtures", () => {
   });
 
   it("daemon-emitted runtime map fixture matches the contract and real collector shape", () => {
-    const runtimeMap: RuntimeMap = runtimeMapDaemonFixture;
+    const runtimeMap = runtimeMapDaemonFixture as unknown as RuntimeMap;
     const container = runtimeMap.nodes.find((node) => node.type === "container");
     expect(container?.layer).toBe("container");
     expect(container?.service?.name).toBe(container?.label);

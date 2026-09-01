@@ -1,0 +1,251 @@
+{
+  "$defs": {
+    "ComposeDiagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/$defs/ComposeFileOrigin"
+        },
+        "severity": {
+          "$ref": "#/$defs/DiagnosticSeverity"
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "message",
+        "origin"
+      ],
+      "type": "object"
+    },
+    "ComposeFileOrigin": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "service": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "file",
+        "field"
+      ],
+      "type": "object"
+    },
+    "ComposeMount": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ComposeMountKind"
+        },
+        "origin": {
+          "$ref": "#/$defs/ComposeFileOrigin"
+        },
+        "readOnly": {
+          "type": "boolean"
+        },
+        "resolvedSource": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "service",
+        "kind",
+        "target",
+        "readOnly",
+        "origin"
+      ],
+      "type": "object"
+    },
+    "ComposeMountKind": {
+      "enum": [
+        "bind",
+        "named_volume",
+        "anonymous_volume",
+        "unsupported"
+      ],
+      "type": "string"
+    },
+    "ComposeService": {
+      "additionalProperties": false,
+      "properties": {
+        "dependsOn": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "environment": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "image": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "environment",
+        "dependsOn"
+      ],
+      "type": "object"
+    },
+    "DiagnosticSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "blocked"
+      ],
+      "type": "string"
+    },
+    "MountCorrelation": {
+      "additionalProperties": false,
+      "properties": {
+        "composeMountId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "container": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "declaredSource": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ComposeMountKind"
+        },
+        "runtimeSource": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/MountCorrelationStatus"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "service",
+        "kind",
+        "target",
+        "status"
+      ],
+      "type": "object"
+    },
+    "MountCorrelationStatus": {
+      "enum": [
+        "matched",
+        "missing",
+        "extra"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "correlations": {
+      "items": {
+        "$ref": "#/$defs/MountCorrelation"
+      },
+      "type": "array"
+    },
+    "diagnostics": {
+      "items": {
+        "$ref": "#/$defs/ComposeDiagnostic"
+      },
+      "type": "array"
+    },
+    "files": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "mounts": {
+      "items": {
+        "$ref": "#/$defs/ComposeMount"
+      },
+      "type": "array"
+    },
+    "projectRoot": {
+      "type": "string"
+    },
+    "services": {
+      "items": {
+        "$ref": "#/$defs/ComposeService"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "files",
+    "projectRoot",
+    "services",
+    "mounts",
+    "correlations",
+    "diagnostics"
+  ],
+  "title": "ComposeScan",
+  "type": "object"
+}

@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "HealthState": {
+      "enum": [
+        "ok",
+        "degraded"
+      ],
+      "type": "string"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "dockerReachable": {
+      "type": "boolean"
+    },
+    "lastUpdated": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "mode": {
+      "$ref": "#/$defs/RuntimeMode"
+    },
+    "snapshotVersion": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/HealthState"
+    }
+  },
+  "required": [
+    "status",
+    "mode",
+    "dockerReachable",
+    "lastUpdated",
+    "snapshotVersion"
+  ],
+  "title": "HealthResponse",
+  "type": "object"
+}

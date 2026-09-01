@@ -70,8 +70,7 @@
           {
             "id": "runtime_caddy_proxy_log_1",
             "source": "caddy",
-            "level": "info",
-            "message": "Serving HTTPS for dockermap.example"
+            "level": "info"
           }
         ],
         "events": [
@@ -116,8 +115,7 @@
           {
             "id": "runtime_systemd_caddy_log_1",
             "source": "journalctl",
-            "level": "info",
-            "message": "Started Caddy service"
+            "level": "info"
           }
         ],
         "events": [
@@ -174,8 +172,7 @@
           {
             "id": "runtime_container_api_log_1",
             "source": "docker logs api",
-            "level": "info",
-            "message": "Application started"
+            "level": "info"
           }
         ],
         "events": [
@@ -220,8 +217,7 @@
           {
             "id": "runtime_database_db_log_1",
             "source": "postgres",
-            "level": "info",
-            "message": "database ready"
+            "level": "info"
           }
         ],
         "events": [
@@ -278,8 +274,7 @@
           {
             "id": "runtime_npm_app_log_1",
             "source": "npm run start",
-            "level": "info",
-            "message": "Worker app booted"
+            "level": "info"
           }
         ],
         "events": [
@@ -415,8 +410,7 @@
           {
             "id": "runtime_systemd_worker_log_1",
             "source": "journalctl",
-            "level": "info",
-            "message": "Started worker service"
+            "level": "info"
           }
         ],
         "events": [
@@ -461,8 +455,7 @@
           {
             "id": "runtime_tmux_worker_log_1",
             "source": "tmux",
-            "level": "info",
-            "message": "Detached session preserved"
+            "level": "info"
           }
         ],
         "events": [

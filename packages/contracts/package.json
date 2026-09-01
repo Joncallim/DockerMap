@@ -8,9 +8,12 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --project tsconfig.json"
   },
   "devDependencies": {
+    "ajv": "8.20.0",
+    "typescript": "^5.9.2",
     "vitest": "^4.1.9"
   }
 }

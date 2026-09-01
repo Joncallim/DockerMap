@@ -57,6 +57,12 @@ DockerMap will use deterministic JSON Schema as the interchange artifact: Rust o
 
 OpenAPI follows schema and route association deliberately: generating it first would merely preserve today's manually synchronized path list under a new tool.
 
+### Implemented baseline (#146)
+
+The first phase is deliberately narrow. `schemars` `=1.2.1` derives the daemon-owned response roots from their Rust serialization definitions: Docker snapshot, runtime map, Compose scan/graph/edit plan, logs, and health. The committed artifacts live in `packages/contracts/generated/rust/` and are regenerated with `npm run generate:contracts`; `npm run check:contracts` renders twice and fails when the byte streams, checked-in bytes, or expected artifact set drift.
+
+The contracts workspace validates every matching readable fixture using Ajv against the committed generated schema, including a negative regression that makes a Rust-owned integer field invalid. This validates schema/fixture agreement without treating a fixture as schema authority. Browser/API-only envelopes, route associations, generated TypeScript, OpenAPI, and release-version authority remain later phases of this ADR.
+
 ## Determinism and CI contract
 
 - A clean checkout generates all committed artifacts with pinned public dependencies. No private registry, network fetch, current time, random ID, absolute build path, or platform ordering may affect output.

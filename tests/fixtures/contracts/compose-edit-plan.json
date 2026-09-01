@@ -1,0 +1,12 @@
+{
+  "file": "/srv/dockermap/compose.yaml",
+  "service": "api",
+  "mountId": "/srv/dockermap/compose.yaml:api:0",
+  "originalSource": "./src",
+  "originalTarget": "/workspace/src",
+  "newSource": "./app",
+  "newTarget": "/workspace/src",
+  "unifiedDiff": "--- /srv/dockermap/compose.yaml\n+++ /srv/dockermap/compose.yaml\n@@ -1 +1 @@\n-      - ./src:/workspace/src\n+      - ./app:/workspace/src\n",
+  "diagnostics": [],
+  "willWrite": false
+}

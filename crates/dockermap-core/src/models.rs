@@ -1,9 +1,10 @@
 //! Public, provider-neutral DockerMap domain models.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     Container,
@@ -11,14 +12,14 @@ pub enum NodeKind {
     Volume,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationshipKind {
     ConnectedTo,
     Mounts,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct GraphNode {
     pub id: String,
     #[serde(rename = "type")]
@@ -26,20 +27,20 @@ pub struct GraphNode {
     pub label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct GraphEdge {
     pub source: String,
     pub target: String,
     pub relationship: RelationshipKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct GraphResponse {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ContainerRecord {
     pub id: String,
     pub name: String,
@@ -53,7 +54,7 @@ pub struct ContainerRecord {
     pub depends_on: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ContainerMount {
     pub id: String,
     pub kind: ComposeMountKind,
@@ -63,14 +64,14 @@ pub struct ContainerMount {
     pub read_only: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ImageRecord {
     pub image: String,
     pub containers: Vec<String>,
     pub status: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct NetworkRecord {
     pub id: String,
     pub name: String,
@@ -79,7 +80,7 @@ pub struct NetworkRecord {
     pub members: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct VolumeRecord {
     pub id: String,
     pub name: String,
@@ -87,7 +88,7 @@ pub struct VolumeRecord {
     pub attached_to: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 pub struct DockerSnapshot {
     pub containers: Vec<ContainerRecord>,
     pub images: Vec<ImageRecord>,
@@ -104,21 +105,21 @@ pub struct DockerSnapshot {
     pub source: Option<RuntimeMode>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeMode {
     Docker,
     Mock,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthState {
     Ok,
     Degraded,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct HealthResponse {
     pub status: HealthState,
     pub mode: RuntimeMode,
@@ -131,7 +132,7 @@ pub struct HealthResponse {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LogLevel {
     Info,
@@ -139,7 +140,7 @@ pub enum LogLevel {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct LogEntry {
     pub id: String,
     pub timestamp: u64,
@@ -148,7 +149,7 @@ pub struct LogEntry {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 pub struct LogsResponse {
     pub service: Option<String>,
     pub entries: Vec<LogEntry>,
@@ -161,7 +162,7 @@ pub struct LogsResponse {
     pub source: Option<RuntimeMode>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ComposeMountKind {
     Bind,
@@ -170,7 +171,7 @@ pub enum ComposeMountKind {
     Unsupported,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticSeverity {
     Info,
@@ -179,14 +180,14 @@ pub enum DiagnosticSeverity {
     Blocked,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ComposeFileOrigin {
     pub file: String,
     pub service: Option<String>,
     pub field: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ComposeDiagnostic {
     pub id: String,
     pub severity: DiagnosticSeverity,
@@ -194,7 +195,7 @@ pub struct ComposeDiagnostic {
     pub origin: ComposeFileOrigin,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ComposeMount {
     pub id: String,
     pub service: String,
@@ -208,7 +209,7 @@ pub struct ComposeMount {
     pub origin: ComposeFileOrigin,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ComposeService {
     pub name: String,
     pub image: Option<String>,
@@ -217,7 +218,7 @@ pub struct ComposeService {
     pub depends_on: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ComposeScan {
     pub files: Vec<String>,
     #[serde(rename = "projectRoot")]
@@ -228,7 +229,7 @@ pub struct ComposeScan {
     pub diagnostics: Vec<ComposeDiagnostic>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MountCorrelationStatus {
     Matched,
@@ -236,7 +237,7 @@ pub enum MountCorrelationStatus {
     Extra,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct MountCorrelation {
     pub id: String,
     pub service: String,
@@ -252,7 +253,7 @@ pub struct MountCorrelation {
     pub status: MountCorrelationStatus,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ComposeNodeKind {
     Service,
@@ -262,14 +263,14 @@ pub enum ComposeNodeKind {
     AnonymousVolume,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ComposeRelationshipKind {
     DeclaresMount,
     MountedAt,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ComposeGraphNode {
     pub id: String,
     #[serde(rename = "type")]
@@ -277,20 +278,20 @@ pub struct ComposeGraphNode {
     pub label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ComposeGraphEdge {
     pub source: String,
     pub target: String,
     pub relationship: ComposeRelationshipKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ComposeGraph {
     pub nodes: Vec<ComposeGraphNode>,
     pub edges: Vec<ComposeGraphEdge>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ComposeEditPlan {
     pub file: String,
     pub service: String,
@@ -311,7 +312,7 @@ pub struct ComposeEditPlan {
     pub will_write: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceEntityKind {
     Service,
@@ -327,7 +328,7 @@ pub enum ServiceEntityKind {
     PackageDependency,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeProviderKind {
     Docker,
@@ -353,7 +354,7 @@ pub enum RuntimeProviderKind {
     Other,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeNodeKind {
     Container,
@@ -383,7 +384,7 @@ pub enum RuntimeNodeKind {
     OrchestratorWorkload,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeRelationshipKind {
     ConnectedTo,
@@ -409,7 +410,7 @@ pub enum RuntimeRelationshipKind {
     RelatedTo,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeNodeLayer {
     Edge,
@@ -424,7 +425,7 @@ pub enum RuntimeNodeLayer {
     Advisory,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeHealthState {
     Healthy,
@@ -433,7 +434,7 @@ pub enum RuntimeHealthState {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeLogLevel {
     Debug,
@@ -442,7 +443,7 @@ pub enum RuntimeLogLevel {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeOwnershipKind {
     Person,
@@ -452,7 +453,7 @@ pub enum RuntimeOwnershipKind {
     Vendor,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeLocationKind {
     Host,
@@ -464,7 +465,7 @@ pub enum RuntimeLocationKind {
     Tailnet,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeServiceStatus {
     Running,
@@ -507,7 +508,7 @@ impl RuntimeServiceStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimePackageManager {
     Npm,
@@ -521,7 +522,7 @@ pub enum RuntimePackageManager {
     System,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAdvisorySeverity {
     Low,
@@ -530,7 +531,7 @@ pub enum RuntimeAdvisorySeverity {
     Critical,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeHealth {
     pub state: RuntimeHealthState,
     #[serde(rename = "checkedAt", skip_serializing_if = "Option::is_none")]
@@ -541,7 +542,7 @@ pub struct RuntimeHealth {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeLogRef {
     pub id: String,
     pub source: String,
@@ -549,7 +550,7 @@ pub struct RuntimeLogRef {
     pub level: Option<RuntimeLogLevel>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeEventRef {
     pub id: String,
     pub kind: String,
@@ -559,7 +560,7 @@ pub struct RuntimeEventRef {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeOwnership {
     pub kind: RuntimeOwnershipKind,
     pub name: String,
@@ -567,7 +568,7 @@ pub struct RuntimeOwnership {
     pub id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeLocation {
     pub kind: RuntimeLocationKind,
     pub value: String,
@@ -575,7 +576,7 @@ pub struct RuntimeLocation {
     pub detail: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeServiceEntity {
     pub name: String,
     pub status: RuntimeServiceStatus,
@@ -615,7 +616,7 @@ impl RuntimeServiceEntity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimePackageAdvisory {
     pub id: String,
     pub source: String,
@@ -629,7 +630,7 @@ pub struct RuntimePackageAdvisory {
     pub published_at: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimePackageUpdate {
     #[serde(rename = "currentVersion")]
     pub current_version: String,
@@ -639,7 +640,7 @@ pub struct RuntimePackageUpdate {
     pub advisories: Vec<RuntimePackageAdvisory>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimePackageEntity {
     pub name: String,
     pub manager: RuntimePackageManager,
@@ -674,7 +675,7 @@ impl RuntimePackageEntity {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeMapNode {
     pub id: String,
     pub provider: RuntimeProviderKind,
@@ -691,7 +692,7 @@ pub struct RuntimeMapNode {
     pub package: Option<RuntimePackageEntity>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeMapEdge {
     pub source: String,
     pub target: String,
@@ -699,14 +700,14 @@ pub struct RuntimeMapEdge {
     pub metadata: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeMapDiagnostic {
     pub provider: RuntimeProviderKind,
     pub severity: DiagnosticSeverity,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 pub struct RuntimeMap {
     pub nodes: Vec<RuntimeMapNode>,
     pub edges: Vec<RuntimeMapEdge>,
