@@ -45,6 +45,7 @@ type Fixture = {
 const repoRoot = resolve(__dirname, "../..");
 const daemonBinary = join(repoRoot, "crates/target/debug/dockermap-daemon");
 const gatewayBinary = join(repoRoot, "crates/target/debug/dockermap-docker-gateway");
+let contractsRuntimePackageReady = false;
 
 export async function startMockStack(): Promise<Stack> {
   const fixtureDir = mkdtempSync(join(tmpdir(), "dockermap-mock-e2e-"));
@@ -52,6 +53,7 @@ export async function startMockStack(): Promise<Stack> {
   const processes: ProcessHandle[] = [];
 
   await ensureDaemonBinary();
+  ensureContractsRuntimePackage();
   processes.push(startDaemon({ port: ports.daemon, cwd: fixtureDir, useDockerAccess: false }));
   await waitForJson(`http://127.0.0.1:${ports.daemon}/daemon/health`);
 
@@ -244,6 +246,7 @@ export async function startLiveDockerStack(): Promise<Stack> {
   const processes: ProcessHandle[] = [];
 
   await ensureDaemonBinary();
+  ensureContractsRuntimePackage();
   const gatewaySocket = join(fixture.dir, "docker-read.sock");
   processes.push(startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter }));
   await waitForSocket(gatewaySocket);
@@ -359,6 +362,30 @@ async function ensureDaemonBinary() {
   if (result.status !== 0) {
     throw new Error(`Failed to build dockermap-daemon:\n${result.stdout}\n${result.stderr}`);
   }
+}
+
+function ensureContractsRuntimePackage() {
+  if (contractsRuntimePackageReady) return;
+
+  // E2E launches the API source with tsx, but value imports still resolve
+  // through the contracts package's runtime export (`dist/index.js`). Build
+  // it here rather than relying on an earlier workspace build or CI order.
+  const result = spawnSync("npm", ["run", "build", "--workspace", "@dockermap/contracts"], {
+    cwd: repoRoot,
+    env: process.env,
+    encoding: "utf8"
+  });
+  if (result.status !== 0) {
+    throw new Error(`Failed to build runtime contracts package:\n${result.stdout}\n${result.stderr}`);
+  }
+
+  try {
+    statSync(join(repoRoot, "packages/contracts/dist/index.js"));
+    statSync(join(repoRoot, "packages/contracts/dist/nodeSchemas.js"));
+  } catch (error) {
+    throw new Error(`Contracts build did not produce its required runtime modules: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  contractsRuntimePackageReady = true;
 }
 
 function startDaemon(options: {

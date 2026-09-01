@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import Ajv2020 from "ajv/dist/2020.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { gzipSync } from "node:zlib";
 import net from "node:net";
 import { afterEach, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { NODE_ENVELOPE_SCHEMAS, type NodeEnvelopeSchemaId } from "@dockermap/contracts";
 import {
   assertRouteManifestComplete,
   routePolicyForRequest,
@@ -820,6 +822,40 @@ test("status endpoint reports widget-friendly health and versioned alias works",
   assert.equal(doc.openapi, "3.0.3");
   assert.ok(doc.paths["/api/logs"], "openapi should document the logs route");
   assert.ok(doc.paths["/api/diagnostics"], "openapi should document diagnostics");
+});
+
+test("isolated Node API endpoints emit their declared Node-owned envelopes", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true" });
+  const validators = new Map<NodeEnvelopeSchemaId, ReturnType<Ajv2020["compile"]>>();
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  for (const [schemaName, schema] of Object.entries(NODE_ENVELOPE_SCHEMAS) as [NodeEnvelopeSchemaId, (typeof NODE_ENVELOPE_SCHEMAS)[NodeEnvelopeSchemaId]][]) {
+    validators.set(schemaName, ajv.compile(schema));
+  }
+
+  const successes: readonly [string, NodeEnvelopeSchemaId][] = [
+    ["/health", "RootHealth"],
+    ["/api/health", "ApiHealth"],
+    ["/api/status", "Status"],
+    ["/api/auth/whoami", "AuthWhoami"],
+    ["/api/diagnostics", "Diagnostics"],
+    ["/api/v1", "Version"]
+  ];
+
+  for (const [path, schemaName] of successes) {
+    const response = await request(api, path);
+    assert.equal(response.status, 200, path);
+    const validator = validators.get(schemaName);
+    assert.ok(validator, `missing ${schemaName} validator`);
+    const body = await response.json();
+    assert.equal(validator(body), true, `${path}: ${JSON.stringify(validator.errors)}`);
+  }
+
+  const missing = await request(api, "/api/not-a-route");
+  assert.equal(missing.status, 404);
+  const errorValidator = validators.get("ApiError");
+  assert.ok(errorValidator, "missing ApiError validator");
+  const error = await missing.json();
+  assert.equal(errorValidator(error), true, JSON.stringify(errorValidator.errors));
 });
 
 test("status endpoint classifies free-form docker status texts", async () => {

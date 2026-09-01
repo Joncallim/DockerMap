@@ -1,0 +1,8 @@
+{
+  "authenticated": true,
+  "required": false,
+  "user": "alice",
+  "name": "Alice Example",
+  "email": "alice@example.test",
+  "groups": ["operators", "reviewers"]
+}

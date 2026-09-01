@@ -11,7 +11,11 @@ This decision gives each DockerMap public API surface one owner. It prevents a p
 
 DockerMap currently has useful but separate declarations: Rust public domain structures in `crates/dockermap-core/src/models.rs`; handwritten browser-facing TypeScript in `packages/contracts/src/index.ts`; Express policy in `apps/api/src/routes.ts` as `ROUTE_MANIFEST`; browser-only envelopes, query parsing, version descriptor, and a hand-built OpenAPI object in `apps/api/src/readHandlers.ts`; and readable shared JSON examples in `tests/fixtures/contracts`.
 
-The fixture test is not schema validation. In particular, `tests/fixtures/contracts/status.json` currently says `"mode": "live"` and omits `sourceCoherent` and `snapshotSource`; current `StatusResponse` permits `"docker" | "mock" | "mixed"` and requires both omitted fields. The compatibility test still passes because it uses a TypeScript assignment in a Vitest test, while the contracts workspace has no `typecheck` script and no runtime schema validator. This is a real baseline hole, not a claim that the fixture or endpoint has already been corrected.
+The earlier status-fixture drift has been corrected: `status.json` now uses the
+attested `"docker"`/`"mock"` vocabulary and includes `sourceCoherent` and
+`snapshotSource`. The contracts workspace now typechecks and validates fixtures
+at runtime. Remaining work is to associate every route with the appropriate
+Rust or Node schema without inventing a duplicate owner for daemon bytes.
 
 Existing route-manifest completeness tests remain valuable: they prove that registered Express templates and declared templates agree. They do not prove OpenAPI paths, request metadata, response schemas, or daemon serialization agree with them.
 
@@ -61,7 +65,24 @@ OpenAPI follows schema and route association deliberately: generating it first w
 
 The first phase is deliberately narrow. `schemars` `=1.2.1` derives the daemon-owned response roots from their Rust serialization definitions: Docker snapshot and graph, runtime map, Compose scan/graph/edit plan, logs, and health. The committed artifacts live in `packages/contracts/generated/rust/` and are regenerated with `npm run generate:contracts`; `npm run check:contracts` renders twice and fails when the byte streams, checked-in bytes, or expected artifact set drift. Rust `u64` fields serialize as JSON integers, but public schemas cap them at JavaScript's exact integer limit (`9007199254740991`): JavaScript `JSON.parse` cannot preserve every larger integer. Current public uses are timestamps and remain inside that range; a future endpoint that needs a larger value must serialize it as a string or introduce a separately documented representation rather than claiming lossless browser compatibility.
 
-The contracts workspace validates every matching readable fixture using Ajv against the committed generated schema, including a negative regression that makes a Rust-owned integer field invalid. This validates schema/fixture agreement without treating a fixture as schema authority. Browser/API-only envelopes, route associations, generated TypeScript, and OpenAPI follow in later phases of this ADR.
+The contracts workspace validates every matching readable fixture using Ajv against the committed generated schema, including a negative regression that makes a Rust-owned integer field invalid. This validates schema/fixture agreement without treating a fixture as schema authority. Browser/API-only envelopes and route associations follow in later phases of this ADR.
+
+### Implemented Node envelope schemas (#152)
+
+`packages/contracts/src/nodeSchemas.ts` is the canonical, handwritten JSON
+Schema declaration layer for values created by the Node API: API errors,
+identity, diagnostics, status, the `/api/v1` descriptor, and the root/API
+health envelopes. Readable fixtures are validated with strict Ajv and reject
+both source-stamp drift and undeclared response fields. An isolated API-process
+test validates actual successful endpoints plus a real 404 error against those
+same schemas.
+
+OpenAPI exposes these Node schemas as components and references them only for
+Node-owned success envelopes and generic API-error responses. Daemon
+pass-through success operations retain human-readable descriptions rather than
+misrepresenting a Node copy as their schema authority. Health envelopes contain
+a Rust-owned `daemon` value; the Node schema validates the enclosing fields but
+does not duplicate its Rust serialization contract.
 
 ### Implemented version authority (#150)
 

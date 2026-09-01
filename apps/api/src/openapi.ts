@@ -1,5 +1,6 @@
 import { ROUTE_MANIFEST, type RouteId, type RouteManifestEntry } from "./routes.js";
 import { PRODUCT_VERSION } from "./generated/productVersion.js";
+import { NODE_ENVELOPE_SCHEMAS, type NodeEnvelopeSchemaId } from "@dockermap/contracts";
 
 type OpenApiParameter = Readonly<{
   name: string;
@@ -10,10 +11,13 @@ type OpenApiParameter = Readonly<{
   schema: Readonly<Record<string, unknown>>;
 }>;
 
-type OpenApiResponse = Readonly<{ description: string }>;
-type OpenApiResponses =
-  | Readonly<{ "200": OpenApiResponse; "204"?: never }>
-  | Readonly<{ "204": OpenApiResponse; "200"?: never }>;
+type OpenApiResponse = Readonly<{
+  description: string;
+  content?: Readonly<Record<"application/json", Readonly<{
+    schema: Readonly<Record<string, unknown>>;
+  }>>>;
+}>;
+type OpenApiResponses = Readonly<Record<string, OpenApiResponse>>;
 
 type OpenApiRequestBody = Readonly<{
   required: true;
@@ -33,6 +37,38 @@ type RouteOperationMetadata = Readonly<Record<RouteId, Readonly<{
 const successfulResponse = { "200": { description: "Successful response." } } as const;
 const noContentResponse = { "204": { description: "Successful response with no response body." } } as const;
 
+function nodeJsonResponse(schema: NodeEnvelopeSchemaId, description = "Successful response.") {
+  return {
+    "200": {
+      description,
+      content: {
+        "application/json": { schema: { $ref: `#/components/schemas/${schema}` } }
+      }
+    }
+  } as const;
+}
+
+function apiErrorResponse(description: string): OpenApiResponse {
+  return {
+    description,
+    content: {
+      "application/json": { schema: { $ref: "#/components/schemas/ApiError" } }
+    }
+  };
+}
+
+function withApiErrors(success: OpenApiResponses, statuses: readonly string[] = ["401", "500"]): OpenApiResponses {
+  return {
+    ...success,
+    ...Object.fromEntries(statuses.map((status) => [status, apiErrorResponse(`API error response (${status}).`)])),
+    // Daemon failures retain their meaningful HTTP status (for example 404,
+    // 502, or 503) while keeping the same redacted Node error envelope.
+    // `default` documents those route-dependent statuses without claiming
+    // every daemon pass-through route has identical failure semantics.
+    default: apiErrorResponse("Route-dependent API error response.")
+  };
+}
+
 const composeFileParameter = {
   name: "file",
   in: "query",
@@ -41,26 +77,25 @@ const composeFileParameter = {
   schema: { type: "array", maxItems: 8, items: { type: "string", minLength: 1, maxLength: 512, pattern: "\\S" } }
 } as const satisfies OpenApiParameter;
 
-// This metadata deliberately owns only human-readable operation details. The
-// route manifest remains authoritative for paths, methods, aliases, auth, and
-// rate limiting. Do not add response schemas or OpenAPI security schemes here:
-// deployment authentication is configured outside this process and response
-// schema authority is being introduced separately.
+// This metadata owns operation documentation and Node-created response
+// envelopes. The route manifest remains authoritative for paths, methods,
+// aliases, auth, and rate limiting. Rust daemon pass-through success bytes
+// intentionally have descriptions only: their schemas remain Rust-owned.
 export const ROUTE_OPERATION_METADATA = {
-  "health": { summary: "API and daemon health", tags: ["system"], responses: successfulResponse },
-  "api-health": { summary: "API and daemon health", tags: ["system"], responses: successfulResponse },
-  "status": { summary: "Compact dashboard status for external widgets (Homepage-style)", tags: ["system"], responses: successfulResponse },
-  "openapi": { summary: "OpenAPI document for explicit browser API routes", tags: ["system"], responses: successfulResponse },
-  "auth-whoami": { summary: "Current authenticated identity", tags: ["system"], responses: successfulResponse },
-  "snapshot": { summary: "Full Docker inventory snapshot", tags: ["docker"], responses: successfulResponse },
-  "graph": { summary: "Topology graph", tags: ["topology"], responses: successfulResponse },
-  "runtime-map": { summary: "Runtime map across all providers", tags: ["runtime"], responses: successfulResponse },
-  "diagnostics": { summary: "Aggregated compose and runtime diagnostics", tags: ["system"], responses: successfulResponse },
-  "containers": { summary: "List containers", tags: ["docker"], responses: successfulResponse },
-  "container": { summary: "Container detail", tags: ["docker"], responses: successfulResponse },
-  "images": { summary: "List images", tags: ["docker"], responses: successfulResponse },
-  "networks": { summary: "List networks", tags: ["docker"], responses: successfulResponse },
-  "volumes": { summary: "List volumes", tags: ["docker"], responses: successfulResponse },
+  "health": { summary: "API and daemon health", tags: ["system"], responses: withApiErrors(nodeJsonResponse("RootHealth")) },
+  "api-health": { summary: "API and daemon health", tags: ["system"], responses: withApiErrors(nodeJsonResponse("ApiHealth")) },
+  "status": { summary: "Compact dashboard status for external widgets (Homepage-style)", tags: ["system"], responses: withApiErrors(nodeJsonResponse("Status")) },
+  "openapi": { summary: "OpenAPI document for explicit browser API routes", tags: ["system"], responses: withApiErrors(successfulResponse) },
+  "auth-whoami": { summary: "Current authenticated identity", tags: ["system"], responses: withApiErrors(nodeJsonResponse("AuthWhoami")) },
+  "snapshot": { summary: "Full Docker inventory snapshot", tags: ["docker"], responses: withApiErrors(successfulResponse) },
+  "graph": { summary: "Topology graph", tags: ["topology"], responses: withApiErrors(successfulResponse) },
+  "runtime-map": { summary: "Runtime map across all providers", tags: ["runtime"], responses: withApiErrors(successfulResponse) },
+  "diagnostics": { summary: "Aggregated compose and runtime diagnostics", tags: ["system"], responses: withApiErrors(nodeJsonResponse("Diagnostics")) },
+  "containers": { summary: "List containers", tags: ["docker"], responses: withApiErrors(successfulResponse) },
+  "container": { summary: "Container detail", tags: ["docker"], responses: withApiErrors(successfulResponse) },
+  "images": { summary: "List images", tags: ["docker"], responses: withApiErrors(successfulResponse) },
+  "networks": { summary: "List networks", tags: ["docker"], responses: withApiErrors(successfulResponse) },
+  "volumes": { summary: "List volumes", tags: ["docker"], responses: withApiErrors(successfulResponse) },
   "logs": {
     summary: "Container logs with cursor pagination",
     tags: ["logs"],
@@ -70,10 +105,10 @@ export const ROUTE_OPERATION_METADATA = {
       { name: "cursor", in: "query", schema: { type: "string", maxLength: 32, pattern: "^\\d+(:\\d+)?$" } },
       { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500 } }
     ],
-    responses: successfulResponse
+    responses: withApiErrors(successfulResponse, ["400", "401", "500"])
   },
-  "compose-scan": { summary: "Scan Compose files and correlate mounts", tags: ["compose"], parameters: [composeFileParameter], responses: successfulResponse },
-  "compose-graph": { summary: "Derive Compose dependency graph", tags: ["compose"], parameters: [composeFileParameter], responses: successfulResponse },
+  "compose-scan": { summary: "Scan Compose files and correlate mounts", tags: ["compose"], parameters: [composeFileParameter], responses: withApiErrors(successfulResponse, ["400", "401", "500"]) },
+  "compose-graph": { summary: "Derive Compose dependency graph", tags: ["compose"], parameters: [composeFileParameter], responses: withApiErrors(successfulResponse, ["400", "401", "500"]) },
   "compose-edit-plan": {
     summary: "Dry-run edit plan (never writes)",
     tags: ["compose"],
@@ -84,9 +119,9 @@ export const ROUTE_OPERATION_METADATA = {
       { name: "source", in: "query", schema: { type: "string", maxLength: 512 } },
       { name: "target", in: "query", schema: { type: "string", maxLength: 512 } }
     ],
-    responses: successfulResponse
+    responses: withApiErrors(successfulResponse, ["400", "401", "500"])
   },
-  "events-stream": { summary: "Server-sent event stream of health snapshots", tags: ["system"], responses: successfulResponse },
+  "events-stream": { summary: "Server-sent event stream of health snapshots", tags: ["system"], responses: withApiErrors(successfulResponse, ["401", "429", "500", "503"]) },
   "auth-session": {
     summary: "Create a browser session from a bearer token",
     tags: ["auth"],
@@ -102,10 +137,10 @@ export const ROUTE_OPERATION_METADATA = {
         }
       }
     },
-    responses: noContentResponse
+    responses: withApiErrors(noContentResponse, ["400", "401", "413", "429", "500"])
   },
-  "auth-session-logout": { summary: "End the current browser session", tags: ["auth"], responses: noContentResponse },
-  "api-version": { summary: "Version descriptor for the /api/v1 alias", tags: ["system"], responses: successfulResponse }
+  "auth-session-logout": { summary: "End the current browser session", tags: ["auth"], responses: withApiErrors(noContentResponse) },
+  "api-version": { summary: "Version descriptor for the /api/v1 alias", tags: ["system"], responses: withApiErrors(nodeJsonResponse("Version")) }
 } as const satisfies RouteOperationMetadata;
 
 type OpenApiOperation = Readonly<{
@@ -167,7 +202,8 @@ export function buildOpenApiDocument() {
       description:
         "Read-only inventory, topology, runtime, compose, logs, and diagnostics endpoints. All /api/v1/* routes alias these paths. Protected routes require the deployment's configured authentication boundary."
     },
-    paths
+    paths,
+    components: { schemas: NODE_ENVELOPE_SCHEMAS }
   };
 }
 

@@ -1,0 +1,10 @@
+{
+  "status": "ok",
+  "daemon": {
+    "status": "degraded",
+    "mode": "mock",
+    "dockerReachable": false,
+    "lastUpdated": 1785175506123,
+    "snapshotVersion": "1785175506123"
+  }
+}

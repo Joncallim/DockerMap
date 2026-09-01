@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import SwaggerParser from "@apidevtools/swagger-parser";
+import { NODE_ENVELOPE_SCHEMAS } from "@dockermap/contracts";
 import { buildOpenApiDocument, ROUTE_OPERATION_METADATA } from "../src/openapi.js";
 import { ROUTE_MANIFEST } from "../src/routes.js";
 
@@ -46,7 +47,10 @@ test("generated OpenAPI operations are exactly the explicit route manifest", () 
 test("generated OpenAPI records the actual session and Compose request contracts", () => {
   const document = buildOpenApiDocument();
   const session = document.paths["/api/auth/session"]?.post;
-  assert.deepEqual(session?.responses, { "204": { description: "Successful response with no response body." } });
+  assert.equal(session?.responses["204"]?.description, "Successful response with no response body.");
+  assert.deepEqual(session?.responses["401"]?.content, {
+    "application/json": { schema: { $ref: "#/components/schemas/ApiError" } }
+  });
   assert.deepEqual(session?.requestBody, {
     required: true,
     content: {
@@ -86,6 +90,35 @@ test("generated OpenAPI records the actual session and Compose request contracts
   assert.deepEqual(editParameters.find((parameter) => parameter.name === "service")?.schema, {
     type: "string", minLength: 1, maxLength: 256, pattern: "\\S"
   });
+});
+
+test("OpenAPI associates only Node-owned success envelopes and generic API errors", () => {
+  const document = buildOpenApiDocument();
+  assert.deepEqual(document.components.schemas, NODE_ENVELOPE_SCHEMAS);
+
+  const nodeSuccesses: readonly [string, string][] = [
+    ["/health", "RootHealth"],
+    ["/api/health", "ApiHealth"],
+    ["/api/status", "Status"],
+    ["/api/auth/whoami", "AuthWhoami"],
+    ["/api/diagnostics", "Diagnostics"],
+    ["/api/v1", "Version"]
+  ];
+  for (const [path, schema] of nodeSuccesses) {
+    assert.deepEqual(document.paths[path]?.get?.responses["200"]?.content, {
+      "application/json": { schema: { $ref: `#/components/schemas/${schema}` } }
+    }, path);
+  }
+
+  for (const path of ["/api/snapshot", "/api/graph", "/api/runtime/map", "/api/logs", "/api/compose/scan"]) {
+    assert.equal(document.paths[path]?.get?.responses["200"]?.content, undefined, `${path} must not duplicate a Rust-owned schema`);
+    assert.deepEqual(document.paths[path]?.get?.responses["401"]?.content, {
+      "application/json": { schema: { $ref: "#/components/schemas/ApiError" } }
+    });
+    assert.deepEqual(document.paths[path]?.get?.responses.default?.content, {
+      "application/json": { schema: { $ref: "#/components/schemas/ApiError" } }
+    }, `${path} must document route-dependent daemon errors`);
+  }
 });
 
 test("operation metadata is exhaustive for the route manifest", () => {

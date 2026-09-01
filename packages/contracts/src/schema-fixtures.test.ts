@@ -2,6 +2,7 @@ import Ajv2020, { type AnySchema } from "ajv/dist/2020.js";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { NODE_ENVELOPE_SCHEMAS, type NodeEnvelopeSchemaId } from "./nodeSchemas.js";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -71,5 +72,44 @@ describe("Rust-owned daemon schema baseline", () => {
 
     expect(validator(fixture)).toBe(false);
     expect(validator.errors?.some((error) => error.keyword === "additionalProperties")).toBe(true);
+  });
+});
+
+const nodeFixtures = [
+  ["ApiError", "api-error.json"],
+  ["AuthWhoami", "auth-whoami.json"],
+  ["Diagnostics", "diagnostics.json"],
+  ["Status", "status.json"],
+  ["Version", "api-version.json"],
+  ["RootHealth", "root-health.json"],
+  ["ApiHealth", "api-health.json"]
+] as const satisfies readonly (readonly [NodeEnvelopeSchemaId, string])[];
+
+describe("Node-owned browser envelope schemas", () => {
+  it.each(nodeFixtures)("validates the readable %s fixture", async (schemaName, fixtureName) => {
+    const validator = new Ajv2020({ allErrors: true, strict: true }).compile(NODE_ENVELOPE_SCHEMAS[schemaName]);
+    const fixture = await readJson(`${repoRoot}tests/fixtures/contracts/${fixtureName}`);
+
+    expect(validator(fixture), `${fixtureName}: ${JSON.stringify(validator.errors)}`).toBe(true);
+  });
+
+  it("rejects an extra Node envelope field instead of letting fixtures expand the API", async () => {
+    const validator = new Ajv2020({ allErrors: true, strict: true }).compile(NODE_ENVELOPE_SCHEMAS.Status);
+    const fixture = await readJson(`${repoRoot}tests/fixtures/contracts/status.json`) as Record<string, unknown>;
+
+    fixture.unreviewed = true;
+
+    expect(validator(fixture)).toBe(false);
+    expect(validator.errors?.some((error) => error.keyword === "additionalProperties")).toBe(true);
+  });
+
+  it("rejects an invalid Node-owned source stamp", async () => {
+    const validator = new Ajv2020({ allErrors: true, strict: true }).compile(NODE_ENVELOPE_SCHEMAS.Status);
+    const fixture = await readJson(`${repoRoot}tests/fixtures/contracts/status.json`) as { snapshotSource: unknown };
+
+    fixture.snapshotSource = "live";
+
+    expect(validator(fixture)).toBe(false);
+    expect(validator.errors?.some((error) => error.instancePath === "/snapshotSource")).toBe(true);
   });
 });
