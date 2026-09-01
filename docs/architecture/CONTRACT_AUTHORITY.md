@@ -84,6 +84,28 @@ misrepresenting a Node copy as their schema authority. Health envelopes contain
 a Rust-owned `daemon` value; the Node schema validates the enclosing fields but
 does not duplicate its Rust serialization contract.
 
+### Implemented Rust route/OpenAPI association (#154)
+
+The generated contracts module now packages two deterministic views of every
+Rust response schema. `RUST_RESPONSE_SCHEMAS` retains the standalone Schemars
+documents for Ajv fixture and actual-response validation.
+`OPENAPI_RUST_RESPONSE_SCHEMAS` differs only by rebasing internal `#/$defs`
+references to the owning OpenAPI component; that is required because an
+OpenAPI component is embedded below the document root. Both views are emitted
+by the Rust generator, not hand-authored schema authorities.
+
+OpenAPI is now 3.1.1 and is structurally validated against the OpenAPI 3.1
+schema by `@seriousme/openapi-schema-validator`, replacing the previous
+3.0-only parser. Every Rust pass-through browser route and its `/api/v1/*`
+alias references one exact generated component: snapshot, graph, runtime,
+inventory/detail, logs, and all Compose reads. Named Rust wrappers make the
+existing inventory object envelopes and transparent container-detail payload a
+stable schema root without changing response bytes. SSE and intentional 204
+session responses remain explicit non-JSON exceptions. Coverage and planted
+missing-mapping tests fail closed if a Rust route loses its schema association,
+and a real Node API process validates emitted pass-through responses against
+the standalone generated schemas.
+
 ### Implemented version authority (#150)
 
 `VERSION` is now the strict SemVer product authority. The dependency-free
@@ -101,7 +123,7 @@ versions are deliberately outside this product-version authority.
 - A clean checkout generates all committed artifacts with pinned public dependencies. No private registry, network fetch, current time, random ID, absolute build path, or platform ordering may affect output.
 - A check runs generation twice at one SHA and fails if tracked files change or the two byte streams differ.
 - CI fails if a public Rust shape changes without regenerated output, a Node envelope lacks schema, a fixture is invalid, or the manifest, live Express registration, metadata, and OpenAPI disagree.
-- A standard parser/linter validates generated OpenAPI. Route completeness and auth/rate-limit tests stay independent: an OpenAPI file is not authorization evidence.
+- The OpenAPI 3.1 structural schema validator validates generated OpenAPI. Route completeness and auth/rate-limit tests stay independent: an OpenAPI file is not authorization evidence.
 - Runtime validation belongs in tests, fixture validation, and optional debug/CI assertions. Production responses gain no new per-response validation cost without a later performance decision.
 
 Generated artifacts are reviewed like source. A generator upgrade is contract-affecting and must show deterministic output and compatibility impact.

@@ -1,0 +1,50 @@
+{
+  "$defs": {
+    "NetworkRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "driver": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "internal": {
+          "type": "boolean"
+        },
+        "members": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "driver",
+        "internal",
+        "members"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "networks": {
+      "items": {
+        "$ref": "#/$defs/NetworkRecord"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "networks"
+  ],
+  "title": "NetworksResponse",
+  "type": "object"
+}

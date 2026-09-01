@@ -26,9 +26,9 @@ export const NODE_ENVELOPE_SCHEMAS = {
     properties: {
       authenticated: { type: "boolean" },
       required: { type: "boolean" },
-      user: { type: "string", nullable: true },
-      name: { type: "string", nullable: true },
-      email: { type: "string", nullable: true },
+      user: { type: ["string", "null"] },
+      name: { type: ["string", "null"] },
+      email: { type: ["string", "null"] },
       groups: { type: "array", items: { type: "string" } }
     }
   },
@@ -45,12 +45,12 @@ export const NODE_ENVELOPE_SCHEMAS = {
           additionalProperties: false,
           required: ["id", "source", "severity", "message", "file", "service"],
           properties: {
-            id: { type: "string", nullable: true },
+            id: { type: ["string", "null"] },
             source: { enum: ["compose", "runtime", "api"] },
             severity: { enum: ["info", "warning", "error", "blocked"] },
             message: { type: "string" },
-            file: { type: "string", nullable: true },
-            service: { type: "string", nullable: true }
+            file: { type: ["string", "null"] },
+            service: { type: ["string", "null"] }
           }
         }
       }

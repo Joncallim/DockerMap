@@ -1,0 +1,42 @@
+{
+  "$defs": {
+    "ImageRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "containers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "image": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "image",
+        "containers",
+        "status"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "images": {
+      "items": {
+        "$ref": "#/$defs/ImageRecord"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "images"
+  ],
+  "title": "ImagesResponse",
+  "type": "object"
+}

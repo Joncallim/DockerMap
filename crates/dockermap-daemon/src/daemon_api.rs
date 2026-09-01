@@ -23,8 +23,9 @@ use axum::{
     Json, Router,
 };
 use dockermap_core::{
-    derive_graph, mock_log_entries, ContainerRecord, DockerSnapshot, GraphResponse, HealthResponse,
-    LogCursor, LogsResponse, RuntimeMap, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+    derive_graph, mock_log_entries, ContainerDetailResponse, ContainersResponse, DockerSnapshot,
+    GraphResponse, HealthResponse, ImagesResponse, LogCursor, LogsResponse, NetworksResponse,
+    RuntimeMap, VolumesResponse, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 use serde::Deserialize;
 
@@ -110,16 +111,18 @@ async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
     Json(runtime_map)
 }
 
-async fn get_containers(State(state): State<AppState>) -> Json<serde_json::Value> {
+async fn get_containers(State(state): State<AppState>) -> Json<ContainersResponse> {
     let cache = state.cache.read().await;
     let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(serde_json::json!({ "containers": snapshot.containers }))
+    Json(ContainersResponse {
+        containers: snapshot.containers,
+    })
 }
 
 async fn get_container(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<Json<ContainerRecord>, ApiError> {
+) -> Result<Json<ContainerDetailResponse>, ApiError> {
     let cache = state.cache.read().await;
     let mut container = cache
         .snapshot
@@ -132,25 +135,31 @@ async fn get_container(
             message: format!("container `{name}` not found"),
         })?;
     redact_container_record(&mut container);
-    Ok(Json(container))
+    Ok(Json(ContainerDetailResponse(container)))
 }
 
-async fn get_images(State(state): State<AppState>) -> Json<serde_json::Value> {
+async fn get_images(State(state): State<AppState>) -> Json<ImagesResponse> {
     let cache = state.cache.read().await;
     let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(serde_json::json!({ "images": snapshot.images }))
+    Json(ImagesResponse {
+        images: snapshot.images,
+    })
 }
 
-async fn get_networks(State(state): State<AppState>) -> Json<serde_json::Value> {
+async fn get_networks(State(state): State<AppState>) -> Json<NetworksResponse> {
     let cache = state.cache.read().await;
     let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(serde_json::json!({ "networks": snapshot.networks }))
+    Json(NetworksResponse {
+        networks: snapshot.networks,
+    })
 }
 
-async fn get_volumes(State(state): State<AppState>) -> Json<serde_json::Value> {
+async fn get_volumes(State(state): State<AppState>) -> Json<VolumesResponse> {
     let cache = state.cache.read().await;
     let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(serde_json::json!({ "volumes": snapshot.volumes }))
+    Json(VolumesResponse {
+        volumes: snapshot.volumes,
+    })
 }
 
 pub(crate) fn docker_log_collection_failed(error: &str) -> ApiError {

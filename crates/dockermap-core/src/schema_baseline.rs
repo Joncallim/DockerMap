@@ -1,24 +1,30 @@
 //! Deterministic JSON Schema artifacts for daemon-owned public responses.
 //!
 //! Rust serialization remains the authority. This module deliberately exports
-//! only the eight daemon response roots that cross the browser/daemon boundary.
+//! only the daemon response roots that cross the browser/daemon boundary.
 
 use crate::{
-    ComposeEditPlan, ComposeGraph, ComposeScan, DockerSnapshot, GraphResponse, HealthResponse,
-    LogsResponse, RuntimeMap,
+    ComposeEditPlan, ComposeGraph, ComposeScan, ContainerDetailResponse, ContainersResponse,
+    DockerSnapshot, GraphResponse, HealthResponse, ImagesResponse, LogsResponse, NetworksResponse,
+    RuntimeMap, VolumesResponse,
 };
 use schemars::{schema_for, Schema};
 use serde_json::Value;
 
-pub const DAEMON_SCHEMA_NAMES: [&str; 8] = [
-    "docker-snapshot",
-    "graph-response",
-    "runtime-map",
-    "compose-scan",
-    "compose-graph",
-    "compose-edit-plan",
-    "logs-response",
-    "health-response",
+pub const DAEMON_SCHEMA_NAMES: [&str; 13] = [
+    "DockerSnapshot",
+    "GraphResponse",
+    "RuntimeMap",
+    "ComposeScan",
+    "ComposeGraph",
+    "ComposeEditPlan",
+    "LogsResponse",
+    "HealthResponse",
+    "ContainersResponse",
+    "ContainerDetailResponse",
+    "ImagesResponse",
+    "NetworksResponse",
+    "VolumesResponse",
 ];
 
 /// Largest integer that JavaScript JSON consumers can represent exactly.
@@ -27,7 +33,7 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 8] = [
 /// that standard `JSON.parse` cannot preserve.
 pub const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
-pub fn daemon_schemas() -> [Schema; 8] {
+pub fn daemon_schemas() -> [Schema; 13] {
     [
         schema_for!(DockerSnapshot),
         schema_for!(GraphResponse),
@@ -37,6 +43,11 @@ pub fn daemon_schemas() -> [Schema; 8] {
         schema_for!(ComposeEditPlan),
         schema_for!(LogsResponse),
         schema_for!(HealthResponse),
+        schema_for!(ContainersResponse),
+        schema_for!(ContainerDetailResponse),
+        schema_for!(ImagesResponse),
+        schema_for!(NetworksResponse),
+        schema_for!(VolumesResponse),
     ]
 }
 
@@ -44,7 +55,7 @@ pub fn daemon_schemas() -> [Schema; 8] {
 /// forward-compatible when deserializing, while fixtures reject typoed or
 /// unreviewed response fields rather than silently redefining the contract.
 /// This changes schema validation only, never daemon serialization behavior.
-pub fn daemon_schema_documents() -> [Value; 8] {
+pub fn daemon_schema_documents() -> [Value; 13] {
     daemon_schemas().map(|schema| {
         let mut document = serde_json::to_value(schema).expect("schemars schema serializes");
         deny_unknown_object_properties(&mut document);
@@ -94,7 +105,7 @@ mod tests {
         let snapshot_schema = DAEMON_SCHEMA_NAMES
             .iter()
             .zip(daemon_schema_documents())
-            .find_map(|(name, schema)| (*name == "docker-snapshot").then_some(schema))
+            .find_map(|(name, schema)| (*name == "DockerSnapshot").then_some(schema))
             .expect("snapshot schema exists");
         let validator = jsonschema::validator_for(&snapshot_schema).expect("valid schema");
         let valid = serde_json::json!({

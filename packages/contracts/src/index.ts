@@ -485,3 +485,8 @@ export interface AuthWhoamiResponse {
 }
 
 export { NODE_ENVELOPE_SCHEMAS, type NodeEnvelopeSchemaId } from "./nodeSchemas.js";
+export {
+  OPENAPI_RUST_RESPONSE_SCHEMAS,
+  RUST_RESPONSE_SCHEMAS,
+  type RustResponseSchemaId
+} from "./rustSchemas.js";

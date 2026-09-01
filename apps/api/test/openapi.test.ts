@@ -1,18 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import SwaggerParser from "@apidevtools/swagger-parser";
-import { NODE_ENVELOPE_SCHEMAS } from "@dockermap/contracts";
-import { buildOpenApiDocument, ROUTE_OPERATION_METADATA } from "../src/openapi.js";
+import { Validator } from "@seriousme/openapi-schema-validator";
+import {
+  NODE_ENVELOPE_SCHEMAS,
+  OPENAPI_RUST_RESPONSE_SCHEMAS,
+  type RustResponseSchemaId
+} from "@dockermap/contracts";
+import {
+  assertRustRouteSchemaCoverage,
+  buildOpenApiDocument,
+  ROUTE_OPERATION_METADATA,
+  RUST_ROUTE_RESPONSE_SCHEMAS
+} from "../src/openapi.js";
 import { ROUTE_MANIFEST } from "../src/routes.js";
 
 function toOpenApiPath(path: string) {
   return path.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
 }
 
-test("generated OpenAPI document passes parser validation", async () => {
+test("generated OpenAPI 3.1 document passes the official structural schema validator", async () => {
   const document = buildOpenApiDocument();
-  const validated = await SwaggerParser.validate(structuredClone(document));
-  assert.equal(validated.openapi, "3.0.3");
+  const validator = new Validator();
+  const validated = await validator.validate(structuredClone(document));
+  assert.equal(validated.valid, true, JSON.stringify(validated.errors));
+  assert.equal(validator.version, "3.1");
 });
 
 test("generated OpenAPI operations are exactly the explicit route manifest", () => {
@@ -92,9 +103,9 @@ test("generated OpenAPI records the actual session and Compose request contracts
   });
 });
 
-test("OpenAPI associates only Node-owned success envelopes and generic API errors", () => {
+test("OpenAPI references generated Rust and Node response components exactly", () => {
   const document = buildOpenApiDocument();
-  assert.deepEqual(document.components.schemas, NODE_ENVELOPE_SCHEMAS);
+  assert.deepEqual(document.components.schemas, { ...NODE_ENVELOPE_SCHEMAS, ...OPENAPI_RUST_RESPONSE_SCHEMAS });
 
   const nodeSuccesses: readonly [string, string][] = [
     ["/health", "RootHealth"],
@@ -110,8 +121,24 @@ test("OpenAPI associates only Node-owned success envelopes and generic API error
     }, path);
   }
 
-  for (const path of ["/api/snapshot", "/api/graph", "/api/runtime/map", "/api/logs", "/api/compose/scan"]) {
-    assert.equal(document.paths[path]?.get?.responses["200"]?.content, undefined, `${path} must not duplicate a Rust-owned schema`);
+  const rustSuccesses: readonly [string, RustResponseSchemaId][] = [
+    ["/api/snapshot", "DockerSnapshot"],
+    ["/api/graph", "GraphResponse"],
+    ["/api/runtime/map", "RuntimeMap"],
+    ["/api/containers", "ContainersResponse"],
+    ["/api/containers/{name}", "ContainerDetailResponse"],
+    ["/api/images", "ImagesResponse"],
+    ["/api/networks", "NetworksResponse"],
+    ["/api/volumes", "VolumesResponse"],
+    ["/api/logs", "LogsResponse"],
+    ["/api/compose/scan", "ComposeScan"],
+    ["/api/compose/graph", "ComposeGraph"],
+    ["/api/compose/edit-plan", "ComposeEditPlan"]
+  ];
+  for (const [path, schema] of rustSuccesses) {
+    assert.deepEqual(document.paths[path]?.get?.responses["200"]?.content, {
+      "application/json": { schema: { $ref: `#/components/schemas/${schema}` } }
+    }, path);
     assert.deepEqual(document.paths[path]?.get?.responses["401"]?.content, {
       "application/json": { schema: { $ref: "#/components/schemas/ApiError" } }
     });
@@ -119,6 +146,44 @@ test("OpenAPI associates only Node-owned success envelopes and generic API error
       "application/json": { schema: { $ref: "#/components/schemas/ApiError" } }
     }, `${path} must document route-dependent daemon errors`);
   }
+});
+
+test("every Rust-owned route and alias has a declared generated schema reference", () => {
+  const document = buildOpenApiDocument();
+  const schemaByRoute = {
+    snapshot: "DockerSnapshot",
+    graph: "GraphResponse",
+    "runtime-map": "RuntimeMap",
+    containers: "ContainersResponse",
+    container: "ContainerDetailResponse",
+    images: "ImagesResponse",
+    networks: "NetworksResponse",
+    volumes: "VolumesResponse",
+    logs: "LogsResponse",
+    "compose-scan": "ComposeScan",
+    "compose-graph": "ComposeGraph",
+    "compose-edit-plan": "ComposeEditPlan"
+  } as const satisfies Partial<Record<(typeof ROUTE_MANIFEST)[number]["id"], RustResponseSchemaId>>;
+
+  for (const route of ROUTE_MANIFEST) {
+    const expected = schemaByRoute[route.id as keyof typeof schemaByRoute];
+    if (!expected) continue;
+    for (const routePath of route.paths) {
+      const operation = document.paths[toOpenApiPath(routePath.path)]?.[route.method.toLowerCase() as "get" | "post"];
+      assert.deepEqual(operation?.responses["200"]?.content, {
+        "application/json": { schema: { $ref: `#/components/schemas/${expected}` } }
+      }, `${route.method} ${routePath.path}`);
+    }
+  }
+});
+
+test("rejects a missing Rust route schema mapping instead of silently documenting an untyped pass-through", () => {
+  const missingSnapshot = { ...RUST_ROUTE_RESPONSE_SCHEMAS } as Partial<typeof RUST_ROUTE_RESPONSE_SCHEMAS>;
+  delete missingSnapshot.snapshot;
+  assert.throws(
+    () => assertRustRouteSchemaCoverage(missingSnapshot),
+    /Rust-owned route is missing a response schema mapping: snapshot/
+  );
 });
 
 test("operation metadata is exhaustive for the route manifest", () => {

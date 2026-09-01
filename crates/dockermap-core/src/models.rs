@@ -54,6 +54,18 @@ pub struct ContainerRecord {
     pub depends_on: Vec<String>,
 }
 
+// These route response types deliberately keep the current JSON wire shapes.
+// They give the browser/daemon boundary named roots for generated schemas
+// without making a list or a detail response an anonymous JSON value.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ContainersResponse {
+    pub containers: Vec<ContainerRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct ContainerDetailResponse(pub ContainerRecord);
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ContainerMount {
     pub id: String,
@@ -72,6 +84,11 @@ pub struct ImageRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ImagesResponse {
+    pub images: Vec<ImageRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct NetworkRecord {
     pub id: String,
     pub name: String,
@@ -81,11 +98,21 @@ pub struct NetworkRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct NetworksResponse {
+    pub networks: Vec<NetworkRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct VolumeRecord {
     pub id: String,
     pub name: String,
     #[serde(rename = "attachedTo")]
     pub attached_to: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct VolumesResponse {
+    pub volumes: Vec<VolumeRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
