@@ -84,9 +84,7 @@ const PROVIDER_REASON_LABEL: Record<ProviderStatusReason, string> = {
 };
 
 const ASSERTION_KIND_LABEL: Record<RuntimeEvidenceAssertionKind, string> = {
-  observed: "Observed fact",
-  derived: "Derived relationship",
-  inferred: "Inferred relationship"
+  observed: "Observed fact"
 };
 
 const FRESHNESS_LABEL: Record<RuntimeEvidenceRef["freshness"], string> = {

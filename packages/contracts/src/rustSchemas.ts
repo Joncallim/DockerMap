@@ -488,11 +488,9 @@ export const RUST_RESPONSE_SCHEMAS = {
       "type": "object"
     },
     "RuntimeEvidenceAssertionKind": {
-      "description": "Whether a runtime claim was directly observed, deterministically derived\nfrom bounded observations, or inferred by a future heuristic.  This is a\nclosed vocabulary: callers must not translate provider error text into a\nconfidence-like assertion label.",
+      "description": "Version-one evidence is a direct Docker observation. Derived and inferred\nclaims need a later, deliberately versioned evidence contract rather than\na permissive enum value in this first slice.",
       "enum": [
-        "observed",
-        "derived",
-        "inferred"
+        "observed"
       ],
       "type": "string"
     },
@@ -508,6 +506,13 @@ export const RUST_RESPONSE_SCHEMAS = {
         "docker_network_membership",
         "docker_volume_mount",
         "docker_port_publication"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceProvider": {
+      "description": "Evidence provider for the version-one Docker-only evidence shape. New\nproviders require a new versioned evidence representation; they cannot be\npassed off as v1 through the broad runtime-provider enum.",
+      "enum": [
+        "docker"
       ],
       "type": "string"
     },
@@ -537,7 +542,7 @@ export const RUST_RESPONSE_SCHEMAS = {
           "$ref": "#/$defs/RuntimeEvidenceKind"
         },
         "provider": {
-          "$ref": "#/$defs/RuntimeProviderKind"
+          "$ref": "#/$defs/RuntimeEvidenceProvider"
         },
         "providerRevision": {
           "description": "Opaque Docker observation token, not a cache-publication revision or\nsource dump.",
@@ -2690,11 +2695,9 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "type": "object"
     },
     "RuntimeEvidenceAssertionKind": {
-      "description": "Whether a runtime claim was directly observed, deterministically derived\nfrom bounded observations, or inferred by a future heuristic.  This is a\nclosed vocabulary: callers must not translate provider error text into a\nconfidence-like assertion label.",
+      "description": "Version-one evidence is a direct Docker observation. Derived and inferred\nclaims need a later, deliberately versioned evidence contract rather than\na permissive enum value in this first slice.",
       "enum": [
-        "observed",
-        "derived",
-        "inferred"
+        "observed"
       ],
       "type": "string"
     },
@@ -2710,6 +2713,13 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "docker_network_membership",
         "docker_volume_mount",
         "docker_port_publication"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceProvider": {
+      "description": "Evidence provider for the version-one Docker-only evidence shape. New\nproviders require a new versioned evidence representation; they cannot be\npassed off as v1 through the broad runtime-provider enum.",
+      "enum": [
+        "docker"
       ],
       "type": "string"
     },
@@ -2739,7 +2749,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceKind"
         },
         "provider": {
-          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeProviderKind"
+          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceProvider"
         },
         "providerRevision": {
           "description": "Opaque Docker observation token, not a cache-publication revision or\nsource dump.",
