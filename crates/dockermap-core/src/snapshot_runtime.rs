@@ -359,7 +359,8 @@ fn docker_runtime_evidence(
         RuntimeEvidenceKind::DockerDaemonStateBindMount => "daemon-state-bind-mount",
         RuntimeEvidenceKind::SystemdRequires
         | RuntimeEvidenceKind::SystemdWants
-        | RuntimeEvidenceKind::SystemdPartOf => {
+        | RuntimeEvidenceKind::SystemdPartOf
+        | RuntimeEvidenceKind::NpmPackageManifestDependency => {
             unreachable!("Docker evidence helper only accepts Docker evidence kinds")
         }
     };
@@ -377,7 +378,8 @@ fn docker_runtime_evidence(
         }
         RuntimeEvidenceKind::SystemdRequires
         | RuntimeEvidenceKind::SystemdWants
-        | RuntimeEvidenceKind::SystemdPartOf => {
+        | RuntimeEvidenceKind::SystemdPartOf
+        | RuntimeEvidenceKind::NpmPackageManifestDependency => {
             unreachable!("Docker evidence helper only accepts Docker evidence kinds")
         }
     };

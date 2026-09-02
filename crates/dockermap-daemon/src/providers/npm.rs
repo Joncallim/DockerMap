@@ -34,6 +34,10 @@ const MAX_PACKAGE_JSON_BYTES: u64 = 262_144;
 const MAX_NPM_SCRIPTS: usize = 16;
 const MAX_SCRIPT_CHARS: usize = 200;
 
+/// Private marker consumed only by cache refresh after slot lifecycle binding.
+/// It is never a public runtime-map metadata key.
+pub(crate) const NPM_EVIDENCE_DEPENDENCY_MARKER: &str = "__dockermapNpmManifestDependency";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PackageDependencyRecord {
     name: String,
@@ -178,6 +182,7 @@ pub(crate) fn collect_npm_projects(
             let mut dependency_metadata = BTreeMap::new();
             dependency_metadata.insert("version".into(), safe_version);
             dependency_metadata.insert("scope".into(), safe_scope);
+            dependency_metadata.insert(NPM_EVIDENCE_DEPENDENCY_MARKER.into(), "declared".into());
             edges.push(RuntimeMapEdge {
                 source: node_id.clone(),
                 target: package_id,
@@ -688,6 +693,26 @@ mod tests {
             Some(package.version.as_str()),
             "package entity version matches the node metadata"
         );
+    }
+
+    #[test]
+    fn npm_dependency_edges_carry_only_the_private_evidence_marker_before_binding() {
+        let (_, edges, _) = collect_fixture_projects(PidNamespaceScope::Host { diagnostic: None });
+        let dependencies = edges
+            .iter()
+            .filter(|edge| edge.relationship == RuntimeRelationshipKind::DependsOn)
+            .collect::<Vec<_>>();
+        assert!(!dependencies.is_empty());
+        assert!(dependencies.iter().all(|edge| {
+            edge.source.starts_with("npm_project_")
+                && edge.target.starts_with("npm_package_")
+                && edge
+                    .metadata
+                    .get(NPM_EVIDENCE_DEPENDENCY_MARKER)
+                    .map(String::as_str)
+                    == Some("declared")
+                && edge.evidence_refs.is_empty()
+        }));
     }
 
     #[test]
