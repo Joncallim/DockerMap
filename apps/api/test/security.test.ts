@@ -941,6 +941,10 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
           finding && typeof finding === "object"
           && (finding as { ruleId?: unknown }).ruleId === "docker.compose_declared_target_not_active"
         )), `${path} must preserve the canonical Compose target finding`);
+        assert.ok(findingList.some((finding) => (
+          finding && typeof finding === "object"
+          && (finding as { ruleId?: unknown }).ruleId === "docker.compose_mutual_dependency"
+        )), `${path} must preserve the canonical mutual Compose finding`);
       }
     }
   }
@@ -1054,7 +1058,17 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[0].freshness = "stale"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[0].kind = "docker_network_membership"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].unsafe = "DOCKERMAP_TEST_EXTRA"; return value; })()]
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].unsafe = "DOCKERMAP_TEST_EXTRA"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].id = "finding_docker_compose_mutual_dependency_forged"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].summary = "DOCKERMAP_TEST_FORGED_MUTUAL_COMPOSE_FINDING"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[4].subjectRef, value.findings[4].targetRef] = [value.findings[4].targetRef, value.findings[4].subjectRef]; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[4].evidenceRefs[0], value.findings[4].evidenceRefs[1]] = [value.findings[4].evidenceRefs[1], value.findings[4].evidenceRefs[0]]; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[1].collectedAt += 1; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[1].providerRevision = "other-revision"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs.push(structuredClone(value.findings[4].evidenceRefs[0])); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[1].kind = "docker_network_membership"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[0].freshness = "stale"; return value; })()]
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
