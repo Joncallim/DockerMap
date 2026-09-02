@@ -890,7 +890,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
   const fixture = async (name: string) => JSON.parse(
     await readFile(new URL(`../../../tests/fixtures/contracts/${name}`, import.meta.url), "utf8")
   ) as Record<string, unknown>;
-  const [snapshot, graph, runtimeMap, logs, composeScan, composeGraph, composeEditPlan, health, findings, history, observedEvents] = await Promise.all([
+  const [snapshot, graph, runtimeMap, logs, composeScan, composeGraph, composeEditPlan, health, findings, history, observedEvents, resourceTelemetry] = await Promise.all([
     fixture("mock-snapshot.json"),
     fixture("graph-response.json"),
     fixture("runtime-map-daemon-emitted.json"),
@@ -901,7 +901,8 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     fixture("health-response.json"),
     fixture("findings-response.json"),
     fixture("observed-change-history-response.json"),
-    fixture("observed-docker-event-history-response.json")
+    fixture("observed-docker-event-history-response.json"),
+    fixture("observed-resource-telemetry-response.json")
   ]);
   const containers = snapshot.containers as unknown[];
   const container = containers.find((entry) => (entry as { name?: unknown }).name === "api");
@@ -914,6 +915,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     if (req.url === "/daemon/findings") return sendJson(res, 200, findings);
     if (req.url === "/daemon/history") return sendJson(res, 200, history);
     if (req.url === "/daemon/observed-events") return sendJson(res, 200, observedEvents);
+    if (req.url === "/daemon/resource-telemetry") return sendJson(res, 200, resourceTelemetry);
     if (req.url === "/daemon/containers") return sendJson(res, 200, { containers });
     if (req.url === "/daemon/containers/api") return sendJson(res, 200, container);
     if (req.url === "/daemon/images") return sendJson(res, 200, { images: snapshot.images });
@@ -942,6 +944,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     ["/api/findings", "FindingsResponse"],
     ["/api/history", "ObservedChangeHistoryResponse"],
     ["/api/observed-events", "ObservedDockerEventHistoryResponse"],
+    ["/api/resource-telemetry", "ObservedResourceTelemetryResponse"],
     ["/api/containers", "ContainersResponse"],
     ["/api/containers/api", "ContainerDetailResponse"],
     ["/api/images", "ImagesResponse"],
@@ -1017,6 +1020,7 @@ test("daemon model responses require non-empty revision and complete provider st
   const findings = await fixture("findings-response.json");
   const history = await fixture("observed-change-history-response.json");
   const observedEvents = await fixture("observed-docker-event-history-response.json");
+  const resourceTelemetry = await fixture("observed-resource-telemetry-response.json");
   const invalidResponses = [
     ["/daemon/snapshot", { ...snapshot, modelRevision: "" }],
     ["/daemon/snapshot", (() => { const value = structuredClone(snapshot); delete value.modelRevision; return value; })()],
@@ -1089,7 +1093,40 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/observed-events", (() => { const value = structuredClone(observedEvents); value.events[0].containerId = "docker_container_ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789"; return value; })()],
     ["/daemon/observed-events", (() => { const value = structuredClone(observedEvents); value.events[0].evidenceSource = "raw_docker_event"; return value; })()],
     ["/daemon/observed-events", (() => { const value = structuredClone(observedEvents); value.events[0].anchorModelRevision = ""; return value; })()],
-    ["/daemon/observed-events", (() => { const value = structuredClone(observedEvents); value.events[0].observedAtMs = Number.MAX_SAFE_INTEGER + 1; return value; })()]
+    ["/daemon/observed-events", (() => { const value = structuredClone(observedEvents); value.events[0].observedAtMs = Number.MAX_SAFE_INTEGER + 1; return value; })()],
+    ["/daemon/resource-telemetry", { ...resourceTelemetry, source: "mock" }],
+    ["/daemon/resource-telemetry", { ...resourceTelemetry, collectionState: "unavailable" }],
+    ["/daemon/resource-telemetry", { ...resourceTelemetry, source: "untrusted" }],
+    ["/daemon/resource-telemetry", { ...resourceTelemetry, currentModelRevision: null }],
+    ["/daemon/resource-telemetry", (() => { const value = structuredClone(resourceTelemetry); delete value.currentObservationRevision; return value; })()],
+    ["/daemon/resource-telemetry", { ...resourceTelemetry, unexpected: "private raw Docker stats" }],
+    ["/daemon/resource-telemetry", (() => {
+      const value = structuredClone(resourceTelemetry);
+      const samples = value.samples as Array<Record<string, unknown>>;
+      samples.push(structuredClone(samples[0]));
+      return value;
+    })()],
+    ["/daemon/resource-telemetry", (() => {
+      const value = structuredClone(resourceTelemetry);
+      const sample = (value.samples as Array<Record<string, unknown>>)[0];
+      const metric = sample.cpuPercent as Record<string, unknown>;
+      metric.expiresAtMs = (metric.observedAtMs as number) - 1;
+      return value;
+    })()],
+    ["/daemon/resource-telemetry", (() => {
+      const value = structuredClone(resourceTelemetry);
+      const sample = (value.samples as Array<Record<string, unknown>>)[0];
+      const metric = sample.cpuPercent as Record<string, unknown>;
+      metric.value = Number.MAX_SAFE_INTEGER + 1;
+      return value;
+    })()],
+    ["/daemon/resource-telemetry", (() => {
+      const value = structuredClone(resourceTelemetry);
+      const sample = (value.samples as Array<Record<string, unknown>>)[0];
+      const metric = sample.cpuPercent as Record<string, unknown>;
+      metric.expiresAtMs = Number.MAX_SAFE_INTEGER + 1;
+      return value;
+    })()]
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
@@ -1108,6 +1145,27 @@ test("daemon model responses require non-empty revision and complete provider st
       code: "daemon_invalid_response",
       message: "Daemon response did not match its declared contract"
     });
+  }
+});
+
+test("resource telemetry accepts coherent active and unavailable lifecycle bytes", async () => {
+  const { validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
+  const resourceTelemetry = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/observed-resource-telemetry-response.json", import.meta.url),
+    "utf8"
+  )) as Record<string, unknown>;
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/resource-telemetry", resourceTelemetry));
+
+  for (const source of ["docker", "mock"] as const) {
+    const unavailable = structuredClone(resourceTelemetry);
+    Object.assign(unavailable, {
+      source,
+      collectionState: "unavailable",
+      currentModelRevision: null,
+      currentObservationRevision: null,
+      samples: []
+    });
+    assert.doesNotThrow(() => validateDaemonResponse("/daemon/resource-telemetry", unavailable), source);
   }
 });
 

@@ -1,4 +1,5 @@
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import { Buffer } from "node:buffer";
 import {
   RUST_RESPONSE_SCHEMAS,
   type ProviderSlot,
@@ -24,6 +25,7 @@ export const DAEMON_RESPONSE_SCHEMA_PATHS = [
   { path: "/daemon/findings", routeId: "findings", schema: RUST_ROUTE_RESPONSE_SCHEMAS.findings },
   { path: "/daemon/history", routeId: "history", schema: RUST_ROUTE_RESPONSE_SCHEMAS.history },
   { path: "/daemon/observed-events", routeId: "observed-events", schema: RUST_ROUTE_RESPONSE_SCHEMAS["observed-events"] },
+  { path: "/daemon/resource-telemetry", routeId: "resource-telemetry", schema: RUST_ROUTE_RESPONSE_SCHEMAS["resource-telemetry"] },
   { path: "/daemon/containers", routeId: "containers", schema: RUST_ROUTE_RESPONSE_SCHEMAS.containers },
   { path: "/daemon/containers/:name", routeId: "container", schema: RUST_ROUTE_RESPONSE_SCHEMAS.container },
   { path: "/daemon/images", routeId: "images", schema: RUST_ROUTE_RESPONSE_SCHEMAS.images },
@@ -383,6 +385,73 @@ function isBoundedObservedEventRevision(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && Array.from(value).length <= 64;
 }
 
+const RESOURCE_TELEMETRY_METRICS = [
+  "cpuPercent",
+  "memoryUsedBytes",
+  "memoryLimitBytes",
+  "networkRxBytesPerSecond",
+  "networkTxBytesPerSecond"
+] as const;
+
+// Resource telemetry is current-only Docker evidence.  The schema carries the
+// numeric shape, while this state table prevents a syntactically-valid daemon
+// response from carrying retained samples/revisions through an unavailable or
+// mock source transition.
+function hasCoherentResourceTelemetry(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const telemetry = payload as Record<string, unknown>;
+  const source = telemetry.source;
+  const collectionState = telemetry.collectionState;
+  const currentModelRevision = telemetry.currentModelRevision;
+  const currentObservationRevision = telemetry.currentObservationRevision;
+  const samples = telemetry.samples;
+  if ((source !== "docker" && source !== "mock") || !Array.isArray(samples)) return false;
+
+  const unavailable = collectionState === "unavailable";
+  if (source === "mock" && !unavailable) return false;
+  if (source === "mock" || unavailable) {
+    return currentModelRevision === null
+      && currentObservationRevision === null
+      && samples.length === 0;
+  }
+  if (source !== "docker" || (collectionState !== "collecting" && collectionState !== "fresh" && collectionState !== "stale")) return false;
+  if (!isBoundedTelemetryRevision(currentModelRevision) || !isBoundedTelemetryRevision(currentObservationRevision)) return false;
+
+  const containerIds = new Set<string>();
+  return samples.every((candidate) => {
+    if (!candidate || typeof candidate !== "object") return false;
+    const sample = candidate as Record<string, unknown>;
+    if (typeof sample.containerId !== "string"
+      || !/^docker_container_[0-9a-f]{64}$/.test(sample.containerId)
+      || containerIds.has(sample.containerId)) return false;
+    containerIds.add(sample.containerId);
+    return RESOURCE_TELEMETRY_METRICS.every((name) => {
+      const metric = sample[name];
+      if (metric === undefined || metric === null) return true;
+      if (!metric || typeof metric !== "object") return false;
+      const value = metric as Record<string, unknown>;
+      const observedAtMs = value.observedAtMs;
+      const expiresAtMs = value.expiresAtMs;
+      return typeof value.value === "number"
+        && Number.isSafeInteger(value.value)
+        && value.value >= 0
+        && typeof observedAtMs === "number"
+        && Number.isSafeInteger(observedAtMs)
+        && observedAtMs >= 0
+        && typeof expiresAtMs === "number"
+        && Number.isSafeInteger(expiresAtMs)
+        && expiresAtMs >= observedAtMs;
+    });
+  });
+}
+
+function isBoundedTelemetryRevision(value: unknown): value is string {
+  // Rust validates `String::len()`, which is UTF-8 byte length. Retain the
+  // same bound at this untrusted publication boundary rather than treating a
+  // multi-byte opaque token as shorter than the daemon does.
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= 64;
+}
+
 export function daemonResponseSchemaId(path: string): RustResponseSchemaId | undefined {
   const pathname = path.split("?", 1)[0];
   if (pathname === "/daemon/containers") return "ContainersResponse";
@@ -418,7 +487,8 @@ export function validateDaemonResponse(path: string, payload: unknown) {
     || (schema === "RuntimeMap" && (!hasCompleteProviderStateVector(payload) || !hasCoherentProviderFreshness(payload) || !hasCoherentRuntimeEvidence(payload)))
     || (schema === "FindingsResponse" && !hasCoherentFindings(payload))
     || (schema === "ObservedChangeHistoryResponse" && !hasCoherentObservedHistory(payload))
-    || (schema === "ObservedDockerEventHistoryResponse" && !hasCoherentObservedDockerEventHistory(payload))) {
+    || (schema === "ObservedDockerEventHistoryResponse" && !hasCoherentObservedDockerEventHistory(payload))
+    || (schema === "ObservedResourceTelemetryResponse" && !hasCoherentResourceTelemetry(payload))) {
     throw new DaemonResponseValidationError();
   }
   return payload;
