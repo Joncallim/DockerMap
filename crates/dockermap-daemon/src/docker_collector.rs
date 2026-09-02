@@ -1,9 +1,12 @@
 use bollard::{
     container::LogOutput,
-    models::{ContainerSummary, EventMessage, MountPoint, MountPointTypeEnum, VolumeListResponse},
+    models::{
+        ContainerStatsResponse, ContainerSummary, EventMessage, MountPoint, MountPointTypeEnum,
+        VolumeListResponse,
+    },
     query_parameters::{
         EventsOptionsBuilder, ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
-        ListVolumesOptionsBuilder, LogsOptionsBuilder,
+        ListVolumesOptionsBuilder, LogsOptionsBuilder, StatsOptionsBuilder,
     },
     Docker,
 };
@@ -123,6 +126,29 @@ impl DockerCollector {
                 // closed fact that this attempt disconnected.
                 .map(|result| result.map_err(|_| ())),
         )
+    }
+
+    /// Fetch exactly one finite stats object for a snapshot-selected container.
+    /// This is intentionally not a general stats API: callers cannot choose a
+    /// route parameter, stream mode, or query shape. The gateway rejects the
+    /// same request whenever inventory label scoping is configured.
+    pub(crate) async fn collect_one_shot_stats(
+        &self,
+        container_id: &str,
+    ) -> Result<ContainerStatsResponse, ()> {
+        if self.label_filter.is_some() {
+            return Err(());
+        }
+        let options = StatsOptionsBuilder::new()
+            .stream(false)
+            .one_shot(false)
+            .build();
+        let mut stream = self.client.stats(container_id, Some(options));
+        stream.next().await.transpose().map_err(|_| ())?.ok_or(())
+    }
+
+    pub(crate) fn stats_available(&self) -> bool {
+        self.label_filter.is_none()
     }
 
     pub(crate) async fn collect_logs(

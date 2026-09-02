@@ -25,8 +25,8 @@ use axum::{
 use dockermap_core::{
     derive_graph, mock_log_entries, ContainerDetailResponse, ContainersResponse, DockerSnapshot,
     FindingsResponse, GraphResponse, HealthResponse, ImagesResponse, LogCursor, LogsResponse,
-    NetworksResponse, ObservedDockerEventHistoryResponse, RuntimeMap, VolumesResponse,
-    DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+    NetworksResponse, ObservedDockerEventHistoryResponse, ObservedResourceTelemetryResponse,
+    RuntimeMap, VolumesResponse, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 
 pub(crate) const MAX_LOG_QUERY_CHARS: usize = 256;
@@ -65,6 +65,7 @@ pub(crate) fn daemon_router(state: AppState, daemon_token: DaemonAuthToken) -> R
         .route("/daemon/findings", get(get_findings))
         .route("/daemon/history", get(get_observed_history))
         .route("/daemon/observed-events", get(get_observed_docker_events))
+        .route("/daemon/resource-telemetry", get(get_resource_telemetry))
         .route("/daemon/containers", get(get_containers))
         .route("/daemon/containers/{name}", get(get_container))
         .route("/daemon/images", get(get_images))
@@ -133,6 +134,13 @@ async fn get_observed_docker_events(
 ) -> Json<ObservedDockerEventHistoryResponse> {
     let cache = state.cache.read().await;
     Json(cache.observed_docker_event_history_response())
+}
+
+async fn get_resource_telemetry(
+    State(state): State<AppState>,
+) -> Json<ObservedResourceTelemetryResponse> {
+    let cache = state.cache.read().await;
+    Json(cache.resource_telemetry_response())
 }
 
 async fn get_containers(State(state): State<AppState>) -> Json<ContainersResponse> {
