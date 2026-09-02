@@ -71,12 +71,18 @@ change so the two never rely on colour alone.
 
 ## Visual Tokens
 
-The canonical token set lives in the `:root` block of
-[apps/web/src/styles.css](../../apps/web/src/styles.css). Highlights:
+The public-safe Hearth token export lives in
+[apps/web/src/hearth-tokens.css](../../apps/web/src/hearth-tokens.css). DockerMap aliases
+those roles in `:root` in [apps/web/src/styles.css](../../apps/web/src/styles.css), then
+keeps operational state colours local. Highlights:
 
 - **Surfaces** — a near-black base (`--bg`) with three raised surface levels and two
   hairline border weights. Dense layouts stay calm because contrast between surfaces is low
   and intentional.
+- **Shell roles** — the rail uses Hearth's raised canvas; the topbar and navigation hover
+  state use its surfaces; the selected navigation item and brand mark use Azure. On narrow
+  screens the horizontal rail remains scrollable and its overflow affordance returns to the
+  raised canvas, so routes are never clipped.
 - **Typography** — system UI sans for the interface, `--mono` for paths, IDs, ports, log
   lines, and clocks. Numeric and technical text is always mono.
 - **Shape** — `--r-sm/md/lg` (7/11/16px). Pills are fully rounded only for compact metadata.
@@ -101,6 +107,10 @@ Navigation is spatial, organised into **spaces** rather than a deep menu tree:
 
 The **⌘K command palette** is a primary interface: navigate, jump to any service, or ask
 Copilot. Everything reachable by search.
+
+Azure belongs to shared shell selection and navigation affordances. Copilot is the sole
+consumer of the Hearth AI purple roles; topology and operational state colours remain
+DockerMap-local and never borrow either decorative treatment.
 
 ## AI Doctrine
 

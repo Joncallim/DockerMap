@@ -22,6 +22,7 @@
   --hearth-azure-strong: #006fd6;
   --hearth-azure-text: #a7d7fb;
   --hearth-azure-soft: rgb(22 139 255 / 18%);
+  --hearth-on-azure: #ffffff;
   --hearth-ai: #b9a4ff;
   --hearth-ai-soft: #231c3a;
   --hearth-shadow: 0 8px 24px rgb(0 0 0 / 20%);
@@ -44,6 +45,7 @@
   --hearth-azure-strong: #004f8f;
   --hearth-azure-text: #0067b8;
   --hearth-azure-soft: rgb(22 139 255 / 20%);
+  --hearth-on-azure: #ffffff;
   --hearth-ai: #6f42c1;
   --hearth-ai-soft: #f2ecff;
   --hearth-shadow: 0 8px 24px rgb(27 36 43 / 8%);
