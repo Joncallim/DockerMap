@@ -238,12 +238,14 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
   // Only a V1 port-publication edge needs a node lookup. Keep ambiguity local
   // to that referenced listener rather than treating unrelated duplicate
   // provider nodes as an API contract violation.
-  const nodesById = new Map<string, Record<string, unknown> | null>();
+  const nodesById = new Map<string, Record<string, unknown>[]>();
   for (const candidate of nodes) {
     if (!candidate || typeof candidate !== "object") return "runtime_evidence_edge_shape";
     const node = candidate as Record<string, unknown>;
     if (typeof node.id !== "string") return "runtime_evidence_edge_shape";
-    nodesById.set(node.id, nodesById.has(node.id) ? null : node);
+    const sameId = nodesById.get(node.id);
+    if (sameId) sameId.push(node);
+    else nodesById.set(node.id, [node]);
   }
   for (const edge of edges) {
     if (!edge || typeof edge !== "object") return "runtime_evidence_edge_shape";
@@ -291,12 +293,31 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
       if (isV4 && candidate.target !== "host_local") return "runtime_evidence_edge_binding";
       if (value.kind === "docker_daemon_state_bind_mount" && candidate.target !== "host_risk_docker_daemon_state") return "runtime_evidence_daemon_state_target";
       if (value.kind === "docker_port_publication") {
-        const listener = nodesById.get(candidate.target);
-        if (listener === undefined) return "runtime_evidence_port_listener_missing";
-        if (listener === null) return "runtime_evidence_port_listener_ambiguous";
+        const listeners = nodesById.get(candidate.target);
+        if (!listeners) return "runtime_evidence_port_listener_missing";
+        const listener = listeners[0];
         if (listener.provider !== "network" || listener.type !== "network_listener"
           || !listener.metadata || typeof listener.metadata !== "object") return "runtime_evidence_port_listener_shape";
-        if (!isHostPublishedDockerPort((listener.metadata as Record<string, unknown>).port)) return "runtime_evidence_port_listener_grammar";
+        const metadata = listener.metadata as Record<string, unknown>;
+        const port = metadata.port;
+        if (!isHostPublishedDockerPort(port)) return "runtime_evidence_port_listener_grammar";
+        // Duplicate provider records are tolerable only when they carry the
+        // exact same closed listener fact. Do not silently choose one record
+        // when a duplicate differs in listener identity, state, or metadata.
+        if (!listeners.every((candidateListener) => {
+          const candidateMetadata = candidateListener.metadata;
+          return candidateListener.provider === "network"
+            && candidateListener.type === "network_listener"
+            && candidateListener.label === listener.label
+            && candidateListener.status === listener.status
+            && candidateListener.layer === listener.layer
+            && (candidateListener.service === null || candidateListener.service === undefined)
+            && (candidateListener.package === null || candidateListener.package === undefined)
+            && candidateMetadata && typeof candidateMetadata === "object"
+            && Object.keys(candidateMetadata).length === 1
+            && (candidateMetadata as Record<string, unknown>).port === port
+            && isHostPublishedDockerPort((candidateMetadata as Record<string, unknown>).port);
+        })) return "runtime_evidence_port_listener_ambiguous";
       }
       // An opaque observation token must never be the collection timestamp
       // re-labelled as a revision. The daemon produces it independently.

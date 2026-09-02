@@ -1306,9 +1306,17 @@ test("runtime evidence is required and fails closed before browser publication",
   const listener = duplicateListener.nodes.find((node: { id?: unknown }) => node.id === duplicateListenerEdge.target);
   assert.ok(listener, "host-port publication targets a listener node");
   duplicateListener.nodes.push(structuredClone(listener));
-  assert.throws(
+  assert.doesNotThrow(
     () => validateDaemonResponse("/daemon/runtime/map", duplicateListener),
-    "Docker port-publication evidence must fail closed when its listener identity is ambiguous"
+    "duplicate Docker listener records may support one publication only when their closed listener facts are identical"
+  );
+
+  const conflictingListener = structuredClone(duplicateListener);
+  const duplicate = conflictingListener.nodes[conflictingListener.nodes.length - 1];
+  duplicate.metadata.port = "8081:8080/tcp";
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", conflictingListener),
+    "Docker port-publication evidence must fail closed when duplicate listener records disagree"
   );
 
   const npmEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "npm_project_dockermap");
