@@ -11,7 +11,7 @@ use crate::{
 use schemars::{schema_for, Schema};
 use serde_json::Value;
 
-pub const DAEMON_SCHEMA_NAMES: [&str; 14] = [
+pub const DAEMON_SCHEMA_NAMES: [&str; 15] = [
     "DockerSnapshot",
     "GraphResponse",
     "RuntimeMap",
@@ -35,7 +35,7 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 14] = [
 /// that standard `JSON.parse` cannot preserve.
 pub const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
-pub fn daemon_schemas() -> [Schema; 14] {
+pub fn daemon_schemas() -> [Schema; 15] {
     [
         schema_for!(DockerSnapshot),
         schema_for!(GraphResponse),
@@ -59,7 +59,7 @@ pub fn daemon_schemas() -> [Schema; 14] {
 /// forward-compatible when deserializing, while fixtures reject typoed or
 /// unreviewed response fields rather than silently redefining the contract.
 /// This changes schema validation only, never daemon serialization behavior.
-pub fn daemon_schema_documents() -> [Value; 14] {
+pub fn daemon_schema_documents() -> [Value; 15] {
     daemon_schemas().map(|schema| {
         let mut document = serde_json::to_value(schema).expect("schemars schema serializes");
         deny_unknown_object_properties(&mut document);
@@ -103,6 +103,43 @@ mod tests {
             first, second,
             "schema output must not depend on generation order"
         );
+    }
+
+    #[test]
+    fn schema_root_inventory_includes_each_declared_response_once() {
+        assert_eq!(DAEMON_SCHEMA_NAMES.len(), 15);
+        assert_eq!(daemon_schema_documents().len(), DAEMON_SCHEMA_NAMES.len());
+        let unique = DAEMON_SCHEMA_NAMES.iter().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), DAEMON_SCHEMA_NAMES.len());
+        assert!(unique.contains(&"ObservedChangeHistoryResponse"));
+    }
+
+    #[test]
+    fn observed_history_statuses_are_required_nullable_and_closed() {
+        let schema = DAEMON_SCHEMA_NAMES
+            .iter()
+            .zip(daemon_schema_documents())
+            .find_map(|(name, schema)| (*name == "ObservedChangeHistoryResponse").then_some(schema))
+            .expect("history schema exists");
+        let validator = jsonschema::validator_for(&schema).expect("valid schema");
+        let event = serde_json::json!({
+            "id": "history-1", "kind": "container_appeared", "observedAtMs": 1,
+            "containerId": "docker_container_safe", "previousStatus": null, "currentStatus": "running"
+        });
+        let response = serde_json::json!({
+            "source": "docker", "baselineEstablished": true,
+            "currentModelRevision": "publication-r1", "observedRevision": "observation-r1",
+            "events": [event]
+        });
+        assert!(validator.is_valid(&response));
+
+        let mut unknown_status = response.clone();
+        unknown_status["events"][0]["currentStatus"] = serde_json::json!("raw Docker status");
+        assert!(!validator.is_valid(&unknown_status));
+
+        let mut missing_status = response;
+        missing_status["events"][0].as_object_mut().expect("event object").remove("previousStatus");
+        assert!(!validator.is_valid(&missing_status));
     }
 
     #[test]

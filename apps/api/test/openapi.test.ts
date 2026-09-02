@@ -232,6 +232,8 @@ test("every Rust-owned route and alias has a declared generated schema reference
     snapshot: "DockerSnapshot",
     graph: "GraphResponse",
     "runtime-map": "RuntimeMap",
+    findings: "FindingsResponse",
+    history: "ObservedChangeHistoryResponse",
     containers: "ContainersResponse",
     container: "ContainerDetailResponse",
     images: "ImagesResponse",

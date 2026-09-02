@@ -180,11 +180,21 @@ pub struct ObservedChangeEvent {
     #[schemars(length(min = 1, max = 192))]
     pub container_id: String,
     #[serde(rename = "previousStatus")]
-    #[schemars(required, extend("type" = ["string", "null"]))]
+    #[schemars(required, with = "ObservedContainerStatusOrNull")]
     pub previous_status: Option<ObservedContainerStatus>,
     #[serde(rename = "currentStatus")]
-    #[schemars(required, extend("type" = ["string", "null"]))]
+    #[schemars(required, with = "ObservedContainerStatusOrNull")]
     pub current_status: Option<ObservedContainerStatus>,
+}
+
+/// Schema-only union keeps optional status values required on the wire while
+/// accurately admitting the null state used by appearance/disappearance.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum ObservedContainerStatusOrNull {
+    Value(ObservedContainerStatus),
+    Null(()),
 }
 
 #[derive(JsonSchema)]
