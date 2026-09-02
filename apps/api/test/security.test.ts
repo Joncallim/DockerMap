@@ -969,6 +969,33 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
   );
 });
 
+test("Rust-serialized V1 Docker Finding evidence may omit its optional provider slot", async () => {
+  const findings = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/findings-response.json", import.meta.url), "utf8"
+  )) as { findings: Array<{ evidenceRefs: Array<Record<string, unknown>> }> };
+  const serialized = structuredClone(findings);
+  const dockerEvidence = serialized.findings.flatMap((finding) => finding.evidenceRefs)
+    .filter((evidence) => evidence.version === 1 && evidence.provider === "docker");
+  assert.ok(dockerEvidence.length > 0, "fixture must cover serialized V1 Docker finding evidence");
+  for (const evidence of dockerEvidence) delete evidence.providerSlot;
+
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/findings") return sendJson(res, 200, serialized);
+    return sendJson(res, 404, { code: "not_found", message: "missing daemon fixture" });
+  });
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  for (const path of ["/api/findings", "/api/v1/findings"]) {
+    const response = await request(api, path, { headers: { Authorization: "Bearer test-token" } });
+    assert.equal(response.status, 200, path);
+    const body = await response.json();
+    assert.deepEqual(body, serialized, path);
+  }
+});
+
 test("authenticated daemon schema violations fail closed instead of reaching browser clients or mock fallback", async () => {
   const fixture = async (name: string) => JSON.parse(
     await readFile(new URL(`../../../tests/fixtures/contracts/${name}`, import.meta.url), "utf8")
@@ -1070,6 +1097,7 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[2].targetRef = "host_risk_untrusted"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[1].kind = "docker_volume_mount"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()],
+     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerSlot = "systemd"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].summary = "DOCKERMAP_TEST_FORGED_TEMPORAL_FINDING"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].subjectRef = "docker_container_api"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); const subject = value.findings[3].subjectRef; value.findings[3].subjectRef = `${subject.slice(0, -1)}e`; return value; })()],

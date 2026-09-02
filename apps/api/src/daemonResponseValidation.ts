@@ -273,7 +273,7 @@ function hasCoherentFindings(payload: unknown): boolean {
           && evidence.assertionKind === "observed"
           && evidence.summary === "Docker reported a bind mount exposing Docker daemon state"
           && evidence.subjectRef === finding.subjectRef
-          && evidence.providerSlot === null
+          && (evidence.providerSlot === null || evidence.providerSlot === undefined)
           && evidence.freshness === "fresh"
           && typeof evidence.providerRevision === "string"
           && evidence.providerRevision !== String(evidence.collectedAt);
@@ -301,7 +301,7 @@ function hasCoherentFindings(payload: unknown): boolean {
           && networkEvidence.kind === "docker_network_membership"
           && networkEvidence.assertionKind === "observed"
           && networkEvidence.freshness === "fresh"
-          && networkEvidence.providerSlot === null
+          && (networkEvidence.providerSlot === null || networkEvidence.providerSlot === undefined)
           && networkEvidence.subjectRef === finding.subjectRef
           && typeof networkEvidence.providerRevision === "string"
           && networkEvidence.providerRevision !== String(networkEvidence.collectedAt)
@@ -310,7 +310,7 @@ function hasCoherentFindings(payload: unknown): boolean {
           && portEvidence.kind === "docker_port_publication"
           && portEvidence.assertionKind === "observed"
           && portEvidence.freshness === "fresh"
-          && portEvidence.providerSlot === null
+          && (portEvidence.providerSlot === null || portEvidence.providerSlot === undefined)
           && portEvidence.subjectRef === finding.subjectRef
           && typeof portEvidence.providerRevision === "string"
           && portEvidence.providerRevision !== String(portEvidence.collectedAt);
