@@ -14,7 +14,8 @@ const fixtures = [
   ["compose-graph", ["compose-graph.json"]],
   ["compose-edit-plan", ["compose-edit-plan.json"]],
   ["logs-response", ["logs-response.json"]],
-  ["health-response", ["health-response.json"]]
+  ["health-response", ["health-response.json"]],
+  ["findings-response", ["findings-response.json"]]
 ] as const;
 
 async function readJson(path: string): Promise<unknown> {

@@ -1308,6 +1308,87 @@ export const RUST_RESPONSE_SCHEMAS = {
   "title": "RuntimeMap",
   "type": "object"
 },
+  FindingsResponse: {
+  "$defs": {
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "recommendation": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "ruleId": {
+          "$ref": "#/$defs/FindingRule"
+        },
+        "severity": {
+          "$ref": "#/$defs/FindingSeverity"
+        },
+        "subjectRef": {
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "ruleId",
+        "severity",
+        "summary",
+        "recommendation",
+        "subjectRef",
+        "targetRef"
+      ],
+      "type": "object"
+    },
+    "FindingRule": {
+      "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
+      "enum": [
+        "systemd.requires_target_not_active"
+      ],
+      "type": "string"
+    },
+    "FindingSeverity": {
+      "description": "Findings are intentionally a small, closed advisory vocabulary. They do\nnot expose provider output or prescribe an automated remediation.",
+      "enum": [
+        "warning",
+        "advisory"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "type": "array"
+    },
+    "modelRevision": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "findings",
+    "modelRevision"
+  ],
+  "title": "FindingsResponse",
+  "type": "object"
+},
   ComposeScan: {
   "$defs": {
     "ComposeDiagnostic": {
@@ -3560,6 +3641,87 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "providerStates"
   ],
   "title": "RuntimeMap",
+  "type": "object"
+},
+  FindingsResponse: {
+  "$defs": {
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "recommendation": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "ruleId": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/FindingRule"
+        },
+        "severity": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/FindingSeverity"
+        },
+        "subjectRef": {
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "ruleId",
+        "severity",
+        "summary",
+        "recommendation",
+        "subjectRef",
+        "targetRef"
+      ],
+      "type": "object"
+    },
+    "FindingRule": {
+      "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
+      "enum": [
+        "systemd.requires_target_not_active"
+      ],
+      "type": "string"
+    },
+    "FindingSeverity": {
+      "description": "Findings are intentionally a small, closed advisory vocabulary. They do\nnot expose provider output or prescribe an automated remediation.",
+      "enum": [
+        "warning",
+        "advisory"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "findings": {
+      "items": {
+        "$ref": "#/components/schemas/FindingsResponse/$defs/Finding"
+      },
+      "type": "array"
+    },
+    "modelRevision": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "findings",
+    "modelRevision"
+  ],
+  "title": "FindingsResponse",
   "type": "object"
 },
   ComposeScan: {

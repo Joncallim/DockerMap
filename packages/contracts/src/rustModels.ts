@@ -14,7 +14,8 @@ export type RustDaemonModels =
   | ContainerRecord
   | ImagesResponse
   | NetworksResponse
-  | VolumesResponse;
+  | VolumesResponse
+  | FindingsResponse;
 export type ComposeMountKind = 'bind' | 'named_volume' | 'anonymous_volume' | 'unsupported';
 export type RuntimeMode = 'docker' | 'mock';
 export type RelationshipKind = 'connected_to' | 'mounts';
@@ -142,6 +143,16 @@ export type ComposeRelationshipKind = 'declares_mount' | 'mounted_at';
 export type ComposeNodeKind = 'service' | 'host_path' | 'container_path' | 'named_volume' | 'anonymous_volume';
 export type LogLevel = 'info' | 'warn' | 'error';
 export type HealthState = 'ok' | 'degraded';
+/**
+ * Closed rule identifiers keep clients from treating findings as arbitrary
+ * provider messages. New rules require an explicit contract addition.
+ */
+export type FindingRule = 'systemd.requires_target_not_active';
+/**
+ * Findings are intentionally a small, closed advisory vocabulary. They do
+ * not expose provider output or prescribe an automated remediation.
+ */
+export type FindingSeverity = 'warning' | 'advisory';
 
 export interface DockerSnapshot {
   containers: ContainerRecord[];
@@ -560,6 +571,19 @@ export interface NetworksResponse {
 }
 export interface VolumesResponse {
   volumes: VolumeRecord[];
+}
+export interface FindingsResponse {
+  findings: Finding[];
+  modelRevision: string;
+}
+export interface Finding {
+  id: string;
+  recommendation: string;
+  ruleId: FindingRule;
+  severity: FindingSeverity;
+  subjectRef: string;
+  summary: string;
+  targetRef: string;
 }
 
 // Rust's transparent route wrapper serializes as the record itself.
