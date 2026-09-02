@@ -147,7 +147,7 @@ export type HealthState = 'ok' | 'degraded';
  * Closed rule identifiers keep clients from treating findings as arbitrary
  * provider messages. New rules require an explicit contract addition.
  */
-export type FindingRule = 'systemd.requires_target_not_active';
+export type FindingRule = 'systemd.requires_target_not_active' | 'docker.internal_network_member_publishes_port';
 /**
  * Findings are intentionally a small, closed advisory vocabulary. They do
  * not expose provider output or prescribe an automated remediation.
@@ -579,13 +579,13 @@ export interface FindingsResponse {
 export interface Finding {
   /**
    * Canonical, already-sanitized runtime evidence that directly triggered
-   * this finding. The rule admits exactly one fact, keeping the response
-   * bounded and preventing a generic metadata channel.
+   * this finding. Each closed rule has a fixed, small evidence budget,
+   * preventing this response from becoming a generic metadata channel.
    *
    * @minItems 1
-   * @maxItems 1
+   * @maxItems 2
    */
-  evidenceRefs: [RuntimeEvidenceRef];
+  evidenceRefs: [RuntimeEvidenceRef] | [RuntimeEvidenceRef, RuntimeEvidenceRef];
   id: string;
   recommendation: string;
   ruleId: FindingRule;

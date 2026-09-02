@@ -56,6 +56,9 @@ const U32_MAX = 4_294_967_295;
 const SYSTEMD_REQUIRES_FINDING_RULE = "systemd.requires_target_not_active";
 const SYSTEMD_REQUIRES_FINDING_SUMMARY = "An active systemd service requires a target that is inactive or failed";
 const SYSTEMD_REQUIRES_FINDING_RECOMMENDATION = "Inspect the target service state and its declared dependency configuration.";
+const INTERNAL_NETWORK_PORT_FINDING_RULE = "docker.internal_network_member_publishes_port";
+const INTERNAL_NETWORK_PORT_FINDING_SUMMARY = "A container on an internal Docker network also has a published host port.";
+const INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION = "Review whether the host-port publication is intended for this internal-network service.";
 
 // Version-one evidence is intentionally a discriminated Docker observation,
 // not a generic provenance bag. JSON Schema owns each field's closed enum;
@@ -196,8 +199,7 @@ function hasCoherentFindings(payload: unknown): boolean {
   return findings.every((candidate) => {
     if (!candidate || typeof candidate !== "object") return false;
     const finding = candidate as Record<string, unknown>;
-    return finding.ruleId === SYSTEMD_REQUIRES_FINDING_RULE
-      && finding.severity === "warning"
+    if (finding.ruleId === SYSTEMD_REQUIRES_FINDING_RULE) return finding.severity === "warning"
       && finding.summary === SYSTEMD_REQUIRES_FINDING_SUMMARY
       && finding.recommendation === SYSTEMD_REQUIRES_FINDING_RECOMMENDATION
       && typeof finding.id === "string"
@@ -220,6 +222,42 @@ function hasCoherentFindings(payload: unknown): boolean {
           && evidence.providerSlot === "systemd"
           && evidence.freshness === "fresh"
           && evidence.subjectRef === finding.subjectRef;
+      })();
+    if (finding.ruleId !== INTERNAL_NETWORK_PORT_FINDING_RULE) return false;
+    return finding.severity === "advisory"
+      && finding.summary === INTERNAL_NETWORK_PORT_FINDING_SUMMARY
+      && finding.recommendation === INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION
+      && typeof finding.id === "string"
+      && finding.id.startsWith("finding_docker_internal_network_member_publishes_port_")
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("docker_container_")
+      && typeof finding.targetRef === "string"
+      && finding.targetRef.startsWith("docker_network_")
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 2
+      && (() => {
+        const [membership, port] = finding.evidenceRefs;
+        if (!membership || typeof membership !== "object" || !port || typeof port !== "object") return false;
+        const networkEvidence = membership as Record<string, unknown>;
+        const portEvidence = port as Record<string, unknown>;
+        return networkEvidence.version === 1
+          && networkEvidence.provider === "docker"
+          && networkEvidence.kind === "docker_network_membership"
+          && networkEvidence.assertionKind === "observed"
+          && networkEvidence.freshness === "fresh"
+          && networkEvidence.providerSlot === null
+          && networkEvidence.subjectRef === finding.subjectRef
+          && typeof networkEvidence.providerRevision === "string"
+          && networkEvidence.providerRevision !== String(networkEvidence.collectedAt)
+          && portEvidence.version === 1
+          && portEvidence.provider === "docker"
+          && portEvidence.kind === "docker_port_publication"
+          && portEvidence.assertionKind === "observed"
+          && portEvidence.freshness === "fresh"
+          && portEvidence.providerSlot === null
+          && portEvidence.subjectRef === finding.subjectRef
+          && typeof portEvidence.providerRevision === "string"
+          && portEvidence.providerRevision !== String(portEvidence.collectedAt);
       })();
   });
 }

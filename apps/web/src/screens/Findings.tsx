@@ -14,7 +14,7 @@ export default function Findings() {
         <div>
           <div className="eyebrow">Evidence-backed review</div>
           <h1 className="screen-title">Findings</h1>
-          <p className="screen-sub">A small set of explicit, declared dependency conditions. These are not health, readiness, traffic, or security conclusions.</p>
+          <p className="screen-sub">A small set of explicit evidence conditions. These are not health, readiness, traffic, Internet-reachability, or security conclusions.</p>
         </div>
         <Link className="ghost-link" to="/runtime">Open Runtime <Icon name="arrow" size={14} /></Link>
       </header>
@@ -30,8 +30,8 @@ export default function Findings() {
       ) : (
         <div className="stack">
           {findings.findings.map((finding) => (
-            <Panel key={finding.id} title="Declared dependency needs review" icon="alert" hint="Observed declaration">
-              <div className="tag-wrap"><Tag tone="warn">Warning</Tag><Tag tone="muted">Systemd Requires</Tag></div>
+            <Panel key={finding.id} title={finding.ruleId === "systemd.requires_target_not_active" ? "Declared dependency needs review" : "Internal-network port publication needs review"} icon="alert" hint={finding.ruleId === "systemd.requires_target_not_active" ? "Observed declaration" : "Observed Docker facts"}>
+              <div className="tag-wrap"><Tag tone={finding.severity === "warning" ? "warn" : "muted"}>{finding.severity === "warning" ? "Warning" : "Advisory"}</Tag><Tag tone="muted">{finding.ruleId === "systemd.requires_target_not_active" ? "Systemd Requires" : "Internal network + host port"}</Tag><Tag tone="muted">{finding.evidenceRefs.length} supporting fact{finding.evidenceRefs.length === 1 ? "" : "s"}</Tag></div>
               <p>{finding.summary}</p>
               <p className="muted-copy">{finding.recommendation}</p>
               <dl className="detail-grid">
