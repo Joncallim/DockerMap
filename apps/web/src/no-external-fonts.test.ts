@@ -26,6 +26,7 @@ function declaration(block: string, property: string) {
 function expectCustomProperties(block: string, expected: Record<string, string>) {
   for (const [name, value] of Object.entries(expected)) {
     expect(customProperty(block, name), name).toBe(value);
+    expect(block.match(new RegExp(`\\s${name}:`, "g")), `${name} must not be redefined`).toHaveLength(1);
   }
 }
 
@@ -271,9 +272,9 @@ describe("production typography boundary", () => {
   });
 
   it("keeps state, topology selection, and AI suggestion capsules distinct", () => {
-    const state = cssBlock(".state-pill");
-    const filter = cssBlock(".filter-chip");
-    const suggestion = cssBlock(".suggest-chip");
+    const state = cssBlock(styles, ".state-pill");
+    const filter = cssBlock(styles, ".filter-chip");
+    const suggestion = cssBlock(styles, ".suggest-chip");
 
     expect(state).toContain("color: var(--c, var(--s-unknown))");
     expect(filter).toContain("text-transform: capitalize");
