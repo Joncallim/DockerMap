@@ -884,8 +884,8 @@ pub struct RuntimeEvidenceRef {
     #[serde(rename = "collectedAt")]
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub collected_at: u64,
-    /// Opaque Docker observation token, not a cache-publication revision or
-    /// source dump.
+    /// Opaque provider observation token, not a cache-publication revision,
+    /// command output, or source dump.
     #[serde(rename = "providerRevision")]
     #[schemars(length(min = 1, max = 259))]
     pub provider_revision: String,
@@ -1092,16 +1092,44 @@ impl RuntimeMapEdge {
             (
                 2,
                 RuntimeEvidenceProvider::Systemd,
-                RuntimeEvidenceKind::SystemdRequires
-                | RuntimeEvidenceKind::SystemdWants
-                | RuntimeEvidenceKind::SystemdPartOf,
+                RuntimeEvidenceKind::SystemdRequires,
                 RuntimeEvidenceAssertionKind::Declared,
                 RuntimeEvidenceFreshness::Fresh
                 | RuntimeEvidenceFreshness::Stale
                 | RuntimeEvidenceFreshness::TimedOut,
                 Some(ProviderSlot::Systemd),
             ) => {
-                self.relationship == RuntimeRelationshipKind::DependsOn
+                self.relationship == RuntimeRelationshipKind::Requires
+                    && self.source.starts_with("systemd_service_")
+                    && self.target.starts_with("systemd_service_")
+                    && self.source != self.target
+            }
+            (
+                2,
+                RuntimeEvidenceProvider::Systemd,
+                RuntimeEvidenceKind::SystemdWants,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh
+                | RuntimeEvidenceFreshness::Stale
+                | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::Systemd),
+            ) => {
+                self.relationship == RuntimeRelationshipKind::Wants
+                    && self.source.starts_with("systemd_service_")
+                    && self.target.starts_with("systemd_service_")
+                    && self.source != self.target
+            }
+            (
+                2,
+                RuntimeEvidenceProvider::Systemd,
+                RuntimeEvidenceKind::SystemdPartOf,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh
+                | RuntimeEvidenceFreshness::Stale
+                | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::Systemd),
+            ) => {
+                self.relationship == RuntimeRelationshipKind::PartOf
                     && self.source.starts_with("systemd_service_")
                     && self.target.starts_with("systemd_service_")
                     && self.source != self.target

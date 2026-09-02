@@ -857,6 +857,17 @@ mod tests {
             malformed[field] = invalid;
             assert!(serde_json::from_value::<RuntimeEvidenceRef>(malformed).is_err());
         }
+        let edge = serde_json::json!({
+            "source": "systemd_service_app",
+            "target": "systemd_service_database",
+            "relationship": "requires",
+            "metadata": {},
+            "evidenceRefs": [valid.clone()]
+        });
+        assert!(serde_json::from_value::<RuntimeMapEdge>(edge.clone()).is_ok());
+        let mut wrong_relationship = edge;
+        wrong_relationship["relationship"] = serde_json::json!("wants");
+        assert!(serde_json::from_value::<RuntimeMapEdge>(wrong_relationship).is_err());
         let mut missing_binding = valid;
         missing_binding
             .as_object_mut()
