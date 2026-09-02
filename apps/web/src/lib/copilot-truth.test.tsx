@@ -2,7 +2,7 @@ import { testProviderStates } from "./testProviderStates";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
+import type { DockerSnapshot, ObservedDockerEventHistoryResponse, RuntimeMap } from "@dockermap/contracts";
 import { AppContext, type AppContextValue } from "../context";
 import Copilot from "../screens/Copilot";
 import { answer } from "./copilot";
@@ -18,6 +18,23 @@ function snapshot(containers: DockerSnapshot["containers"]): DockerSnapshot {
 const healthy = (id: string, extra: Partial<DockerSnapshot["containers"][number]> = {}): DockerSnapshot["containers"][number] => ({
   id, name: id, image: "nginx:1", status: "running", role: "api", networks: [], ports: [], mounts: [], dependsOn: [], ...extra
 });
+
+const observedEvents: ObservedDockerEventHistoryResponse = {
+  source: "docker",
+  collectionState: "collecting",
+  currentModelRevision: "test-revision",
+  currentObservationRevision: "event-observation-revision",
+  events: [{
+    id: `docker_event_${"a".repeat(64)}`,
+    containerId: `docker_container_${"b".repeat(64)}`,
+    evidenceSource: "docker_event_stream",
+    kind: "container_started",
+    observedAtMs: 1,
+    sourceOccurredAtMs: 1,
+    anchorModelRevision: "test-revision",
+    anchorObservationRevision: "event-observation-revision"
+  }]
+};
 
 describe("A. evidence authority must be exact-matched", () => {
   it("null/null authority produces no substantive answer", () => {
@@ -180,6 +197,25 @@ describe("C. evidence kinds must be accurate", () => {
     );
     expect(html).toContain(">Inferred<");
     expect(html).toContain("A heuristic guess, not measured");
+  });
+
+  it("renders an observed, generic temporal answer without opaque identities or a service link", () => {
+    const model = buildModel(snapshot([healthy("api")]), runtime);
+    const value: AppContextValue = {
+      model, modelProvenance: "live", loading: false, error: null, health: null,
+      observedDockerEvents: observedEvents, tick: 0, evidenceMode: "live", openCommand: () => {}
+    };
+    const html = renderToStaticMarkup(
+      <AppContext.Provider value={value}>
+        <MemoryRouter initialEntries={["/copilot?q=what+changed+recently"]}><Copilot /></MemoryRouter>
+      </AppContext.Provider>
+    );
+    expect(html).toContain("Most recent Docker stream observation");
+    expect(html).toContain(">Observed<");
+    expect(html).toContain("container_started");
+    expect(html).not.toContain(observedEvents.events[0]!.id);
+    expect(html).not.toContain(observedEvents.events[0]!.containerId);
+    expect(html).not.toContain("/services/");
   });
 });
 
