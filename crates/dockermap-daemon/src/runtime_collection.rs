@@ -48,6 +48,7 @@ pub(crate) type StaticProviderSlot = ProviderSlot;
 pub(crate) const STATIC_PROVIDER_SLOTS: &[StaticProviderSlot] = &[
     StaticProviderSlot::NetworkInfrastructure,
     StaticProviderSlot::HostScoped,
+    StaticProviderSlot::Tmux,
     StaticProviderSlot::Cron,
     StaticProviderSlot::Systemd,
     StaticProviderSlot::PythonProcesses,
@@ -61,6 +62,7 @@ pub(crate) fn slot_interval(slot: StaticProviderSlot) -> Duration {
     match slot {
         StaticProviderSlot::NetworkInfrastructure => Duration::from_secs(10),
         StaticProviderSlot::HostScoped => Duration::from_secs(15),
+        StaticProviderSlot::Tmux => Duration::from_secs(15),
         StaticProviderSlot::Cron => Duration::from_secs(15),
         StaticProviderSlot::Systemd => Duration::from_secs(15),
         StaticProviderSlot::PythonProcesses => Duration::from_secs(10),
@@ -182,6 +184,17 @@ fn collect_provider_slot(
                 },
             );
         }
+        StaticProviderSlot::Tmux => {
+            collect_tmux_runtime_provider(pid_namespace, &mut collection);
+            collection.set_state(
+                slot,
+                if pid_namespace.is_restricted() {
+                    ProviderStateKind::Disabled
+                } else {
+                    ProviderStateKind::Fresh
+                },
+            );
+        }
         StaticProviderSlot::Cron => {
             collect_cron_runtime_provider(pid_namespace, &mut collection);
             collection.set_state(
@@ -270,7 +283,7 @@ fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapN
     });
 }
 
-/// `/proc/net`, schedulers, PM2, and tmux expose only
+/// `/proc/net`, schedulers, and PM2 expose only
 /// the daemon container's view in a restricted PID namespace. Keep them out
 /// of a host topology rather than relabeling container-local evidence.
 pub(crate) fn collect_host_scoped_runtime_providers(
@@ -287,10 +300,6 @@ pub(crate) fn collect_host_scoped_runtime_providers(
                 RuntimeProviderKind::Pm2,
                 "PM2 discovery omitted because the daemon runs in a restricted PID namespace",
             ),
-            (
-                RuntimeProviderKind::Tmux,
-                "tmux discovery omitted because the daemon runs in a restricted PID namespace",
-            ),
         ] {
             collection.push_diagnostic(ProviderDiagnostic::new(
                 provider,
@@ -304,7 +313,26 @@ pub(crate) fn collect_host_scoped_runtime_providers(
     let (nodes, _, diagnostics) = collection.parts_mut();
     collect_network_listeners(nodes, diagnostics);
     collect_pm2_apps(nodes, diagnostics);
-    collect_tmux_sessions(nodes, diagnostics);
+}
+
+/// Tmux is independently scheduled so the fixed read-only session listing has
+/// its own revision, freshness, timeout and single-flight guard. A restricted
+/// PID namespace cannot truthfully describe host sessions, so it produces only
+/// a bounded diagnostic and a disabled slot.
+fn collect_tmux_runtime_provider(
+    pid_namespace: PidNamespaceScope,
+    collection: &mut ProviderCollection,
+) {
+    if pid_namespace.is_restricted() {
+        collection.push_diagnostic(ProviderDiagnostic::new(
+            RuntimeProviderKind::Tmux,
+            DiagnosticSeverity::Info,
+            "tmux discovery omitted because the daemon runs in a restricted PID namespace",
+        ));
+        return;
+    }
+    let (nodes, edges, diagnostics) = collection.parts_mut();
+    collect_tmux_sessions(nodes, edges, diagnostics);
 }
 
 /// Cron is independently scheduled so declaration evidence has its own
@@ -388,11 +416,7 @@ mod tests {
 
         assert!(nodes.is_empty());
         assert!(edges.is_empty());
-        for provider in [
-            RuntimeProviderKind::Network,
-            RuntimeProviderKind::Pm2,
-            RuntimeProviderKind::Tmux,
-        ] {
+        for provider in [RuntimeProviderKind::Network, RuntimeProviderKind::Pm2] {
             assert!(diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.provider == provider));
@@ -412,6 +436,23 @@ mod tests {
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.provider == RuntimeProviderKind::ScheduledJob
                 && diagnostic.message.contains("restricted PID namespace")
+        }));
+    }
+
+    #[test]
+    fn restricted_namespace_keeps_tmux_as_a_distinct_disabled_slot() {
+        let mut tmux = ProviderCollection::default();
+        collect_tmux_runtime_provider(PidNamespaceScope::Restricted, &mut tmux);
+        tmux.set_state(StaticProviderSlot::Tmux, ProviderStateKind::Disabled);
+        assert!(tmux.states().iter().any(|state| {
+            state.slot == StaticProviderSlot::Tmux && state.state == ProviderStateKind::Disabled
+        }));
+        let (nodes, edges, diagnostics) = tmux.into_parts();
+        assert!(nodes.is_empty() && edges.is_empty());
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::Tmux
+                && diagnostic.message
+                    == "tmux discovery omitted because the daemon runs in a restricted PID namespace"
         }));
     }
 
@@ -460,6 +501,7 @@ mod tests {
             [
                 StaticProviderSlot::NetworkInfrastructure,
                 StaticProviderSlot::HostScoped,
+                StaticProviderSlot::Tmux,
                 StaticProviderSlot::Cron,
                 StaticProviderSlot::Systemd,
                 StaticProviderSlot::PythonProcesses,

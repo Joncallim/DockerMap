@@ -162,16 +162,16 @@ mod tests {
             .expect("provider state property exists");
         assert_eq!(
             states.get("minItems").and_then(|value| value.as_u64()),
-            Some(7)
+            Some(8)
         );
         assert_eq!(
             states.get("maxItems").and_then(|value| value.as_u64()),
-            Some(7)
+            Some(8)
         );
     }
 
     #[test]
-    fn runtime_evidence_schema_admits_the_closed_version_four_cron_shape() {
+    fn runtime_evidence_schema_admits_the_closed_version_five_tmux_shape() {
         let schema = DAEMON_SCHEMA_NAMES
             .iter()
             .zip(daemon_schema_documents())
@@ -184,7 +184,7 @@ mod tests {
             evidence
                 .pointer("/properties/version/maximum")
                 .and_then(|value| value.as_u64()),
-            Some(4),
+            Some(5),
             "generated schema must not reject the newest closed evidence version"
         );
         assert!(

@@ -62,19 +62,21 @@ export type RuntimeEvidenceKind =
   | 'systemd_wants'
   | 'systemd_part_of'
   | 'npm_package_manifest_dependency'
-  | 'cron_schedule_declaration';
+  | 'cron_schedule_declaration'
+  | 'tmux_session_listing';
 /**
- * Evidence providers are deliberately closed.  Version two adds systemd only
- * after it received its own scheduler slot; it cannot inherit a broader host
- * collection's freshness or revision.
+ * Evidence providers are deliberately closed. Every host provider enters only
+ * after it receives its own scheduler slot, so it cannot inherit a broader
+ * host collection's freshness or revision.
  */
-export type RuntimeEvidenceProvider = 'docker' | 'systemd' | 'npm' | 'cron';
+export type RuntimeEvidenceProvider = 'docker' | 'systemd' | 'npm' | 'cron' | 'tmux';
 /**
  * Fixed, schema-backed host-provider slots. This is not a plugin or policy
  * interface: the daemon owns the complete finite list.
  */
 export type ProviderSlot =
   | ('network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm')
+  | 'tmux'
   | 'cron'
   | 'systemd';
 export type RuntimeRelationshipKind =
@@ -240,10 +242,11 @@ export interface RuntimeMap {
   modelRevision: string;
   nodes: RuntimeMapNode[];
   /**
-   * @minItems 7
-   * @maxItems 7
+   * @minItems 8
+   * @maxItems 8
    */
   providerStates: [
+    ProviderState,
     ProviderState,
     ProviderState,
     ProviderState,
