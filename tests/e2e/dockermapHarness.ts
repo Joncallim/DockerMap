@@ -14,6 +14,11 @@ export type Stack = {
   projectName: string | null;
   controlContainerName: string | null;
   productionSocketReadOnly?: boolean;
+  /**
+   * Closed API-validation labels collected from the production container for
+   * E2E failure diagnosis. Never returns daemon payloads or generic logs.
+   */
+  productionValidationDiagnostics?: () => string[];
   postProductionSessionBurst?: (client: "a" | "b", spoofedXForwardedForPrefix: string) => {
     elapsedMs: number;
     responses: Array<{ status: number; body: string }>;
@@ -159,6 +164,12 @@ export async function startProductionImageStack(options: { liveDocker?: boolean 
     projectName: fixture?.projectName ?? null,
     controlContainerName: fixture?.controlContainerName ?? null,
     productionSocketReadOnly: fixture ? productionSocketIsReadOnly(docker, container) : undefined,
+    productionValidationDiagnostics: () => dockerOutput(docker, ["logs", "--tail", "100", container], repoRoot)
+      .split("\n")
+      .flatMap((line) => {
+        const match = line.match(/\[DockerMap\] daemon response validation rejected \/daemon\/runtime\/map: (schema|provider_state_vector|provider_freshness|runtime_evidence|findings)/);
+        return match ? [match[1]] : [];
+      }),
     postProductionSessionBurst: (client, spoofedXForwardedForPrefix) => {
       const started = Date.now();
       const output = dockerOutput(

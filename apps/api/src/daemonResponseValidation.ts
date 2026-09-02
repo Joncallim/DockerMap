@@ -460,7 +460,7 @@ export function daemonResponseSchemaId(path: string): RustResponseSchemaId | und
 
 /** A daemon response is syntactically JSON but violates its Rust-owned model. */
 export class DaemonResponseValidationError extends Error {
-  constructor() {
+  constructor(readonly reason: "schema" | "provider_state_vector" | "provider_freshness" | "runtime_evidence" | "findings") {
     // Keep the public error deliberately independent of schema paths/errors:
     // a compromised daemon must not use validator output as an exfiltration channel.
     super("Daemon response did not match its declared contract");
@@ -475,10 +475,12 @@ export class DaemonResponseValidationError extends Error {
 export function validateDaemonResponse(path: string, payload: unknown) {
   const schema = daemonResponseSchemaId(path);
   const validator = schema && validators.get(schema);
-  if (!validator || !validator(payload)
-    || (schema === "RuntimeMap" && (!hasCompleteProviderStateVector(payload) || !hasCoherentProviderFreshness(payload) || !hasCoherentRuntimeEvidence(payload)))
-    || (schema === "FindingsResponse" && !hasCoherentFindings(payload))) {
-    throw new DaemonResponseValidationError();
+  if (!validator || !validator(payload)) throw new DaemonResponseValidationError("schema");
+  if (schema === "RuntimeMap") {
+    if (!hasCompleteProviderStateVector(payload)) throw new DaemonResponseValidationError("provider_state_vector");
+    if (!hasCoherentProviderFreshness(payload)) throw new DaemonResponseValidationError("provider_freshness");
+    if (!hasCoherentRuntimeEvidence(payload)) throw new DaemonResponseValidationError("runtime_evidence");
   }
+  if (schema === "FindingsResponse" && !hasCoherentFindings(payload)) throw new DaemonResponseValidationError("findings");
   return payload;
 }
