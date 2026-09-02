@@ -81,13 +81,14 @@ jobs:
       - name: Lint
         run: cargo clippy --manifest-path crates/Cargo.toml --all-targets -- -D warnings
 
-      # RustSec advisories are a release gate. A future exception must name a
-      # specific advisory and be documented in docs/release/SUPPLY_CHAIN.md.
+      # 0.22.2 supports the pinned Rust 1.88 toolchain. --locked prevents
+      # Cargo from resolving newer transitive dependencies at CI runtime.
+      - name: Install pinned cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      # RustSec advisories are a release gate. There are no ignored advisories.
       - name: Audit Rust dependencies
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: crates
+        run: cargo audit --file crates/Cargo.lock
 
       - name: Test
         run: cargo test --manifest-path crates/Cargo.toml
@@ -168,6 +169,9 @@ jobs:
       # express. Build the image on every PR so regressions ship nowhere.
       - name: Build image
         run: docker build -t dockermap:ci .
+
+      - name: Prepare image supply-chain evidence directory
+        run: mkdir -p artifacts
 
       # Keep a reviewable inventory of the exact locally built image. The
       # artifact is intentionally not uploaded to a registry.

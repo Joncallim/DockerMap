@@ -9,7 +9,7 @@ pull request and tagged release candidate.
 | Surface | Gate | Policy |
 | --- | --- | --- |
 | Node production dependencies | `npm audit --omit=dev` | Any reported production dependency vulnerability fails CI. |
-| Rust dependencies | RustSec `cargo audit` through the pinned `rustsec/audit-check` action | Any RustSec advisory fails CI. An exception may be added only for a specific advisory ID, with a linked tracking issue and expiry/review date in this document. There are no current exceptions. |
+| Rust dependencies | RustSec `cargo audit` through `cargo-audit` 0.22.2 installed with `--locked` | Any RustSec advisory fails CI. The exact tool release supports the pinned Rust 1.88 toolchain and avoids resolving newer audit-tool dependencies during CI. An exception may be added only for a specific advisory ID, with a linked tracking issue and expiry/review date in this document. There are no current exceptions. |
 | Built Docker image | Anchore Grype scan of locally built `dockermap:ci` | High and critical findings with a fix available fail CI. Lower-severity and currently unfixable findings are retained in the scan artifact for review; they are not silently treated as accepted. |
 | Image inventory | Anchore Syft SPDX JSON SBOM | Generated from the locally built CI image and retained for 30 days with the workflow SHA. |
 | Tagged release candidate | Checksums, package/image SPDX JSON SBOMs, and the same Node/Rust/image gates | Generated from the exact tagged source and retained for 30 days with the tag and commit SHA. |

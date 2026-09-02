@@ -39,9 +39,9 @@ test("CI enforces documented Rust and container supply-chain gates", async () =>
   const workflow = await read(".github/workflows/ci.yml");
 
   assertImmutableActionsAndReadOnlyPermissions(workflow, "CI");
-  assert.match(workflow,
-    /rustsec\/audit-check@69366f33c96575abad1ee0dba8212993eecbe998/);
-  assert.match(workflow, /working-directory:\s*crates/);
+  assert.match(workflow, /cargo install cargo-audit --version 0\.22\.2 --locked/);
+  assert.match(workflow, /cargo audit --file crates\/Cargo\.lock/);
+  assert.doesNotMatch(workflow, /rustsec\/audit-check/);
   assert.match(workflow,
     /anchore\/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26/);
   assert.match(workflow,
@@ -54,6 +54,8 @@ test("CI enforces documented Rust and container supply-chain gates", async () =>
   assert.match(workflow, /only-fixed:\s*false/);
   assert.match(workflow, /dockermap-ci\.grype\.all\.sarif/);
   assert.match(workflow, /dockermap-ci\.grype\.gating\.sarif/);
+  assert.match(workflow,
+    /- name: Prepare image supply-chain evidence directory\s+run: mkdir -p artifacts/s);
   assert.match(workflow, /image-supply-chain-\$\{\{ github\.sha \}\}/);
 });
 
@@ -65,8 +67,9 @@ test("tag builds retain artifacts for review and cannot publish automatically", 
   assertImmutableActionsAndReadOnlyPermissions(workflow, "release");
   assert.match(workflow,
     /anchore\/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26/);
-  assert.match(workflow,
-    /rustsec\/audit-check@69366f33c96575abad1ee0dba8212993eecbe998/);
+  assert.match(workflow, /cargo install cargo-audit --version 0\.22\.2 --locked/);
+  assert.match(workflow, /cargo audit --file crates\/Cargo\.lock/);
+  assert.doesNotMatch(workflow, /rustsec\/audit-check/);
   assert.match(workflow,
     /anchore\/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439/);
   assert.match(workflow, /npm audit --omit=dev/);
