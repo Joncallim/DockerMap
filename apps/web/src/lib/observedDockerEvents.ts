@@ -43,6 +43,7 @@ export function coherentObservedDockerEvents(
   if (!COLLECTION_STATES.has(history.collectionState)) return null;
   if (!isRevision(history.currentModelRevision) || history.currentModelRevision !== model.modelRevision) return null;
   if (!isRevision(history.currentObservationRevision) || !Array.isArray(history.events)) return null;
+  if (history.events.length > 64) return null;
 
   const ids = new Set<string>();
   for (const event of history.events) {
@@ -52,24 +53,33 @@ export function coherentObservedDockerEvents(
   return history;
 }
 
-function isCoherentEvent(event: ObservedDockerEvent): boolean {
-  return Object.hasOwn(event, "id")
-    && EVENT_ID.test(event.id)
-    && Object.hasOwn(event, "containerId")
-    && CONTAINER_ID.test(event.containerId)
-    && Object.hasOwn(event, "evidenceSource")
-    && event.evidenceSource === "docker_event_stream"
-    && Object.hasOwn(event, "kind")
-    && EVENT_KINDS.has(event.kind)
-    && Object.hasOwn(event, "observedAtMs")
-    && isTimestamp(event.observedAtMs)
-    && Object.hasOwn(event, "sourceOccurredAtMs")
-    && isTimestamp(event.sourceOccurredAtMs)
-    && event.sourceOccurredAtMs <= event.observedAtMs
-    && Object.hasOwn(event, "anchorModelRevision")
-    && isRevision(event.anchorModelRevision)
-    && Object.hasOwn(event, "anchorObservationRevision")
-    && isRevision(event.anchorObservationRevision);
+function isCoherentEvent(event: unknown): event is ObservedDockerEvent {
+  // API JSON is untrusted at this boundary. `Object.hasOwn` accepts only
+  // objects, so reject every non-record (including arrays) before inspecting
+  // fields; no malformed event row may throw or fail open during rendering.
+  if (event === null || typeof event !== "object" || Array.isArray(event)) return false;
+  const row = event as Record<string, unknown>;
+
+  return Object.hasOwn(row, "id")
+    && typeof row.id === "string"
+    && EVENT_ID.test(row.id)
+    && Object.hasOwn(row, "containerId")
+    && typeof row.containerId === "string"
+    && CONTAINER_ID.test(row.containerId)
+    && Object.hasOwn(row, "evidenceSource")
+    && row.evidenceSource === "docker_event_stream"
+    && Object.hasOwn(row, "kind")
+    && typeof row.kind === "string"
+    && EVENT_KINDS.has(row.kind as ObservedDockerEvent["kind"])
+    && Object.hasOwn(row, "observedAtMs")
+    && isTimestamp(row.observedAtMs)
+    && Object.hasOwn(row, "sourceOccurredAtMs")
+    && isTimestamp(row.sourceOccurredAtMs)
+    && row.sourceOccurredAtMs <= row.observedAtMs
+    && Object.hasOwn(row, "anchorModelRevision")
+    && isRevision(row.anchorModelRevision)
+    && Object.hasOwn(row, "anchorObservationRevision")
+    && isRevision(row.anchorObservationRevision);
 }
 
 function isTimestamp(value: unknown): value is number {

@@ -98,6 +98,30 @@ describe("Docker event observations", () => {
     expect(html).not.toContain('href="/services/');
   });
 
+  it.each([null, undefined, false, 0, "row", [], {}])("rejects a non-record event row (%p) without throwing", (row) => {
+    const malformed = {
+      ...coherentHistory,
+      events: [row]
+    } as unknown as ObservedDockerEventHistoryResponse;
+
+    expect(coherentObservedDockerEvents(buildModel(snapshot, runtime), "live", "live", malformed)).toBeNull();
+    expect(() => render(malformed)).not.toThrow();
+    expect(render(malformed)).not.toContain("panel-docker-event-observations");
+  });
+
+  it("rejects an oversized retained-event response before rendering", () => {
+    const oversized: ObservedDockerEventHistoryResponse = {
+      ...coherentHistory,
+      events: Array.from({ length: 65 }, (_, index) => ({
+        ...coherentHistory.events[0]!,
+        id: `docker_event_${index.toString(16).padStart(64, "0")}`
+      }))
+    };
+
+    expect(coherentObservedDockerEvents(buildModel(snapshot, runtime), "live", "live", oversized)).toBeNull();
+    expect(render(oversized)).not.toContain("panel-docker-event-observations");
+  });
+
   const incoherentHistories: Array<[string, ObservedDockerEventHistoryResponse, EvidenceMode, ModelProvenance]> = [
     ["mock source", { ...coherentHistory, source: "mock" }, "live", "live"],
     ["revision mismatch", { ...coherentHistory, currentModelRevision: "other" }, "live", "live"],
