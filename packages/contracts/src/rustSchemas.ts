@@ -1391,7 +1391,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "enum": [
         "systemd.requires_target_not_active",
         "docker.internal_network_member_publishes_port",
-        "docker.daemon_state_bind_mount"
+        "docker.daemon_state_bind_mount",
+        "docker.compose_declared_target_not_active"
       ],
       "type": "string"
     },
@@ -3937,7 +3938,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "enum": [
         "systemd.requires_target_not_active",
         "docker.internal_network_member_publishes_port",
-        "docker.daemon_state_bind_mount"
+        "docker.daemon_state_bind_mount",
+        "docker.compose_declared_target_not_active"
       ],
       "type": "string"
     },

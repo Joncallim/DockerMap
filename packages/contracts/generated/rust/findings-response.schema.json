@@ -57,7 +57,8 @@
       "enum": [
         "systemd.requires_target_not_active",
         "docker.internal_network_member_publishes_port",
-        "docker.daemon_state_bind_mount"
+        "docker.daemon_state_bind_mount",
+        "docker.compose_declared_target_not_active"
       ],
       "type": "string"
     },

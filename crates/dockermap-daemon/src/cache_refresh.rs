@@ -1863,6 +1863,40 @@ mod scheduler_tests {
         }
     }
 
+    #[tokio::test]
+    async fn compose_target_advisory_is_cached_only_for_docker_source_and_cleared_on_reset() {
+        let mut snapshot = mock_snapshot();
+        snapshot
+            .containers
+            .iter_mut()
+            .find(|container| container.id == "container_api")
+            .expect("fixture supplies Compose dependency target")
+            .status = "Exited (1) 2 seconds ago".into();
+        let mut initial = docker_cache(snapshot);
+        initial.rebuild_runtime_map();
+        initial.assign_revision();
+        assert!(initial.findings.findings.iter().any(|finding| {
+            finding.rule_id == dockermap_core::FindingRule::DockerComposeDeclaredTargetNotActive
+                && finding.evidence_refs.len() == 1
+                && finding.evidence_refs[0].kind == RuntimeEvidenceKind::DockerComposeDependsOn
+        }));
+        let state = AppState {
+            cache: Arc::new(RwLock::new(initial)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let cache = state.cache.read().await;
+        assert_eq!(cache.health.mode, RuntimeMode::Mock);
+        assert!(cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(cache.findings.findings.is_empty());
+    }
+
     #[test]
     fn revisionless_or_disabled_systemd_collection_cannot_publish_evidence() {
         let mut slots = slots();

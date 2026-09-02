@@ -3,7 +3,7 @@ use crate::{
     collision_resistant_id_component, Finding, FindingRule, FindingSeverity,
     RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
     RuntimeEvidenceProvider, RuntimeMap, RuntimeNodeKind, RuntimeProviderKind,
-    RuntimeRelationshipKind,
+    RuntimeRelationshipKind, RuntimeServiceStatus,
 };
 use std::collections::BTreeMap;
 
@@ -21,11 +21,15 @@ const DOCKER_DAEMON_STATE_RECOMMENDATION: &str =
 const DOCKER_DAEMON_STATE_RISK_ID: &str = "host_risk_docker_daemon_state";
 const DOCKER_DAEMON_STATE_EVIDENCE_SUMMARY: &str =
     "Docker reported a bind mount exposing Docker daemon state";
+const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_SUMMARY: &str =
+    "A running Docker Compose service declares a dependency whose container is not active.";
+const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_RECOMMENDATION: &str =
+    "Review the declared dependency and the target container state.";
 
 /// Derive bounded, deterministic advisory findings from the already-public
-/// runtime topology. The rule intentionally fails closed: it acts only on one
-/// fresh V2 systemd `Requires=` declaration between uniquely identified
-/// systemd services. Raw provider material is never copied into a finding.
+/// runtime topology. Every rule intentionally fails closed on its own closed
+/// evidence shape and uniquely identified entities. Raw provider material is
+/// never copied into a finding.
 pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
     let node_counts = runtime_map
         .nodes
@@ -72,6 +76,21 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
         }
     }
 
+    let mut compose_dependency_counts = BTreeMap::<(&str, &str), usize>::new();
+    let mut compose_dependency_edge_counts = BTreeMap::<(&str, &str), usize>::new();
+    for edge in &runtime_map.edges {
+        if edge.relationship == RuntimeRelationshipKind::DependsOn {
+            *compose_dependency_edge_counts
+                .entry((edge.source.as_str(), edge.target.as_str()))
+                .or_default() += 1;
+        }
+        if is_candidate_compose_dependency(edge, &nodes) {
+            *compose_dependency_counts
+                .entry((edge.source.as_str(), edge.target.as_str()))
+                .or_default() += 1;
+        }
+    }
+
     let mut findings = Vec::new();
     for edge in &runtime_map.edges {
         let pair = (edge.source.as_str(), edge.target.as_str());
@@ -103,6 +122,50 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             subject_ref: edge.source.clone(),
             target_ref: edge.target.clone(),
             evidence_refs: vec![evidence],
+        });
+    }
+    for edge in &runtime_map.edges {
+        let pair = (edge.source.as_str(), edge.target.as_str());
+        if compose_dependency_edge_counts.get(&pair) != Some(&1)
+            || compose_dependency_counts.get(&pair) != Some(&1)
+            || !is_candidate_compose_dependency(edge, &nodes)
+        {
+            continue;
+        }
+        let (Some(source), Some(target)) = (nodes.get(pair.0), nodes.get(pair.1)) else {
+            continue;
+        };
+        if !is_docker_container(source)
+            || !is_docker_container(target)
+            || !matches!(
+                source
+                    .status
+                    .as_deref()
+                    .map(RuntimeServiceStatus::from_status_text),
+                Some(RuntimeServiceStatus::Running)
+            )
+            || !matches!(
+                target
+                    .status
+                    .as_deref()
+                    .map(RuntimeServiceStatus::from_status_text),
+                Some(RuntimeServiceStatus::Stopped | RuntimeServiceStatus::Failed)
+            )
+        {
+            continue;
+        }
+        findings.push(Finding {
+            id: format!(
+                "finding_docker_compose_declared_target_not_active_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            rule_id: FindingRule::DockerComposeDeclaredTargetNotActive,
+            severity: FindingSeverity::Advisory,
+            summary: COMPOSE_DECLARED_TARGET_NOT_ACTIVE_SUMMARY.into(),
+            recommendation: COMPOSE_DECLARED_TARGET_NOT_ACTIVE_RECOMMENDATION.into(),
+            subject_ref: edge.source.clone(),
+            target_ref: edge.target.clone(),
+            evidence_refs: vec![edge.evidence_refs[0].clone()],
         });
     }
     for edge in &runtime_map.edges {
@@ -275,6 +338,20 @@ fn is_candidate_requires(edge: &crate::RuntimeMapEdge) -> bool {
                     && evidence.subject_ref == edge.source
                     && evidence.provider_slot == Some(crate::ProviderSlot::Systemd)
         )
+}
+
+fn is_candidate_compose_dependency<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.metadata.is_empty()
+        && edge.relationship == RuntimeRelationshipKind::DependsOn
+        && edge.source != edge.target
+        && matches!(
+            (nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
+            (Some(source), Some(target)) if is_docker_container(source) && is_docker_container(target)
+        )
+        && is_fresh_docker_evidence(edge, RuntimeEvidenceKind::DockerComposeDependsOn)
 }
 
 #[cfg(test)]
@@ -638,6 +715,117 @@ mod tests {
             .metadata
             .insert("port".into(), "80/tcp".into());
         assert!(derive_findings(&private_only_port).is_empty());
+    }
+
+    fn compose_dependency_map(source_status: &str, target_status: &str) -> RuntimeMap {
+        let source = "docker_container_compose_source";
+        let target = "docker_container_compose_target";
+        let mut source_node = docker_node(
+            source,
+            RuntimeProviderKind::Docker,
+            RuntimeNodeKind::Container,
+            BTreeMap::new(),
+        );
+        source_node.status = Some(source_status.into());
+        let mut target_node = docker_node(
+            target,
+            RuntimeProviderKind::Docker,
+            RuntimeNodeKind::Container,
+            BTreeMap::new(),
+        );
+        target_node.status = Some(target_status.into());
+        RuntimeMap {
+            nodes: vec![source_node, target_node],
+            edges: vec![RuntimeMapEdge {
+                source: source.into(),
+                target: target.into(),
+                relationship: RuntimeRelationshipKind::DependsOn,
+                metadata: BTreeMap::new(),
+                evidence_refs: vec![docker_evidence(
+                    RuntimeEvidenceKind::DockerComposeDependsOn,
+                    source,
+                )],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn compose_declared_target_rule_is_bounded_and_normalizes_docker_statuses() {
+        for (source_status, target_status) in [
+            ("Up 3 hours", "Exited (1) 2 seconds ago"),
+            ("running", "stopped"),
+            ("UP", "failed"),
+        ] {
+            let input = compose_dependency_map(source_status, target_status);
+            let findings = derive_findings(&input);
+            assert_eq!(findings.len(), 1, "{source_status} -> {target_status}");
+            let finding = &findings[0];
+            assert_eq!(
+                finding.rule_id,
+                FindingRule::DockerComposeDeclaredTargetNotActive
+            );
+            assert_eq!(finding.severity, FindingSeverity::Advisory);
+            assert_eq!(finding.summary, COMPOSE_DECLARED_TARGET_NOT_ACTIVE_SUMMARY);
+            assert_eq!(
+                finding.recommendation,
+                COMPOSE_DECLARED_TARGET_NOT_ACTIVE_RECOMMENDATION
+            );
+            assert_eq!(finding.subject_ref, "docker_container_compose_source");
+            assert_eq!(finding.target_ref, "docker_container_compose_target");
+            assert_eq!(
+                finding.evidence_refs,
+                vec![input.edges[0].evidence_refs[0].clone()]
+            );
+            assert!(finding
+                .id
+                .starts_with("finding_docker_compose_declared_target_not_active_"));
+        }
+    }
+
+    #[test]
+    fn compose_declared_target_rule_fails_closed_for_ambiguous_or_non_advisory_inputs() {
+        for (source, target) in [
+            ("created", "exited"),
+            ("stopping", "exited"),
+            ("up", "up 1 hour"),
+            ("up", "starting"),
+            ("up", "unknown"),
+        ] {
+            assert!(derive_findings(&compose_dependency_map(source, target)).is_empty());
+        }
+        let mut stale = compose_dependency_map("up", "exited");
+        stale.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
+        assert!(derive_findings(&stale).is_empty());
+        let mut timed_out = compose_dependency_map("up", "failed");
+        timed_out.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::TimedOut;
+        assert!(derive_findings(&timed_out).is_empty());
+        let mut missing = compose_dependency_map("up", "exited");
+        missing.edges[0].evidence_refs.clear();
+        assert!(derive_findings(&missing).is_empty());
+        let mut duplicate = compose_dependency_map("up", "exited");
+        duplicate.edges.push(duplicate.edges[0].clone());
+        assert!(derive_findings(&duplicate).is_empty());
+        let mut malformed_duplicate = compose_dependency_map("up", "exited");
+        let mut malformed_edge = malformed_duplicate.edges[0].clone();
+        malformed_edge.evidence_refs.clear();
+        malformed_duplicate.edges.push(malformed_edge);
+        assert!(derive_findings(&malformed_duplicate).is_empty());
+        let mut metadata = compose_dependency_map("up", "exited");
+        metadata.edges[0]
+            .metadata
+            .insert("unsafe".into(), "value".into());
+        assert!(derive_findings(&metadata).is_empty());
+        let mut collision = compose_dependency_map("up", "exited");
+        collision.nodes.push(collision.nodes[0].clone());
+        assert!(derive_findings(&collision).is_empty());
+        let mut non_docker = compose_dependency_map("up", "exited");
+        non_docker.nodes[1].provider = RuntimeProviderKind::Systemd;
+        assert!(derive_findings(&non_docker).is_empty());
+        let mut wrong_evidence = compose_dependency_map("up", "exited");
+        wrong_evidence.edges[0].evidence_refs[0].kind =
+            RuntimeEvidenceKind::DockerNetworkMembership;
+        assert!(derive_findings(&wrong_evidence).is_empty());
     }
 
     #[test]
