@@ -16,12 +16,13 @@ use crate::{
 };
 use bollard::models::{EventMessage, EventMessageTypeEnum};
 use dockermap_core::{observed_container_identity, opaque_sha256_hex, MAX_OBSERVED_CHANGE_EVENTS};
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use std::{
     collections::{BTreeSet, VecDeque},
+    pin::Pin,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::time::sleep;
+use tokio::time::{interval, sleep, MissedTickBehavior};
 
 /// Must remain identical to the gateway's closed event policy. The collector
 /// owns no general event-filter interface and never accepts caller input.
@@ -42,6 +43,26 @@ const SOURCE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(8);
 const STABLE_STREAM_RESET_AFTER: Duration = Duration::from_secs(5);
+const MAX_STREAM_ITEMS_BEFORE_YIELD: usize = 64;
+
+pub(crate) type DockerEventStream =
+    Pin<Box<dyn Stream<Item = Result<EventMessage, ()>> + Send + 'static>>;
+
+/// Narrow injectable seam for lifecycle tests. Production has exactly one
+/// implementation, and that implementation can only build the fixed gateway
+/// collector; this is not a plugin or caller-controlled policy surface.
+pub(crate) trait DockerEventConnector: Send + Sync + 'static {
+    fn connect(&self, since_seconds: u64) -> Result<DockerEventStream, ()>;
+}
+
+struct GatewayDockerEventConnector;
+
+impl DockerEventConnector for GatewayDockerEventConnector {
+    fn connect(&self, since_seconds: u64) -> Result<DockerEventStream, ()> {
+        let collector = DockerCollector::connect().map_err(|_| ())?;
+        Ok(collector.event_stream_since(since_seconds))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DockerHealthState {
@@ -305,6 +326,13 @@ enum StreamExit {
 /// provider slot, never overlaps another event stream, and reconnects only
 /// through the configured filtered gateway.
 pub(crate) async fn docker_event_loop(state: AppState) {
+    docker_event_loop_with_connector(state, GatewayDockerEventConnector).await;
+}
+
+pub(crate) async fn docker_event_loop_with_connector<C>(state: AppState, connector: C)
+where
+    C: DockerEventConnector,
+{
     let mut backoff = ReconnectBackoff::new();
     loop {
         let now_seconds = wall_clock_seconds();
@@ -314,17 +342,29 @@ pub(crate) async fn docker_event_loop(state: AppState) {
             continue;
         };
 
-        let collector = match DockerCollector::connect() {
-            Ok(collector) => collector,
+        let mut stream = match connector.connect(context.since_seconds) {
+            Ok(stream) => stream,
             Err(_) => {
                 sleep(backoff.failure_delay()).await;
                 continue;
             }
         };
         let connected_at = Instant::now();
-        let mut stream = Box::pin(collector.event_stream_since(context.since_seconds));
+        let mut source_poll = interval(SOURCE_POLL_INTERVAL);
+        source_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        // Tokio intervals tick immediately. Consume that setup tick so the
+        // select below owns one persistent 250ms deadline which cannot be
+        // recreated/postponed by a continuously ready stream.
+        source_poll.tick().await;
+        let mut items_since_yield = 0;
         let exit = loop {
             tokio::select! {
+                biased;
+                _ = source_poll.tick() => {
+                    if !docker_event_source_is_current(&state, &context).await {
+                        break StreamExit::SourceChanged;
+                    }
+                }
                 item = stream.next() => {
                     let Some(item) = item else {
                         break StreamExit::Disconnected;
@@ -332,6 +372,14 @@ pub(crate) async fn docker_event_loop(state: AppState) {
                     let Ok(message) = item else {
                         break StreamExit::Disconnected;
                     };
+                    items_since_yield += 1;
+                    if items_since_yield >= MAX_STREAM_ITEMS_BEFORE_YIELD {
+                        items_since_yield = 0;
+                        // A malicious or malformed always-ready response must
+                        // not monopolize the executor before the persistent
+                        // source-generation deadline becomes runnable.
+                        tokio::task::yield_now().await;
+                    }
                     let Some(observed_at_ms) = wall_clock_millis() else {
                         continue;
                     };
@@ -344,13 +392,12 @@ pub(crate) async fn docker_event_loop(state: AppState) {
                         DockerEventApply::StaleSource => break StreamExit::SourceChanged,
                     }
                 }
-                _ = sleep(SOURCE_POLL_INTERVAL) => {
-                    if !docker_event_source_is_current(&state, &context).await {
-                        break StreamExit::SourceChanged;
-                    }
-                }
             }
         };
+        // Close the failed/stale Unix response before any reconnect delay.
+        // This makes the single-connection bound physical, not merely a fact
+        // of control flow, and makes task cancellation promptly release it.
+        drop(stream);
 
         if matches!(exit, StreamExit::SourceChanged) {
             backoff.reset();
@@ -560,6 +607,50 @@ mod tests {
             DockerEventJournal::default().replay_since_seconds(NOW_SECONDS),
             NOW_SECONDS - DOCKER_EVENT_REPLAY_SECONDS
         );
+    }
+
+    #[test]
+    fn dedupe_horizon_is_exactly_4096_and_evicts_oldest_identity() {
+        let mut journal = DockerEventJournal::default();
+        let first = parsed("start", 0);
+        for index in 0..MAX_DOCKER_EVENT_DEDUPE_IDS {
+            assert_eq!(
+                journal.retain(
+                    parsed("start", index as u64),
+                    1,
+                    "model-revision",
+                    "observation-revision"
+                ),
+                DockerEventRetention::Retained
+            );
+        }
+        assert_eq!(journal.dedupe_order.len(), MAX_DOCKER_EVENT_DEDUPE_IDS);
+        assert_eq!(journal.dedupe_ids.len(), MAX_DOCKER_EVENT_DEDUPE_IDS);
+        assert_eq!(
+            journal.retain(first.clone(), 1, "model-revision", "observation-revision"),
+            DockerEventRetention::Duplicate,
+            "the oldest ID remains protected at the exact capacity"
+        );
+
+        assert_eq!(
+            journal.retain(
+                parsed("start", MAX_DOCKER_EVENT_DEDUPE_IDS as u64),
+                1,
+                "model-revision",
+                "observation-revision"
+            ),
+            DockerEventRetention::Retained
+        );
+        assert_eq!(journal.dedupe_order.len(), MAX_DOCKER_EVENT_DEDUPE_IDS);
+        assert_eq!(journal.dedupe_ids.len(), MAX_DOCKER_EVENT_DEDUPE_IDS);
+        assert!(!journal.dedupe_ids.contains(&first.id));
+        assert_eq!(
+            journal.retain(first, 1, "model-revision", "observation-revision"),
+            DockerEventRetention::Retained,
+            "an ID is eligible again only after bounded FIFO eviction"
+        );
+        assert_eq!(journal.dedupe_order.len(), MAX_DOCKER_EVENT_DEDUPE_IDS);
+        assert_eq!(journal.dedupe_ids.len(), MAX_DOCKER_EVENT_DEDUPE_IDS);
     }
 
     #[test]

@@ -95,7 +95,9 @@ impl DockerCollector {
     pub(crate) fn event_stream_since(
         &self,
         since_seconds: u64,
-    ) -> impl futures_util::Stream<Item = Result<EventMessage, ()>> + '_ {
+    ) -> std::pin::Pin<
+        Box<dyn futures_util::Stream<Item = Result<EventMessage, ()>> + Send + 'static>,
+    > {
         let mut filters = HashMap::<String, Vec<String>>::from([
             ("type".into(), vec!["container".into()]),
             (
@@ -113,12 +115,14 @@ impl DockerCollector {
             .since(&since_seconds.to_string())
             .filters(&filters)
             .build();
-        self.client
-            .events(Some(options))
-            // Do not carry a provider-controlled error string into retained
-            // state or later diagnostics. The supervisor needs only the
-            // closed fact that this attempt disconnected.
-            .map(|result| result.map_err(|_| ()))
+        Box::pin(
+            self.client
+                .events(Some(options))
+                // Do not carry a provider-controlled error string into retained
+                // state or later diagnostics. The supervisor needs only the
+                // closed fact that this attempt disconnected.
+                .map(|result| result.map_err(|_| ())),
+        )
     }
 
     pub(crate) async fn collect_logs(
