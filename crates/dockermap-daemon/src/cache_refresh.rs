@@ -1864,6 +1864,56 @@ mod scheduler_tests {
     }
 
     #[tokio::test]
+    async fn daemon_state_host_port_warning_is_docker_only_and_cleared_on_reset() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers[0].mounts = vec![ContainerMount {
+            id: "private-mount-id".into(),
+            kind: ComposeMountKind::Bind,
+            source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+            target: "/private/target".into(),
+            read_only: true,
+        }];
+        let mut initial = docker_cache(snapshot);
+        initial.rebuild_runtime_map();
+        initial.assign_revision();
+        let finding = initial
+            .findings
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id
+                    == dockermap_core::FindingRule::DockerDaemonStateBindMountPublishesPort
+            })
+            .expect("fresh Docker daemon-state and host-port evidence produces its warning");
+        assert_eq!(finding.evidence_refs.len(), 2);
+        assert_eq!(
+            finding.evidence_refs[0].kind,
+            RuntimeEvidenceKind::DockerDaemonStateBindMount
+        );
+        assert_eq!(
+            finding.evidence_refs[1].kind,
+            RuntimeEvidenceKind::DockerPortPublication
+        );
+
+        let state = AppState {
+            cache: Arc::new(RwLock::new(initial)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let cache = state.cache.read().await;
+        assert_eq!(cache.health.mode, RuntimeMode::Mock);
+        assert!(cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(cache.findings.findings.iter().all(|finding| {
+            finding.rule_id != dockermap_core::FindingRule::DockerDaemonStateBindMountPublishesPort
+        }));
+    }
+
+    #[tokio::test]
     async fn compose_target_advisory_is_cached_only_for_docker_source_and_cleared_on_reset() {
         let mut snapshot = mock_snapshot();
         snapshot
