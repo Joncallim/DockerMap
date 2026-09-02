@@ -1292,6 +1292,70 @@ test("runtime evidence is required and fails closed before browser publication",
   assert.ok(malformedNpmEdge);
   malformedNpmEdge.target = "docker_container_not_a_package";
   assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongNpmEndpoint));
+
+  const cronEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "scheduled_job_fixture_daily_backup");
+  assert.ok(cronEdge, "canonical daemon fixture carries a V4 Cron schedule declaration");
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
+  for (const freshness of ["stale", "timed_out"] as const) {
+    const retainedCron = structuredClone(fixture);
+    const edge = retainedCron.edges.find((candidate: { source?: unknown }) => candidate.source === "scheduled_job_fixture_daily_backup");
+    assert.ok(edge);
+    edge.evidenceRefs[0].freshness = freshness;
+    assert.doesNotThrow(
+      () => validateDaemonResponse("/daemon/runtime/map", retainedCron),
+      `v4 cron evidence may retain ${freshness} data from its own scheduler slot`
+    );
+  }
+  for (const [field, value] of [
+    ["provider", "systemd"],
+    ["kind", "systemd_requires"],
+    ["assertionKind", "observed"],
+    ["providerSlot", "host_scoped"],
+    ["freshness", "unavailable"],
+    ["version", 3]
+  ] as const) {
+    const malformedCron = structuredClone(fixture);
+    const edge = malformedCron.edges.find((candidate: { source?: unknown }) => candidate.source === "scheduled_job_fixture_daily_backup");
+    assert.ok(edge);
+    edge.evidenceRefs[0][field] = value;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", malformedCron),
+      `v4 cron evidence must reject fabricated ${field}`
+    );
+  }
+  const timestampAliasedCron = structuredClone(fixture);
+  const timestampAliasedCronEdge = timestampAliasedCron.edges.find((candidate: { source?: unknown }) => candidate.source === "scheduled_job_fixture_daily_backup");
+  assert.ok(timestampAliasedCronEdge);
+  timestampAliasedCronEdge.evidenceRefs[0].providerRevision = String(timestampAliasedCronEdge.evidenceRefs[0].collectedAt);
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", timestampAliasedCron));
+  const unboundedCron = structuredClone(fixture);
+  const unboundedCronEdge = unboundedCron.edges.find((candidate: { source?: unknown }) => candidate.source === "scheduled_job_fixture_daily_backup");
+  assert.ok(unboundedCronEdge);
+  unboundedCronEdge.evidenceRefs[0].providerRevision = "x".repeat(260);
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", unboundedCron));
+  const unsafeTimestampCron = structuredClone(fixture);
+  const unsafeTimestampCronEdge = unsafeTimestampCron.edges.find((candidate: { source?: unknown }) => candidate.source === "scheduled_job_fixture_daily_backup");
+  assert.ok(unsafeTimestampCronEdge);
+  unsafeTimestampCronEdge.evidenceRefs[0].collectedAt = Number.MAX_SAFE_INTEGER + 1;
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", unsafeTimestampCron));
+  const extraCronField = structuredClone(fixture);
+  const extraCronFieldEdge = extraCronField.edges.find((candidate: { source?: unknown }) => candidate.source === "scheduled_job_fixture_daily_backup");
+  assert.ok(extraCronFieldEdge);
+  extraCronFieldEdge.evidenceRefs[0].rawSchedule = "* * * * * secret";
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", extraCronField));
+  for (const [field, value] of [
+    ["target", "host_other"],
+    ["relationship", "depends_on"]
+  ] as const) {
+    const malformedCron = structuredClone(fixture);
+    const edge = malformedCron.edges.find((candidate: { source?: unknown }) => candidate.source === "scheduled_job_fixture_daily_backup");
+    assert.ok(edge);
+    edge[field] = value;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", malformedCron),
+      `v4 cron evidence must reject a noncanonical ${field}`
+    );
+  }
 });
 
 test("fabricated runtime evidence is rejected over the authenticated API boundary", async () => {
@@ -1329,6 +1393,32 @@ test("fabricated V3 NPM evidence is rejected neutrally over the authenticated AP
   npmEdge.target = `npm_package_token_${sentinel}`;
   npmEdge.evidenceRefs[0].subjectRef = npmEdge.source;
   npmEdge.evidenceRefs[0].providerSlot = "systemd";
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/runtime/map") return sendJson(res, 200, fixture);
+    return sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+  const response = await request(api, "/api/v1/runtime/map", { headers: { Authorization: "Bearer test-token" } });
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.deepEqual(body, {
+    code: "daemon_invalid_response",
+    message: "Daemon response did not match its declared contract"
+  });
+  assert.doesNotMatch(JSON.stringify(body), new RegExp(sentinel));
+});
+
+test("fabricated V4 Cron evidence is rejected neutrally over the authenticated API boundary", async () => {
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json", import.meta.url),
+    "utf8"
+  ));
+  const sentinel = "DOCKERMAP_TEST_FAKE_CRON_EVIDENCE_SECRET";
+  const cronEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "scheduled_job_fixture_daily_backup");
+  assert.ok(cronEdge, "canonical fixture must exercise the V4 browser boundary");
+  cronEdge.target = `host_${sentinel}`;
+  cronEdge.evidenceRefs[0].subjectRef = cronEdge.source;
+  cronEdge.evidenceRefs[0].providerSlot = "host_scoped";
   const daemon = await startStubDaemon((req, res) => {
     if (req.url === "/daemon/runtime/map") return sendJson(res, 200, fixture);
     return sendJson(res, 404, { code: "not_found", message: "missing" });
@@ -2230,6 +2320,7 @@ test("API publishes redacted and normalized daemon data on every response route"
         providerStates: [
           { slot: "network_infrastructure", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "host_scoped", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+          { slot: "cron", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "systemd", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "python_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "native_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
