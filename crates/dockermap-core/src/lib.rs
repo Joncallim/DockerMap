@@ -1008,6 +1008,42 @@ mod tests {
     }
 
     #[test]
+    fn version_four_cron_evidence_requires_its_closed_slot_and_canonical_edge() {
+        let valid = serde_json::json!({
+            "version": 4,
+            "id": "cron_evidence_schedule_opaque",
+            "provider": "cron",
+            "kind": "cron_schedule_declaration",
+            "assertionKind": "declared",
+            "summary": "cron declared a scheduled job",
+            "subjectRef": "scheduled_job_opaque",
+            "collectedAt": 42,
+            "providerRevision": "opaque-cron-revision",
+            "providerSlot": "cron",
+            "freshness": "stale"
+        });
+        assert!(serde_json::from_value::<RuntimeEvidenceRef>(valid.clone()).is_ok());
+        for (field, invalid) in [
+            ("providerSlot", serde_json::json!("host_scoped")),
+            ("provider", serde_json::json!("systemd")),
+            ("assertionKind", serde_json::json!("observed")),
+            ("kind", serde_json::json!("systemd_requires")),
+        ] {
+            let mut malformed = valid.clone();
+            malformed[field] = invalid;
+            assert!(serde_json::from_value::<RuntimeEvidenceRef>(malformed).is_err());
+        }
+        let edge = serde_json::json!({
+            "source": "scheduled_job_opaque", "target": "host_local", "relationship": "runs_on",
+            "metadata": {}, "evidenceRefs": [valid]
+        });
+        assert!(serde_json::from_value::<RuntimeMapEdge>(edge.clone()).is_ok());
+        let mut wrong_target = edge;
+        wrong_target["target"] = serde_json::json!("host_other");
+        assert!(serde_json::from_value::<RuntimeMapEdge>(wrong_target).is_err());
+    }
+
+    #[test]
     fn version_one_evidence_cannot_attest_a_different_runtime_edge() {
         let snapshot = mock_snapshot();
         let edge = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")

@@ -351,6 +351,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "cron",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "type": "string"
+        },
+        {
           "const": "systemd",
           "description": "systemd has an independent collector lifecycle.  It must not inherit\nfreshness from the broader host-scoped observation slot.",
           "type": "string"
@@ -552,6 +557,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "npm_package_manifest_dependency",
           "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
           "type": "string"
+        },
+        {
+          "const": "cron_schedule_declaration",
+          "description": "A parsed cron declaration. This does not claim the command ran.",
+          "type": "string"
         }
       ]
     },
@@ -560,7 +570,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "enum": [
         "docker",
         "systemd",
-        "npm"
+        "npm",
+        "cron"
       ],
       "type": "string"
     },
@@ -621,7 +632,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 3,
+          "maximum": 4,
           "minimum": 1,
           "type": "integer"
         }
@@ -1294,8 +1305,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/$defs/ProviderState"
       },
-      "maxItems": 6,
-      "minItems": 6,
+      "maxItems": 7,
+      "minItems": 7,
       "type": "array"
     },
     "source": {
@@ -1406,6 +1417,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "cron",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "type": "string"
+        },
+        {
           "const": "systemd",
           "description": "systemd has an independent collector lifecycle.  It must not inherit\nfreshness from the broader host-scoped observation slot.",
           "type": "string"
@@ -1468,6 +1484,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "npm_package_manifest_dependency",
           "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
           "type": "string"
+        },
+        {
+          "const": "cron_schedule_declaration",
+          "description": "A parsed cron declaration. This does not claim the command ran.",
+          "type": "string"
         }
       ]
     },
@@ -1476,7 +1497,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "enum": [
         "docker",
         "systemd",
-        "npm"
+        "npm",
+        "cron"
       ],
       "type": "string"
     },
@@ -1537,7 +1559,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 3,
+          "maximum": 4,
           "minimum": 1,
           "type": "integer"
         }
@@ -2875,6 +2897,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "cron",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "type": "string"
+        },
+        {
           "const": "systemd",
           "description": "systemd has an independent collector lifecycle.  It must not inherit\nfreshness from the broader host-scoped observation slot.",
           "type": "string"
@@ -3076,6 +3103,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "npm_package_manifest_dependency",
           "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
           "type": "string"
+        },
+        {
+          "const": "cron_schedule_declaration",
+          "description": "A parsed cron declaration. This does not claim the command ran.",
+          "type": "string"
         }
       ]
     },
@@ -3084,7 +3116,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "enum": [
         "docker",
         "systemd",
-        "npm"
+        "npm",
+        "cron"
       ],
       "type": "string"
     },
@@ -3145,7 +3178,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 3,
+          "maximum": 4,
           "minimum": 1,
           "type": "integer"
         }
@@ -3818,8 +3851,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/components/schemas/RuntimeMap/$defs/ProviderState"
       },
-      "maxItems": 6,
-      "minItems": 6,
+      "maxItems": 7,
+      "minItems": 7,
       "type": "array"
     },
     "source": {
@@ -3930,6 +3963,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "cron",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "type": "string"
+        },
+        {
           "const": "systemd",
           "description": "systemd has an independent collector lifecycle.  It must not inherit\nfreshness from the broader host-scoped observation slot.",
           "type": "string"
@@ -3992,6 +4030,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "npm_package_manifest_dependency",
           "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
           "type": "string"
+        },
+        {
+          "const": "cron_schedule_declaration",
+          "description": "A parsed cron declaration. This does not claim the command ran.",
+          "type": "string"
         }
       ]
     },
@@ -4000,7 +4043,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "enum": [
         "docker",
         "systemd",
-        "npm"
+        "npm",
+        "cron"
       ],
       "type": "string"
     },
@@ -4061,7 +4105,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 3,
+          "maximum": 4,
           "minimum": 1,
           "type": "integer"
         }

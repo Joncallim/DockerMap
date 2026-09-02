@@ -61,19 +61,22 @@ export type RuntimeEvidenceKind =
   | 'systemd_requires'
   | 'systemd_wants'
   | 'systemd_part_of'
-  | 'npm_package_manifest_dependency';
+  | 'npm_package_manifest_dependency'
+  | 'cron_schedule_declaration';
 /**
  * Evidence providers are deliberately closed.  Version two adds systemd only
  * after it received its own scheduler slot; it cannot inherit a broader host
  * collection's freshness or revision.
  */
-export type RuntimeEvidenceProvider = 'docker' | 'systemd' | 'npm';
+export type RuntimeEvidenceProvider = 'docker' | 'systemd' | 'npm' | 'cron';
 /**
  * Fixed, schema-backed host-provider slots. This is not a plugin or policy
  * interface: the daemon owns the complete finite list.
  */
 export type ProviderSlot =
-  ('network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm') | 'systemd';
+  | ('network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm')
+  | 'cron'
+  | 'systemd';
 export type RuntimeRelationshipKind =
   | 'connected_to'
   | 'depends_on'
@@ -237,10 +240,18 @@ export interface RuntimeMap {
   modelRevision: string;
   nodes: RuntimeMapNode[];
   /**
-   * @minItems 6
-   * @maxItems 6
+   * @minItems 7
+   * @maxItems 7
    */
-  providerStates: [ProviderState, ProviderState, ProviderState, ProviderState, ProviderState, ProviderState];
+  providerStates: [
+    ProviderState,
+    ProviderState,
+    ProviderState,
+    ProviderState,
+    ProviderState,
+    ProviderState,
+    ProviderState
+  ];
   /**
    * ACTUAL source of these bytes: "docker" or "mock" (#85 A3). Stamped by
    * the daemon route layer from the cache's runtime mode.

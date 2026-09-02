@@ -153,6 +153,9 @@ pub enum RuntimeMode {
 pub enum ProviderSlot {
     NetworkInfrastructure,
     HostScoped,
+    /// Cron has an independent collector lifecycle. It must not inherit
+    /// host-node, listener, PM2, or tmux freshness.
+    Cron,
     /// systemd has an independent collector lifecycle.  It must not inherit
     /// freshness from the broader host-scoped observation slot.
     Systemd,
@@ -829,6 +832,7 @@ pub enum RuntimeEvidenceProvider {
     Docker,
     Systemd,
     Npm,
+    Cron,
 }
 
 /// Evidence assertion semantics are deliberately closed. A declaration says
@@ -866,6 +870,8 @@ pub enum RuntimeEvidenceKind {
     /// A package.json dependency declaration. This is not proof that the
     /// package was installed, resolved, executed, or is safe.
     NpmPackageManifestDependency,
+    /// A parsed cron declaration. This does not claim the command ran.
+    CronScheduleDeclaration,
 }
 
 /// A compact, versioned reference to the bounded fact supporting a runtime
@@ -876,7 +882,7 @@ pub enum RuntimeEvidenceKind {
 pub struct RuntimeEvidenceRef {
     /// Version of this closed evidence representation, not a provider API
     /// version.  It lets future additions remain explicit and reviewable.
-    #[schemars(range(min = 1, max = 3))]
+    #[schemars(range(min = 1, max = 4))]
     pub version: u8,
     #[schemars(length(min = 1, max = 259))]
     pub id: String,
@@ -957,6 +963,15 @@ impl RuntimeEvidenceRef {
                     | RuntimeEvidenceFreshness::Stale
                     | RuntimeEvidenceFreshness::TimedOut,
                 Some(ProviderSlot::ProjectNpm),
+            ) | (
+                4,
+                RuntimeEvidenceProvider::Cron,
+                RuntimeEvidenceKind::CronScheduleDeclaration,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh
+                    | RuntimeEvidenceFreshness::Stale
+                    | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::Cron),
             )
         )
     }
@@ -1152,6 +1167,21 @@ impl RuntimeMapEdge {
                     && self.source != self.target
             }
             (
+                4,
+                RuntimeEvidenceProvider::Cron,
+                RuntimeEvidenceKind::CronScheduleDeclaration,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh
+                | RuntimeEvidenceFreshness::Stale
+                | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::Cron),
+            ) => {
+                self.relationship == RuntimeRelationshipKind::RunsOn
+                    && self.source.starts_with("scheduled_job_")
+                    && self.target == "host_local"
+                    && self.source != self.target
+            }
+            (
                 2,
                 RuntimeEvidenceProvider::Systemd,
                 RuntimeEvidenceKind::SystemdWants,
@@ -1292,7 +1322,7 @@ pub struct RuntimeMap {
     #[schemars(length(min = 1))]
     pub model_revision: String,
     #[serde(rename = "providerStates")]
-    #[schemars(length(min = 6, max = 6))]
+    #[schemars(length(min = 7, max = 7))]
     pub provider_states: Vec<ProviderState>,
     /// ACTUAL source of these bytes: "docker" or "mock" (#85 A3). Stamped by
     /// the daemon route layer from the cache's runtime mode.

@@ -8,6 +8,7 @@
 use crate::{
     docker_collector::DockerCollector,
     provider_contract::ProviderCollection,
+    providers::cron::CRON_EVIDENCE_SCHEDULE_MARKER,
     providers::npm::NPM_EVIDENCE_DEPENDENCY_MARKER,
     providers::systemd::{
         SYSTEMD_EVIDENCE_KIND_MARKER, SYSTEMD_EVIDENCE_PART_OF, SYSTEMD_EVIDENCE_REQUIRES,
@@ -309,6 +310,7 @@ impl SlotDataRevision {
 pub(crate) struct ProviderSlotFlights {
     network: Arc<AtomicBool>,
     host: Arc<AtomicBool>,
+    cron: Arc<AtomicBool>,
     systemd: Arc<AtomicBool>,
     python: Arc<AtomicBool>,
     native: Arc<AtomicBool>,
@@ -320,6 +322,7 @@ impl Default for ProviderSlotFlights {
         Self {
             network: Arc::new(AtomicBool::new(false)),
             host: Arc::new(AtomicBool::new(false)),
+            cron: Arc::new(AtomicBool::new(false)),
             systemd: Arc::new(AtomicBool::new(false)),
             python: Arc::new(AtomicBool::new(false)),
             native: Arc::new(AtomicBool::new(false)),
@@ -336,6 +339,7 @@ impl ProviderSlotFlights {
         match slot {
             ProviderSlot::NetworkInfrastructure => self.network.clone(),
             ProviderSlot::HostScoped => self.host.clone(),
+            ProviderSlot::Cron => self.cron.clone(),
             ProviderSlot::Systemd => self.systemd.clone(),
             ProviderSlot::PythonProcesses => self.python.clone(),
             ProviderSlot::NativeProcesses => self.native.clone(),
@@ -347,6 +351,7 @@ impl ProviderSlotFlights {
         [
             &self.network,
             &self.host,
+            &self.cron,
             &self.systemd,
             &self.python,
             &self.native,
@@ -881,6 +886,8 @@ fn runtime_map_for_snapshot(
                 bind_systemd_evidence(&mut edges, slot_state);
             } else if slot == ProviderSlot::ProjectNpm {
                 bind_npm_evidence(&mut edges, slot_state);
+            } else if slot == ProviderSlot::Cron {
+                bind_cron_evidence(&mut edges, slot_state);
             }
             let (target_nodes, target_edges, target_diagnostics) = combined.parts_mut();
             target_nodes.extend(nodes);
@@ -895,11 +902,105 @@ fn runtime_map_for_snapshot(
             });
         }
     }
+    // Cron's declaration target is canonical only when the independently
+    // retained HostScoped observation supplied `host_local`. Startup and host
+    // refresh ordering can otherwise leave a dangling relationship; omit it
+    // rather than publishing an unverifiable target or borrowing host state.
+    let has_canonical_host = combined.nodes().iter().any(|node| {
+        node.id == "host_local"
+            && node.provider == RuntimeProviderKind::Host
+            && node.kind == dockermap_core::RuntimeNodeKind::Host
+    });
+    if !has_canonical_host {
+        combined.parts_mut().1.retain(|edge| {
+            !(edge.source.starts_with("scheduled_job_")
+                && edge.target == "host_local"
+                && edge.relationship == dockermap_core::RuntimeRelationshipKind::RunsOn)
+        });
+    }
     let mut runtime_map =
         runtime_map_from_collection(snapshot, &combined, docker_observation_revision, mode);
     runtime_map.provider_states = provider_states_for(slots);
     runtime_map.diagnostics.extend(extra_diagnostics);
     runtime_map
+}
+
+/// Bind a parsed cron declaration only to the independently scheduled Cron
+/// slot. The private marker is removed in every path. A cron relationship is
+/// fail-closed until the canonical retained host node exists.
+fn bind_cron_evidence(edges: &mut [RuntimeMapEdge], state: &SlotRuntimeState) {
+    let disabled = retained_collection(&state.observation)
+        .as_ref()
+        .is_some_and(|collection| {
+            collection.states().iter().any(|candidate| {
+                candidate.slot == ProviderSlot::Cron
+                    && candidate.state == ProviderStateKind::Disabled
+            })
+        });
+    let freshness = match &state.observation {
+        RuntimeProviderState::Fresh(_) => RuntimeEvidenceFreshness::Fresh,
+        RuntimeProviderState::Collecting(Some(_)) | RuntimeProviderState::Degraded(Some(_)) => {
+            RuntimeEvidenceFreshness::Stale
+        }
+        RuntimeProviderState::TimedOut(Some(_)) => RuntimeEvidenceFreshness::TimedOut,
+        RuntimeProviderState::Unavailable
+        | RuntimeProviderState::Collecting(None)
+        | RuntimeProviderState::Degraded(None)
+        | RuntimeProviderState::TimedOut(None) => {
+            clear_cron_evidence(edges);
+            return;
+        }
+    };
+    let (Some(revision), Some(collected_at)) = (
+        state
+            .freshness
+            .data_revision
+            .as_ref()
+            .map(SlotDataRevision::public),
+        state.freshness.last_success_ms,
+    ) else {
+        clear_cron_evidence(edges);
+        return;
+    };
+    if disabled {
+        clear_cron_evidence(edges);
+        return;
+    }
+    for edge in edges.iter_mut() {
+        let marker = edge.metadata.remove(CRON_EVIDENCE_SCHEDULE_MARKER);
+        if marker.as_deref() != Some("declared")
+            || edge.relationship != dockermap_core::RuntimeRelationshipKind::RunsOn
+            || !edge.source.starts_with("scheduled_job_")
+            || edge.target != "host_local"
+            || edge.source == edge.target
+        {
+            edge.evidence_refs.clear();
+            continue;
+        }
+        edge.evidence_refs = vec![RuntimeEvidenceRef {
+            version: 4,
+            id: format!(
+                "cron_evidence_schedule_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            provider: RuntimeEvidenceProvider::Cron,
+            kind: RuntimeEvidenceKind::CronScheduleDeclaration,
+            assertion_kind: RuntimeEvidenceAssertionKind::Declared,
+            summary: "cron declared a scheduled job".into(),
+            subject_ref: edge.source.clone(),
+            collected_at,
+            provider_revision: revision.clone(),
+            provider_slot: Some(ProviderSlot::Cron),
+            freshness,
+        }];
+    }
+}
+
+fn clear_cron_evidence(edges: &mut [RuntimeMapEdge]) {
+    for edge in edges.iter_mut() {
+        edge.metadata.remove(CRON_EVIDENCE_SCHEDULE_MARKER);
+        edge.evidence_refs.clear();
+    }
 }
 
 /// Convert the private NPM manifest marker into public evidence only after
@@ -1360,6 +1461,156 @@ mod scheduler_tests {
         collection
     }
 
+    fn marked_cron_declaration() -> ProviderCollection {
+        let mut collection = ProviderCollection::default();
+        collection.set_state(ProviderSlot::Cron, ProviderStateKind::Fresh);
+        collection.nodes_mut().push(RuntimeMapNode {
+            id: "scheduled_job_declared".into(),
+            provider: RuntimeProviderKind::ScheduledJob,
+            kind: RuntimeNodeKind::ScheduledJob,
+            label: "scheduled job".into(),
+            status: Some("scheduled".into()),
+            layer: Some(RuntimeNodeLayer::Process),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        });
+        collection.parts_mut().1.push(RuntimeMapEdge {
+            source: "scheduled_job_declared".into(),
+            target: "host_local".into(),
+            relationship: dockermap_core::RuntimeRelationshipKind::RunsOn,
+            metadata: BTreeMap::from([(CRON_EVIDENCE_SCHEDULE_MARKER.into(), "declared".into())]),
+            evidence_refs: Vec::new(),
+        });
+        collection
+    }
+
+    fn host_collection() -> ProviderCollection {
+        let mut collection = ProviderCollection::default();
+        collection.set_state(ProviderSlot::HostScoped, ProviderStateKind::Fresh);
+        collection.nodes_mut().push(RuntimeMapNode {
+            id: "host_local".into(),
+            provider: RuntimeProviderKind::Host,
+            kind: RuntimeNodeKind::Host,
+            label: "host".into(),
+            status: Some("online".into()),
+            layer: Some(RuntimeNodeLayer::Host),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        });
+        collection
+    }
+
+    #[test]
+    fn cron_declaration_evidence_is_slot_bound_and_target_gated() {
+        for (observation, expected) in [
+            (
+                RuntimeProviderState::Fresh(marked_cron_declaration()),
+                RuntimeEvidenceFreshness::Fresh,
+            ),
+            (
+                RuntimeProviderState::Degraded(Some(marked_cron_declaration())),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                RuntimeProviderState::TimedOut(Some(marked_cron_declaration())),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
+        ] {
+            let mut provider_slots = slots();
+            let cron = provider_slots.get_mut(&ProviderSlot::Cron).unwrap();
+            cron.observation = observation;
+            cron.freshness.data_revision = Some(SlotDataRevision::first());
+            cron.freshness.last_success_ms = Some(42);
+            // A completed Cron pass alone must not publish a dangling edge.
+            let no_host = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &provider_slots,
+                "docker-observation",
+            );
+            assert!(no_host
+                .edges
+                .iter()
+                .all(|edge| edge.source != "scheduled_job_declared"));
+
+            let host = provider_slots.get_mut(&ProviderSlot::HostScoped).unwrap();
+            host.observation = RuntimeProviderState::Fresh(host_collection());
+            host.freshness.data_revision = Some(SlotDataRevision::first());
+            host.freshness.last_success_ms = Some(42);
+            let map = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &provider_slots,
+                "docker-observation",
+            );
+            let edge = map
+                .edges
+                .iter()
+                .find(|edge| edge.source == "scheduled_job_declared")
+                .expect("canonical host admits cron edge");
+            assert!(edge.metadata.is_empty());
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 4);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Cron);
+            assert_eq!(evidence.kind, RuntimeEvidenceKind::CronScheduleDeclaration);
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Declared
+            );
+            assert_eq!(evidence.provider_slot, Some(ProviderSlot::Cron));
+            assert_eq!(evidence.collected_at, 42);
+            assert_eq!(evidence.freshness, expected);
+        }
+    }
+
+    #[test]
+    fn cron_marker_never_publishes_without_lifecycle_or_after_reset() {
+        let mut provider_slots = slots();
+        let cron = provider_slots.get_mut(&ProviderSlot::Cron).unwrap();
+        cron.observation = RuntimeProviderState::Fresh(marked_cron_declaration());
+        let host = provider_slots.get_mut(&ProviderSlot::HostScoped).unwrap();
+        host.observation = RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &provider_slots,
+            "docker-observation",
+        );
+        let edge = map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "scheduled_job_declared")
+            .unwrap();
+        assert!(edge.evidence_refs.is_empty() && edge.metadata.is_empty());
+
+        let mut disabled = slots();
+        let cron = disabled.get_mut(&ProviderSlot::Cron).unwrap();
+        let mut collection = marked_cron_declaration();
+        collection.set_state(ProviderSlot::Cron, ProviderStateKind::Disabled);
+        cron.observation = RuntimeProviderState::Fresh(collection);
+        cron.freshness.data_revision = Some(SlotDataRevision::first());
+        cron.freshness.last_success_ms = Some(42);
+        disabled
+            .get_mut(&ProviderSlot::HostScoped)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &disabled,
+            "docker-observation",
+        );
+        let edge = map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "scheduled_job_declared")
+            .unwrap();
+        assert!(edge.evidence_refs.is_empty() && edge.metadata.is_empty());
+    }
+
     #[test]
     fn systemd_evidence_is_slot_bound_and_truthfully_retained() {
         for (observation, expected) in [
@@ -1760,6 +2011,7 @@ mod scheduler_tests {
             slot_interval(ProviderSlot::HostScoped),
             Duration::from_secs(15)
         );
+        assert_eq!(slot_interval(ProviderSlot::Cron), Duration::from_secs(15));
         assert_eq!(
             slot_interval(ProviderSlot::Systemd),
             Duration::from_secs(15)
@@ -1808,6 +2060,7 @@ mod scheduler_tests {
         let invocations = |slot| 1 + window.as_secs() / slot_interval(slot).as_secs();
         assert_eq!(invocations(ProviderSlot::NetworkInfrastructure), 7);
         assert_eq!(invocations(ProviderSlot::HostScoped), 5);
+        assert_eq!(invocations(ProviderSlot::Cron), 5);
         assert_eq!(invocations(ProviderSlot::Systemd), 5);
         assert_eq!(invocations(ProviderSlot::PythonProcesses), 7);
         assert_eq!(invocations(ProviderSlot::NativeProcesses), 7);
@@ -1874,11 +2127,12 @@ mod scheduler_tests {
         assert_eq!(publications, 31);
         assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
         assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+        assert_eq!(starts[&ProviderSlot::Cron], 5);
         assert_eq!(starts[&ProviderSlot::Systemd], 5);
         assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);
         assert_eq!(starts[&ProviderSlot::NativeProcesses], 7);
         assert_eq!(starts[&ProviderSlot::ProjectNpm], 2);
-        assert_eq!(starts.values().sum::<usize>(), 33);
+        assert_eq!(starts.values().sum::<usize>(), 38);
         assert!(maximum_live_workers <= MAX_CONCURRENT_PROVIDER_SLOTS);
         // Before Systemd became independently schedulable, one aggregate
         // host-scoped pass covered it alongside the four other fixed bundles.
@@ -1911,7 +2165,7 @@ mod scheduler_tests {
                 .block_on(run_real_collector_churn_trace(&profile));
             match profile.as_str() {
                 "full-host" => {
-                    assert_eq!(starts.values().sum::<usize>(), 33);
+                    assert_eq!(starts.values().sum::<usize>(), 38);
                     // The old whole-runtime pass had five aggregate bundles;
                     // systemd was part of host-scoped collection, not a sixth
                     // independently scheduled unit.
@@ -1924,8 +2178,9 @@ mod scheduler_tests {
                     );
                 }
                 "restricted" => {
-                    assert_eq!(starts.values().sum::<usize>(), 13);
+                    assert_eq!(starts.values().sum::<usize>(), 14);
                     assert_eq!(starts[&ProviderSlot::HostScoped], 1);
+                    assert_eq!(starts[&ProviderSlot::Cron], 1);
                     assert_eq!(starts[&ProviderSlot::Systemd], 1);
                     assert_eq!(starts[&ProviderSlot::PythonProcesses], 1);
                     assert_eq!(starts[&ProviderSlot::NativeProcesses], 1);
@@ -2134,6 +2389,7 @@ mod scheduler_tests {
         if profile == "restricted" {
             for slot in [
                 ProviderSlot::HostScoped,
+                ProviderSlot::Cron,
                 ProviderSlot::PythonProcesses,
                 ProviderSlot::NativeProcesses,
             ] {
@@ -2146,6 +2402,7 @@ mod scheduler_tests {
         } else {
             assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
             assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+            assert_eq!(starts[&ProviderSlot::Cron], 5);
             assert_eq!(starts[&ProviderSlot::Systemd], 5);
             assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);
             assert_eq!(starts[&ProviderSlot::NativeProcesses], 7);
