@@ -53,7 +53,8 @@ export type RuntimeEvidenceAssertionKind = 'observed';
  * slice.  New sources require an explicit enum addition rather than an
  * arbitrary source string or metadata map.
  */
-export type RuntimeEvidenceKind = 'docker_network_membership' | 'docker_volume_mount' | 'docker_port_publication';
+export type RuntimeEvidenceKind =
+  ('docker_network_membership' | 'docker_volume_mount' | 'docker_port_publication') | 'docker_compose_depends_on';
 /**
  * Evidence provider for the version-one Docker-only evidence shape. New
  * providers require a new versioned evidence representation; they cannot be

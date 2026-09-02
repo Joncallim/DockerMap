@@ -1169,7 +1169,8 @@ test("runtime evidence is required and fails closed before browser publication",
   for (const [kind, relationship] of [
     ["docker_network_membership", "mounts"],
     ["docker_volume_mount", "exposes"],
-    ["docker_port_publication", "connected_to"]
+    ["docker_port_publication", "connected_to"],
+    ["docker_compose_depends_on", "connected_to"]
   ] as const) {
     const mismatched = structuredClone(fixture);
     mismatched.edges[0].evidenceRefs[0].kind = kind;

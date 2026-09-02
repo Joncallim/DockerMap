@@ -60,6 +60,7 @@ const V1_EVIDENCE_EDGE = {
   docker_network_membership: { relationship: "connected_to", sourcePrefix: "docker_container_", targetPrefix: "docker_network_" },
   docker_volume_mount: { relationship: "mounts", sourcePrefix: "docker_container_", targetPrefix: "docker_volume_" },
   docker_port_publication: { relationship: "exposes", sourcePrefix: "docker_container_", targetPrefix: "network_listener_" },
+  docker_compose_depends_on: { relationship: "depends_on", sourcePrefix: "docker_container_", targetPrefix: "docker_container_" },
 } as const;
 
 function hasCompleteProviderStateVector(payload: unknown): boolean {
@@ -147,6 +148,7 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
       const expected = typeof value.kind === "string" ? V1_EVIDENCE_EDGE[value.kind as keyof typeof V1_EVIDENCE_EDGE] : undefined;
       if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return false;
       if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix)) return false;
+      if (value.kind === "docker_compose_depends_on" && candidate.source === candidate.target) return false;
       // An opaque observation token must never be the collection timestamp
       // re-labelled as a revision. The daemon produces it independently.
       return typeof value.providerRevision === "string" && value.providerRevision !== String(value.collectedAt);

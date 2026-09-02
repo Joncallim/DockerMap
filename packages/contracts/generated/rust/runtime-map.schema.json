@@ -174,12 +174,21 @@
     },
     "RuntimeEvidenceKind": {
       "description": "Safe, provider-specific fact families supported by the first provenance\nslice.  New sources require an explicit enum addition rather than an\narbitrary source string or metadata map.",
-      "enum": [
-        "docker_network_membership",
-        "docker_volume_mount",
-        "docker_port_publication"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "docker_network_membership",
+            "docker_volume_mount",
+            "docker_port_publication"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_depends_on",
+          "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeEvidenceProvider": {
       "description": "Evidence provider for the version-one Docker-only evidence shape. New\nproviders require a new versioned evidence representation; they cannot be\npassed off as v1 through the broad runtime-provider enum.",
