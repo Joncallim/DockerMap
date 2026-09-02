@@ -67,8 +67,18 @@ const SPECS: readonly FindingSpec[] = [
     idPrefix: "finding_docker_compose_declared_target_not_active_", subjectPrefix: "docker_container_", targetPrefix: "docker_container_",
     evidenceCount: 1, evidence: { version: 1, provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", providerSlot: null },
     title: "Declared Compose dependency needs review", category: "Docker Compose", hint: "Observed Compose declaration", tone: "muted", severityLabel: "Advisory", inspectChanges: true
+  },
+  {
+    ruleId: "docker.compose_mutual_dependency", severity: "advisory",
+    summary: "Docker recorded mutually declared Compose dependencies between two containers.",
+    recommendation: "Review the declared dependencies and remove any unintended mutual dependency.",
+    idPrefix: "finding_docker_compose_mutual_dependency_", subjectPrefix: "docker_container_", targetPrefix: "docker_container_",
+    evidenceCount: 2, evidence: { version: 1, provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", providerSlot: null },
+    title: "Mutual Compose declarations need review", category: "Docker Compose", hint: "Observed Compose declarations", tone: "muted", severityLabel: "Advisory", inspectChanges: true
   }
 ];
+
+const COMPOSE_DECLARATION_EVIDENCE_SUMMARY = "Docker recorded Compose dependency declaration";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -89,6 +99,10 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     || (spec.targetPrefix !== undefined && !finding.targetRef.startsWith(spec.targetPrefix))
     || (spec.targetRef !== undefined && finding.targetRef !== spec.targetRef)
     || finding.subjectRef === finding.targetRef
+    // Mutual findings are emitted in one canonical direction. This preserves
+    // the API's ordered forward/reverse evidence meaning without displaying
+    // either opaque reference.
+    || (spec.ruleId === "docker.compose_mutual_dependency" && finding.subjectRef >= finding.targetRef)
     || !Array.isArray(finding.evidenceRefs) || finding.evidenceRefs.length !== spec.evidenceCount) return null;
 
   const evidence = record(finding.evidenceRefs[0]);
@@ -100,7 +114,7 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     // The API permits the Compose observation's legacy absent slot as well as
     // null. Both mean the Docker-wide collector, never a provider-supplied
     // slot name; all other supported shapes require their exact slot value.
-    || (spec.ruleId === "docker.compose_declared_target_not_active"
+    || ((spec.ruleId === "docker.compose_declared_target_not_active" || spec.ruleId === "docker.compose_mutual_dependency")
       ? evidence.providerSlot !== undefined && evidence.providerSlot !== null
       : evidence.providerSlot !== spec.evidence.providerSlot)
     || evidence.freshness !== "fresh"
@@ -113,6 +127,33 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     if (!port || port.version !== 1 || port.provider !== "docker" || port.kind !== "docker_port_publication"
       || port.assertionKind !== "observed" || port.providerSlot !== null || port.freshness !== "fresh"
       || port.subjectRef !== finding.subjectRef) return null;
+  }
+
+  // A mutual Compose declaration is a fixed, contemporaneous pair: first
+  // subject -> target, then target -> subject. Keep the collection token
+  // opaque, but require both observations to share it and their collection
+  // instant so a malformed or stitched response cannot produce advice.
+  if (spec.ruleId === "docker.compose_mutual_dependency") {
+    const reverse = record(finding.evidenceRefs[1]);
+    const isFreshComposeEvidence = (candidate: Record<string, unknown>, subjectRef: unknown) => (
+      candidate.version === 1
+      && candidate.provider === "docker"
+      && candidate.kind === "docker_compose_depends_on"
+      && candidate.assertionKind === "observed"
+      && (candidate.providerSlot === undefined || candidate.providerSlot === null)
+      && candidate.freshness === "fresh"
+      && candidate.subjectRef === subjectRef
+      && typeof candidate.id === "string" && candidate.id.length > 0
+      && candidate.summary === COMPOSE_DECLARATION_EVIDENCE_SUMMARY
+      && typeof candidate.collectedAt === "number" && Number.isSafeInteger(candidate.collectedAt) && candidate.collectedAt >= 0
+      && typeof candidate.providerRevision === "string" && candidate.providerRevision.length > 0
+      && candidate.providerRevision !== String(candidate.collectedAt)
+    );
+    if (!reverse
+      || !isFreshComposeEvidence(evidence, finding.subjectRef)
+      || !isFreshComposeEvidence(reverse, finding.targetRef)
+      || evidence.collectedAt !== reverse.collectedAt
+      || evidence.providerRevision !== reverse.providerRevision) return null;
   }
 
   return spec;

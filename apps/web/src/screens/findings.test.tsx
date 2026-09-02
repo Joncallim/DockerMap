@@ -130,6 +130,50 @@ describe("Findings screen", () => {
     expect(html).toContain("Review the declared dependency and the target container state.");
   });
 
+  it("renders a mutual Compose advisory with static copy only", () => {
+    const mutual = structuredClone(findings);
+    mutual.findings[0] = {
+      id: "finding_docker_compose_mutual_dependency_opaque",
+      ruleId: "docker.compose_mutual_dependency",
+      severity: "advisory",
+      summary: "Docker recorded mutually declared Compose dependencies between two containers.",
+      recommendation: "Review the declared dependencies and remove any unintended mutual dependency.",
+      subjectRef: "docker_container_alpha_private", targetRef: "docker_container_beta_private",
+      evidenceRefs: [
+        { version: 1, id: "opaque-forward", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_alpha_private", collectedAt: 1, providerRevision: "opaque-revision", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "opaque-reverse", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_beta_private", collectedAt: 1, providerRevision: "opaque-revision", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    const html = render({ findings: mutual });
+    expect(html).toContain("Mutual Compose declarations need review");
+    expect(html).toContain("Review the declared dependencies and remove any unintended mutual dependency.");
+    expect(html).toContain('href="/changes"');
+    for (const privateValue of ["docker_container_alpha_private", "docker_container_beta_private", "opaque-forward", "opaque-reverse", "opaque-revision"]) {
+      expect(html).not.toContain(privateValue);
+    }
+    expect(html).not.toContain("start-order");
+  });
+
+  it("suppresses malformed mutual Compose findings and fixture-mode mutual advice", () => {
+    const mutual = structuredClone(findings);
+    mutual.findings[0] = {
+      id: "finding_docker_compose_mutual_dependency_opaque", ruleId: "docker.compose_mutual_dependency", severity: "advisory",
+      summary: "Docker recorded mutually declared Compose dependencies between two containers.",
+      recommendation: "Review the declared dependencies and remove any unintended mutual dependency.",
+      subjectRef: "docker_container_alpha", targetRef: "docker_container_beta",
+      evidenceRefs: [
+        { version: 1, id: "opaque-forward", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_alpha", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "opaque-reverse", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_beta", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    expect(render({ findings: mutual })).toContain("Mutual Compose declarations need review");
+    const malformed = structuredClone(mutual);
+    malformed.findings[0].evidenceRefs.reverse();
+    expect(render({ findings: malformed })).not.toContain("Mutual Compose declarations need review");
+    expect(render({ findings: mutual, evidenceMode: "demo", modelProvenance: "demo" })).not.toContain("Mutual Compose declarations need review");
+    expect(render({ findings: mutual, evidenceMode: "mock", modelProvenance: "mock" })).not.toContain("Mutual Compose declarations need review");
+  });
+
   it("suppresses findings in demo and mock contexts even if fixture data is injected", () => {
     for (const context of [
       { evidenceMode: "demo" as const, modelProvenance: "demo" as const },
