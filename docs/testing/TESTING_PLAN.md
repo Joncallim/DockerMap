@@ -177,18 +177,21 @@ The automated evidence is deliberately isolated: fake streams, a filtered Unix
 gateway stub, and contract/browser fixtures prove the closed policy and
 fail-closed publication behavior without reading a host's Docker history.
 
-PR #215 records live evidence for commit `db9514d`: the targeted opt-in
-temporal sequence and the full opt-in live-Docker suite both passed (**2/2**).
-The labelled fixture restarted only its `worker` three times, restarted the
-filtered gateway, observed exactly three new opaque `container_died` rows, and
-produced exactly one advisory; fixture cleanup also completed. This is isolated
-test evidence, not a general host-history claim, and it remains pending PR
-review and merge.
+PR #215 initially recorded live evidence for commit `db9514d`: the targeted
+opt-in temporal sequence and the full opt-in live-Docker suite both passed
+(**2/2**). Its current head, `aeb5e86`, additionally pauses only the isolated
+filtered gateway and proves the response becomes `mock`/`unavailable` with
+null revisions and an empty event list, then returns to
+`docker`/`collecting` after gateway recovery. The labelled fixture also
+restarts only its `worker` three times, restarts the filtered gateway, observes
+exactly three new opaque `container_died` rows, produces exactly one advisory,
+checks a raw/unsafe event request is denied by the filtered gateway, and
+completes cleanup. This is isolated test evidence, not a general host-history
+claim, and it remains pending PR review and merge.
 
-The sequence still does not cover a live Docker-to-mock transition and Docker
-recovery, daemon-restart empty-history behavior, or a live raw/unsafe event
-request denied by the gateway. Record those separately before using the stream
-as complete release evidence for a candidate.
+The sequence still does not cover daemon-restart empty-history behavior. Record
+that separately before using the stream as complete release evidence for a
+candidate.
 
 ## Sandbox Fixture
 
