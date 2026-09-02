@@ -216,27 +216,41 @@ function hasCoherentProviderFreshness(payload: unknown): boolean {
   });
 }
 
-function hasCoherentRuntimeEvidence(payload: unknown): boolean {
-  if (!payload || typeof payload !== "object") return false;
+type RuntimeEvidenceDiagnostic =
+  | "runtime_evidence_edge_shape"
+  | "runtime_evidence_base_tuple"
+  | "runtime_evidence_edge_binding"
+  | "runtime_evidence_source_binding"
+  | "runtime_evidence_daemon_state_target"
+  | "runtime_evidence_port_listener_missing"
+  | "runtime_evidence_port_listener_ambiguous"
+  | "runtime_evidence_port_listener_shape"
+  | "runtime_evidence_port_listener_grammar"
+  | "runtime_evidence_revision";
+
+// This returns only a fixed category for container-internal E2E diagnostics.
+// It must never contain daemon-supplied text, IDs, paths, or metadata values.
+function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic | null {
+  if (!payload || typeof payload !== "object") return "runtime_evidence_edge_shape";
   const nodes = (payload as { nodes?: unknown }).nodes;
   const edges = (payload as { edges?: unknown }).edges;
-  if (!Array.isArray(nodes) || !Array.isArray(edges)) return false;
+  if (!Array.isArray(nodes) || !Array.isArray(edges)) return "runtime_evidence_edge_shape";
   // Only a V1 port-publication edge needs a node lookup. Keep ambiguity local
   // to that referenced listener rather than treating unrelated duplicate
   // provider nodes as an API contract violation.
   const nodesById = new Map<string, Record<string, unknown> | null>();
   for (const candidate of nodes) {
-    if (!candidate || typeof candidate !== "object") return false;
+    if (!candidate || typeof candidate !== "object") return "runtime_evidence_edge_shape";
     const node = candidate as Record<string, unknown>;
-    if (typeof node.id !== "string") return false;
+    if (typeof node.id !== "string") return "runtime_evidence_edge_shape";
     nodesById.set(node.id, nodesById.has(node.id) ? null : node);
   }
-  return edges.every((edge) => {
-    if (!edge || typeof edge !== "object") return false;
+  for (const edge of edges) {
+    if (!edge || typeof edge !== "object") return "runtime_evidence_edge_shape";
     const candidate = edge as { source?: unknown; target?: unknown; relationship?: unknown; evidenceRefs?: unknown };
-    if (!Array.isArray(candidate.evidenceRefs)) return false;
-    return candidate.evidenceRefs.every((evidence) => {
-      if (!evidence || typeof evidence !== "object") return false;
+    if (!Array.isArray(candidate.evidenceRefs)) return "runtime_evidence_edge_shape";
+    for (const evidence of candidate.evidenceRefs) {
+      if (!evidence || typeof evidence !== "object") return "runtime_evidence_edge_shape";
       const value = evidence as {
         version?: unknown; provider?: unknown; kind?: unknown; assertionKind?: unknown;
         freshness?: unknown; providerRevision?: unknown; collectedAt?: unknown; subjectRef?: unknown;
@@ -262,7 +276,7 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
         && value.assertionKind === "declared"
         && value.providerSlot === "cron"
         && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
-      if (!isV1 && !isV2 && !isV3 && !isV4) return false;
+      if (!isV1 && !isV2 && !isV3 && !isV4) return "runtime_evidence_base_tuple";
       const expected = typeof value.kind === "string"
         ? (isV1
           ? V1_EVIDENCE_EDGE[value.kind as keyof typeof V1_EVIDENCE_EDGE]
@@ -272,22 +286,24 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
               ? V3_EVIDENCE_EDGE[value.kind as keyof typeof V3_EVIDENCE_EDGE]
               : V4_EVIDENCE_EDGE[value.kind as keyof typeof V4_EVIDENCE_EDGE])
         : undefined;
-      if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return false;
-      if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix)) return false;
-      if (isV4 && candidate.target !== "host_local") return false;
-      if (value.kind === "docker_daemon_state_bind_mount" && candidate.target !== "host_risk_docker_daemon_state") return false;
+      if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return "runtime_evidence_edge_binding";
+      if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix) || candidate.source === candidate.target) return "runtime_evidence_source_binding";
+      if (isV4 && candidate.target !== "host_local") return "runtime_evidence_edge_binding";
+      if (value.kind === "docker_daemon_state_bind_mount" && candidate.target !== "host_risk_docker_daemon_state") return "runtime_evidence_daemon_state_target";
       if (value.kind === "docker_port_publication") {
         const listener = nodesById.get(candidate.target);
-        if (listener?.provider !== "network" || listener.type !== "network_listener"
-          || !listener.metadata || typeof listener.metadata !== "object"
-          || !isHostPublishedDockerPort((listener.metadata as Record<string, unknown>).port)) return false;
+        if (listener === undefined) return "runtime_evidence_port_listener_missing";
+        if (listener === null) return "runtime_evidence_port_listener_ambiguous";
+        if (listener.provider !== "network" || listener.type !== "network_listener"
+          || !listener.metadata || typeof listener.metadata !== "object") return "runtime_evidence_port_listener_shape";
+        if (!isHostPublishedDockerPort((listener.metadata as Record<string, unknown>).port)) return "runtime_evidence_port_listener_grammar";
       }
-      if (candidate.source === candidate.target) return false;
       // An opaque observation token must never be the collection timestamp
       // re-labelled as a revision. The daemon produces it independently.
-      return typeof value.providerRevision === "string" && value.providerRevision !== String(value.collectedAt);
-    });
-  });
+      if (typeof value.providerRevision !== "string" || value.providerRevision === String(value.collectedAt)) return "runtime_evidence_revision";
+    }
+  }
+  return null;
 }
 
 // Findings are a deliberately tiny conclusion vocabulary, not a daemon-supplied
@@ -460,7 +476,7 @@ export function daemonResponseSchemaId(path: string): RustResponseSchemaId | und
 
 /** A daemon response is syntactically JSON but violates its Rust-owned model. */
 export class DaemonResponseValidationError extends Error {
-  constructor(readonly reason: "schema" | "provider_state_vector" | "provider_freshness" | "runtime_evidence" | "findings") {
+  constructor(readonly reason: "schema" | "provider_state_vector" | "provider_freshness" | RuntimeEvidenceDiagnostic | "findings") {
     // Keep the public error deliberately independent of schema paths/errors:
     // a compromised daemon must not use validator output as an exfiltration channel.
     super("Daemon response did not match its declared contract");
@@ -479,7 +495,8 @@ export function validateDaemonResponse(path: string, payload: unknown) {
   if (schema === "RuntimeMap") {
     if (!hasCompleteProviderStateVector(payload)) throw new DaemonResponseValidationError("provider_state_vector");
     if (!hasCoherentProviderFreshness(payload)) throw new DaemonResponseValidationError("provider_freshness");
-    if (!hasCoherentRuntimeEvidence(payload)) throw new DaemonResponseValidationError("runtime_evidence");
+    const evidenceDiagnostic = runtimeEvidenceDiagnostic(payload);
+    if (evidenceDiagnostic) throw new DaemonResponseValidationError(evidenceDiagnostic);
   }
   if (schema === "FindingsResponse" && !hasCoherentFindings(payload)) throw new DaemonResponseValidationError("findings");
   return payload;
