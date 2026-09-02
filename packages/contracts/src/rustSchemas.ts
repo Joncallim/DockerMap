@@ -2793,6 +2793,172 @@ export const RUST_RESPONSE_SCHEMAS = {
   "title": "ObservedDockerEventHistoryResponse",
   "type": "object"
 },
+  ObservedResourceTelemetryResponse: {
+  "$defs": {
+    "ObservedResourceMetric": {
+      "additionalProperties": false,
+      "description": "One numeric metric with an explicit finite freshness window.",
+      "properties": {
+        "expiresAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "observedAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "value": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "value",
+        "observedAtMs",
+        "expiresAtMs"
+      ],
+      "type": "object"
+    },
+    "ObservedResourceTelemetryCollectionState": {
+      "description": "Closed lifecycle vocabulary for bounded current Docker resource samples.\nIt is deliberately separate from host provider slots and event history.",
+      "enum": [
+        "collecting",
+        "fresh",
+        "stale",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "ObservedResourceTelemetrySample": {
+      "additionalProperties": false,
+      "description": "Sanitized current metrics for one already-public snapshot container.",
+      "properties": {
+        "containerId": {
+          "pattern": "^docker_container_[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "cpuPercent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservedResourceMetric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memoryLimitBytes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservedResourceMetric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memoryUsedBytes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservedResourceMetric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "networkRxBytesPerSecond": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservedResourceMetric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "networkTxBytesPerSecond": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservedResourceMetric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "containerId"
+      ],
+      "type": "object"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Bounded current-only telemetry. No raw Docker stats payload, names, network\ninterfaces, counters, or historical series cross this boundary.",
+  "properties": {
+    "collectionState": {
+      "$ref": "#/$defs/ObservedResourceTelemetryCollectionState"
+    },
+    "currentModelRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "currentObservationRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "samples": {
+      "items": {
+        "$ref": "#/$defs/ObservedResourceTelemetrySample"
+      },
+      "maxItems": 16,
+      "type": "array"
+    },
+    "source": {
+      "$ref": "#/$defs/RuntimeMode"
+    }
+  },
+  "required": [
+    "source",
+    "collectionState",
+    "currentModelRevision",
+    "currentObservationRevision",
+    "samples"
+  ],
+  "title": "ObservedResourceTelemetryResponse",
+  "type": "object"
+},
 } as const;
 
 export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
@@ -5585,6 +5751,172 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "events"
   ],
   "title": "ObservedDockerEventHistoryResponse",
+  "type": "object"
+},
+  ObservedResourceTelemetryResponse: {
+  "$defs": {
+    "ObservedResourceMetric": {
+      "additionalProperties": false,
+      "description": "One numeric metric with an explicit finite freshness window.",
+      "properties": {
+        "expiresAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "observedAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "value": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "value",
+        "observedAtMs",
+        "expiresAtMs"
+      ],
+      "type": "object"
+    },
+    "ObservedResourceTelemetryCollectionState": {
+      "description": "Closed lifecycle vocabulary for bounded current Docker resource samples.\nIt is deliberately separate from host provider slots and event history.",
+      "enum": [
+        "collecting",
+        "fresh",
+        "stale",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "ObservedResourceTelemetrySample": {
+      "additionalProperties": false,
+      "description": "Sanitized current metrics for one already-public snapshot container.",
+      "properties": {
+        "containerId": {
+          "pattern": "^docker_container_[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "cpuPercent": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/ObservedResourceTelemetryResponse/$defs/ObservedResourceMetric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memoryLimitBytes": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/ObservedResourceTelemetryResponse/$defs/ObservedResourceMetric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memoryUsedBytes": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/ObservedResourceTelemetryResponse/$defs/ObservedResourceMetric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "networkRxBytesPerSecond": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/ObservedResourceTelemetryResponse/$defs/ObservedResourceMetric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "networkTxBytesPerSecond": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/ObservedResourceTelemetryResponse/$defs/ObservedResourceMetric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "containerId"
+      ],
+      "type": "object"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Bounded current-only telemetry. No raw Docker stats payload, names, network\ninterfaces, counters, or historical series cross this boundary.",
+  "properties": {
+    "collectionState": {
+      "$ref": "#/components/schemas/ObservedResourceTelemetryResponse/$defs/ObservedResourceTelemetryCollectionState"
+    },
+    "currentModelRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "currentObservationRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "samples": {
+      "items": {
+        "$ref": "#/components/schemas/ObservedResourceTelemetryResponse/$defs/ObservedResourceTelemetrySample"
+      },
+      "maxItems": 16,
+      "type": "array"
+    },
+    "source": {
+      "$ref": "#/components/schemas/ObservedResourceTelemetryResponse/$defs/RuntimeMode"
+    }
+  },
+  "required": [
+    "source",
+    "collectionState",
+    "currentModelRevision",
+    "currentObservationRevision",
+    "samples"
+  ],
+  "title": "ObservedResourceTelemetryResponse",
   "type": "object"
 },
 } as const;

@@ -17,7 +17,8 @@ export type RustDaemonModels =
   | VolumesResponse
   | FindingsResponse
   | ObservedChangeHistoryResponse
-  | ObservedDockerEventHistoryResponse;
+  | ObservedDockerEventHistoryResponse
+  | ObservedResourceTelemetryResponse;
 export type ComposeMountKind = 'bind' | 'named_volume' | 'anonymous_volume' | 'unsupported';
 export type RuntimeMode = 'docker' | 'mock';
 export type RelationshipKind = 'connected_to' | 'mounts';
@@ -197,6 +198,11 @@ export type ObservedDockerEventKind =
   | 'container_health_starting'
   | 'container_health_healthy'
   | 'container_health_unhealthy';
+/**
+ * Closed lifecycle vocabulary for bounded current Docker resource samples.
+ * It is deliberately separate from host provider slots and event history.
+ */
+export type ObservedResourceTelemetryCollectionState = 'collecting' | 'fresh' | 'stale' | 'unavailable';
 
 export interface DockerSnapshot {
   containers: ContainerRecord[];
@@ -701,6 +707,199 @@ export interface ObservedDockerEvent {
   kind: ObservedDockerEventKind;
   observedAtMs: number;
   sourceOccurredAtMs: number;
+}
+/**
+ * Bounded current-only telemetry. No raw Docker stats payload, names, network
+ * interfaces, counters, or historical series cross this boundary.
+ */
+export interface ObservedResourceTelemetryResponse {
+  collectionState: ObservedResourceTelemetryCollectionState;
+  currentModelRevision: string | null;
+  currentObservationRevision: string | null;
+  /**
+   * @maxItems 16
+   */
+  samples:
+    | []
+    | [ObservedResourceTelemetrySample]
+    | [ObservedResourceTelemetrySample, ObservedResourceTelemetrySample]
+    | [ObservedResourceTelemetrySample, ObservedResourceTelemetrySample, ObservedResourceTelemetrySample]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ]
+    | [
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample,
+        ObservedResourceTelemetrySample
+      ];
+  source: RuntimeMode;
+}
+/**
+ * Sanitized current metrics for one already-public snapshot container.
+ */
+export interface ObservedResourceTelemetrySample {
+  containerId: string;
+  cpuPercent?: ObservedResourceMetric | null;
+  memoryLimitBytes?: ObservedResourceMetric | null;
+  memoryUsedBytes?: ObservedResourceMetric | null;
+  networkRxBytesPerSecond?: ObservedResourceMetric | null;
+  networkTxBytesPerSecond?: ObservedResourceMetric | null;
+}
+/**
+ * One numeric metric with an explicit finite freshness window.
+ */
+export interface ObservedResourceMetric {
+  expiresAtMs: number;
+  observedAtMs: number;
+  value: number;
 }
 
 // Rust's transparent route wrapper serializes as the record itself.

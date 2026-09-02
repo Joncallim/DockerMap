@@ -7,12 +7,12 @@ use crate::{
     ComposeEditPlan, ComposeGraph, ComposeScan, ContainerDetailResponse, ContainersResponse,
     DockerSnapshot, FindingsResponse, GraphResponse, HealthResponse, ImagesResponse, LogsResponse,
     NetworksResponse, ObservedChangeHistoryResponse, ObservedDockerEventHistoryResponse,
-    RuntimeMap, VolumesResponse,
+    ObservedResourceTelemetryResponse, RuntimeMap, VolumesResponse,
 };
 use schemars::{schema_for, Schema};
 use serde_json::Value;
 
-pub const DAEMON_SCHEMA_NAMES: [&str; 16] = [
+pub const DAEMON_SCHEMA_NAMES: [&str; 17] = [
     "DockerSnapshot",
     "GraphResponse",
     "RuntimeMap",
@@ -29,6 +29,7 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 16] = [
     "VolumesResponse",
     "ObservedChangeHistoryResponse",
     "ObservedDockerEventHistoryResponse",
+    "ObservedResourceTelemetryResponse",
 ];
 
 /// Largest integer that JavaScript JSON consumers can represent exactly.
@@ -37,7 +38,7 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 16] = [
 /// that standard `JSON.parse` cannot preserve.
 pub const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
-pub fn daemon_schemas() -> [Schema; 16] {
+pub fn daemon_schemas() -> [Schema; 17] {
     [
         schema_for!(DockerSnapshot),
         schema_for!(GraphResponse),
@@ -55,6 +56,7 @@ pub fn daemon_schemas() -> [Schema; 16] {
         schema_for!(VolumesResponse),
         schema_for!(ObservedChangeHistoryResponse),
         schema_for!(ObservedDockerEventHistoryResponse),
+        schema_for!(ObservedResourceTelemetryResponse),
     ]
 }
 
@@ -62,7 +64,7 @@ pub fn daemon_schemas() -> [Schema; 16] {
 /// forward-compatible when deserializing, while fixtures reject typoed or
 /// unreviewed response fields rather than silently redefining the contract.
 /// This changes schema validation only, never daemon serialization behavior.
-pub fn daemon_schema_documents() -> [Value; 16] {
+pub fn daemon_schema_documents() -> [Value; 17] {
     daemon_schemas().map(|schema| {
         let mut document = serde_json::to_value(schema).expect("schemars schema serializes");
         deny_unknown_object_properties(&mut document);
@@ -111,7 +113,7 @@ mod tests {
 
     #[test]
     fn schema_root_inventory_includes_each_declared_response_once() {
-        assert_eq!(DAEMON_SCHEMA_NAMES.len(), 16);
+        assert_eq!(DAEMON_SCHEMA_NAMES.len(), 17);
         assert_eq!(daemon_schema_documents().len(), DAEMON_SCHEMA_NAMES.len());
         let unique = DAEMON_SCHEMA_NAMES
             .iter()
@@ -119,6 +121,7 @@ mod tests {
         assert_eq!(unique.len(), DAEMON_SCHEMA_NAMES.len());
         assert!(unique.contains(&"ObservedChangeHistoryResponse"));
         assert!(unique.contains(&"ObservedDockerEventHistoryResponse"));
+        assert!(unique.contains(&"ObservedResourceTelemetryResponse"));
     }
 
     #[test]

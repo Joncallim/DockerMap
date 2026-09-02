@@ -338,6 +338,176 @@ pub struct ObservedDockerEventHistoryResponse {
     pub events: Vec<ObservedDockerEvent>,
 }
 
+/// Closed lifecycle vocabulary for bounded current Docker resource samples.
+/// It is deliberately separate from host provider slots and event history.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedResourceTelemetryCollectionState {
+    Collecting,
+    Fresh,
+    Stale,
+    Unavailable,
+}
+
+/// One numeric metric with an explicit finite freshness window.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ObservedResourceMetric {
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub value: u64,
+    #[serde(rename = "observedAtMs")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub observed_at_ms: u64,
+    #[serde(rename = "expiresAtMs")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub expires_at_ms: u64,
+}
+
+/// Sanitized current metrics for one already-public snapshot container.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ObservedResourceTelemetrySample {
+    #[serde(rename = "containerId")]
+    #[schemars(regex(pattern = "^docker_container_[0-9a-f]{64}$"))]
+    pub container_id: String,
+    #[serde(rename = "cpuPercent")]
+    pub cpu_percent: Option<ObservedResourceMetric>,
+    #[serde(rename = "memoryUsedBytes")]
+    pub memory_used_bytes: Option<ObservedResourceMetric>,
+    #[serde(rename = "memoryLimitBytes")]
+    pub memory_limit_bytes: Option<ObservedResourceMetric>,
+    #[serde(rename = "networkRxBytesPerSecond")]
+    pub network_rx_bytes_per_second: Option<ObservedResourceMetric>,
+    #[serde(rename = "networkTxBytesPerSecond")]
+    pub network_tx_bytes_per_second: Option<ObservedResourceMetric>,
+}
+
+/// Bounded current-only telemetry. No raw Docker stats payload, names, network
+/// interfaces, counters, or historical series cross this boundary.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct ObservedResourceTelemetryResponse {
+    pub source: RuntimeMode,
+    #[serde(rename = "collectionState")]
+    pub collection_state: ObservedResourceTelemetryCollectionState,
+    #[serde(rename = "currentModelRevision")]
+    #[schemars(required, with = "NonEmptyStringOrNull")]
+    pub current_model_revision: Option<String>,
+    #[serde(rename = "currentObservationRevision")]
+    #[schemars(required, with = "NonEmptyStringOrNull")]
+    pub current_observation_revision: Option<String>,
+    #[schemars(length(max = 16))]
+    pub samples: Vec<ObservedResourceTelemetrySample>,
+}
+
+#[derive(Deserialize)]
+struct ObservedResourceTelemetryResponseWire {
+    source: RuntimeMode,
+    #[serde(rename = "collectionState")]
+    collection_state: ObservedResourceTelemetryCollectionState,
+    #[serde(rename = "currentModelRevision")]
+    current_model_revision: RequiredNullableString,
+    #[serde(rename = "currentObservationRevision")]
+    current_observation_revision: RequiredNullableString,
+    samples: Vec<ObservedResourceTelemetrySample>,
+}
+
+/// Unlike a bare `Option`, this wrapper makes a missing property a serde
+/// error while still allowing the explicit JSON `null` required by the wire
+/// contract.
+struct RequiredNullableString(Option<String>);
+
+impl<'de> Deserialize<'de> for RequiredNullableString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Option::<String>::deserialize(deserializer).map(Self)
+    }
+}
+
+impl<'de> Deserialize<'de> for ObservedResourceTelemetryResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ObservedResourceTelemetryResponseWire::deserialize(deserializer)?;
+        let response = Self {
+            source: wire.source,
+            collection_state: wire.collection_state,
+            current_model_revision: wire.current_model_revision.0,
+            current_observation_revision: wire.current_observation_revision.0,
+            samples: wire.samples,
+        };
+        response.validate().map_err(serde::de::Error::custom)?;
+        Ok(response)
+    }
+}
+
+impl ObservedResourceTelemetryResponse {
+    pub fn validate(&self) -> Result<(), String> {
+        const MAX_SAFE: u64 = 9_007_199_254_740_991;
+        let unavailable =
+            self.collection_state == ObservedResourceTelemetryCollectionState::Unavailable;
+        if unavailable {
+            if self.current_model_revision.is_some()
+                || self.current_observation_revision.is_some()
+                || !self.samples.is_empty()
+            {
+                return Err(
+                    "unavailable resource telemetry must have null anchors and no samples".into(),
+                );
+            }
+            return Ok(());
+        }
+        if self.source != RuntimeMode::Docker {
+            return Err("active resource telemetry requires docker source".into());
+        }
+        if !self
+            .current_model_revision
+            .as_ref()
+            .is_some_and(|value| !value.is_empty() && value.len() <= 64)
+            || !self
+                .current_observation_revision
+                .as_ref()
+                .is_some_and(|value| !value.is_empty() && value.len() <= 64)
+        {
+            return Err("active resource telemetry requires nonempty anchors".into());
+        }
+        if self.samples.len() > 16 {
+            return Err("resource telemetry sample cap exceeded".into());
+        }
+        for sample in &self.samples {
+            if sample.container_id.len() != 81
+                || !sample.container_id.starts_with("docker_container_")
+                || !sample.container_id[17..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err("resource telemetry container identity is invalid".into());
+            }
+            for metric in [
+                &sample.cpu_percent,
+                &sample.memory_used_bytes,
+                &sample.memory_limit_bytes,
+                &sample.network_rx_bytes_per_second,
+                &sample.network_tx_bytes_per_second,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if metric.value > MAX_SAFE
+                    || metric.observed_at_ms > MAX_SAFE
+                    || metric.expires_at_ms > MAX_SAFE
+                    || metric.expires_at_ms < metric.observed_at_ms
+                {
+                    return Err(
+                        "resource telemetry metric is outside its safe freshness bounds".into(),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Deserialization-only wire shape. The public response has state-dependent
 /// invariants that JSON Schema can document but cannot express portably across
 /// every schema consumer, so serde rejects incoherent payloads as well.
@@ -1550,4 +1720,54 @@ pub struct RuntimeMap {
     /// the daemon route layer from the cache's runtime mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<RuntimeMode>,
+}
+
+#[cfg(test)]
+mod resource_telemetry_tests {
+    use super::*;
+
+    #[test]
+    fn resource_telemetry_deserialization_fails_closed_for_incoherent_or_unsafe_values() {
+        let unavailable_with_sample = serde_json::json!({
+            "source": "docker", "collectionState": "unavailable",
+            "currentModelRevision": null, "currentObservationRevision": null,
+            "samples": [{"containerId": "docker_container_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]
+        });
+        assert!(serde_json::from_value::<ObservedResourceTelemetryResponse>(
+            unavailable_with_sample
+        )
+        .is_err());
+        let active_without_anchor = serde_json::json!({
+            "source": "docker", "collectionState": "fresh",
+            "currentModelRevision": null, "currentObservationRevision": "obs", "samples": []
+        });
+        assert!(
+            serde_json::from_value::<ObservedResourceTelemetryResponse>(active_without_anchor)
+                .is_err()
+        );
+        let missing_nullable_anchor = serde_json::json!({
+            "source": "docker", "collectionState": "fresh",
+            "currentModelRevision": "model", "samples": []
+        });
+        assert!(serde_json::from_value::<ObservedResourceTelemetryResponse>(
+            missing_nullable_anchor
+        )
+        .is_err());
+        let overlong_anchor = serde_json::json!({
+            "source": "docker", "collectionState": "fresh",
+            "currentModelRevision": "a".repeat(65), "currentObservationRevision": "obs", "samples": []
+        });
+        assert!(
+            serde_json::from_value::<ObservedResourceTelemetryResponse>(overlong_anchor).is_err()
+        );
+        let unsafe_metric = serde_json::json!({
+            "source": "docker", "collectionState": "fresh",
+            "currentModelRevision": "model", "currentObservationRevision": "obs",
+            "samples": [{"containerId": "docker_container_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "memoryUsedBytes": {"value": 9007199254740992_u64, "observedAtMs": 1, "expiresAtMs": 2}}]
+        });
+        assert!(
+            serde_json::from_value::<ObservedResourceTelemetryResponse>(unsafe_metric).is_err()
+        );
+    }
 }

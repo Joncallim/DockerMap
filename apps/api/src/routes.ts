@@ -39,6 +39,7 @@ export const ROUTE_MANIFEST = [
   { id: "findings", method: "GET", paths: apiPaths("/api/findings"), auth: "authenticated", rateLimit: null },
   { id: "history", method: "GET", paths: apiPaths("/api/history"), auth: "authenticated", rateLimit: null },
   { id: "observed-events", method: "GET", paths: apiPaths("/api/observed-events"), auth: "authenticated", rateLimit: null },
+  { id: "resource-telemetry", method: "GET", paths: apiPaths("/api/resource-telemetry"), auth: "authenticated", rateLimit: null },
   { id: "diagnostics", method: "GET", paths: apiPaths("/api/diagnostics"), auth: "authenticated", rateLimit: null },
   { id: "containers", method: "GET", paths: apiPaths("/api/containers"), auth: "authenticated", rateLimit: null },
   { id: "container", method: "GET", paths: apiPaths("/api/containers/:name"), auth: "authenticated", rateLimit: null },
