@@ -4,7 +4,7 @@
 # These manifest-list digests fix the selected base-image identity while
 # retaining the upstream images' supported platforms. They do not make the
 # whole build byte-for-byte reproducible; see docs/release/SUPPLY_CHAIN.md.
-FROM rust:1.88-slim-bookworm@sha256:38bc5a86d998772d4aec2348656ed21438d20fcdce2795b56ca434cf21430d89 AS rust-builder
+FROM rust:1.88-slim-trixie@sha256:9a7159329166b45f453351a077367f501aa3e98378f7e327530e7966a139d05f AS rust-builder
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -17,7 +17,7 @@ RUN cargo build --release --manifest-path crates/Cargo.toml \
     -p dockermap-core --bin generate-contract-schemas
 
 # ---- Node API + React web app ---------------------------------------------
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS js-builder
+FROM node:22-trixie-slim@sha256:7b8a0c89c54499bee567618f96578e1a12a800f062fbdbfd1fb6a443fa6f6284 AS js-builder
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
@@ -43,15 +43,25 @@ COPY --from=rust-builder /src/crates/target/release/generate-contract-schemas /u
 ENV VITE_API_BASE_URL=""
 ENV DOCKERMAP_CONTRACT_SCHEMA_GENERATOR=/usr/local/bin/generate-contract-schemas
 RUN npm run check:version && npm run check:contracts && npm run build
+# The runtime image needs the compiled artifacts and production dependency
+# closure only. Remove root/workspace development dependencies before copying
+# node_modules so scanners and the image do not retain build tooling.
+RUN npm prune --omit=dev --workspaces --include-workspace-root
 # `@dockermap/contracts` is a real runtime dependency of the compiled API.
 # Build and assert the entire package artifact, rather than relying on a
 # source-tree module that happened to be copied into the image.
 RUN test -f packages/contracts/dist/index.js && test -f packages/contracts/dist/nodeSchemas.js
 
 # ---- Runtime image ----------------------------------------------------------
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends nginx procps curl \
+FROM node:22-trixie-slim@sha256:7b8a0c89c54499bee567618f96578e1a12a800f062fbdbfd1fb6a443fa6f6284 AS runtime
+# The pinned base fixes image identity, while this upgrade applies the current
+# distribution security fixes before adding the runtime-only packages.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends nginx procps curl \
     && rm -rf /var/lib/apt/lists/*
+# npm is used only by the builder. Removing its global installation prevents
+# unused bundled packages from remaining in the production attack surface.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # The split deployment uses one shared non-root group for the filtered Unix
 # socket.  The gateway receives the host Docker-socket GID as a supplemental

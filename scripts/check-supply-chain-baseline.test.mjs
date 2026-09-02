@@ -33,6 +33,12 @@ test("Dockerfile pins every external base image to a manifest digest", async () 
     assert.match(image, /@sha256:[a-f0-9]{64}$/,
       `base image must be pinned to a SHA-256 manifest digest: ${image}`);
   }
+  assert.match(dockerfile, /npm prune --omit=dev --workspaces --include-workspace-root/,
+    "runtime dependencies must exclude workspace build tooling");
+  assert.match(dockerfile, /apt-get upgrade -y --no-install-recommends/,
+    "runtime base packages must receive current distribution security upgrades");
+  assert.match(dockerfile, /rm -rf \/usr\/local\/lib\/node_modules\/npm \/usr\/local\/bin\/npm \/usr\/local\/bin\/npx/,
+    "unused global npm must not remain in the production image");
 });
 
 test("CI enforces documented Rust and container supply-chain gates", async () => {
