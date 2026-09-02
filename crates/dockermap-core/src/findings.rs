@@ -2,7 +2,7 @@ use crate::snapshot_runtime::is_host_published_docker_port;
 use crate::{
     collision_resistant_id_component, Finding, FindingRule, FindingSeverity,
     RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
-    RuntimeEvidenceProvider, RuntimeMap, RuntimeNodeKind, RuntimeProviderKind,
+    RuntimeEvidenceProvider, RuntimeMap, RuntimeMode, RuntimeNodeKind, RuntimeProviderKind,
     RuntimeRelationshipKind, RuntimeServiceStatus,
 };
 use std::collections::BTreeMap;
@@ -29,6 +29,11 @@ const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_SUMMARY: &str =
     "A running Docker Compose service declares a dependency whose container is not active.";
 const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_RECOMMENDATION: &str =
     "Review the declared dependency and the target container state.";
+const COMPOSE_DEPENDENCY_EVIDENCE_SUMMARY: &str = "Docker recorded Compose dependency declaration";
+const COMPOSE_MUTUAL_DEPENDENCY_SUMMARY: &str =
+    "Docker recorded mutually declared Compose dependencies between two containers.";
+const COMPOSE_MUTUAL_DEPENDENCY_RECOMMENDATION: &str =
+    "Review the declared dependencies and remove any unintended mutual dependency.";
 
 /// Derive bounded, deterministic advisory findings from the already-public
 /// runtime topology. Every rule intentionally fails closed on its own closed
@@ -180,6 +185,53 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             subject_ref: daemon_edge.source.clone(),
             target_ref: daemon_edge.target.clone(),
             evidence_refs: vec![daemon_evidence.clone(), port_evidence.clone()],
+        });
+    }
+    // A mutual declaration is one closed, unordered pair. Iterate only the
+    // lexicographically first direction so the emitted subject/target and
+    // evidence order do not depend on collector edge ordering.
+    for edge in &runtime_map.edges {
+        let pair = (edge.source.as_str(), edge.target.as_str());
+        if matches!(runtime_map.source.as_ref(), Some(RuntimeMode::Mock))
+            || pair.0 >= pair.1
+            || compose_dependency_edge_counts.get(&pair) != Some(&1)
+            || compose_dependency_counts.get(&pair) != Some(&1)
+            || !is_candidate_compose_dependency(edge, &nodes)
+        {
+            continue;
+        }
+        let reverse = (pair.1, pair.0);
+        if compose_dependency_edge_counts.get(&reverse) != Some(&1)
+            || compose_dependency_counts.get(&reverse) != Some(&1)
+        {
+            continue;
+        }
+        let Some(reverse_edge) = runtime_map.edges.iter().find(|candidate| {
+            candidate.source == edge.target
+                && candidate.target == edge.source
+                && is_candidate_compose_dependency(candidate, &nodes)
+        }) else {
+            continue;
+        };
+        let evidence = &edge.evidence_refs[0];
+        let reverse_evidence = &reverse_edge.evidence_refs[0];
+        if evidence.collected_at != reverse_evidence.collected_at
+            || evidence.provider_revision != reverse_evidence.provider_revision
+        {
+            continue;
+        }
+        findings.push(Finding {
+            id: format!(
+                "finding_docker_compose_mutual_dependency_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            rule_id: FindingRule::DockerComposeMutualDependency,
+            severity: FindingSeverity::Advisory,
+            summary: COMPOSE_MUTUAL_DEPENDENCY_SUMMARY.into(),
+            recommendation: COMPOSE_MUTUAL_DEPENDENCY_RECOMMENDATION.into(),
+            subject_ref: edge.source.clone(),
+            target_ref: edge.target.clone(),
+            evidence_refs: vec![evidence.clone(), reverse_evidence.clone()],
         });
     }
     for edge in &runtime_map.edges {
@@ -449,6 +501,7 @@ fn is_candidate_compose_dependency<'a>(
             (Some(source), Some(target)) if is_docker_container(source) && is_docker_container(target)
         )
         && is_fresh_docker_evidence(edge, RuntimeEvidenceKind::DockerComposeDependsOn)
+        && matches!(edge.evidence_refs.first(), Some(evidence) if evidence.summary == COMPOSE_DEPENDENCY_EVIDENCE_SUMMARY)
 }
 
 #[cfg(test)]
@@ -597,13 +650,17 @@ mod tests {
     }
 
     fn docker_evidence(kind: RuntimeEvidenceKind, source: &str) -> RuntimeEvidenceRef {
+        let summary = match kind {
+            RuntimeEvidenceKind::DockerComposeDependsOn => COMPOSE_DEPENDENCY_EVIDENCE_SUMMARY,
+            _ => "Docker reported a bounded runtime fact",
+        };
         RuntimeEvidenceRef {
             version: 1,
             id: format!("docker_evidence_{source}"),
             provider: RuntimeEvidenceProvider::Docker,
             kind,
             assertion_kind: RuntimeEvidenceAssertionKind::Observed,
-            summary: "Docker reported a bounded runtime fact".into(),
+            summary: summary.into(),
             subject_ref: source.into(),
             collected_at: 1,
             provider_revision: "opaque-docker-observation".into(),
@@ -1094,6 +1151,127 @@ mod tests {
         wrong_evidence.edges[0].evidence_refs[0].kind =
             RuntimeEvidenceKind::DockerNetworkMembership;
         assert!(derive_findings(&wrong_evidence).is_empty());
+    }
+
+    fn mutual_compose_dependency_map() -> RuntimeMap {
+        let mut map = compose_dependency_map("created", "starting");
+        let reverse_source = map.edges[0].target.clone();
+        let reverse_target = map.edges[0].source.clone();
+        map.edges.push(RuntimeMapEdge {
+            source: reverse_source.clone(),
+            target: reverse_target,
+            relationship: RuntimeRelationshipKind::DependsOn,
+            metadata: BTreeMap::new(),
+            evidence_refs: vec![docker_evidence(
+                RuntimeEvidenceKind::DockerComposeDependsOn,
+                &reverse_source,
+            )],
+        });
+        map
+    }
+
+    fn mutual_compose_finding(findings: &[Finding]) -> Option<&Finding> {
+        findings
+            .iter()
+            .find(|finding| finding.rule_id == FindingRule::DockerComposeMutualDependency)
+    }
+
+    #[test]
+    fn compose_mutual_dependency_is_deterministic_and_contains_only_canonical_evidence() {
+        let input = mutual_compose_dependency_map();
+        let finding = mutual_compose_finding(&derive_findings(&input))
+            .expect("fresh, reciprocal Docker Compose declarations produce an advisory")
+            .clone();
+        assert_eq!(finding.severity, FindingSeverity::Advisory);
+        assert_eq!(finding.summary, COMPOSE_MUTUAL_DEPENDENCY_SUMMARY);
+        assert_eq!(
+            finding.recommendation,
+            COMPOSE_MUTUAL_DEPENDENCY_RECOMMENDATION
+        );
+        assert_eq!(finding.subject_ref, "docker_container_compose_source");
+        assert_eq!(finding.target_ref, "docker_container_compose_target");
+        assert_eq!(
+            finding.id,
+            format!(
+                "finding_docker_compose_mutual_dependency_{}",
+                collision_resistant_id_component(
+                    "docker_container_compose_source\u{1f}docker_container_compose_target"
+                )
+            )
+        );
+        assert_eq!(
+            finding.evidence_refs,
+            vec![
+                input.edges[0].evidence_refs[0].clone(),
+                input.edges[1].evidence_refs[0].clone()
+            ]
+        );
+
+        let mut reversed = input.clone();
+        reversed.edges.reverse();
+        assert_eq!(
+            mutual_compose_finding(&derive_findings(&reversed)),
+            Some(&finding),
+            "edge ordering cannot change a canonical finding"
+        );
+    }
+
+    #[test]
+    fn compose_mutual_dependency_fails_closed_for_ambiguous_malformed_or_stale_inputs() {
+        let mut missing_reverse = mutual_compose_dependency_map();
+        missing_reverse.edges.pop();
+        assert!(mutual_compose_finding(&derive_findings(&missing_reverse)).is_none());
+
+        let mut duplicate_forward = mutual_compose_dependency_map();
+        duplicate_forward
+            .edges
+            .push(duplicate_forward.edges[0].clone());
+        assert!(mutual_compose_finding(&derive_findings(&duplicate_forward)).is_none());
+
+        let mut malformed_reverse = mutual_compose_dependency_map();
+        let mut malformed = malformed_reverse.edges[1].clone();
+        malformed.evidence_refs.clear();
+        malformed_reverse.edges.push(malformed);
+        assert!(mutual_compose_finding(&derive_findings(&malformed_reverse)).is_none());
+
+        for freshness in [
+            RuntimeEvidenceFreshness::Stale,
+            RuntimeEvidenceFreshness::TimedOut,
+        ] {
+            let mut input = mutual_compose_dependency_map();
+            input.edges[1].evidence_refs[0].freshness = freshness;
+            assert!(mutual_compose_finding(&derive_findings(&input)).is_none());
+        }
+
+        let mut metadata = mutual_compose_dependency_map();
+        metadata.edges[0]
+            .metadata
+            .insert("unsafe".into(), "value".into());
+        assert!(mutual_compose_finding(&derive_findings(&metadata)).is_none());
+
+        let mut noncanonical_summary = mutual_compose_dependency_map();
+        noncanonical_summary.edges[0].evidence_refs[0].summary = "untrusted summary".into();
+        assert!(mutual_compose_finding(&derive_findings(&noncanonical_summary)).is_none());
+
+        let mut mismatched_time = mutual_compose_dependency_map();
+        mismatched_time.edges[1].evidence_refs[0].collected_at = 2;
+        assert!(mutual_compose_finding(&derive_findings(&mismatched_time)).is_none());
+
+        let mut mismatched_revision = mutual_compose_dependency_map();
+        mismatched_revision.edges[1].evidence_refs[0].provider_revision = "other".into();
+        assert!(mutual_compose_finding(&derive_findings(&mismatched_revision)).is_none());
+
+        let mut wrong_provider = mutual_compose_dependency_map();
+        wrong_provider.nodes[1].provider = RuntimeProviderKind::Systemd;
+        assert!(mutual_compose_finding(&derive_findings(&wrong_provider)).is_none());
+
+        let mut collision = mutual_compose_dependency_map();
+        collision.nodes.push(collision.nodes[0].clone());
+        assert!(mutual_compose_finding(&derive_findings(&collision)).is_none());
+
+        let mut mock = mutual_compose_dependency_map();
+        mock.source = Some(RuntimeMode::Mock);
+        assert!(mutual_compose_finding(&derive_findings(&mock)).is_none());
     }
 
     #[test]
