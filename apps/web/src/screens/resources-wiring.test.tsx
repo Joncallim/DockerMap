@@ -83,7 +83,7 @@ describe("resource wiring holds model provenance through mode flips", () => {
     expect(target.querySelector(".panel-resources")).toBeNull();
     const tab = Array.from(target.querySelectorAll<HTMLButtonElement>("[role=tab]")).find((button) => button.textContent?.includes("Resources"));
     act(() => tab!.click());
-    expect(target.querySelector(".panel-resources")!.textContent).toContain("Resource collectors not wired");
+    expect(target.querySelector(".panel-resources")!.textContent).toContain("Current Docker resource telemetry is not available for this model.");
     expect(target.querySelectorAll(".panel-resources .bar, .panel-resources .spark")).toHaveLength(0);
   });
 });
