@@ -48,6 +48,7 @@ pub(crate) type StaticProviderSlot = ProviderSlot;
 pub(crate) const STATIC_PROVIDER_SLOTS: &[StaticProviderSlot] = &[
     StaticProviderSlot::NetworkInfrastructure,
     StaticProviderSlot::HostScoped,
+    StaticProviderSlot::Systemd,
     StaticProviderSlot::PythonProcesses,
     StaticProviderSlot::NativeProcesses,
     StaticProviderSlot::ProjectNpm,
@@ -59,6 +60,7 @@ pub(crate) fn slot_interval(slot: StaticProviderSlot) -> Duration {
     match slot {
         StaticProviderSlot::NetworkInfrastructure => Duration::from_secs(10),
         StaticProviderSlot::HostScoped => Duration::from_secs(15),
+        StaticProviderSlot::Systemd => Duration::from_secs(15),
         StaticProviderSlot::PythonProcesses => Duration::from_secs(10),
         StaticProviderSlot::NativeProcesses => Duration::from_secs(10),
         StaticProviderSlot::ProjectNpm => Duration::from_secs(60),
@@ -169,6 +171,17 @@ fn collect_provider_slot(
                 },
             );
         }
+        StaticProviderSlot::Systemd => {
+            collect_systemd_runtime_provider(pid_namespace, &mut collection);
+            collection.set_state(
+                slot,
+                if pid_namespace.is_restricted() {
+                    ProviderStateKind::Disabled
+                } else {
+                    ProviderStateKind::Fresh
+                },
+            );
+        }
         StaticProviderSlot::PythonProcesses => {
             let (nodes, _, diagnostics) = collection.parts_mut();
             collect_python_processes(pid_namespace.is_restricted(), nodes, diagnostics);
@@ -235,7 +248,7 @@ fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapN
     });
 }
 
-/// `/proc/net`, init-service managers, schedulers, PM2, and tmux expose only
+/// `/proc/net`, schedulers, PM2, and tmux expose only
 /// the daemon container's view in a restricted PID namespace. Keep them out
 /// of a host topology rather than relabeling container-local evidence.
 pub(crate) fn collect_host_scoped_runtime_providers(
@@ -247,10 +260,6 @@ pub(crate) fn collect_host_scoped_runtime_providers(
             (
                 RuntimeProviderKind::Network,
                 "Network listener discovery omitted because the daemon runs in a restricted PID namespace",
-            ),
-            (
-                RuntimeProviderKind::Systemd,
-                "systemd discovery omitted because the daemon runs in a restricted PID namespace",
             ),
             (
                 RuntimeProviderKind::ScheduledJob,
@@ -274,12 +283,31 @@ pub(crate) fn collect_host_scoped_runtime_providers(
         return;
     }
 
-    let (nodes, edges, diagnostics) = collection.parts_mut();
+    let (nodes, _, diagnostics) = collection.parts_mut();
     collect_network_listeners(nodes, diagnostics);
-    collect_systemd_services(nodes, edges, diagnostics);
     collect_scheduled_jobs(nodes, diagnostics);
     collect_pm2_apps(nodes, diagnostics);
     collect_tmux_sessions(nodes, diagnostics);
+}
+
+/// systemd's unit graph is independently scheduled so its relationship facts
+/// have their own state and revision.  This does not add a command: it keeps
+/// the existing fixed, read-only `systemctl` collector and its diagnostics.
+fn collect_systemd_runtime_provider(
+    pid_namespace: PidNamespaceScope,
+    collection: &mut ProviderCollection,
+) {
+    if pid_namespace.is_restricted() {
+        collection.push_diagnostic(ProviderDiagnostic::new(
+            RuntimeProviderKind::Systemd,
+            DiagnosticSeverity::Info,
+            "systemd discovery omitted because the daemon runs in a restricted PID namespace",
+        ));
+        return;
+    }
+
+    let (nodes, edges, diagnostics) = collection.parts_mut();
+    collect_systemd_services(nodes, edges, diagnostics);
 }
 
 fn local_hostname() -> String {
@@ -326,7 +354,6 @@ mod tests {
         assert!(edges.is_empty());
         for provider in [
             RuntimeProviderKind::Network,
-            RuntimeProviderKind::Systemd,
             RuntimeProviderKind::ScheduledJob,
             RuntimeProviderKind::Pm2,
             RuntimeProviderKind::Tmux,
@@ -335,6 +362,28 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.provider == provider));
         }
+    }
+
+    #[test]
+    fn restricted_namespace_keeps_systemd_as_a_distinct_disabled_slot() {
+        let mut host = ProviderCollection::default();
+        collect_host_scoped_runtime_providers(PidNamespaceScope::Restricted, &mut host);
+        let (_, _, host_diagnostics) = host.into_parts();
+        assert!(host_diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.provider != RuntimeProviderKind::Systemd));
+
+        let mut systemd = ProviderCollection::default();
+        collect_systemd_runtime_provider(PidNamespaceScope::Restricted, &mut systemd);
+        systemd.set_state(StaticProviderSlot::Systemd, ProviderStateKind::Disabled);
+        assert!(systemd.states().iter().any(|state| {
+            state.slot == StaticProviderSlot::Systemd && state.state == ProviderStateKind::Disabled
+        }));
+        let (_, _, systemd_diagnostics) = systemd.into_parts();
+        assert!(systemd_diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::Systemd
+                && diagnostic.message.contains("restricted PID namespace")
+        }));
     }
 
     #[test]
@@ -360,6 +409,7 @@ mod tests {
             [
                 StaticProviderSlot::NetworkInfrastructure,
                 StaticProviderSlot::HostScoped,
+                StaticProviderSlot::Systemd,
                 StaticProviderSlot::PythonProcesses,
                 StaticProviderSlot::NativeProcesses,
                 StaticProviderSlot::ProjectNpm,
