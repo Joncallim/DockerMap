@@ -7,6 +7,7 @@
 
 use crate::{
     docker_collector::DockerCollector,
+    docker_events::{DockerEventJournal, DockerEventRetention, ParsedDockerEvent},
     provider_contract::ProviderCollection,
     providers::systemd::{
         SYSTEMD_EVIDENCE_KIND_MARKER, SYSTEMD_EVIDENCE_PART_OF, SYSTEMD_EVIDENCE_REQUIRES,
@@ -89,6 +90,10 @@ struct ObservedHistoryCache {
     next_sequence: u64,
     baseline: Option<ObservedContainerInventory>,
     events: VecDeque<ObservedChangeEvent>,
+    /// Docker stream observations remain a distinct internal evidence source
+    /// until their public contract is reviewed. Replacing this entire cache on
+    /// a source transition also clears its replay cursor and dedupe horizon.
+    docker_events: DockerEventJournal,
 }
 
 impl ObservedHistoryCache {
@@ -98,6 +103,7 @@ impl ObservedHistoryCache {
             next_sequence: 0,
             baseline: None,
             events: VecDeque::new(),
+            docker_events: DockerEventJournal::default(),
         }
     }
 
@@ -199,6 +205,19 @@ impl ObservedHistoryCache {
             events: self.events.iter().rev().cloned().collect(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DockerEventSourceContext {
+    pub(crate) source_generation: u64,
+    pub(crate) since_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DockerEventApply {
+    Retained,
+    Duplicate,
+    StaleSource,
 }
 
 /// Per-process, opaque revision source. The boot value comes from the OS CSPRNG
@@ -578,6 +597,50 @@ pub(crate) async fn refresh_cache(state: &AppState) {
     if mode == RuntimeMode::Docker {
         let due = claim_due_provider_slots(state, monotonic_now()).await;
         spawn_provider_slots(state.clone(), snapshot, mode, source_generation, due);
+    }
+}
+
+/// Return the current live generation and its bounded replay cursor. Mock mode
+/// has no Docker-event authority and therefore produces no stream context.
+pub(crate) async fn docker_event_source_context(
+    state: &AppState,
+    now_seconds: u64,
+) -> Option<DockerEventSourceContext> {
+    let cache = state.cache.read().await;
+    (cache.health.mode == RuntimeMode::Docker).then(|| DockerEventSourceContext {
+        source_generation: cache.source_generation,
+        since_seconds: cache
+            .observed_history
+            .docker_events
+            .replay_since_seconds(now_seconds),
+    })
+}
+
+/// Retain only against the exact live source generation captured when this
+/// stream was opened. The revision values are read under the same cache lock,
+/// so an accepted event cannot mix anchors from two publications.
+pub(crate) async fn retain_docker_event(
+    state: &AppState,
+    context: &DockerEventSourceContext,
+    event: ParsedDockerEvent,
+) -> DockerEventApply {
+    let mut cache = state.cache.write().await;
+    if cache.health.mode != RuntimeMode::Docker
+        || cache.source_generation != context.source_generation
+    {
+        return DockerEventApply::StaleSource;
+    }
+    let model_revision = cache.snapshot.model_revision.clone();
+    let observation_revision = cache.docker_observation_token();
+    match cache.observed_history.docker_events.retain(
+        event,
+        context.source_generation,
+        &model_revision,
+        &observation_revision,
+    ) {
+        DockerEventRetention::Retained => DockerEventApply::Retained,
+        DockerEventRetention::Duplicate => DockerEventApply::Duplicate,
+        DockerEventRetention::Rejected => DockerEventApply::StaleSource,
     }
 }
 
@@ -1276,7 +1339,9 @@ fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
 #[cfg(test)]
 mod scheduler_tests {
     use super::*;
+    use crate::docker_events::{parse_docker_event, DockerEventEvidenceSource};
     use crate::provider_contract::ProviderDiagnostic;
+    use bollard::models::{EventActor, EventMessage, EventMessageTypeEnum};
     use dockermap_core::{
         mock_snapshot, ComposeMountKind, ContainerMount, HealthState, RuntimeMapNode,
         RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
@@ -2725,6 +2790,103 @@ mod scheduler_tests {
         assert!(
             docker.events.is_empty(),
             "first Docker cache after reset is baseline only"
+        );
+    }
+
+    #[tokio::test]
+    async fn docker_event_retention_is_generation_bound_reset_and_not_snapshot_relabelled() {
+        const NOW_SECONDS: u64 = 1_800_000_000;
+        const RAW_CONTAINER_ID: &str =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let snapshot = mock_snapshot();
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(snapshot.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(snapshot.clone())).await;
+        let context = docker_event_source_context(&state, NOW_SECONDS)
+            .await
+            .expect("Docker source has event authority");
+        let event = parse_docker_event(
+            EventMessage {
+                typ: Some(EventMessageTypeEnum::CONTAINER),
+                action: Some("restart".into()),
+                actor: Some(EventActor {
+                    id: Some(RAW_CONTAINER_ID.into()),
+                    attributes: Some(std::collections::HashMap::from([
+                        ("name".into(), "/private/restart-name".into()),
+                        ("exitCode".into(), "private-exit-text".into()),
+                    ])),
+                }),
+                time: Some(NOW_SECONDS as i64),
+                time_nano: Some((NOW_SECONDS * 1_000_000_000 + 42) as i64),
+                ..Default::default()
+            },
+            NOW_SECONDS * 1_000,
+        )
+        .expect("controlled event parses");
+
+        assert_eq!(
+            retain_docker_event(&state, &context, event.clone()).await,
+            DockerEventApply::Retained
+        );
+        let cache = state.cache.read().await;
+        assert!(
+            cache.observed_history_response().events.is_empty(),
+            "Docker stream events must not be relabelled as snapshot deltas"
+        );
+        let retained = cache.observed_history.docker_events.retained();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(
+            retained[0].source,
+            DockerEventEvidenceSource::DockerEventStream
+        );
+        assert_eq!(retained[0].source_generation, context.source_generation);
+        assert_eq!(
+            retained[0].anchor_model_revision,
+            cache.snapshot.model_revision
+        );
+        assert_eq!(
+            retained[0].anchor_observation_revision,
+            cache.docker_observation_token()
+        );
+        let retained_debug = format!("{:?}", retained[0]);
+        for forbidden in [
+            RAW_CONTAINER_ID,
+            "/private/restart-name",
+            "private-exit-text",
+        ] {
+            assert!(!retained_debug.contains(forbidden));
+        }
+        drop(cache);
+
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        assert!(docker_event_source_context(&state, NOW_SECONDS)
+            .await
+            .is_none());
+        assert!(state
+            .cache
+            .read()
+            .await
+            .observed_history
+            .docker_events
+            .retained()
+            .is_empty());
+        assert_eq!(
+            retain_docker_event(&state, &context, event.clone()).await,
+            DockerEventApply::StaleSource
+        );
+
+        publish_docker_snapshot_cache(&state, docker_cache(snapshot)).await;
+        let next_context = docker_event_source_context(&state, NOW_SECONDS)
+            .await
+            .expect("recovered Docker source has a new event generation");
+        assert_ne!(next_context.source_generation, context.source_generation);
+        assert_eq!(
+            retain_docker_event(&state, &next_context, event).await,
+            DockerEventApply::Retained,
+            "a source reset clears the prior generation's dedupe state"
         );
     }
 
