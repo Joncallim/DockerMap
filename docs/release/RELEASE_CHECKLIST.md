@@ -77,11 +77,15 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 
 ## Follow-up evidence and product work
 
-- [ ] Capture isolated unfiltered live-Docker evidence for current resource
-  telemetry. It must demonstrate the exact finite stats authority, current-only
-  expiry, bounded request/concurrency behavior, and fixture cleanup/resource
-  budget. The normal labelled live-Docker harness cannot supply this evidence:
-  its label scope correctly denies every stats request.
+- [x] Capture isolated unfiltered live-Docker evidence for current resource
+  telemetry. The focused exact dual-opt-in proof records authenticated finite
+  stats authority, current-only 16-row/8-second-expiry publication,
+  Docker-to-mock reset, and owned-fixture cleanup. Deterministic daemon tests
+  cover the two-request and 750-ms limits. The normal labelled live-Docker
+  harness cannot supply this evidence because its label scope correctly denies
+  every stats request. At #247's integration head the focused proof passed;
+  the separate normal live browser suite has an unrelated Service Detail
+  failure and remains an unverified release gate.
 
 - [x] Add provider-specific redaction fixtures for systemd, tmux, npm/package metadata,
   native process inspection, reverse-proxy config, and DNS collectors.
