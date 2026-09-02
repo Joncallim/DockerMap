@@ -85,6 +85,42 @@
           "freshness": "fresh"
         }
       ]
+    },
+    {
+      "id": "finding_docker_repeated_container_died_events_docker_container_ddddddddddddddddddddddddddddddd--249bd4907c9ebee596f254dc5635c27837d2f00a6c3ed32794af0237fc0fbde0",
+      "ruleId": "docker.repeated_container_died_events",
+      "severity": "advisory",
+      "summary": "A Docker container had three observed die events within five minutes.",
+      "recommendation": "Review the container's recent configuration and logs to determine whether the repeated exits are expected.",
+      "subjectRef": "docker_container_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "targetRef": "docker_event_stream",
+      "evidenceRefs": [],
+      "temporalEvidenceRefs": [
+        {
+          "eventId": "docker_event_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "source": "docker_event_stream",
+          "kind": "container_died",
+          "sourceOccurredAtMs": 1710000000000,
+          "anchorModelRevision": "fixture-model-anchor-a",
+          "anchorObservationRevision": "fixture-observation-anchor-a"
+        },
+        {
+          "eventId": "docker_event_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "source": "docker_event_stream",
+          "kind": "container_died",
+          "sourceOccurredAtMs": 1710000100000,
+          "anchorModelRevision": "fixture-model-anchor-b",
+          "anchorObservationRevision": "fixture-observation-anchor-b"
+        },
+        {
+          "eventId": "docker_event_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "source": "docker_event_stream",
+          "kind": "container_died",
+          "sourceOccurredAtMs": 1710000200000,
+          "anchorModelRevision": "fixture-model-anchor-c",
+          "anchorObservationRevision": "fixture-observation-anchor-c"
+        }
+      ]
     }
   ]
 }

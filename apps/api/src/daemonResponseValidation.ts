@@ -1,4 +1,5 @@
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import { createHash } from "node:crypto";
 import {
   RUST_RESPONSE_SCHEMAS,
   type ProviderSlot,
@@ -64,6 +65,12 @@ const INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION = "Review whether the host-po
 const DOCKER_DAEMON_STATE_FINDING_RULE = "docker.daemon_state_bind_mount";
 const DOCKER_DAEMON_STATE_FINDING_SUMMARY = "A container has Docker daemon state access that may provide Docker daemon API authority.";
 const DOCKER_DAEMON_STATE_FINDING_RECOMMENDATION = "Review whether this container requires Docker daemon API authority.";
+const REPEATED_CONTAINER_DIED_EVENTS_FINDING_RULE = "docker.repeated_container_died_events";
+const REPEATED_CONTAINER_DIED_EVENTS_FINDING_SUMMARY = "A Docker container had three observed die events within five minutes.";
+const REPEATED_CONTAINER_DIED_EVENTS_RECOMMENDATION = "Review the container's recent configuration and logs to determine whether the repeated exits are expected.";
+const REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS = 300_000;
+const OPAQUE_DOCKER_CONTAINER_ID = /^docker_container_[0-9a-f]{64}$/;
+const OPAQUE_DOCKER_EVENT_ID = /^docker_event_[0-9a-f]{64}$/;
 
 // Version-one evidence is intentionally a discriminated Docker observation,
 // not a generic provenance bag. JSON Schema owns each field's closed enum;
@@ -206,6 +213,20 @@ function hasCoherentFindings(payload: unknown): boolean {
   return findings.every((candidate) => {
     if (!candidate || typeof candidate !== "object") return false;
     const finding = candidate as Record<string, unknown>;
+    if (finding.ruleId === REPEATED_CONTAINER_DIED_EVENTS_FINDING_RULE) return finding.severity === "advisory"
+      && finding.summary === REPEATED_CONTAINER_DIED_EVENTS_FINDING_SUMMARY
+      && finding.recommendation === REPEATED_CONTAINER_DIED_EVENTS_RECOMMENDATION
+      && typeof finding.id === "string"
+      // This is a temporal-only opaque subject, not a runtime-map entity that
+      // a browser may resolve or link to. The fixed stream target says only
+      // where the three retained observations came from.
+      && typeof finding.subjectRef === "string"
+      && OPAQUE_DOCKER_CONTAINER_ID.test(finding.subjectRef)
+      && finding.id === `finding_docker_repeated_container_died_events_${collisionResistantIdComponent(finding.subjectRef)}`
+      && finding.targetRef === "docker_event_stream"
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 0
+      && hasCoherentRepeatedContainerDiedEvidence(finding.temporalEvidenceRefs);
     if (finding.ruleId === SYSTEMD_REQUIRES_FINDING_RULE) return finding.severity === "warning"
       && finding.summary === SYSTEMD_REQUIRES_FINDING_SUMMARY
       && finding.recommendation === SYSTEMD_REQUIRES_FINDING_RECOMMENDATION
@@ -218,6 +239,7 @@ function hasCoherentFindings(payload: unknown): boolean {
       && finding.subjectRef !== finding.targetRef
       && Array.isArray(finding.evidenceRefs)
       && finding.evidenceRefs.length === 1
+      && finding.temporalEvidenceRefs === undefined
       && (() => {
         const candidateEvidence = finding.evidenceRefs[0];
         if (!candidateEvidence || typeof candidateEvidence !== "object") return false;
@@ -240,6 +262,7 @@ function hasCoherentFindings(payload: unknown): boolean {
       && finding.targetRef === "host_risk_docker_daemon_state"
       && Array.isArray(finding.evidenceRefs)
       && finding.evidenceRefs.length === 1
+      && finding.temporalEvidenceRefs === undefined
       && (() => {
         const candidateEvidence = finding.evidenceRefs[0];
         if (!candidateEvidence || typeof candidateEvidence !== "object") return false;
@@ -267,6 +290,7 @@ function hasCoherentFindings(payload: unknown): boolean {
       && finding.targetRef.startsWith("docker_network_")
       && Array.isArray(finding.evidenceRefs)
       && finding.evidenceRefs.length === 2
+      && finding.temporalEvidenceRefs === undefined
       && (() => {
         const [membership, port] = finding.evidenceRefs;
         if (!membership || typeof membership !== "object" || !port || typeof port !== "object") return false;
@@ -292,6 +316,67 @@ function hasCoherentFindings(payload: unknown): boolean {
           && portEvidence.providerRevision !== String(portEvidence.collectedAt);
       })();
   });
+}
+
+// Keep this byte-for-byte aligned with core's `collision_resistant_id_component`.
+// Temporal subjects are currently ASCII-only digests, but retaining the complete
+// routine here prevents a future vocabulary expansion from weakening the
+// browser boundary through a readable-slug collision.
+function collisionResistantIdComponent(value: string): string {
+  let slug = "";
+  let emittedSeparator = false;
+  for (const character of value) {
+    if (/^[A-Za-z0-9_.-]$/.test(character)) {
+      slug += character;
+      emittedSeparator = false;
+    } else if (!emittedSeparator) {
+      slug += "-";
+      emittedSeparator = true;
+    }
+  }
+  const trimmed = slug.replace(/^-+|-+$/g, "");
+  const readable = trimmed.length === 0 ? "identity" : Array.from(trimmed).slice(0, 48).join("");
+  const digest = createHash("sha256").update(value, "utf8").digest("hex");
+  return `${readable}--${digest}`;
+}
+
+function hasCoherentRepeatedContainerDiedEvidence(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length !== 3) return false;
+
+  const evidence = value as Record<string, unknown>[];
+  const eventIds = new Set<string>();
+  for (const reference of evidence) {
+    if (!reference
+      || typeof reference.eventId !== "string"
+      || !OPAQUE_DOCKER_EVENT_ID.test(reference.eventId)
+      || eventIds.has(reference.eventId)
+      || reference.source !== "docker_event_stream"
+      || reference.kind !== "container_died"
+      || typeof reference.sourceOccurredAtMs !== "number"
+      || !Number.isSafeInteger(reference.sourceOccurredAtMs)
+      || reference.sourceOccurredAtMs < 0
+      || !isBoundedObservedEventRevision(reference.anchorModelRevision)
+      || !isBoundedObservedEventRevision(reference.anchorObservationRevision)) {
+      return false;
+    }
+    eventIds.add(reference.eventId);
+  }
+  const sourceTimes = evidence.map((reference) => reference.sourceOccurredAtMs as number);
+  const orderedEventIds = evidence.map((reference) => reference.eventId as string);
+
+  // Core orders this fixed three-observation window by source time and then
+  // opaque event identity. A Finding response carries no runtime subject in
+  // these refs, deliberately preventing a temporal observation from being
+  // promoted into a current container link.
+  if (!evidence.slice(1).every((_, index) => {
+    const currentTime = sourceTimes[index + 1];
+    const previousTime = sourceTimes[index];
+    return currentTime > previousTime
+      || (currentTime === previousTime && orderedEventIds[index + 1] > orderedEventIds[index]);
+  })) return false;
+
+  return sourceTimes[2] - sourceTimes[0]
+    <= REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS;
 }
 
 // History is a deliberately narrow observation envelope. In particular mock
