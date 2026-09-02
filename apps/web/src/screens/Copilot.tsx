@@ -72,7 +72,7 @@ export default function Copilot() {
       </div>
 
       {result && (
-        <Panel title={result.headline} icon="spark">
+        <Panel title={result.headline} icon="spark" className="copilot-answer-panel">
           <div className="copilot-answer">
             {result.body.map((line, i) => (
               <p key={i}>{line}</p>
