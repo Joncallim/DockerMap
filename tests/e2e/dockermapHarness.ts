@@ -164,7 +164,7 @@ export async function startProductionImageStack(options: { liveDocker?: boolean 
     projectName: fixture?.projectName ?? null,
     controlContainerName: fixture?.controlContainerName ?? null,
     productionSocketReadOnly: fixture ? productionSocketIsReadOnly(docker, container) : undefined,
-    productionValidationDiagnostics: () => dockerOutput(docker, ["logs", "--tail", "100", container], repoRoot)
+    productionValidationDiagnostics: () => dockerOutputIncludingStderr(docker, ["logs", "--tail", "100", container], repoRoot)
       .split("\n")
       .flatMap((line) => {
         const match = line.match(/\[DockerMap\] daemon response validation rejected \/daemon\/runtime\/map: (schema|provider_state_vector|provider_freshness|runtime_evidence|findings)/);
@@ -898,6 +898,16 @@ function dockerOutput(docker: string[], args: string[], cwd: string) {
   const result = spawnSync(docker[0], [...docker.slice(1), ...args], { cwd, encoding: "utf8", timeout: 120_000 });
   if (result.status !== 0) throw new Error(`Docker command failed: ${docker.join(" ")} ${args.join(" ")}\n${result.stderr}`);
   return result.stdout;
+}
+
+// `docker logs` preserves container stdout and stderr on the corresponding
+// client streams. The production API deliberately writes validation labels to
+// stderr, so the test-only diagnostic reader must combine both. Its caller
+// still filters the result to a closed allowlist before reporting anything.
+function dockerOutputIncludingStderr(docker: string[], args: string[], cwd: string) {
+  const result = spawnSync(docker[0], [...docker.slice(1), ...args], { cwd, encoding: "utf8", timeout: 120_000 });
+  if (result.status !== 0) throw new Error(`Docker command failed: ${docker.join(" ")} ${args.join(" ")}\n${result.stderr}`);
+  return `${result.stdout}${result.stderr}`;
 }
 
 /** Select an unused /24 from a dedicated private range for an ephemeral E2E network. */
