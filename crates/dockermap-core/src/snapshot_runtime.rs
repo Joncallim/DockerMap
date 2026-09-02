@@ -42,6 +42,39 @@ pub fn derive_images(snapshot: &DockerSnapshot) -> Vec<ImageRecord> {
         .collect()
 }
 
+/// Return whether a bounded Docker collector port string proves that Docker
+/// bound a nonzero host port. The collector publishes `private/protocol` for
+/// a container-only listener and `host:private/protocol` for a host binding.
+/// Keep this discriminant at the derivation boundary so publication evidence
+/// never attests the former.
+pub(crate) fn is_host_published_docker_port(port: &str) -> bool {
+    let Some((host, private_and_protocol)) = port.split_once(':') else {
+        return false;
+    };
+    if host.is_empty()
+        || !host.bytes().all(|byte| byte.is_ascii_digit())
+        || host
+            .parse::<u16>()
+            .ok()
+            .filter(|value| *value > 0)
+            .is_none()
+        || private_and_protocol.contains(':')
+    {
+        return false;
+    }
+    let Some((private, protocol)) = private_and_protocol.split_once('/') else {
+        return false;
+    };
+    !private.is_empty()
+        && private.bytes().all(|byte| byte.is_ascii_digit())
+        && private
+            .parse::<u16>()
+            .ok()
+            .filter(|value| *value > 0)
+            .is_some()
+        && matches!(protocol, "tcp" | "udp" | "sctp")
+}
+
 pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -493,13 +526,22 @@ pub fn derive_runtime_map(
             });
             let source = runtime_container_id(container);
             edges.push(RuntimeMapEdge {
-                evidence_refs: vec![docker_runtime_evidence(
-                    snapshot,
-                    &source,
-                    &listener_id,
-                    RuntimeEvidenceKind::DockerPortPublication,
-                    evidence_provider_revision,
-                )],
+                // A container-only port remains useful topology, but it is
+                // not a host publication. Findings rely on this attestation,
+                // so emit it only when the bounded record proves a nonzero
+                // host binding.
+                evidence_refs: is_host_published_docker_port(port)
+                    .then(|| {
+                        docker_runtime_evidence(
+                            snapshot,
+                            &source,
+                            &listener_id,
+                            RuntimeEvidenceKind::DockerPortPublication,
+                            evidence_provider_revision,
+                        )
+                    })
+                    .into_iter()
+                    .collect(),
                 source,
                 target: listener_id,
                 relationship: RuntimeRelationshipKind::Exposes,
