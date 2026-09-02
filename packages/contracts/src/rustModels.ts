@@ -626,8 +626,8 @@ export interface ObservedChangeHistoryResponse {
   source: RuntimeMode;
 }
 /**
- * One observed inventory delta. `containerId` is the collision-resistant
- * Docker runtime-node identity, never a raw Docker ID or container name.
+ * One observed inventory delta. `containerId` is an opaque digest-derived
+ * history identity, never a raw Docker ID, readable ID fragment, or name.
  */
 export interface ObservedChangeEvent {
   containerId: string;

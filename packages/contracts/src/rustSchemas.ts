@@ -2515,7 +2515,7 @@ export const RUST_RESPONSE_SCHEMAS = {
   "$defs": {
     "ObservedChangeEvent": {
       "additionalProperties": false,
-      "description": "One observed inventory delta. `containerId` is the collision-resistant\nDocker runtime-node identity, never a raw Docker ID or container name.",
+      "description": "One observed inventory delta. `containerId` is an opaque digest-derived\nhistory identity, never a raw Docker ID, readable ID fragment, or name.",
       "properties": {
         "containerId": {
           "maxLength": 192,
@@ -5163,7 +5163,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
   "$defs": {
     "ObservedChangeEvent": {
       "additionalProperties": false,
-      "description": "One observed inventory delta. `containerId` is the collision-resistant\nDocker runtime-node identity, never a raw Docker ID or container name.",
+      "description": "One observed inventory delta. `containerId` is an opaque digest-derived\nhistory identity, never a raw Docker ID, readable ID fragment, or name.",
       "properties": {
         "containerId": {
           "maxLength": 192,
