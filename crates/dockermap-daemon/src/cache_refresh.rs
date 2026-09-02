@@ -1339,16 +1339,171 @@ fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
 #[cfg(test)]
 mod scheduler_tests {
     use super::*;
-    use crate::docker_events::{parse_docker_event, DockerEventEvidenceSource};
+    use crate::docker_events::{
+        docker_event_loop_with_connector, parse_docker_event, DockerEventConnector,
+        DockerEventEvidenceSource, DockerEventStream,
+    };
     use crate::provider_contract::ProviderDiagnostic;
     use bollard::models::{EventActor, EventMessage, EventMessageTypeEnum};
     use dockermap_core::{
         mock_snapshot, ComposeMountKind, ContainerMount, HealthState, RuntimeMapNode,
         RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
     };
+    use futures_util::{stream, Stream};
     use std::{
-        collections::BTreeMap as TestBTreeMap, fs, os::unix::fs::PermissionsExt, process::Command,
+        collections::{BTreeMap as TestBTreeMap, VecDeque as TestVecDeque},
+        fs,
+        os::unix::fs::PermissionsExt,
+        pin::Pin,
+        process::Command,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Mutex as StdMutex,
+        },
+        task::{Context, Poll},
     };
+
+    enum TestEventStreamScript {
+        Items(Vec<Result<EventMessage, ()>>),
+        Pending,
+        MalformedFlood,
+    }
+
+    struct TestEventConnectorState {
+        scripts: TestVecDeque<TestEventStreamScript>,
+        since_seconds: Vec<u64>,
+        connected_at: Vec<tokio::time::Instant>,
+    }
+
+    #[derive(Clone)]
+    struct TestEventConnector {
+        state: Arc<StdMutex<TestEventConnectorState>>,
+        active: Arc<AtomicUsize>,
+        max_active: Arc<AtomicUsize>,
+    }
+
+    impl TestEventConnector {
+        fn new(scripts: Vec<TestEventStreamScript>) -> Self {
+            Self {
+                state: Arc::new(StdMutex::new(TestEventConnectorState {
+                    scripts: scripts.into(),
+                    since_seconds: Vec::new(),
+                    connected_at: Vec::new(),
+                })),
+                active: Arc::new(AtomicUsize::new(0)),
+                max_active: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn connection_count(&self) -> usize {
+            self.state.lock().unwrap().since_seconds.len()
+        }
+
+        fn since_seconds(&self) -> Vec<u64> {
+            self.state.lock().unwrap().since_seconds.clone()
+        }
+
+        fn connected_at(&self) -> Vec<tokio::time::Instant> {
+            self.state.lock().unwrap().connected_at.clone()
+        }
+
+        fn active(&self) -> usize {
+            self.active.load(Ordering::SeqCst)
+        }
+
+        fn max_active(&self) -> usize {
+            self.max_active.load(Ordering::SeqCst)
+        }
+    }
+
+    impl DockerEventConnector for TestEventConnector {
+        fn connect(&self, since_seconds: u64) -> Result<DockerEventStream, ()> {
+            let script = {
+                let mut state = self.state.lock().unwrap();
+                state.since_seconds.push(since_seconds);
+                state.connected_at.push(tokio::time::Instant::now());
+                state
+                    .scripts
+                    .pop_front()
+                    .unwrap_or(TestEventStreamScript::Pending)
+            };
+            let inner: DockerEventStream = match script {
+                TestEventStreamScript::Items(items) => Box::pin(stream::iter(items)),
+                TestEventStreamScript::Pending => Box::pin(stream::pending()),
+                TestEventStreamScript::MalformedFlood => {
+                    Box::pin(stream::repeat(Ok(EventMessage::default())))
+                }
+            };
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            Ok(Box::pin(TrackedEventStream {
+                inner,
+                active: Arc::clone(&self.active),
+            }))
+        }
+    }
+
+    struct TrackedEventStream {
+        inner: DockerEventStream,
+        active: Arc<AtomicUsize>,
+    }
+
+    impl Stream for TrackedEventStream {
+        type Item = Result<EventMessage, ()>;
+
+        fn poll_next(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+        ) -> Poll<Option<Self::Item>> {
+            self.inner.as_mut().poll_next(context)
+        }
+    }
+
+    impl Drop for TrackedEventStream {
+        fn drop(&mut self) {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    async fn wait_for_event_connections(connector: &TestEventConnector, expected: usize) {
+        for _ in 0..100 {
+            if connector.connection_count() >= expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!(
+            "expected {expected} event connections, got {}",
+            connector.connection_count()
+        );
+    }
+
+    async fn wait_for_event_streams_to_close(connector: &TestEventConnector) {
+        for _ in 0..100 {
+            if connector.active() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("event stream stayed active after source cancellation");
+    }
+
+    fn test_docker_event(action: &str, source_seconds: u64) -> EventMessage {
+        EventMessage {
+            typ: Some(EventMessageTypeEnum::CONTAINER),
+            action: Some(action.into()),
+            actor: Some(EventActor {
+                id: Some("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into()),
+                attributes: Some(std::collections::HashMap::from([(
+                    "name".into(),
+                    "/private/supervisor-name".into(),
+                )])),
+            }),
+            time: Some(source_seconds as i64),
+            time_nano: Some((source_seconds * 1_000_000_000 + 42) as i64),
+            ..Default::default()
+        }
+    }
 
     // Before Systemd was extracted into its own independently scheduled slot,
     // every two-second pass ran these five aggregate collection bundles.
@@ -2888,6 +3043,148 @@ mod scheduler_tests {
             DockerEventApply::Retained,
             "a source reset clears the prior generation's dedupe state"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn docker_event_supervisor_reconnects_once_at_a_time_and_resets_on_source_change() {
+        let source_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let snapshot = mock_snapshot();
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(snapshot.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(snapshot.clone())).await;
+        let old_context = docker_event_source_context(&state, source_seconds)
+            .await
+            .expect("controlled Docker source");
+        let connector = TestEventConnector::new(vec![
+            TestEventStreamScript::Items(vec![Ok(test_docker_event("start", source_seconds))]),
+            TestEventStreamScript::Items(vec![Err(())]),
+            TestEventStreamScript::Pending,
+            TestEventStreamScript::Pending,
+        ]);
+        let task = tokio::spawn(docker_event_loop_with_connector(
+            state.clone(),
+            connector.clone(),
+        ));
+
+        wait_for_event_connections(&connector, 1).await;
+        wait_for_event_streams_to_close(&connector).await;
+        tokio::time::advance(Duration::from_millis(250)).await;
+        wait_for_event_connections(&connector, 2).await;
+        wait_for_event_streams_to_close(&connector).await;
+        tokio::time::advance(Duration::from_millis(500)).await;
+        wait_for_event_connections(&connector, 3).await;
+        let connected_at = connector.connected_at();
+        assert_eq!(
+            connected_at[1].duration_since(connected_at[0]),
+            Duration::from_millis(250),
+            "a retained event resets the first reconnect delay"
+        );
+        assert_eq!(
+            connected_at[2].duration_since(connected_at[1]),
+            Duration::from_millis(500),
+            "an immediately failed replay attempt advances backoff"
+        );
+        let since = connector.since_seconds();
+        assert_eq!(since[0], source_seconds - 300);
+        assert_eq!(
+            since[1], source_seconds,
+            "inclusive reconnect cursor advances to the accepted source second"
+        );
+        assert_eq!(since[2], source_seconds);
+        assert_eq!(connector.active(), 1);
+        assert_eq!(connector.max_active(), 1);
+
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let stale = parse_docker_event(
+            test_docker_event("stop", source_seconds),
+            source_seconds * 1_000,
+        )
+        .unwrap();
+        assert_eq!(
+            retain_docker_event(&state, &old_context, stale).await,
+            DockerEventApply::StaleSource,
+            "an old stream generation cannot publish after the mode flip"
+        );
+        tokio::time::advance(Duration::from_millis(250)).await;
+        wait_for_event_streams_to_close(&connector).await;
+        let connections_during_mock = connector.connection_count();
+        assert!(state
+            .cache
+            .read()
+            .await
+            .observed_history
+            .docker_events
+            .retained()
+            .is_empty());
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(connector.connection_count(), connections_during_mock);
+
+        publish_docker_snapshot_cache(&state, docker_cache(snapshot)).await;
+        tokio::time::advance(Duration::from_millis(250)).await;
+        wait_for_event_connections(&connector, connections_during_mock + 1).await;
+        let recovered_context = docker_event_source_context(&state, source_seconds)
+            .await
+            .expect("recovered Docker source");
+        assert_ne!(
+            recovered_context.source_generation,
+            old_context.source_generation
+        );
+        let recovered_since = connector.since_seconds();
+        assert_eq!(
+            recovered_since[connections_during_mock],
+            source_seconds - 300,
+            "source reset discards the prior generation's replay cursor"
+        );
+        assert_eq!(connector.max_active(), 1);
+
+        task.abort();
+        let join_error = task
+            .await
+            .expect_err("supervisor aborts at daemon shutdown");
+        assert!(join_error.is_cancelled());
+        assert_eq!(
+            connector.active(),
+            0,
+            "task cancellation drops its live Docker stream"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn malformed_ready_stream_cannot_starve_source_generation_cancellation() {
+        let snapshot = mock_snapshot();
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(snapshot.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(snapshot)).await;
+        let connector = TestEventConnector::new(vec![TestEventStreamScript::MalformedFlood]);
+        let task = tokio::spawn(docker_event_loop_with_connector(
+            state.clone(),
+            connector.clone(),
+        ));
+        wait_for_event_connections(&connector, 1).await;
+        assert_eq!(connector.active(), 1);
+
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        tokio::time::advance(Duration::from_millis(250)).await;
+        wait_for_event_streams_to_close(&connector).await;
+        assert_eq!(
+            connector.connection_count(),
+            1,
+            "the mock generation must not create a replacement stream"
+        );
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
     }
 
     #[tokio::test]
