@@ -12,6 +12,7 @@ export const RUST_ROUTE_RESPONSE_SCHEMAS = {
   findings: "FindingsResponse",
   history: "ObservedChangeHistoryResponse",
   "observed-events": "ObservedDockerEventHistoryResponse",
+  "resource-telemetry": "ObservedResourceTelemetryResponse",
   containers: "ContainersResponse",
   container: "ContainerDetailResponse",
   images: "ImagesResponse",

@@ -1,0 +1,16 @@
+{
+  "source": "docker",
+  "collectionState": "fresh",
+  "currentModelRevision": "daemon-model-42",
+  "currentObservationRevision": "daemon-observation-42",
+  "samples": [
+    {
+      "containerId": "docker_container_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "cpuPercent": { "value": 40, "observedAtMs": 1710000000000, "expiresAtMs": 1710000008000 },
+      "memoryUsedBytes": { "value": 123, "observedAtMs": 1710000000000, "expiresAtMs": 1710000008000 },
+      "memoryLimitBytes": { "value": 456, "observedAtMs": 1710000000000, "expiresAtMs": 1710000008000 },
+      "networkRxBytesPerSecond": { "value": 500, "observedAtMs": 1710000000000, "expiresAtMs": 1710000008000 },
+      "networkTxBytesPerSecond": { "value": 750, "observedAtMs": 1710000000000, "expiresAtMs": 1710000008000 }
+    }
+  ]
+}
