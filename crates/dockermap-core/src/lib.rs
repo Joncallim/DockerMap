@@ -21,7 +21,8 @@ pub use logs::{
 };
 pub use models::*;
 pub use observed_history::{
-    observed_container_inventory, ObservedContainerInventory, MAX_OBSERVED_CHANGE_EVENTS,
+    observed_container_identity, observed_container_inventory, opaque_sha256_hex,
+    ObservedContainerInventory, MAX_OBSERVED_CHANGE_EVENTS,
 };
 pub use snapshot_runtime::{derive_graph, derive_images, derive_runtime_map};
 

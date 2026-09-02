@@ -5,6 +5,7 @@ mod config;
 mod daemon_api;
 mod docker_collector;
 mod docker_config;
+mod docker_events;
 mod pid_namespace;
 mod process_runner;
 mod provider_contract;
@@ -37,6 +38,7 @@ use docker_collector::{
     log_entry_id, log_tail_count, log_until_seconds, parse_depends_on_label,
     parse_timestamped_log_line, MAX_LOG_CURSOR_TAIL,
 };
+use docker_events::docker_event_loop;
 #[cfg(test)]
 use dockermap_core::mock_log_entries;
 #[cfg(test)]
@@ -137,6 +139,7 @@ async fn main() {
 
     refresh_cache(&state).await;
     tokio::spawn(refresh_loop(state.clone()));
+    tokio::spawn(docker_event_loop(state.clone()));
 
     let app = daemon_router(state, daemon_token);
     let listener = TcpListener::bind(address)
