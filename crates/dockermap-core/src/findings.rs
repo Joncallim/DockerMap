@@ -13,6 +13,13 @@ const INTERNAL_NETWORK_PORT_SUMMARY: &str =
     "A container on an internal Docker network also has a published host port.";
 const INTERNAL_NETWORK_PORT_RECOMMENDATION: &str =
     "Review whether the host-port publication is intended for this internal-network service.";
+const DOCKER_DAEMON_STATE_SUMMARY: &str =
+    "A container has Docker daemon state access that may provide Docker daemon API authority.";
+const DOCKER_DAEMON_STATE_RECOMMENDATION: &str =
+    "Review whether this container requires Docker daemon API authority.";
+const DOCKER_DAEMON_STATE_RISK_ID: &str = "host_risk_docker_daemon_state";
+const DOCKER_DAEMON_STATE_EVIDENCE_SUMMARY: &str =
+    "Docker reported a bind mount exposing Docker daemon state";
 
 /// Derive bounded, deterministic advisory findings from the already-public
 /// runtime topology. The rule intentionally fails closed: it acts only on one
@@ -37,6 +44,15 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
     for edge in &runtime_map.edges {
         if is_candidate_requires(edge) {
             *candidate_counts
+                .entry((edge.source.as_str(), edge.target.as_str()))
+                .or_default() += 1;
+        }
+    }
+
+    let mut daemon_state_counts = BTreeMap::<(&str, &str), usize>::new();
+    for edge in &runtime_map.edges {
+        if is_docker_daemon_state_shape(edge, &nodes) {
+            *daemon_state_counts
                 .entry((edge.source.as_str(), edge.target.as_str()))
                 .or_default() += 1;
         }
@@ -90,6 +106,27 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
     }
     for edge in &runtime_map.edges {
         let pair = (edge.source.as_str(), edge.target.as_str());
+        if daemon_state_counts.get(&pair) != Some(&1)
+            || !is_candidate_docker_daemon_state_bind_mount(edge, &nodes)
+        {
+            continue;
+        }
+        findings.push(Finding {
+            id: format!(
+                "finding_docker_daemon_state_bind_mount_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            rule_id: FindingRule::DockerDaemonStateBindMount,
+            severity: FindingSeverity::Warning,
+            summary: DOCKER_DAEMON_STATE_SUMMARY.into(),
+            recommendation: DOCKER_DAEMON_STATE_RECOMMENDATION.into(),
+            subject_ref: edge.source.clone(),
+            target_ref: edge.target.clone(),
+            evidence_refs: vec![edge.evidence_refs[0].clone()],
+        });
+    }
+    for edge in &runtime_map.edges {
+        let pair = (edge.source.as_str(), edge.target.as_str());
         if membership_counts.get(&pair) != Some(&1)
             || port_counts.get(edge.source.as_str()) != Some(&1)
             || !is_candidate_internal_network_membership(edge, &nodes)
@@ -128,6 +165,35 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
 
 fn is_docker_container(node: &crate::RuntimeMapNode) -> bool {
     node.provider == RuntimeProviderKind::Docker && node.kind == RuntimeNodeKind::Container
+}
+
+fn is_docker_daemon_state_risk(node: &crate::RuntimeMapNode) -> bool {
+    node.provider == RuntimeProviderKind::Docker
+        && node.kind == RuntimeNodeKind::HostRisk
+        && node.id == DOCKER_DAEMON_STATE_RISK_ID
+        && node.metadata.is_empty()
+}
+
+fn is_docker_daemon_state_shape<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.metadata.is_empty()
+        && edge.relationship == RuntimeRelationshipKind::ExposesDaemonState
+        && matches!(
+            (nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
+            (Some(source), Some(target))
+                if is_docker_container(source) && is_docker_daemon_state_risk(target)
+        )
+}
+
+fn is_candidate_docker_daemon_state_bind_mount<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    is_docker_daemon_state_shape(edge, nodes)
+        && is_fresh_docker_evidence(edge, RuntimeEvidenceKind::DockerDaemonStateBindMount)
+        && matches!(edge.evidence_refs.first(), Some(evidence) if evidence.summary == DOCKER_DAEMON_STATE_EVIDENCE_SUMMARY)
 }
 
 fn is_docker_network(node: &crate::RuntimeMapNode) -> bool {
@@ -398,6 +464,85 @@ mod tests {
             provider_slot: None,
             freshness: RuntimeEvidenceFreshness::Fresh,
         }
+    }
+
+    fn daemon_state_map() -> RuntimeMap {
+        let container = "docker_container_daemon_state";
+        let risk = DOCKER_DAEMON_STATE_RISK_ID;
+        RuntimeMap {
+            nodes: vec![
+                docker_node(
+                    container,
+                    RuntimeProviderKind::Docker,
+                    RuntimeNodeKind::Container,
+                    BTreeMap::new(),
+                ),
+                docker_node(
+                    risk,
+                    RuntimeProviderKind::Docker,
+                    RuntimeNodeKind::HostRisk,
+                    BTreeMap::new(),
+                ),
+            ],
+            edges: vec![RuntimeMapEdge {
+                source: container.into(),
+                target: risk.into(),
+                relationship: RuntimeRelationshipKind::ExposesDaemonState,
+                metadata: BTreeMap::new(),
+                evidence_refs: vec![RuntimeEvidenceRef {
+                    summary: DOCKER_DAEMON_STATE_EVIDENCE_SUMMARY.into(),
+                    ..docker_evidence(RuntimeEvidenceKind::DockerDaemonStateBindMount, container)
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn daemon_state_bind_mount_warning_carries_only_canonical_evidence() {
+        let input = daemon_state_map();
+        let findings = derive_findings(&input);
+        assert_eq!(findings.len(), 1);
+        let finding = &findings[0];
+        assert_eq!(finding.rule_id, FindingRule::DockerDaemonStateBindMount);
+        assert_eq!(finding.severity, FindingSeverity::Warning);
+        assert_eq!(finding.summary, DOCKER_DAEMON_STATE_SUMMARY);
+        assert_eq!(finding.recommendation, DOCKER_DAEMON_STATE_RECOMMENDATION);
+        assert_eq!(finding.target_ref, DOCKER_DAEMON_STATE_RISK_ID);
+        assert_eq!(finding.evidence_refs, input.edges[0].evidence_refs);
+        let encoded = serde_json::to_string(finding).unwrap();
+        for forbidden in ["/var/run/docker.sock", "readOnly", "mount-id"] {
+            assert!(!encoded.contains(forbidden), "finding leaked {forbidden}");
+        }
+    }
+
+    #[test]
+    fn daemon_state_bind_mount_warning_fails_closed() {
+        let mut stale = daemon_state_map();
+        stale.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
+        assert!(derive_findings(&stale).is_empty());
+
+        let mut duplicate = daemon_state_map();
+        duplicate.edges.push(duplicate.edges[0].clone());
+        assert!(derive_findings(&duplicate).is_empty());
+
+        let mut wrong_kind = daemon_state_map();
+        wrong_kind.edges[0].evidence_refs[0].kind = RuntimeEvidenceKind::DockerVolumeMount;
+        assert!(derive_findings(&wrong_kind).is_empty());
+
+        let mut missing = daemon_state_map();
+        missing.edges[0].evidence_refs.clear();
+        assert!(derive_findings(&missing).is_empty());
+
+        let mut collision = daemon_state_map();
+        collision.nodes.push(collision.nodes[1].clone());
+        assert!(derive_findings(&collision).is_empty());
+
+        let mut raw_metadata = daemon_state_map();
+        raw_metadata.edges[0]
+            .metadata
+            .insert("mountSource".into(), "/var/run/docker.sock".into());
+        assert!(derive_findings(&raw_metadata).is_empty());
     }
 
     fn internal_network_port_map() -> RuntimeMap {

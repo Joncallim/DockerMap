@@ -1130,8 +1130,8 @@ mod scheduler_tests {
     use super::*;
     use crate::provider_contract::ProviderDiagnostic;
     use dockermap_core::{
-        mock_snapshot, HealthState, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer,
-        RuntimeProviderKind,
+        mock_snapshot, ComposeMountKind, ContainerMount, HealthState, RuntimeMapNode,
+        RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
     };
     use std::{
         collections::BTreeMap as TestBTreeMap, fs, os::unix::fs::PermissionsExt, process::Command,
@@ -1334,6 +1334,46 @@ mod scheduler_tests {
             docker_finding.evidence_refs[1].kind,
             RuntimeEvidenceKind::DockerPortPublication
         );
+    }
+
+    #[test]
+    fn daemon_state_bind_mount_finding_is_cached_after_publication() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers[0].mounts = vec![ContainerMount {
+            id: "private-mount-id".into(),
+            kind: ComposeMountKind::Bind,
+            source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+            target: "/private/target".into(),
+            read_only: true,
+        }];
+        let mut cache = docker_cache(snapshot);
+        cache.rebuild_runtime_map();
+        cache.assign_revision();
+        let finding = cache
+            .findings
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id == dockermap_core::FindingRule::DockerDaemonStateBindMount
+            })
+            .expect("cached runtime map produces the daemon-state warning");
+        assert_eq!(finding.evidence_refs.len(), 1);
+        assert_eq!(
+            finding.evidence_refs[0].kind,
+            RuntimeEvidenceKind::DockerDaemonStateBindMount
+        );
+        let serialized = serde_json::to_string(finding).unwrap();
+        for forbidden in [
+            "DOCKERMAP_TEST_DAEMON_STATE",
+            "/private/target",
+            "private-mount-id",
+            "readOnly",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "cached finding leaked {forbidden}"
+            );
+        }
     }
 
     #[test]

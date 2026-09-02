@@ -1215,6 +1215,8 @@ pub enum FindingRule {
     SystemdRequiresTargetNotActive,
     #[serde(rename = "docker.internal_network_member_publishes_port")]
     DockerInternalNetworkMemberPublishesPort,
+    #[serde(rename = "docker.daemon_state_bind_mount")]
+    DockerDaemonStateBindMount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
