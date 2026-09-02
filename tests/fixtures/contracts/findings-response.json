@@ -85,6 +85,29 @@
           "freshness": "fresh"
         }
       ]
+    },
+    {
+      "id": "finding_docker_compose_declared_target_not_active_docker_container_compose_source-docker_container--bf87ab2e9b1b8b7f49304dbc1fa040e0bf4c561c8585b686be888110fb646715",
+      "ruleId": "docker.compose_declared_target_not_active",
+      "severity": "advisory",
+      "summary": "A running Docker Compose service declares a dependency whose container is not active.",
+      "recommendation": "Review the declared dependency and the target container state.",
+      "subjectRef": "docker_container_compose_source",
+      "targetRef": "docker_container_compose_target",
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "docker_compose_depends_on:docker_container_compose_source:docker_container_compose_target",
+          "provider": "docker",
+          "kind": "docker_compose_depends_on",
+          "assertionKind": "observed",
+          "summary": "Docker recorded Compose dependency declaration",
+          "subjectRef": "docker_container_compose_source",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-docker-observation",
+          "freshness": "fresh"
+        }
+      ]
     }
   ]
 }
