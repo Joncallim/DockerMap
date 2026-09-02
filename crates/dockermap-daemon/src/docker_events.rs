@@ -8,14 +8,18 @@
 
 use crate::{
     cache_refresh::{
-        docker_event_source_context, retain_docker_event, DockerEventApply,
-        DockerEventSourceContext,
+        docker_event_source_context, retain_docker_event, set_docker_event_collection_state,
+        DockerEventApply, DockerEventSourceContext,
     },
     docker_collector::DockerCollector,
     AppState,
 };
 use bollard::models::{EventMessage, EventMessageTypeEnum};
-use dockermap_core::{observed_container_identity, opaque_sha256_hex, MAX_OBSERVED_CHANGE_EVENTS};
+use dockermap_core::{
+    observed_container_identity, opaque_sha256_hex, ObservedDockerEvent,
+    ObservedDockerEventCollectionState, ObservedDockerEventEvidenceSource, ObservedDockerEventKind,
+    MAX_OBSERVED_CHANGE_EVENTS,
+};
 use futures_util::{Stream, StreamExt};
 use std::{
     collections::{BTreeSet, VecDeque},
@@ -96,6 +100,26 @@ impl DockerEventKind {
             Self::HealthChanged(DockerHealthState::Unhealthy) => "container_health_unhealthy",
         }
     }
+
+    fn public_kind(self) -> ObservedDockerEventKind {
+        match self {
+            Self::Created => ObservedDockerEventKind::ContainerCreated,
+            Self::Started => ObservedDockerEventKind::ContainerStarted,
+            Self::Stopped => ObservedDockerEventKind::ContainerStopped,
+            Self::Died => ObservedDockerEventKind::ContainerDied,
+            Self::Restarted => ObservedDockerEventKind::ContainerRestarted,
+            Self::Destroyed => ObservedDockerEventKind::ContainerDestroyed,
+            Self::HealthChanged(DockerHealthState::Starting) => {
+                ObservedDockerEventKind::ContainerHealthStarting
+            }
+            Self::HealthChanged(DockerHealthState::Healthy) => {
+                ObservedDockerEventKind::ContainerHealthHealthy
+            }
+            Self::HealthChanged(DockerHealthState::Unhealthy) => {
+                ObservedDockerEventKind::ContainerHealthUnhealthy
+            }
+        }
+    }
 }
 
 /// Safe reduction of a raw Bollard message. Every retained string is either a
@@ -144,12 +168,25 @@ pub(crate) enum DockerEventRetention {
 /// the same 64-row product retention boundary, while the larger but still
 /// fixed dedupe horizon prevents replay from turning an evicted row into a
 /// fresh event after a normal reconnect.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct DockerEventJournal {
     events: VecDeque<RetainedDockerEvent>,
     dedupe_order: VecDeque<String>,
     dedupe_ids: BTreeSet<String>,
     last_source_timestamp_nanos: Option<u64>,
+    collection_state: ObservedDockerEventCollectionState,
+}
+
+impl Default for DockerEventJournal {
+    fn default() -> Self {
+        Self {
+            events: VecDeque::new(),
+            dedupe_order: VecDeque::new(),
+            dedupe_ids: BTreeSet::new(),
+            last_source_timestamp_nanos: None,
+            collection_state: ObservedDockerEventCollectionState::Unavailable,
+        }
+    }
 }
 
 impl DockerEventJournal {
@@ -203,6 +240,36 @@ impl DockerEventJournal {
             .map(|nanos| nanos / 1_000_000_000)
             .unwrap_or(oldest_allowed)
             .clamp(oldest_allowed, now_seconds)
+    }
+
+    /// The daemon supervisor owns this state and can move it only after
+    /// proving the stream generation is still current. It carries no gateway
+    /// error text or other provider-controlled display data.
+    pub(crate) fn set_collection_state(&mut self, state: ObservedDockerEventCollectionState) {
+        self.collection_state = state;
+    }
+
+    pub(crate) fn collection_state(&self) -> ObservedDockerEventCollectionState {
+        self.collection_state
+    }
+
+    /// Public projection is intentionally separate from the retained shape so
+    /// private source-generation bookkeeping cannot become an API field.
+    pub(crate) fn public_events_newest_first(&self) -> Vec<ObservedDockerEvent> {
+        self.events
+            .iter()
+            .rev()
+            .map(|event| ObservedDockerEvent {
+                id: event.id.clone(),
+                kind: event.kind.public_kind(),
+                evidence_source: ObservedDockerEventEvidenceSource::DockerEventStream,
+                observed_at_ms: event.observed_at_ms,
+                source_occurred_at_ms: event.source_timestamp_ms,
+                container_id: event.container_id.clone(),
+                anchor_model_revision: event.anchor_model_revision.clone(),
+                anchor_observation_revision: event.anchor_observation_revision.clone(),
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -342,13 +409,45 @@ where
             continue;
         };
 
+        if !set_docker_event_collection_state(
+            &state,
+            &context,
+            ObservedDockerEventCollectionState::Connecting,
+        )
+        .await
+        {
+            backoff.reset();
+            continue;
+        }
+
         let mut stream = match connector.connect(context.since_seconds) {
             Ok(stream) => stream,
             Err(_) => {
+                if !set_docker_event_collection_state(
+                    &state,
+                    &context,
+                    ObservedDockerEventCollectionState::Reconnecting,
+                )
+                .await
+                {
+                    backoff.reset();
+                    continue;
+                }
                 sleep(backoff.failure_delay()).await;
                 continue;
             }
         };
+        if !set_docker_event_collection_state(
+            &state,
+            &context,
+            ObservedDockerEventCollectionState::Collecting,
+        )
+        .await
+        {
+            drop(stream);
+            backoff.reset();
+            continue;
+        }
         let connected_at = Instant::now();
         let mut source_poll = interval(SOURCE_POLL_INTERVAL);
         source_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -400,6 +499,16 @@ where
         drop(stream);
 
         if matches!(exit, StreamExit::SourceChanged) {
+            backoff.reset();
+            continue;
+        }
+        if !set_docker_event_collection_state(
+            &state,
+            &context,
+            ObservedDockerEventCollectionState::Reconnecting,
+        )
+        .await
+        {
             backoff.reset();
             continue;
         }

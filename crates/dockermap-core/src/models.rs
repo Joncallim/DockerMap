@@ -193,16 +193,29 @@ where
     D: serde::Deserializer<'de>,
 {
     let container_id = String::deserialize(deserializer)?;
-    let is_valid = container_id
-        .strip_prefix("docker_container_")
-        .is_some_and(|suffix| {
-            suffix.len() == 64
-                && suffix.bytes().all(|byte| {
-                    byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte <= b'f')
-                })
-        });
+    let is_valid = is_opaque_sha256_identity(&container_id, "docker_container_");
     is_valid.then_some(container_id).ok_or_else(|| {
         serde::de::Error::custom("observed container ID must be an opaque SHA-256 identity")
+    })
+}
+
+fn deserialize_observed_event_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let event_id = String::deserialize(deserializer)?;
+    let is_valid = is_opaque_sha256_identity(&event_id, "docker_event_");
+    is_valid.then_some(event_id).ok_or_else(|| {
+        serde::de::Error::custom("observed event ID must be an opaque SHA-256 identity")
+    })
+}
+
+fn is_opaque_sha256_identity(value: &str, prefix: &str) -> bool {
+    value.strip_prefix(prefix).is_some_and(|suffix| {
+        suffix.len() == 64
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte <= b'f'))
     })
 }
 
@@ -239,6 +252,90 @@ pub struct ObservedChangeHistoryResponse {
     pub observed_revision: Option<String>,
     #[schemars(length(max = 64))]
     pub events: Vec<ObservedChangeEvent>,
+}
+
+/// Closed lifecycle state of the daemon-owned Docker event collector. It is
+/// operational state for a single fixed read-only stream, not an assertion
+/// about the contents of an inventory snapshot.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedDockerEventCollectionState {
+    Connecting,
+    Collecting,
+    Reconnecting,
+    Unavailable,
+}
+
+/// The small vocabulary retained from Docker's container event stream. Raw
+/// action text, actor attributes, exit messages and names are discarded before
+/// this model can be constructed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedDockerEventKind {
+    ContainerCreated,
+    ContainerStarted,
+    ContainerStopped,
+    ContainerDied,
+    ContainerRestarted,
+    ContainerDestroyed,
+    ContainerHealthStarting,
+    ContainerHealthHealthy,
+    ContainerHealthUnhealthy,
+}
+
+/// The evidence source is closed so a later source cannot be silently
+/// relabelled as Docker event-stream evidence.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedDockerEventEvidenceSource {
+    DockerEventStream,
+}
+
+/// One safe, digest-only Docker stream event. Anchor revisions identify the
+/// coherent daemon publication at receipt time; they do not claim that a
+/// following inventory snapshot already reflects the event.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ObservedDockerEvent {
+    #[serde(deserialize_with = "deserialize_observed_event_id")]
+    #[schemars(regex(pattern = "^docker_event_[0-9a-f]{64}$"))]
+    pub id: String,
+    pub kind: ObservedDockerEventKind,
+    #[serde(rename = "evidenceSource")]
+    pub evidence_source: ObservedDockerEventEvidenceSource,
+    #[serde(rename = "observedAtMs")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub observed_at_ms: u64,
+    #[serde(rename = "sourceOccurredAtMs")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub source_occurred_at_ms: u64,
+    #[serde(rename = "containerId")]
+    #[serde(deserialize_with = "deserialize_observed_container_id")]
+    #[schemars(regex(pattern = "^docker_container_[0-9a-f]{64}$"))]
+    pub container_id: String,
+    #[serde(rename = "anchorModelRevision")]
+    #[schemars(length(min = 1, max = 64))]
+    pub anchor_model_revision: String,
+    #[serde(rename = "anchorObservationRevision")]
+    #[schemars(length(min = 1, max = 64))]
+    pub anchor_observation_revision: String,
+}
+
+/// Bounded daemon-lifetime history of the separately collected Docker event
+/// stream. This root deliberately never mixes stream evidence with
+/// snapshot-derived `/daemon/history` deltas.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ObservedDockerEventHistoryResponse {
+    pub source: RuntimeMode,
+    #[serde(rename = "collectionState")]
+    pub collection_state: ObservedDockerEventCollectionState,
+    #[serde(rename = "currentModelRevision")]
+    #[schemars(required, with = "NonEmptyStringOrNull")]
+    pub current_model_revision: Option<String>,
+    #[serde(rename = "currentObservationRevision")]
+    #[schemars(required, with = "NonEmptyStringOrNull")]
+    pub current_observation_revision: Option<String>,
+    #[schemars(length(max = 64))]
+    pub events: Vec<ObservedDockerEvent>,
 }
 
 /// Fixed, schema-backed host-provider slots. This is not a plugin or policy
