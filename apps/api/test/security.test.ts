@@ -1292,6 +1292,25 @@ test("runtime evidence is required and fails closed before browser publication",
     "Docker port-publication evidence requires host:private/protocol listener metadata"
   );
 
+  const unrelatedDuplicate = structuredClone(fixture);
+  unrelatedDuplicate.nodes.push(structuredClone(unrelatedDuplicate.nodes[0]));
+  assert.doesNotThrow(
+    () => validateDaemonResponse("/daemon/runtime/map", unrelatedDuplicate),
+    "a port-evidence lookup must not turn unrelated provider-node duplication into a publication failure"
+  );
+  const duplicateListener = structuredClone(fixture);
+  const duplicateListenerEdge = duplicateListener.edges.find((edge: { evidenceRefs?: Array<{ kind?: unknown }> }) =>
+    edge.evidenceRefs?.[0]?.kind === "docker_port_publication"
+  );
+  assert.ok(duplicateListenerEdge, "canonical daemon fixture carries a Docker host-port publication");
+  const listener = duplicateListener.nodes.find((node: { id?: unknown }) => node.id === duplicateListenerEdge.target);
+  assert.ok(listener, "host-port publication targets a listener node");
+  duplicateListener.nodes.push(structuredClone(listener));
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", duplicateListener),
+    "Docker port-publication evidence must fail closed when its listener identity is ambiguous"
+  );
+
   const npmEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "npm_project_dockermap");
   assert.ok(npmEdge, "canonical daemon fixture carries a V3 NPM manifest declaration");
   assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));

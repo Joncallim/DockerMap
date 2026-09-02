@@ -221,12 +221,15 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
   const nodes = (payload as { nodes?: unknown }).nodes;
   const edges = (payload as { edges?: unknown }).edges;
   if (!Array.isArray(nodes) || !Array.isArray(edges)) return false;
-  const nodesById = new Map<string, Record<string, unknown>>();
+  // Only a V1 port-publication edge needs a node lookup. Keep ambiguity local
+  // to that referenced listener rather than treating unrelated duplicate
+  // provider nodes as an API contract violation.
+  const nodesById = new Map<string, Record<string, unknown> | null>();
   for (const candidate of nodes) {
     if (!candidate || typeof candidate !== "object") return false;
     const node = candidate as Record<string, unknown>;
-    if (typeof node.id !== "string" || nodesById.has(node.id)) return false;
-    nodesById.set(node.id, node);
+    if (typeof node.id !== "string") return false;
+    nodesById.set(node.id, nodesById.has(node.id) ? null : node);
   }
   return edges.every((edge) => {
     if (!edge || typeof edge !== "object") return false;
