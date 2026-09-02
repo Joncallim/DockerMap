@@ -220,6 +220,43 @@ mod tests {
         });
         assert!(validator.is_valid(&unavailable));
         assert!(serde_json::from_value::<ObservedDockerEventHistoryResponse>(unavailable).is_ok());
+
+        let mut mock_connecting = response.clone();
+        mock_connecting["source"] = serde_json::json!("mock");
+        mock_connecting["collectionState"] = serde_json::json!("connecting");
+        assert!(
+            validator.is_valid(&mock_connecting),
+            "portable schema metadata cannot express the response state machine"
+        );
+        assert!(
+            serde_json::from_value::<ObservedDockerEventHistoryResponse>(mock_connecting).is_err(),
+            "serde must reject a mock response that claims an active collector"
+        );
+
+        let mut unavailable_with_evidence = response.clone();
+        unavailable_with_evidence["collectionState"] = serde_json::json!("unavailable");
+        assert!(validator.is_valid(&unavailable_with_evidence));
+        assert!(
+            serde_json::from_value::<ObservedDockerEventHistoryResponse>(unavailable_with_evidence)
+                .is_err(),
+            "unavailable Docker must not retain references or events"
+        );
+
+        let mut collecting_without_refs = response.clone();
+        collecting_without_refs["currentModelRevision"] = serde_json::Value::Null;
+        collecting_without_refs["currentObservationRevision"] = serde_json::Value::Null;
+        assert!(validator.is_valid(&collecting_without_refs));
+        assert!(
+            serde_json::from_value::<ObservedDockerEventHistoryResponse>(collecting_without_refs)
+                .is_err(),
+            "an active Docker collector must have current anchor revisions"
+        );
+
+        let event = response["events"][0].clone();
+        let mut over_bound = response;
+        over_bound["events"] = serde_json::Value::Array(std::iter::repeat_n(event, 65).collect());
+        assert!(!validator.is_valid(&over_bound));
+        assert!(serde_json::from_value::<ObservedDockerEventHistoryResponse>(over_bound).is_err());
     }
 
     #[test]
