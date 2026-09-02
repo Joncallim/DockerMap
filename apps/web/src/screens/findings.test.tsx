@@ -14,7 +14,13 @@ const findings: FindingsResponse = {
     summary: "An active systemd service requires a target that is inactive or failed",
     recommendation: "Inspect the target service state and its declared dependency configuration.",
     subjectRef: "systemd_service_application",
-    targetRef: "systemd_service_database"
+    targetRef: "systemd_service_database",
+    evidenceRefs: [{
+      version: 2, id: "systemd_requires:systemd_service_application:systemd_service_database",
+      provider: "systemd", kind: "systemd_requires", assertionKind: "declared",
+      summary: "systemd declared a Requires dependency", subjectRef: "systemd_service_application",
+      collectedAt: 1, providerRevision: "test-systemd-observation", providerSlot: "systemd", freshness: "fresh"
+    }]
   }]
 };
 

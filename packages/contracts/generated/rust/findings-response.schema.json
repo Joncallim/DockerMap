@@ -3,6 +3,15 @@
     "Finding": {
       "additionalProperties": false,
       "properties": {
+        "evidenceRefs": {
+          "description": "Canonical, already-sanitized runtime evidence that directly triggered\nthis finding. The rule admits exactly one fact, keeping the response\nbounded and preventing a generic metadata channel.",
+          "items": {
+            "$ref": "#/$defs/RuntimeEvidenceRef"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "type": "array"
+        },
         "id": {
           "maxLength": 259,
           "minLength": 1,
@@ -38,7 +47,8 @@
         "summary",
         "recommendation",
         "subjectRef",
-        "targetRef"
+        "targetRef",
+        "evidenceRefs"
       ],
       "type": "object"
     },
@@ -56,6 +66,159 @@
         "advisory"
       ],
       "type": "string"
+    },
+    "ProviderSlot": {
+      "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
+      "oneOf": [
+        {
+          "enum": [
+            "network_infrastructure",
+            "host_scoped",
+            "python_processes",
+            "native_processes",
+            "project_npm"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "systemd",
+          "description": "systemd has an independent collector lifecycle.  It must not inherit\nfreshness from the broader host-scoped observation slot.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuntimeEvidenceAssertionKind": {
+      "description": "Evidence assertion semantics are deliberately closed. A declaration says\nwhat a source configured, never that its target is healthy or was invoked.",
+      "enum": [
+        "observed",
+        "declared"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceFreshness": {
+      "enum": [
+        "fresh",
+        "stale",
+        "timed_out"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceKind": {
+      "description": "Safe, provider-specific fact families supported by the first provenance\nslice.  New sources require an explicit enum addition rather than an\narbitrary source string or metadata map.",
+      "oneOf": [
+        {
+          "enum": [
+            "docker_network_membership",
+            "docker_volume_mount",
+            "docker_port_publication"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_depends_on",
+          "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_requires",
+          "description": "A systemd `Requires=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_wants",
+          "description": "A systemd `Wants=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_part_of",
+          "description": "A systemd `PartOf=` declaration. It is not an ordering assertion.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuntimeEvidenceProvider": {
+      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
+      "enum": [
+        "docker",
+        "systemd"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceRef": {
+      "additionalProperties": false,
+      "description": "A compact, versioned reference to the bounded fact supporting a runtime\nrelationship.  It intentionally contains no raw command output, config\nfragment, path, process arguments, or generic metadata bag.",
+      "properties": {
+        "assertionKind": {
+          "$ref": "#/$defs/RuntimeEvidenceAssertionKind"
+        },
+        "collectedAt": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freshness": {
+          "$ref": "#/$defs/RuntimeEvidenceFreshness"
+        },
+        "id": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/RuntimeEvidenceKind"
+        },
+        "provider": {
+          "$ref": "#/$defs/RuntimeEvidenceProvider"
+        },
+        "providerRevision": {
+          "description": "Opaque provider observation token, not a cache-publication revision,\ncommand output, or source dump.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerSlot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderSlot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Version-two provider evidence is explicitly tied to the finite\nscheduler slot that supplied its revision and freshness. Version one\nDocker evidence intentionally has no host-provider slot."
+        },
+        "subjectRef": {
+          "description": "The already-public runtime entity whose Docker fact was observed.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "A bounded, curated explanation; it is never copied from a raw source.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
+          "format": "uint8",
+          "maximum": 2,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "provider",
+        "kind",
+        "assertionKind",
+        "summary",
+        "subjectRef",
+        "collectedAt",
+        "providerRevision",
+        "freshness"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

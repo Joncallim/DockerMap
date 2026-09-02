@@ -577,6 +577,15 @@ export interface FindingsResponse {
   modelRevision: string;
 }
 export interface Finding {
+  /**
+   * Canonical, already-sanitized runtime evidence that directly triggered
+   * this finding. The rule admits exactly one fact, keeping the response
+   * bounded and preventing a generic metadata channel.
+   *
+   * @minItems 1
+   * @maxItems 1
+   */
+  evidenceRefs: [RuntimeEvidenceRef];
   id: string;
   recommendation: string;
   ruleId: FindingRule;
