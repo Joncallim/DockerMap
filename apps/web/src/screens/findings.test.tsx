@@ -69,4 +69,23 @@ describe("Findings screen", () => {
     expect(html).toContain("2 supporting facts");
     expect(html).not.toContain("Internet exposure");
   });
+
+  it("labels daemon-state access as a bounded authority review without mount details", () => {
+    const daemonState = structuredClone(findings);
+    daemonState.findings[0] = {
+      id: "finding_docker_daemon_state_bind_mount_test",
+      ruleId: "docker.daemon_state_bind_mount",
+      severity: "warning",
+      summary: "A container has Docker daemon state access that may provide Docker daemon API authority.",
+      recommendation: "Review whether this container requires Docker daemon API authority.",
+      subjectRef: "docker_container_api",
+      targetRef: "host_risk_docker_daemon_state",
+      evidenceRefs: [{ version: 1, id: "daemon-state", provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", summary: "Docker reported a bind mount exposing Docker daemon state", subjectRef: "docker_container_api", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }]
+    };
+    const html = render({ findings: daemonState });
+    expect(html).toContain("Docker daemon-state access needs review");
+    expect(html).toContain("Docker daemon state");
+    expect(html).toContain("may provide Docker daemon API authority");
+    expect(html).not.toContain("/var/run/docker.sock");
+  });
 });

@@ -1038,6 +1038,7 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].subjectRef = value.findings[0].targetRef; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); delete value.findings[0].evidenceRefs; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[2].targetRef = "host_risk_untrusted"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[1].kind = "docker_volume_mount"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()]
   ] as const;

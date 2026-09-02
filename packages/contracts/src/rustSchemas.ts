@@ -1373,7 +1373,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
       "enum": [
         "systemd.requires_target_not_active",
-        "docker.internal_network_member_publishes_port"
+        "docker.internal_network_member_publishes_port",
+        "docker.daemon_state_bind_mount"
       ],
       "type": "string"
     },
@@ -3884,7 +3885,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
       "enum": [
         "systemd.requires_target_not_active",
-        "docker.internal_network_member_publishes_port"
+        "docker.internal_network_member_publishes_port",
+        "docker.daemon_state_bind_mount"
       ],
       "type": "string"
     },

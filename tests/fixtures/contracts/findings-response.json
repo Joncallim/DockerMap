@@ -61,6 +61,30 @@
           "freshness": "fresh"
         }
       ]
+    },
+    {
+      "id": "finding_docker_daemon_state_bind_mount_fixture",
+      "ruleId": "docker.daemon_state_bind_mount",
+      "severity": "warning",
+      "summary": "A container has Docker daemon state access that may provide Docker daemon API authority.",
+      "recommendation": "Review whether this container requires Docker daemon API authority.",
+      "subjectRef": "docker_container_api",
+      "targetRef": "host_risk_docker_daemon_state",
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "docker_daemon_state_bind_mount:docker_container_api:host_risk_docker_daemon_state",
+          "provider": "docker",
+          "kind": "docker_daemon_state_bind_mount",
+          "assertionKind": "observed",
+          "summary": "Docker reported a bind mount exposing Docker daemon state",
+          "subjectRef": "docker_container_api",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-docker-observation",
+          "providerSlot": null,
+          "freshness": "fresh"
+        }
+      ]
     }
   ]
 }
