@@ -2615,8 +2615,11 @@ mod scheduler_tests {
 
     #[tokio::test]
     async fn observed_history_emits_only_sanitized_container_deltas_after_a_baseline() {
+        const RAW_ID_PREFIX: &str = "history-identity-sentinel";
+        const RAW_ID_SENTINEL: &str = "history-identity-sentinel-7f2ac9e481";
         let mut first = mock_snapshot();
         first.last_updated = 10;
+        first.containers[0].id = RAW_ID_SENTINEL.into();
         let state = AppState {
             cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
             docker: Arc::new(RwLock::new(None)),
@@ -2666,11 +2669,13 @@ mod scheduler_tests {
             Some(dockermap_core::ObservedContainerStatus::Stopped)
         );
         assert!(event.container_id.starts_with("docker_container_"));
-        let encoded = serde_json::to_string(event).expect("event serializes");
+        let encoded = serde_json::to_string(&response).expect("response serializes");
         for forbidden in [
             "Exited (137)",
             "/srv/private",
             "DOCKERMAP_TEST_FAKE_HISTORY",
+            RAW_ID_PREFIX,
+            RAW_ID_SENTINEL,
         ] {
             assert!(
                 !encoded.contains(forbidden),
