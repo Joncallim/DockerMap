@@ -77,3 +77,28 @@ test("refuses a transparent detail alias when its Rust wrapper schema drifts", a
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("refuses an unlisted Rust response schema root", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "dockermap-rust-root-inventory-"));
+  try {
+    const schemas = resolve(directory, "schemas");
+    await cp(sourceSchemas, schemas, { recursive: true });
+    await writeFile(
+      resolve(schemas, "future-response.schema.json"),
+      `${JSON.stringify({ type: "object", properties: {}, required: [] }, null, 2)}\n`
+    );
+    const result = spawnSync(process.execPath, [generator], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DOCKERMAP_RUST_SCHEMA_DIRECTORY: schemas,
+        DOCKERMAP_RUST_MODELS_OUTPUT: resolve(directory, "rustModels.ts")
+      }
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Rust schema root inventory differs/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

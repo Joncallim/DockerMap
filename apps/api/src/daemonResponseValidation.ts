@@ -23,6 +23,7 @@ export const DAEMON_RESPONSE_SCHEMA_PATHS = [
   { path: "/daemon/runtime/map", routeId: "runtime-map", schema: RUST_ROUTE_RESPONSE_SCHEMAS["runtime-map"] },
   { path: "/daemon/findings", routeId: "findings", schema: RUST_ROUTE_RESPONSE_SCHEMAS.findings },
   { path: "/daemon/history", routeId: "history", schema: RUST_ROUTE_RESPONSE_SCHEMAS.history },
+  { path: "/daemon/observed-events", routeId: "observed-events", schema: RUST_ROUTE_RESPONSE_SCHEMAS["observed-events"] },
   { path: "/daemon/containers", routeId: "containers", schema: RUST_ROUTE_RESPONSE_SCHEMAS.containers },
   { path: "/daemon/containers/:name", routeId: "container", schema: RUST_ROUTE_RESPONSE_SCHEMAS.container },
   { path: "/daemon/images", routeId: "images", schema: RUST_ROUTE_RESPONSE_SCHEMAS.images },
@@ -321,6 +322,67 @@ function hasCoherentObservedHistory(payload: unknown): boolean {
   });
 }
 
+// Docker stream evidence has a distinct lifecycle from snapshot-derived
+// history. The generated schema owns its closed vocabulary and field bounds;
+// this mirrors the Rust state machine so a syntactically valid 2xx cannot
+// claim usable stream evidence while the collector is unavailable or mocked.
+function hasCoherentObservedDockerEventHistory(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const history = payload as Record<string, unknown>;
+  const source = history.source;
+  const collectionState = history.collectionState;
+  const currentModelRevision = history.currentModelRevision;
+  const currentObservationRevision = history.currentObservationRevision;
+  const events = history.events;
+  if ((source !== "docker" && source !== "mock") || !Array.isArray(events)) return false;
+
+  const unavailable = collectionState === "unavailable";
+  if (source === "mock" && !unavailable) return false;
+  if (source === "mock" || unavailable) {
+    return currentModelRevision === null
+      && currentObservationRevision === null
+      && events.length === 0;
+  }
+  if (collectionState !== "connecting" && collectionState !== "collecting" && collectionState !== "reconnecting") return false;
+  if (!isBoundedObservedEventRevision(currentModelRevision)
+    || !isBoundedObservedEventRevision(currentObservationRevision)) return false;
+
+  return events.every((candidate) => {
+    if (!candidate || typeof candidate !== "object") return false;
+    const event = candidate as Record<string, unknown>;
+    return typeof event.id === "string"
+      && /^docker_event_[0-9a-f]{64}$/.test(event.id)
+      && event.evidenceSource === "docker_event_stream"
+      && typeof event.containerId === "string"
+      && /^docker_container_[0-9a-f]{64}$/.test(event.containerId)
+      && typeof event.observedAtMs === "number"
+      && Number.isSafeInteger(event.observedAtMs)
+      && event.observedAtMs >= 0
+      && typeof event.sourceOccurredAtMs === "number"
+      && Number.isSafeInteger(event.sourceOccurredAtMs)
+      && event.sourceOccurredAtMs >= 0
+      && typeof event.anchorModelRevision === "string"
+      && isBoundedObservedEventRevision(event.anchorModelRevision)
+      && typeof event.anchorObservationRevision === "string"
+      && isBoundedObservedEventRevision(event.anchorObservationRevision)
+      && (event.kind === "container_created"
+        || event.kind === "container_started"
+        || event.kind === "container_stopped"
+        || event.kind === "container_died"
+        || event.kind === "container_restarted"
+        || event.kind === "container_destroyed"
+        || event.kind === "container_health_starting"
+        || event.kind === "container_health_healthy"
+        || event.kind === "container_health_unhealthy");
+  });
+}
+
+function isBoundedObservedEventRevision(value: unknown): value is string {
+  // Rust's `chars().count()` treats each Unicode scalar as one character;
+  // Array.from is the matching JavaScript operation rather than UTF-16 length.
+  return typeof value === "string" && value.length > 0 && Array.from(value).length <= 64;
+}
+
 export function daemonResponseSchemaId(path: string): RustResponseSchemaId | undefined {
   const pathname = path.split("?", 1)[0];
   if (pathname === "/daemon/containers") return "ContainersResponse";
@@ -355,7 +417,8 @@ export function validateDaemonResponse(path: string, payload: unknown) {
   if (!validator || !validator(payload)
     || (schema === "RuntimeMap" && (!hasCompleteProviderStateVector(payload) || !hasCoherentProviderFreshness(payload) || !hasCoherentRuntimeEvidence(payload)))
     || (schema === "FindingsResponse" && !hasCoherentFindings(payload))
-    || (schema === "ObservedChangeHistoryResponse" && !hasCoherentObservedHistory(payload))) {
+    || (schema === "ObservedChangeHistoryResponse" && !hasCoherentObservedHistory(payload))
+    || (schema === "ObservedDockerEventHistoryResponse" && !hasCoherentObservedDockerEventHistory(payload))) {
     throw new DaemonResponseValidationError();
   }
   return payload;

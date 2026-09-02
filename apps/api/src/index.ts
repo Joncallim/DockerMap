@@ -450,6 +450,18 @@ function getMockResponse<T>(path: string): T {
     } as T;
   }
 
+  if (path === "/daemon/observed-events") {
+    // Demo Mode must not manufacture Docker stream evidence. This is a
+    // deliberately unavailable collector state, not an empty live timeline.
+    return {
+      source: "mock",
+      collectionState: "unavailable",
+      currentModelRevision: null,
+      currentObservationRevision: null,
+      events: []
+    } as T;
+  }
+
   if (path === "/daemon/containers") {
     return { containers: mockContainers } as T;
   }
@@ -598,6 +610,7 @@ registerRoute("graph", readHandlers.graph);
 registerRoute("runtime-map", readHandlers.runtimeMap);
 registerRoute("findings", readHandlers.findings);
 registerRoute("history", readHandlers.history);
+registerRoute("observed-events", readHandlers.observedEvents);
 registerRoute("diagnostics", readHandlers.diagnostics);
 registerRoute("containers", readHandlers.containers);
 registerRoute("container", readHandlers.container);

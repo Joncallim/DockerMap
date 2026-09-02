@@ -1,0 +1,18 @@
+{
+  "source": "docker",
+  "collectionState": "collecting",
+  "currentModelRevision": "daemon-model-42",
+  "currentObservationRevision": "daemon-observation-42",
+  "events": [
+    {
+      "id": "docker_event_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "container_restarted",
+      "evidenceSource": "docker_event_stream",
+      "observedAtMs": 1710000001000,
+      "sourceOccurredAtMs": 1710000000000,
+      "containerId": "docker_container_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "anchorModelRevision": "daemon-model-42",
+      "anchorObservationRevision": "daemon-observation-42"
+    }
+  ]
+}

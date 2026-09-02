@@ -16,7 +16,8 @@ export type RustDaemonModels =
   | NetworksResponse
   | VolumesResponse
   | FindingsResponse
-  | ObservedChangeHistoryResponse;
+  | ObservedChangeHistoryResponse
+  | ObservedDockerEventHistoryResponse;
 export type ComposeMountKind = 'bind' | 'named_volume' | 'anonymous_volume' | 'unsupported';
 export type RuntimeMode = 'docker' | 'mock';
 export type RelationshipKind = 'connected_to' | 'mounts';
@@ -170,6 +171,32 @@ export type ObservedContainerStatus = 'running' | 'stopped' | 'other';
  * from two published Docker inventories, not from Docker's event stream.
  */
 export type ObservedChangeKind = 'container_appeared' | 'container_disappeared' | 'container_status_changed';
+/**
+ * Closed lifecycle state of the daemon-owned Docker event collector. It is
+ * operational state for a single fixed read-only stream, not an assertion
+ * about the contents of an inventory snapshot.
+ */
+export type ObservedDockerEventCollectionState = 'connecting' | 'collecting' | 'reconnecting' | 'unavailable';
+/**
+ * The evidence source is closed so a later source cannot be silently
+ * relabelled as Docker event-stream evidence.
+ */
+export type ObservedDockerEventEvidenceSource = 'docker_event_stream';
+/**
+ * The small vocabulary retained from Docker's container event stream. Raw
+ * action text, actor attributes, exit messages and names are discarded before
+ * this model can be constructed.
+ */
+export type ObservedDockerEventKind =
+  | 'container_created'
+  | 'container_started'
+  | 'container_stopped'
+  | 'container_died'
+  | 'container_restarted'
+  | 'container_destroyed'
+  | 'container_health_starting'
+  | 'container_health_healthy'
+  | 'container_health_unhealthy';
 
 export interface DockerSnapshot {
   containers: ContainerRecord[];
@@ -644,6 +671,36 @@ export interface ObservedChangeEvent {
    * accurately admitting the null state used by appearance/disappearance.
    */
   previousStatus: ObservedContainerStatus | null;
+}
+/**
+ * Bounded daemon-lifetime history of the separately collected Docker event
+ * stream. This root deliberately never mixes stream evidence with
+ * snapshot-derived `/daemon/history` deltas.
+ */
+export interface ObservedDockerEventHistoryResponse {
+  collectionState: ObservedDockerEventCollectionState;
+  currentModelRevision: string | null;
+  currentObservationRevision: string | null;
+  /**
+   * @maxItems 64
+   */
+  events: ObservedDockerEvent[];
+  source: RuntimeMode;
+}
+/**
+ * One safe, digest-only Docker stream event. Anchor revisions identify the
+ * coherent daemon publication at receipt time; they do not claim that a
+ * following inventory snapshot already reflects the event.
+ */
+export interface ObservedDockerEvent {
+  anchorModelRevision: string;
+  anchorObservationRevision: string;
+  containerId: string;
+  evidenceSource: ObservedDockerEventEvidenceSource;
+  id: string;
+  kind: ObservedDockerEventKind;
+  observedAtMs: number;
+  sourceOccurredAtMs: number;
 }
 
 // Rust's transparent route wrapper serializes as the record itself.

@@ -23,7 +23,8 @@ use dockermap_core::{
     collision_resistant_id_component, derive_findings, derive_images, mock_snapshot,
     observed_container_inventory, DiagnosticSeverity, DockerSnapshot, FindingsResponse,
     HealthResponse, HealthState, ObservedChangeEvent, ObservedChangeHistoryResponse,
-    ObservedChangeKind, ObservedContainerInventory, ProviderSlot, ProviderState, ProviderStateKind,
+    ObservedChangeKind, ObservedContainerInventory, ObservedDockerEventCollectionState,
+    ObservedDockerEventHistoryResponse, ProviderSlot, ProviderState, ProviderStateKind,
     ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness,
     RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap,
     RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMode, RuntimeProviderKind,
@@ -569,6 +570,40 @@ impl DaemonCache {
         )
     }
 
+    /// Stream events have their own response root: they are never mixed into
+    /// snapshot-delta history. An unavailable collector (including mock mode)
+    /// intentionally exposes no current references or retained events.
+    pub(crate) fn observed_docker_event_history_response(
+        &self,
+    ) -> ObservedDockerEventHistoryResponse {
+        let collection_state = if self.health.mode == RuntimeMode::Docker {
+            self.observed_history.docker_events.collection_state()
+        } else {
+            ObservedDockerEventCollectionState::Unavailable
+        };
+        if self.health.mode != RuntimeMode::Docker
+            || collection_state == ObservedDockerEventCollectionState::Unavailable
+        {
+            return ObservedDockerEventHistoryResponse {
+                source: self.health.mode.clone(),
+                collection_state: ObservedDockerEventCollectionState::Unavailable,
+                current_model_revision: None,
+                current_observation_revision: None,
+                events: Vec::new(),
+            };
+        }
+        ObservedDockerEventHistoryResponse {
+            source: RuntimeMode::Docker,
+            collection_state,
+            current_model_revision: Some(self.snapshot.model_revision.clone()),
+            current_observation_revision: Some(self.docker_observation_token()),
+            events: self
+                .observed_history
+                .docker_events
+                .public_events_newest_first(),
+        }
+    }
+
     fn rebuild_runtime_map(&mut self) {
         self.assign_docker_observation_revision();
         let docker_observation_token = self.docker_observation_token();
@@ -642,6 +677,27 @@ pub(crate) async fn retain_docker_event(
         DockerEventRetention::Duplicate => DockerEventApply::Duplicate,
         DockerEventRetention::Rejected => DockerEventApply::StaleSource,
     }
+}
+
+/// Advance the public collector lifecycle only for the exact live source
+/// generation that owns the stream. A stale worker therefore cannot turn a
+/// mock/unavailable response back into a live-looking one after a source flip.
+pub(crate) async fn set_docker_event_collection_state(
+    state: &AppState,
+    context: &DockerEventSourceContext,
+    collection_state: ObservedDockerEventCollectionState,
+) -> bool {
+    let mut cache = state.cache.write().await;
+    if cache.health.mode != RuntimeMode::Docker
+        || cache.source_generation != context.source_generation
+    {
+        return false;
+    }
+    cache
+        .observed_history
+        .docker_events
+        .set_collection_state(collection_state);
+    true
 }
 
 fn spawn_provider_slots(
@@ -2969,6 +3025,123 @@ mod scheduler_tests {
             docker.events.is_empty(),
             "first Docker cache after reset is baseline only"
         );
+    }
+
+    #[tokio::test]
+    async fn observed_docker_event_response_is_generation_bound_bounded_and_never_snapshot_history()
+    {
+        const NOW_SECONDS: u64 = 1_800_000_000;
+        const RAW_CONTAINER_ID: &str =
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let snapshot = mock_snapshot();
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(snapshot.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(snapshot)).await;
+        let context = docker_event_source_context(&state, NOW_SECONDS)
+            .await
+            .expect("live Docker generation");
+
+        let unavailable = state
+            .cache
+            .read()
+            .await
+            .observed_docker_event_history_response();
+        assert_eq!(
+            unavailable.collection_state,
+            ObservedDockerEventCollectionState::Unavailable
+        );
+        assert!(unavailable.current_model_revision.is_none());
+        assert!(unavailable.current_observation_revision.is_none());
+        assert!(unavailable.events.is_empty());
+
+        assert!(
+            set_docker_event_collection_state(
+                &state,
+                &context,
+                ObservedDockerEventCollectionState::Collecting,
+            )
+            .await
+        );
+        for offset in 0..=MAX_OBSERVED_CHANGE_EVENTS {
+            let event = parse_docker_event(
+                EventMessage {
+                    typ: Some(EventMessageTypeEnum::CONTAINER),
+                    action: Some("restart".into()),
+                    actor: Some(EventActor {
+                        id: Some(RAW_CONTAINER_ID.into()),
+                        attributes: Some(std::collections::HashMap::from([(
+                            "name".into(),
+                            "/private/observed-event-name".into(),
+                        )])),
+                    }),
+                    time: Some(NOW_SECONDS as i64),
+                    time_nano: Some((NOW_SECONDS * 1_000_000_000 + offset as u64) as i64),
+                    ..Default::default()
+                },
+                NOW_SECONDS * 1_000,
+            )
+            .expect("controlled event parses");
+            assert_eq!(
+                retain_docker_event(&state, &context, event).await,
+                DockerEventApply::Retained
+            );
+        }
+
+        let cache = state.cache.read().await;
+        let response = cache.observed_docker_event_history_response();
+        let snapshot_history = cache.observed_history_response();
+        assert_eq!(response.source, RuntimeMode::Docker);
+        assert_eq!(
+            response.collection_state,
+            ObservedDockerEventCollectionState::Collecting
+        );
+        assert!(response.current_model_revision.is_some());
+        assert!(response.current_observation_revision.is_some());
+        assert_eq!(response.events.len(), MAX_OBSERVED_CHANGE_EVENTS);
+        assert!(snapshot_history.events.is_empty());
+        let newest = response.events.first().expect("newest event retained");
+        let oldest = response.events.last().expect("oldest event retained");
+        assert!(newest.source_occurred_at_ms >= oldest.source_occurred_at_ms);
+        assert_eq!(
+            newest.kind,
+            dockermap_core::ObservedDockerEventKind::ContainerRestarted
+        );
+        assert_eq!(
+            newest.evidence_source,
+            dockermap_core::ObservedDockerEventEvidenceSource::DockerEventStream
+        );
+        let encoded = serde_json::to_string(&response).expect("response serializes");
+        for forbidden in [RAW_CONTAINER_ID, "/private/observed-event-name"] {
+            assert!(!encoded.contains(forbidden), "response leaked {forbidden}");
+        }
+        drop(cache);
+
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        assert!(
+            !set_docker_event_collection_state(
+                &state,
+                &context,
+                ObservedDockerEventCollectionState::Collecting,
+            )
+            .await,
+            "old stream generation must not relabel mock as active"
+        );
+        let mock = state
+            .cache
+            .read()
+            .await
+            .observed_docker_event_history_response();
+        assert_eq!(mock.source, RuntimeMode::Mock);
+        assert_eq!(
+            mock.collection_state,
+            ObservedDockerEventCollectionState::Unavailable
+        );
+        assert!(mock.current_model_revision.is_none());
+        assert!(mock.current_observation_revision.is_none());
+        assert!(mock.events.is_empty());
     }
 
     #[tokio::test]

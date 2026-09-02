@@ -6,12 +6,13 @@
 use crate::{
     ComposeEditPlan, ComposeGraph, ComposeScan, ContainerDetailResponse, ContainersResponse,
     DockerSnapshot, FindingsResponse, GraphResponse, HealthResponse, ImagesResponse, LogsResponse,
-    NetworksResponse, ObservedChangeHistoryResponse, RuntimeMap, VolumesResponse,
+    NetworksResponse, ObservedChangeHistoryResponse, ObservedDockerEventHistoryResponse,
+    RuntimeMap, VolumesResponse,
 };
 use schemars::{schema_for, Schema};
 use serde_json::Value;
 
-pub const DAEMON_SCHEMA_NAMES: [&str; 15] = [
+pub const DAEMON_SCHEMA_NAMES: [&str; 16] = [
     "DockerSnapshot",
     "GraphResponse",
     "RuntimeMap",
@@ -27,6 +28,7 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 15] = [
     "NetworksResponse",
     "VolumesResponse",
     "ObservedChangeHistoryResponse",
+    "ObservedDockerEventHistoryResponse",
 ];
 
 /// Largest integer that JavaScript JSON consumers can represent exactly.
@@ -35,7 +37,7 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 15] = [
 /// that standard `JSON.parse` cannot preserve.
 pub const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
-pub fn daemon_schemas() -> [Schema; 15] {
+pub fn daemon_schemas() -> [Schema; 16] {
     [
         schema_for!(DockerSnapshot),
         schema_for!(GraphResponse),
@@ -52,6 +54,7 @@ pub fn daemon_schemas() -> [Schema; 15] {
         schema_for!(NetworksResponse),
         schema_for!(VolumesResponse),
         schema_for!(ObservedChangeHistoryResponse),
+        schema_for!(ObservedDockerEventHistoryResponse),
     ]
 }
 
@@ -59,7 +62,7 @@ pub fn daemon_schemas() -> [Schema; 15] {
 /// forward-compatible when deserializing, while fixtures reject typoed or
 /// unreviewed response fields rather than silently redefining the contract.
 /// This changes schema validation only, never daemon serialization behavior.
-pub fn daemon_schema_documents() -> [Value; 15] {
+pub fn daemon_schema_documents() -> [Value; 16] {
     daemon_schemas().map(|schema| {
         let mut document = serde_json::to_value(schema).expect("schemars schema serializes");
         deny_unknown_object_properties(&mut document);
@@ -91,7 +94,7 @@ fn deny_unknown_object_properties(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::{daemon_schema_documents, DAEMON_SCHEMA_NAMES, JSON_SAFE_INTEGER_MAX};
-    use crate::ObservedChangeHistoryResponse;
+    use crate::{ObservedChangeHistoryResponse, ObservedDockerEventHistoryResponse};
     use serde_json::Value;
 
     #[test]
@@ -108,13 +111,14 @@ mod tests {
 
     #[test]
     fn schema_root_inventory_includes_each_declared_response_once() {
-        assert_eq!(DAEMON_SCHEMA_NAMES.len(), 15);
+        assert_eq!(DAEMON_SCHEMA_NAMES.len(), 16);
         assert_eq!(daemon_schema_documents().len(), DAEMON_SCHEMA_NAMES.len());
         let unique = DAEMON_SCHEMA_NAMES
             .iter()
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(unique.len(), DAEMON_SCHEMA_NAMES.len());
         assert!(unique.contains(&"ObservedChangeHistoryResponse"));
+        assert!(unique.contains(&"ObservedDockerEventHistoryResponse"));
     }
 
     #[test]
@@ -162,6 +166,97 @@ mod tests {
             .expect("event object")
             .remove("previousStatus");
         assert!(!validator.is_valid(&missing_status));
+    }
+
+    #[test]
+    fn observed_docker_event_history_is_bounded_closed_and_digest_only() {
+        let schema = DAEMON_SCHEMA_NAMES
+            .iter()
+            .zip(daemon_schema_documents())
+            .find_map(|(name, schema)| {
+                (*name == "ObservedDockerEventHistoryResponse").then_some(schema)
+            })
+            .expect("Docker event history schema exists");
+        let validator = jsonschema::validator_for(&schema).expect("valid schema");
+        let event = serde_json::json!({
+            "id": "docker_event_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "kind": "container_restarted",
+            "evidenceSource": "docker_event_stream",
+            "observedAtMs": 1,
+            "sourceOccurredAtMs": 1,
+            "containerId": "docker_container_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "anchorModelRevision": "publication-r1",
+            "anchorObservationRevision": "observation-r1"
+        });
+        let response = serde_json::json!({
+            "source": "docker",
+            "collectionState": "collecting",
+            "currentModelRevision": "publication-r1",
+            "currentObservationRevision": "observation-r1",
+            "events": [event]
+        });
+        assert!(validator.is_valid(&response));
+        assert!(
+            serde_json::from_value::<ObservedDockerEventHistoryResponse>(response.clone()).is_ok()
+        );
+
+        let mut raw_identity = response.clone();
+        raw_identity["events"][0]["id"] = serde_json::json!("docker_event_/private/name");
+        assert!(!validator.is_valid(&raw_identity));
+        assert!(
+            serde_json::from_value::<ObservedDockerEventHistoryResponse>(raw_identity).is_err()
+        );
+
+        let mut unknown_kind = response.clone();
+        unknown_kind["events"][0]["kind"] = serde_json::json!("private_action");
+        assert!(!validator.is_valid(&unknown_kind));
+
+        let unavailable = serde_json::json!({
+            "source": "mock",
+            "collectionState": "unavailable",
+            "currentModelRevision": null,
+            "currentObservationRevision": null,
+            "events": []
+        });
+        assert!(validator.is_valid(&unavailable));
+        assert!(serde_json::from_value::<ObservedDockerEventHistoryResponse>(unavailable).is_ok());
+
+        let mut mock_connecting = response.clone();
+        mock_connecting["source"] = serde_json::json!("mock");
+        mock_connecting["collectionState"] = serde_json::json!("connecting");
+        assert!(
+            validator.is_valid(&mock_connecting),
+            "portable schema metadata cannot express the response state machine"
+        );
+        assert!(
+            serde_json::from_value::<ObservedDockerEventHistoryResponse>(mock_connecting).is_err(),
+            "serde must reject a mock response that claims an active collector"
+        );
+
+        let mut unavailable_with_evidence = response.clone();
+        unavailable_with_evidence["collectionState"] = serde_json::json!("unavailable");
+        assert!(validator.is_valid(&unavailable_with_evidence));
+        assert!(
+            serde_json::from_value::<ObservedDockerEventHistoryResponse>(unavailable_with_evidence)
+                .is_err(),
+            "unavailable Docker must not retain references or events"
+        );
+
+        let mut collecting_without_refs = response.clone();
+        collecting_without_refs["currentModelRevision"] = serde_json::Value::Null;
+        collecting_without_refs["currentObservationRevision"] = serde_json::Value::Null;
+        assert!(validator.is_valid(&collecting_without_refs));
+        assert!(
+            serde_json::from_value::<ObservedDockerEventHistoryResponse>(collecting_without_refs)
+                .is_err(),
+            "an active Docker collector must have current anchor revisions"
+        );
+
+        let event = response["events"][0].clone();
+        let mut over_bound = response;
+        over_bound["events"] = serde_json::Value::Array(std::iter::repeat_n(event, 65).collect());
+        assert!(!validator.is_valid(&over_bound));
+        assert!(serde_json::from_value::<ObservedDockerEventHistoryResponse>(over_bound).is_err());
     }
 
     #[test]

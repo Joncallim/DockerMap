@@ -102,6 +102,17 @@ test("every browser API route is bearer-gated except CORS preflight", async () =
   assert.deepEqual(await historyAuthenticated.json(), {
     source: "mock", baselineEstablished: false, currentModelRevision: null, observedRevision: null, events: []
   });
+
+  const observedEventsUnauthenticated = await request(api, "/api/observed-events");
+  assert.equal(observedEventsUnauthenticated.status, 401);
+  const observedEventsAuthenticated = await request(api, "/api/v1/observed-events", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(observedEventsAuthenticated.status, 200);
+  assert.deepEqual(await observedEventsAuthenticated.json(), {
+    source: "mock", collectionState: "unavailable", currentModelRevision: null,
+    currentObservationRevision: null, events: []
+  });
 });
 
 test("bearer mode exchanges the API token for a strict HttpOnly session cookie and can log out", async () => {
@@ -879,7 +890,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
   const fixture = async (name: string) => JSON.parse(
     await readFile(new URL(`../../../tests/fixtures/contracts/${name}`, import.meta.url), "utf8")
   ) as Record<string, unknown>;
-  const [snapshot, graph, runtimeMap, logs, composeScan, composeGraph, composeEditPlan, health, findings, history] = await Promise.all([
+  const [snapshot, graph, runtimeMap, logs, composeScan, composeGraph, composeEditPlan, health, findings, history, observedEvents] = await Promise.all([
     fixture("mock-snapshot.json"),
     fixture("graph-response.json"),
     fixture("runtime-map-daemon-emitted.json"),
@@ -889,7 +900,8 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     fixture("compose-edit-plan.json"),
     fixture("health-response.json"),
     fixture("findings-response.json"),
-    fixture("observed-change-history-response.json")
+    fixture("observed-change-history-response.json"),
+    fixture("observed-docker-event-history-response.json")
   ]);
   const containers = snapshot.containers as unknown[];
   const container = containers.find((entry) => (entry as { name?: unknown }).name === "api");
@@ -901,6 +913,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     if (req.url === "/daemon/runtime/map") return sendJson(res, 200, runtimeMap);
     if (req.url === "/daemon/findings") return sendJson(res, 200, findings);
     if (req.url === "/daemon/history") return sendJson(res, 200, history);
+    if (req.url === "/daemon/observed-events") return sendJson(res, 200, observedEvents);
     if (req.url === "/daemon/containers") return sendJson(res, 200, { containers });
     if (req.url === "/daemon/containers/api") return sendJson(res, 200, container);
     if (req.url === "/daemon/images") return sendJson(res, 200, { images: snapshot.images });
@@ -928,6 +941,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     ["/api/runtime/map", "RuntimeMap"],
     ["/api/findings", "FindingsResponse"],
     ["/api/history", "ObservedChangeHistoryResponse"],
+    ["/api/observed-events", "ObservedDockerEventHistoryResponse"],
     ["/api/containers", "ContainersResponse"],
     ["/api/containers/api", "ContainerDetailResponse"],
     ["/api/images", "ImagesResponse"],
@@ -1002,6 +1016,7 @@ test("daemon model responses require non-empty revision and complete provider st
   const runtime = await fixture("runtime-map.json");
   const findings = await fixture("findings-response.json");
   const history = await fixture("observed-change-history-response.json");
+  const observedEvents = await fixture("observed-docker-event-history-response.json");
   const invalidResponses = [
     ["/daemon/snapshot", { ...snapshot, modelRevision: "" }],
     ["/daemon/snapshot", (() => { const value = structuredClone(snapshot); delete value.modelRevision; return value; })()],
@@ -1063,14 +1078,29 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/history", (() => { const value = structuredClone(history); value.events[0].containerId = "docker_container_0123456789abcdef"; return value; })()],
     ["/daemon/history", (() => { const value = structuredClone(history); value.events[0].containerId = "docker_container_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef-extra"; return value; })()],
     ["/daemon/history", (() => { const value = structuredClone(history); value.events[0].currentStatus = "raw Docker status"; return value; })()],
-    ["/daemon/history", (() => { const value = structuredClone(history); value.events[0].previousStatus = null; return value; })()]
+    ["/daemon/history", (() => { const value = structuredClone(history); value.events[0].previousStatus = null; return value; })()],
+    ["/daemon/observed-events", { ...observedEvents, source: "mock" }],
+    ["/daemon/observed-events", { ...observedEvents, collectionState: "unavailable" }],
+    ["/daemon/observed-events", { ...observedEvents, source: "untrusted" }],
+    ["/daemon/observed-events", { ...observedEvents, collectionState: "connecting", currentModelRevision: null }],
+    ["/daemon/observed-events", (() => { const value = structuredClone(observedEvents); delete value.currentObservationRevision; return value; })()],
+    ["/daemon/observed-events", { ...observedEvents, unexpected: "private daemon detail" }],
+    ["/daemon/observed-events", (() => { const value = structuredClone(observedEvents); value.events[0].id = "docker_event_/private/raw-id"; return value; })()],
+    ["/daemon/observed-events", (() => { const value = structuredClone(observedEvents); value.events[0].containerId = "docker_container_ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789"; return value; })()],
+    ["/daemon/observed-events", (() => { const value = structuredClone(observedEvents); value.events[0].evidenceSource = "raw_docker_event"; return value; })()],
+    ["/daemon/observed-events", (() => { const value = structuredClone(observedEvents); value.events[0].anchorModelRevision = ""; return value; })()],
+    ["/daemon/observed-events", (() => { const value = structuredClone(observedEvents); value.events[0].observedAtMs = Number.MAX_SAFE_INTEGER + 1; return value; })()]
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
       if (req.url !== daemonPath) return sendJson(res, 404, { code: "not_found", message: "missing" });
       sendJson(res, 200, body);
     });
-    const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+    const api = await startApi({
+      DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+      DOCKERMAP_API_TOKEN: "test-token",
+      DOCKERMAP_ALLOW_MOCK: "true"
+    });
     const browserPath = daemonPath.replace("/daemon", "/api");
     const response = await request(api, browserPath, { headers: { Authorization: "Bearer test-token" } });
     assert.equal(response.status, 502, browserPath);
