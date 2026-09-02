@@ -9,6 +9,7 @@ import type { Finding } from "@dockermap/contracts";
  */
 export interface FindingPresentation {
   title: string;
+  summary: string;
   category: string;
   hint: string;
   recommendation: string;
@@ -61,6 +62,14 @@ const SPECS: readonly FindingSpec[] = [
     title: "Docker daemon-state access needs review", category: "Docker daemon state", hint: "Observed Docker fact", tone: "warn", severityLabel: "Warning"
   },
   {
+    ruleId: "docker.daemon_state_bind_mount_publishes_port", severity: "warning",
+    summary: "A container with Docker daemon state access also has a published host port.",
+    recommendation: "Review whether the daemon-state access and host-port publication are both intended.",
+    idPrefix: "finding_docker_daemon_state_bind_mount_publishes_port_", subjectPrefix: "docker_container_", targetRef: "host_risk_docker_daemon_state",
+    evidenceCount: 2, evidence: { version: 1, provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", providerSlot: null },
+    title: "Docker daemon-state and host-port publication need review", category: "Docker daemon state + host port", hint: "Observed Docker facts", tone: "warn", severityLabel: "Warning", inspectChanges: true
+  },
+  {
     ruleId: "docker.compose_declared_target_not_active", severity: "advisory",
     summary: "A running Docker Compose service declares a dependency whose container is not active.",
     recommendation: "Review the declared dependency and the target container state.",
@@ -100,7 +109,7 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     // The API permits the Compose observation's legacy absent slot as well as
     // null. Both mean the Docker-wide collector, never a provider-supplied
     // slot name; all other supported shapes require their exact slot value.
-    || (spec.ruleId === "docker.compose_declared_target_not_active"
+    || ((spec.ruleId === "docker.compose_declared_target_not_active" || spec.ruleId === "docker.daemon_state_bind_mount_publishes_port")
       ? evidence.providerSlot !== undefined && evidence.providerSlot !== null
       : evidence.providerSlot !== spec.evidence.providerSlot)
     || evidence.freshness !== "fresh"
@@ -113,6 +122,19 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     if (!port || port.version !== 1 || port.provider !== "docker" || port.kind !== "docker_port_publication"
       || port.assertionKind !== "observed" || port.providerSlot !== null || port.freshness !== "fresh"
       || port.subjectRef !== finding.subjectRef) return null;
+  }
+
+  // The daemon-state + host-port advisory is a paired observation from one
+  // Docker collection. The UI never renders either fact's values, but it must
+  // not present the static warning if the opaque pair is incomplete, crossed,
+  // stale, or from different observations. Version-one Docker evidence may
+  // omit its legacy null slot at the browser boundary.
+  if (spec.ruleId === "docker.daemon_state_bind_mount_publishes_port") {
+    const port = record(finding.evidenceRefs[1]);
+    if (!port || port.version !== 1 || port.provider !== "docker" || port.kind !== "docker_port_publication"
+      || port.assertionKind !== "observed" || (port.providerSlot !== undefined && port.providerSlot !== null)
+      || port.freshness !== "fresh" || port.subjectRef !== finding.subjectRef
+      || port.collectedAt !== evidence.collectedAt || port.providerRevision !== evidence.providerRevision) return null;
   }
 
   return spec;

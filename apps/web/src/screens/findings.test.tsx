@@ -130,14 +130,86 @@ describe("Findings screen", () => {
     expect(html).toContain("Review the declared dependency and the target container state.");
   });
 
+  it("renders daemon-state host-port advice with static generic copy and a changes link", () => {
+    const daemonStatePort = structuredClone(findings);
+    daemonStatePort.findings[0] = {
+      id: "finding_docker_daemon_state_bind_mount_publishes_port_docker_container_redacted",
+      ruleId: "docker.daemon_state_bind_mount_publishes_port",
+      severity: "warning",
+      summary: "A container with Docker daemon state access also has a published host port.",
+      recommendation: "Review whether the daemon-state access and host-port publication are both intended.",
+      subjectRef: "docker_container_redacted", targetRef: "host_risk_docker_daemon_state",
+      evidenceRefs: [
+        { version: 1, id: "mount-path-secret", provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", summary: "provider-text-secret", subjectRef: "docker_container_redacted", collectedAt: 1, providerRevision: "opaque-pair", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "host-port-secret", provider: "docker", kind: "docker_port_publication", assertionKind: "observed", summary: "provider-text-secret", subjectRef: "docker_container_redacted", collectedAt: 1, providerRevision: "opaque-pair", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    const html = render({ findings: daemonStatePort });
+    expect(html).toContain("Docker daemon-state and host-port publication need review");
+    expect(html).toContain("A container with Docker daemon state access also has a published host port.");
+    expect(html).toContain("Review whether the daemon-state access and host-port publication are both intended.");
+    expect(html).toContain('href="/changes"');
+    for (const hidden of ["docker_container_redacted", "mount-path-secret", "host-port-secret", "provider-text-secret", "opaque-pair"]) expect(html).not.toContain(hidden);
+  });
+
+  it("accepts the legacy omitted V1 Docker provider slots for a coherent daemon-state host-port pair", () => {
+    const daemonStatePort = structuredClone(findings);
+    daemonStatePort.findings[0] = {
+      id: "finding_docker_daemon_state_bind_mount_publishes_port_docker_container_legacy",
+      ruleId: "docker.daemon_state_bind_mount_publishes_port", severity: "warning",
+      summary: "A container with Docker daemon state access also has a published host port.",
+      recommendation: "Review whether the daemon-state access and host-port publication are both intended.",
+      subjectRef: "docker_container_legacy", targetRef: "host_risk_docker_daemon_state",
+      evidenceRefs: [
+        { version: 1, id: "opaque-mount", provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_legacy", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "opaque-port", provider: "docker", kind: "docker_port_publication", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_legacy", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    for (const evidence of daemonStatePort.findings[0].evidenceRefs) delete (evidence as { providerSlot?: unknown }).providerSlot;
+    const html = render({ findings: daemonStatePort });
+    expect(html).toContain("Docker daemon-state and host-port publication need review");
+  });
+
+  it("fails closed for malformed or mismatched daemon-state host-port pairs", () => {
+    const daemonStatePort = structuredClone(findings);
+    daemonStatePort.findings[0] = {
+      id: "finding_docker_daemon_state_bind_mount_publishes_port_docker_container_pair",
+      ruleId: "docker.daemon_state_bind_mount_publishes_port", severity: "warning",
+      summary: "A container with Docker daemon state access also has a published host port.",
+      recommendation: "Review whether the daemon-state access and host-port publication are both intended.",
+      subjectRef: "docker_container_pair", targetRef: "host_risk_docker_daemon_state",
+      evidenceRefs: [
+        { version: 1, id: "opaque-mount", provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_pair", collectedAt: 1, providerRevision: "first", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "opaque-port", provider: "docker", kind: "docker_port_publication", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_other", collectedAt: 2, providerRevision: "second", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    const html = render({ findings: daemonStatePort });
+    expect(html).not.toContain("Docker daemon-state and host-port publication need review");
+    expect(html).not.toContain("docker_container_pair");
+    expect(html).not.toContain("docker_container_other");
+  });
+
   it("suppresses findings in demo and mock contexts even if fixture data is injected", () => {
+    const daemonStatePort = structuredClone(findings);
+    daemonStatePort.findings[0] = {
+      id: "finding_docker_daemon_state_bind_mount_publishes_port_docker_container_fixture",
+      ruleId: "docker.daemon_state_bind_mount_publishes_port", severity: "warning",
+      summary: "A container with Docker daemon state access also has a published host port.",
+      recommendation: "Review whether the daemon-state access and host-port publication are both intended.",
+      subjectRef: "docker_container_fixture", targetRef: "host_risk_docker_daemon_state",
+      evidenceRefs: [
+        { version: 1, id: "opaque-mount", provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_fixture", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "opaque-port", provider: "docker", kind: "docker_port_publication", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_fixture", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }
+      ]
+    };
     for (const context of [
       { evidenceMode: "demo" as const, modelProvenance: "demo" as const },
       { evidenceMode: "mock" as const, modelProvenance: "mock" as const }
     ]) {
-      const html = render({ findings, ...context });
+      const html = render({ findings: daemonStatePort, ...context });
       expect(html).toContain("Live evidence is not established");
-      expect(html).not.toContain("Declared dependency needs review");
+      expect(html).not.toContain("Docker daemon-state and host-port publication need review");
+      expect(html).not.toContain("docker_container_fixture");
     }
   });
 });
