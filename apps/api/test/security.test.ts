@@ -1256,6 +1256,42 @@ test("runtime evidence is required and fails closed before browser publication",
     () => validateDaemonResponse("/daemon/runtime/map", daemonStateWrongTarget),
     "Docker daemon-state evidence has one canonical synthetic target"
   );
+
+  const npmEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "npm_project_dockermap");
+  assert.ok(npmEdge, "canonical daemon fixture carries a V3 NPM manifest declaration");
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
+  for (const freshness of ["stale", "timed_out"] as const) {
+    const retainedNpm = structuredClone(fixture);
+    const edge = retainedNpm.edges.find((candidate: { source?: unknown }) => candidate.source === "npm_project_dockermap");
+    assert.ok(edge);
+    edge.evidenceRefs[0].freshness = freshness;
+    assert.doesNotThrow(
+      () => validateDaemonResponse("/daemon/runtime/map", retainedNpm),
+      `v3 npm evidence may retain ${freshness} data from its own scheduler slot`
+    );
+  }
+  for (const [field, value] of [
+    ["provider", "docker"],
+    ["kind", "docker_compose_depends_on"],
+    ["assertionKind", "observed"],
+    ["providerSlot", "systemd"],
+    ["freshness", "unavailable"],
+    ["version", 2]
+  ] as const) {
+    const malformedNpm = structuredClone(fixture);
+    const edge = malformedNpm.edges.find((candidate: { source?: unknown }) => candidate.source === "npm_project_dockermap");
+    assert.ok(edge);
+    edge.evidenceRefs[0][field] = value;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", malformedNpm),
+      `v3 npm evidence must reject fabricated ${field}`
+    );
+  }
+  const wrongNpmEndpoint = structuredClone(fixture);
+  const malformedNpmEdge = wrongNpmEndpoint.edges.find((edge: { source?: unknown }) => edge.source === "npm_project_dockermap");
+  assert.ok(malformedNpmEdge);
+  malformedNpmEdge.target = "docker_container_not_a_package";
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongNpmEndpoint));
 });
 
 test("fabricated runtime evidence is rejected over the authenticated API boundary", async () => {
@@ -1273,6 +1309,32 @@ test("fabricated runtime evidence is rejected over the authenticated API boundar
   });
   const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
   const response = await request(api, "/api/runtime/map", { headers: { Authorization: "Bearer test-token" } });
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.deepEqual(body, {
+    code: "daemon_invalid_response",
+    message: "Daemon response did not match its declared contract"
+  });
+  assert.doesNotMatch(JSON.stringify(body), new RegExp(sentinel));
+});
+
+test("fabricated V3 NPM evidence is rejected neutrally over the authenticated API boundary", async () => {
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json", import.meta.url),
+    "utf8"
+  ));
+  const sentinel = "DOCKERMAP_TEST_FAKE_NPM_EVIDENCE_SECRET";
+  const npmEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "npm_project_dockermap");
+  assert.ok(npmEdge, "canonical fixture must exercise the V3 browser boundary");
+  npmEdge.target = `npm_package_token_${sentinel}`;
+  npmEdge.evidenceRefs[0].subjectRef = npmEdge.source;
+  npmEdge.evidenceRefs[0].providerSlot = "systemd";
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/runtime/map") return sendJson(res, 200, fixture);
+    return sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+  const response = await request(api, "/api/v1/runtime/map", { headers: { Authorization: "Bearer test-token" } });
   assert.equal(response.status, 502);
   const body = await response.json();
   assert.deepEqual(body, {

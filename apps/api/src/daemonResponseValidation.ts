@@ -84,6 +84,13 @@ const V2_EVIDENCE_EDGE = {
   systemd_part_of: { relationship: "part_of", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_" },
 } as const;
 
+// Version three is equally narrow: a package manifest declaration from the
+// separately scheduled ProjectNpm slot.  It says nothing about installation,
+// resolution, execution, or package safety.
+const V3_EVIDENCE_EDGE = {
+  npm_package_manifest_dependency: { relationship: "depends_on", sourcePrefix: "npm_project_", targetPrefix: "npm_package_" },
+} as const;
+
 function hasCompleteProviderStateVector(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
   const providerStates = (payload as { providerStates?: unknown }).providerStates;
@@ -176,11 +183,18 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
         && value.assertionKind === "declared"
         && value.providerSlot === "systemd"
         && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
-      if (!isV1 && !isV2) return false;
+      const isV3 = value.version === 3
+        && value.provider === "npm"
+        && value.assertionKind === "declared"
+        && value.providerSlot === "project_npm"
+        && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
+      if (!isV1 && !isV2 && !isV3) return false;
       const expected = typeof value.kind === "string"
         ? (isV1
           ? V1_EVIDENCE_EDGE[value.kind as keyof typeof V1_EVIDENCE_EDGE]
-          : V2_EVIDENCE_EDGE[value.kind as keyof typeof V2_EVIDENCE_EDGE])
+          : isV2
+            ? V2_EVIDENCE_EDGE[value.kind as keyof typeof V2_EVIDENCE_EDGE]
+            : V3_EVIDENCE_EDGE[value.kind as keyof typeof V3_EVIDENCE_EDGE])
         : undefined;
       if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return false;
       if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix)) return false;
