@@ -36,20 +36,24 @@ Only a reviewed, exact RustSec advisory ID may be placed in the audit action's
 
 Every external `FROM` reference in the root Dockerfile is pinned to an upstream
 manifest-list SHA-256 digest. The human-readable tag remains beside the digest
-to make the intended upstream release clear. A digest is intentionally not a
-floating tag: it is updated only in a reviewed maintenance change that records
-the new upstream digest and passes the Docker image build, vulnerability scan,
-and relevant release checks. Manifest-list digests retain the upstream image's
-supported architecture variants.
+to make the intended upstream release clear. This fixes base-image selection;
+it is not a claim that the whole container build is byte-for-byte reproducible.
+The Dockerfile frontend selector and Debian `apt` repositories remain mutable
+inputs, so this baseline deliberately does not claim a fully reproducible image
+build. A digest is intentionally not a floating tag: it is updated only in a
+reviewed maintenance change that records the new upstream digest and passes the
+Docker image build, vulnerability scan, and relevant release checks.
+Manifest-list digests retain the upstream image's supported architecture
+variants.
 
 ## Release publication control
 
 A `v*` tag reruns the production Node audit, RustSec advisory audit, local
-release-candidate image build/vulnerability scan, reproducible build,
-version/tag check, deterministic archive, checksum, and both release-artifact
-and image SBOM generation. It uploads those outputs only as a 30-day GitHub
-Actions artifact. The workflow has read-only repository contents permission and
-cannot create a GitHub Release or publish a container image.
+release-candidate image build/vulnerability scan, release build, version/tag
+check, normalized archive packaging, checksum, and both release-artifact and
+image SBOM generation. It uploads those outputs only as a 30-day GitHub Actions
+artifact. The workflow has read-only repository contents permission and cannot
+create a GitHub Release or publish a container image.
 
 After the exact-tag clean-host, proxy, restart/reboot, and required #15/#16
 evidence is reviewed, a maintainer may create the private prerelease manually
