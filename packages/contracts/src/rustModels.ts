@@ -123,7 +123,7 @@ export type RuntimeNodeKind =
  * interface: the daemon owns the complete finite list.
  */
 export type ProviderSlot =
-  'network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm';
+  ('network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm') | 'systemd';
 export type ProviderStateKind = 'fresh' | 'stale' | 'collecting' | 'unavailable' | 'timed_out' | 'disabled';
 /**
  * A deliberately small, non-diagnostic explanation for a provider slot that
@@ -215,10 +215,10 @@ export interface RuntimeMap {
   modelRevision: string;
   nodes: RuntimeMapNode[];
   /**
-   * @minItems 5
-   * @maxItems 5
+   * @minItems 6
+   * @maxItems 6
    */
-  providerStates: [ProviderState, ProviderState, ProviderState, ProviderState, ProviderState];
+  providerStates: [ProviderState, ProviderState, ProviderState, ProviderState, ProviderState, ProviderState];
   /**
    * ACTUAL source of these bytes: "docker" or "mock" (#85 A3). Stamped by
    * the daemon route layer from the cache's runtime mode.

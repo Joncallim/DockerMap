@@ -196,7 +196,9 @@ test.describe("DockerMap GUI", () => {
     // Edge evidence is selected independently of endpoint navigation. The
     // inspector must expose the canonical Docker fact, not reconstruct a
     // rationale from the two visible labels.
-    const inspectEvidence = page.getByRole("button", { name: "Inspect evidence" }).first();
+    const inspectEvidence = page
+      .locator(".runtime-edge-row", { has: page.locator(".runtime-edge-target", { hasText: "application" }) })
+      .getByRole("button", { name: "Inspect evidence" });
     await inspectEvidence.click();
     await expect(inspectEvidence).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByText("Relationship evidence", { exact: true })).toBeVisible();

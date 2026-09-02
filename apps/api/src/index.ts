@@ -422,7 +422,7 @@ function getMockResponse<T>(path: string): T {
       lastUpdated: mockSnapshot.lastUpdated ?? Date.now(),
       modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1",
       providerStates: [
-        unavailableProviderState("network_infrastructure"), unavailableProviderState("host_scoped"),
+        unavailableProviderState("network_infrastructure"), unavailableProviderState("host_scoped"), unavailableProviderState("systemd"),
         unavailableProviderState("python_processes"), unavailableProviderState("native_processes"),
         unavailableProviderState("project_npm")
       ],

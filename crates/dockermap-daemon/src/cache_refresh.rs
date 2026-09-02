@@ -1276,9 +1276,12 @@ mod scheduler_tests {
         assert_eq!(starts[&ProviderSlot::ProjectNpm], 2);
         assert_eq!(starts.values().sum::<usize>(), 33);
         assert!(maximum_live_workers <= MAX_CONCURRENT_PROVIDER_SLOTS);
-        let legacy_slot_passes =
-            (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * STATIC_PROVIDER_SLOTS.len() as u64;
-        assert_eq!(legacy_slot_passes, 186);
+        // Before Systemd became independently schedulable, one aggregate
+        // host-scoped pass covered it alongside the four other fixed bundles.
+        // Preserve that actual historical five-bundle baseline rather than
+        // retroactively multiplying the old cadence by today's six slots.
+        let legacy_aggregate_passes = (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * 5;
+        assert_eq!(legacy_aggregate_passes, 155);
     }
 
     /// The scheduler's timing trace above deliberately counts claims rather

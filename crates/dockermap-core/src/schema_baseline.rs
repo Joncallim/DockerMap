@@ -160,11 +160,11 @@ mod tests {
             .expect("provider state property exists");
         assert_eq!(
             states.get("minItems").and_then(|value| value.as_u64()),
-            Some(5)
+            Some(6)
         );
         assert_eq!(
             states.get("maxItems").and_then(|value| value.as_u64()),
-            Some(5)
+            Some(6)
         );
     }
 
