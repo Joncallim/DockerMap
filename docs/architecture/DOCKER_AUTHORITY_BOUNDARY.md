@@ -147,21 +147,50 @@ publish, or retained. The daemon event parser, deduplication, reconnect
 lifecycle, publication redaction, and evidence integration remain pending #70
 work and must be reviewed before any raw event is exposed beyond the collector.
 
+### Finite Docker stats preflight (#70)
+
+The gateway's
+`bollard_0_19_one_shot_stats_request_traverses_the_real_gateway_verbatim`
+regression measures Bollard 0.19.4 against the real filtered Unix gateway and
+an isolated raw-Docker Unix stub. The one approved origin-form target is:
+
+```text
+/containers/<single-unescaped-name-or-id>/stats?stream=false&one-shot=false
+```
+
+The test proves the exact query order, empty request body, normal HTTP/1.1
+framing, and verbatim forwarding. The policy rejects every other stats form:
+the streaming form, one-shot variation, reordered/duplicate/unknown or missing
+query keys, root/versioned/encoded paths, request bodies, and upgrade framing.
+It provides no general Docker read or path wildcard, but an unfiltered gateway
+does permit that single finite stats shape for any valid container name or ID
+segment. It does not itself implement a stats collector or publish Docker's
+response body.
+
+A label filter cannot be expressed on Docker's per-container stats endpoint.
+The gateway therefore denies **all** stats requests whenever
+`DOCKERMAP_DOCKER_LABEL_FILTER` is configured; collector-side target selection
+cannot substitute for gateway authorization. Finite stats are available only
+to an unfiltered gateway profile. A later scoped-telemetry design needs a new
+reviewed authority mechanism rather than weakening this boundary.
+
 ## Gateway policy
 
-Allow only the measured inventory/log requests and the bounded event form above.
+Allow only the measured inventory/log requests, bounded event form, and, only
+without a configured label scope, finite per-container stats form above.
 There is no general Docker read permission or path wildcard.
 
 - Method must be exactly `GET`; all other methods, including `HEAD`, are
   rejected until a separately reviewed contract adds them.
-- Paths are accepted only in origin form and must exactly match one of the five
+- Paths are accepted only in origin form and must exactly match one of the six
   route shapes. Empty query is allowed only for `/networks` and `/volumes`.
 - The container path segment must be a single non-empty, unescaped Docker
   name/ID segment. Encoded separators, duplicate slashes, dot segments and
   absolute-form targets are rejected, not normalised.
 - Query parameters are unique and exactly match the applicable contract.
   Unknown keys, duplicate keys, empty/value-shape changes, unbounded/following
-  logs, old event lookback, and unscoped event requests are rejected.
+  logs, streaming or malformed stats, every stats call on a label-scoped
+  gateway, old event lookback, and unscoped event requests are rejected.
 - Inventory calls use the unfiltered form only when no gateway label filter is
   configured. With one configured label filter, all three require the measured
   single `filters` object; the gateway rejects scope widening or filter removal.
@@ -186,12 +215,12 @@ socket paths and has no raw-socket retry path.
 Gateway regression tests use a fake raw Unix Docker endpoint to establish that
 allowed targets are forwarded verbatim and denied method, route, query,
 framing, upgrade, and encoded-path forms never reach Docker. They cover the
-representative mutation, inspect/archive/top/exec/stats/image/build, unsafe
-event-query, and request-ambiguity classes enumerated below. A Bollard-driven
-wire test proves that nondeterministic filter-map ordering is accepted only
-after exact semantic validation. The isolated live-Docker and production-image
-suites cover allowed reads, denied mutations, and the split mount/network
-profile.
+representative mutation, inspect/archive/top/exec/image/build, unsafe
+event-query, hostile stats-query, and request-ambiguity classes enumerated
+below. Bollard-driven wire tests prove the event filter semantics and exact
+finite stats request before either reaches Docker. The isolated live-Docker and
+production-image suites cover allowed reads, denied mutations, and the split
+mount/network profile.
 
 The single-container compatibility image starts the gateway before its
 collector and therefore exercises the filtered contract, but it is **not** the
@@ -199,11 +228,12 @@ production isolation profile: its processes share one container namespace and
 raw-socket mount. Use the split Compose deployment for Docker-only operation.
 
 This policy intentionally excludes container archive/export, top/processes,
-inspect, exec, stats, images, builds, plugin APIs and every mutation. It permits
-only the bounded, container-scoped event selection above; the daemon collector
-is not implemented by this slice. Any later event expansion or stats support
-requires a new explicit policy, negative tests, and review; it must not be
-enabled by a broad read wildcard.
+inspect, exec, images, builds, plugin APIs and every mutation. It permits only
+the bounded, container-scoped event selection and exact finite stats request on
+an unfiltered gateway. Neither gateway permission implements collector
+scheduling, retention, redaction, or publication. Any later event or stats
+expansion requires a new explicit policy, negative tests, and review; it must
+not be enabled by a broad read wildcard.
 
 ## Deployment profiles
 
