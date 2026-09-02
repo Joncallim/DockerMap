@@ -24,6 +24,25 @@ const findings: FindingsResponse = {
   }]
 };
 
+const temporalFinding: FindingsResponse = {
+  modelRevision: "findings-revision",
+  findings: [{
+    id: "finding_docker_repeated_container_died_events_docker_container_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd--249bd4907c9ebee596f254dc5635c27837d2f00a6c3ed32794af0237fc0fbde0",
+    ruleId: "docker.repeated_container_died_events",
+    severity: "advisory",
+    summary: "A Docker container had three observed die events within five minutes.",
+    recommendation: "Review the container's recent configuration and logs to determine whether the repeated exits are expected.",
+    subjectRef: "docker_container_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    targetRef: "docker_event_stream",
+    evidenceRefs: [],
+    temporalEvidenceRefs: [
+      { eventId: "docker_event_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", source: "docker_event_stream", kind: "container_died", sourceOccurredAtMs: 1_710_000_000_000, anchorModelRevision: "anchor-a", anchorObservationRevision: "observed-a" },
+      { eventId: "docker_event_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", source: "docker_event_stream", kind: "container_died", sourceOccurredAtMs: 1_710_000_100_000, anchorModelRevision: "anchor-b", anchorObservationRevision: "observed-b" },
+      { eventId: "docker_event_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", source: "docker_event_stream", kind: "container_died", sourceOccurredAtMs: 1_710_000_200_000, anchorModelRevision: "anchor-c", anchorObservationRevision: "observed-c" }
+    ]
+  }]
+};
+
 function render(value: Partial<AppContextValue>): string {
   const context: AppContextValue = {
     model: null, modelProvenance: null, loading: false, error: null, health: null,
@@ -87,5 +106,42 @@ describe("Findings screen", () => {
     expect(html).toContain("Docker daemon state");
     expect(html).toContain("may provide Docker daemon API authority");
     expect(html).not.toContain("/var/run/docker.sock");
+  });
+
+  it("renders the temporal advisory as a generic bounded history link without raw event material or lifecycle conclusions", () => {
+    const html = render({ findings: temporalFinding });
+    expect(html).toContain("Docker event history needs review");
+    expect(html).toContain("Three retained Docker event observations fall within the five-minute review threshold.");
+    expect(html).toContain('href="/changes"');
+    expect(html).not.toContain('href="/services/');
+    expect(html).not.toContain(temporalFinding.findings[0].id);
+    expect(html).not.toContain(temporalFinding.findings[0].subjectRef);
+    expect(html).not.toContain(temporalFinding.findings[0]!.temporalEvidenceRefs![0]!.eventId);
+    expect(html).not.toContain("anchor-a");
+    expect(html).not.toContain("1710000000000");
+    expect(html).not.toMatch(/crash|restart|current state|cause/i);
+  });
+
+  it.each([
+    ["wrong evidence kind", (value: FindingsResponse) => { value.findings[0]!.temporalEvidenceRefs![1]!.kind = "container_died_x" as never; }],
+    ["out-of-window timestamps", (value: FindingsResponse) => { value.findings[0]!.temporalEvidenceRefs![2]!.sourceOccurredAtMs += 300_001; }],
+    ["opaque subject replacement", (value: FindingsResponse) => { value.findings[0]!.subjectRef = "docker_container_api"; }],
+    ["unreviewed field", (value: FindingsResponse) => { Object.assign(value.findings[0]!.temporalEvidenceRefs![0]!, { raw: "must-not-render" }); }]
+  ])("fails closed for a temporal finding with %s", (_label, mutate) => {
+    const malformed = structuredClone(temporalFinding);
+    mutate(malformed);
+    const html = render({ findings: malformed });
+    expect(html).toContain("Live evidence is not established");
+    expect(html).not.toContain("Docker event history needs review");
+    expect(html).not.toContain("must-not-render");
+  });
+
+  it.each([
+    ["demo", "demo", "demo"],
+    ["mock", "mock", "mock"]
+  ] as const)("does not present temporal findings as live while in %s mode", (_label, evidenceMode, modelProvenance) => {
+    const html = render({ findings: temporalFinding, evidenceMode, modelProvenance });
+    expect(html).toContain("Live evidence is not established");
+    expect(html).not.toContain("Docker event history needs review");
   });
 });

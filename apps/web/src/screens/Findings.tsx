@@ -2,9 +2,20 @@ import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import Icon from "../components/Icon";
 import { EmptyState, Loading, Panel, Tag } from "../components/primitives";
+import { isCoherentRepeatedContainerDiedFinding } from "../lib/temporalFinding";
+
+const TEMPORAL_FINDING_RULE = "docker.repeated_container_died_events";
 
 export default function Findings() {
-  const { findings, loading } = useApp();
+  const { findings: response, loading, evidenceMode, modelProvenance } = useApp();
+  // AppShell already supplies findings only beside a coherent live model. This
+  // guard keeps the standalone screen equally conservative in tests, future
+  // call sites, and any direct context consumer.
+  const explicitNonLive = evidenceMode === "demo" || evidenceMode === "mock" || modelProvenance === "demo" || modelProvenance === "mock";
+  const hasMalformedTemporalFinding = response?.findings.some((finding) =>
+    finding.ruleId === TEMPORAL_FINDING_RULE && !isCoherentRepeatedContainerDiedFinding(finding)
+  ) ?? false;
+  const findings = explicitNonLive || hasMalformedTemporalFinding ? null : response;
 
   if (loading && !findings) return <Loading label="Checking bounded findings…" />;
 
@@ -36,6 +47,16 @@ export default function Findings() {
       ) : (
         <div className="stack">
           {findings.findings.map((finding) => {
+            if (finding.ruleId === TEMPORAL_FINDING_RULE) {
+              // The contract guard above makes this branch safe. Its contents
+              // intentionally never render opaque subjects, event IDs,
+              // anchors, source times, or daemon-provided copy.
+              return <Panel key={finding.id} title="Docker event history needs review" icon="alert" hint="Historical observation">
+                <div className="tag-wrap"><Tag tone="muted">Advisory</Tag><Tag tone="muted">Docker event stream</Tag><Tag tone="muted">3 retained observations</Tag></div>
+                <p>Three retained Docker event observations fall within the five-minute review threshold.</p>
+                <p className="muted-copy"><Link className="ghost-link" to="/changes">Review Change Center <Icon name="arrow" size={14} /></Link> for bounded Docker event observations.</p>
+              </Panel>;
+            }
             const [title, hint] = presentationFor(finding.ruleId);
             const category = finding.ruleId === "systemd.requires_target_not_active" ? "Systemd Requires" : finding.ruleId === "docker.daemon_state_bind_mount" ? "Docker daemon state" : "Internal network + host port";
             return <Panel key={finding.id} title={title} icon="alert" hint={hint}>
