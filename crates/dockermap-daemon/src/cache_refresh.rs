@@ -14,6 +14,7 @@ use crate::{
         SYSTEMD_EVIDENCE_KIND_MARKER, SYSTEMD_EVIDENCE_PART_OF, SYSTEMD_EVIDENCE_REQUIRES,
         SYSTEMD_EVIDENCE_WANTS,
     },
+    providers::tmux::TMUX_EVIDENCE_SESSION_LISTING_MARKER,
     publication::{publish_docker_snapshot, redact_health_response, redact_runtime_map},
     runtime_collection::{
         collect_provider_slot_bounded, runtime_map_from_collection, slot_interval,
@@ -310,6 +311,7 @@ impl SlotDataRevision {
 pub(crate) struct ProviderSlotFlights {
     network: Arc<AtomicBool>,
     host: Arc<AtomicBool>,
+    tmux: Arc<AtomicBool>,
     cron: Arc<AtomicBool>,
     systemd: Arc<AtomicBool>,
     python: Arc<AtomicBool>,
@@ -322,6 +324,7 @@ impl Default for ProviderSlotFlights {
         Self {
             network: Arc::new(AtomicBool::new(false)),
             host: Arc::new(AtomicBool::new(false)),
+            tmux: Arc::new(AtomicBool::new(false)),
             cron: Arc::new(AtomicBool::new(false)),
             systemd: Arc::new(AtomicBool::new(false)),
             python: Arc::new(AtomicBool::new(false)),
@@ -339,6 +342,7 @@ impl ProviderSlotFlights {
         match slot {
             ProviderSlot::NetworkInfrastructure => self.network.clone(),
             ProviderSlot::HostScoped => self.host.clone(),
+            ProviderSlot::Tmux => self.tmux.clone(),
             ProviderSlot::Cron => self.cron.clone(),
             ProviderSlot::Systemd => self.systemd.clone(),
             ProviderSlot::PythonProcesses => self.python.clone(),
@@ -351,6 +355,7 @@ impl ProviderSlotFlights {
         [
             &self.network,
             &self.host,
+            &self.tmux,
             &self.cron,
             &self.systemd,
             &self.python,
@@ -888,6 +893,8 @@ fn runtime_map_for_snapshot(
                 bind_npm_evidence(&mut edges, slot_state);
             } else if slot == ProviderSlot::Cron {
                 bind_cron_evidence(&mut edges, slot_state);
+            } else if slot == ProviderSlot::Tmux {
+                bind_tmux_evidence(&mut edges, slot_state);
             }
             let (target_nodes, target_edges, target_diagnostics) = combined.parts_mut();
             target_nodes.extend(nodes);
@@ -902,22 +909,48 @@ fn runtime_map_for_snapshot(
             });
         }
     }
-    // Cron's declaration target is canonical only when the independently
-    // retained HostScoped observation supplied `host_local`. Startup and host
-    // refresh ordering can otherwise leave a dangling relationship; omit it
-    // rather than publishing an unverifiable target or borrowing host state.
-    let has_canonical_host = combined.nodes().iter().any(|node| {
-        node.id == "host_local"
-            && node.provider == RuntimeProviderKind::Host
-            && node.kind == dockermap_core::RuntimeNodeKind::Host
+    // Cron and Tmux target the canonical local host only when the independent
+    // HostScoped observation supplied exactly one such node. Startup, reset,
+    // and collision ordering can otherwise leave a dangling or ambiguous
+    // relationship; omit it rather than borrowing host state. Tmux has the
+    // additional source gate because a duplicate generated session identity
+    // cannot safely attest which listing record produced the relationship.
+    let canonical_host_nodes = combined
+        .nodes()
+        .iter()
+        .filter(|node| node.id == "host_local")
+        .collect::<Vec<_>>();
+    let has_exactly_one_canonical_host = canonical_host_nodes.len() == 1
+        && canonical_host_nodes[0].provider == RuntimeProviderKind::Host
+        && canonical_host_nodes[0].kind == dockermap_core::RuntimeNodeKind::Host;
+    let tmux_source_identities = combined.nodes().iter().fold(
+        BTreeMap::<String, (usize, bool)>::new(),
+        |mut counts, node| {
+            let entry = counts.entry(node.id.clone()).or_insert((0, false));
+            entry.0 += 1;
+            entry.1 |= node.provider == RuntimeProviderKind::Tmux
+                && node.kind == dockermap_core::RuntimeNodeKind::TmuxSession;
+            counts
+        },
+    );
+    combined.parts_mut().1.retain(|edge| {
+        if edge.target != "host_local"
+            || edge.relationship != dockermap_core::RuntimeRelationshipKind::RunsOn
+        {
+            return true;
+        }
+        if edge.source.starts_with("scheduled_job_") {
+            return has_exactly_one_canonical_host;
+        }
+        if edge.source.starts_with("tmux_session_") {
+            return *mode == RuntimeMode::Docker
+                && has_exactly_one_canonical_host
+                && tmux_source_identities
+                    .get(&edge.source)
+                    .is_some_and(|(count, is_tmux_session)| *count == 1 && *is_tmux_session);
+        }
+        true
     });
-    if !has_canonical_host {
-        combined.parts_mut().1.retain(|edge| {
-            !(edge.source.starts_with("scheduled_job_")
-                && edge.target == "host_local"
-                && edge.relationship == dockermap_core::RuntimeRelationshipKind::RunsOn)
-        });
-    }
     let mut runtime_map =
         runtime_map_from_collection(snapshot, &combined, docker_observation_revision, mode);
     runtime_map.provider_states = provider_states_for(slots);
@@ -999,6 +1032,85 @@ fn bind_cron_evidence(edges: &mut [RuntimeMapEdge], state: &SlotRuntimeState) {
 fn clear_cron_evidence(edges: &mut [RuntimeMapEdge]) {
     for edge in edges.iter_mut() {
         edge.metadata.remove(CRON_EVIDENCE_SCHEDULE_MARKER);
+        edge.evidence_refs.clear();
+    }
+}
+
+/// Bind a fixed tmux session listing only to the independently scheduled
+/// Tmux slot. The private marker is removed in every path. The final runtime
+/// map separately verifies that the source session and local-host target are
+/// both unique before it retains the relationship.
+fn bind_tmux_evidence(edges: &mut [RuntimeMapEdge], state: &SlotRuntimeState) {
+    let disabled = retained_collection(&state.observation)
+        .as_ref()
+        .is_some_and(|collection| {
+            collection.states().iter().any(|candidate| {
+                candidate.slot == ProviderSlot::Tmux
+                    && candidate.state == ProviderStateKind::Disabled
+            })
+        });
+    let freshness = match &state.observation {
+        RuntimeProviderState::Fresh(_) => RuntimeEvidenceFreshness::Fresh,
+        RuntimeProviderState::Collecting(Some(_)) | RuntimeProviderState::Degraded(Some(_)) => {
+            RuntimeEvidenceFreshness::Stale
+        }
+        RuntimeProviderState::TimedOut(Some(_)) => RuntimeEvidenceFreshness::TimedOut,
+        RuntimeProviderState::Unavailable
+        | RuntimeProviderState::Collecting(None)
+        | RuntimeProviderState::Degraded(None)
+        | RuntimeProviderState::TimedOut(None) => {
+            clear_tmux_evidence(edges);
+            return;
+        }
+    };
+    let (Some(revision), Some(collected_at)) = (
+        state
+            .freshness
+            .data_revision
+            .as_ref()
+            .map(SlotDataRevision::public),
+        state.freshness.last_success_ms,
+    ) else {
+        clear_tmux_evidence(edges);
+        return;
+    };
+    if disabled {
+        clear_tmux_evidence(edges);
+        return;
+    }
+    for edge in edges.iter_mut() {
+        let marker = edge.metadata.remove(TMUX_EVIDENCE_SESSION_LISTING_MARKER);
+        if marker.as_deref() != Some("observed")
+            || edge.relationship != dockermap_core::RuntimeRelationshipKind::RunsOn
+            || !edge.source.starts_with("tmux_session_")
+            || edge.target != "host_local"
+            || edge.source == edge.target
+        {
+            edge.evidence_refs.clear();
+            continue;
+        }
+        edge.evidence_refs = vec![RuntimeEvidenceRef {
+            version: 5,
+            id: format!(
+                "tmux_evidence_session_listing_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            provider: RuntimeEvidenceProvider::Tmux,
+            kind: RuntimeEvidenceKind::TmuxSessionListing,
+            assertion_kind: RuntimeEvidenceAssertionKind::Observed,
+            summary: "tmux listed a local session".into(),
+            subject_ref: edge.source.clone(),
+            collected_at,
+            provider_revision: revision.clone(),
+            provider_slot: Some(ProviderSlot::Tmux),
+            freshness,
+        }];
+    }
+}
+
+fn clear_tmux_evidence(edges: &mut [RuntimeMapEdge]) {
+    for edge in edges.iter_mut() {
+        edge.metadata.remove(TMUX_EVIDENCE_SESSION_LISTING_MARKER);
         edge.evidence_refs.clear();
     }
 }
@@ -1485,6 +1597,36 @@ mod scheduler_tests {
         collection
     }
 
+    fn marked_tmux_session() -> ProviderCollection {
+        let mut collection = ProviderCollection::default();
+        collection.set_state(ProviderSlot::Tmux, ProviderStateKind::Fresh);
+        collection.nodes_mut().push(RuntimeMapNode {
+            id: "tmux_session_opaque".into(),
+            provider: RuntimeProviderKind::Tmux,
+            kind: RuntimeNodeKind::TmuxSession,
+            label: "DOCKERMAP_TEST_TMUX_SESSION_NAME_SECRET".into(),
+            status: Some("attached".into()),
+            layer: Some(RuntimeNodeLayer::Session),
+            metadata: BTreeMap::from([(
+                "sessionId".into(),
+                "DOCKERMAP_TEST_TMUX_SESSION_METADATA_SECRET".into(),
+            )]),
+            service: None,
+            package: None,
+        });
+        collection.parts_mut().1.push(RuntimeMapEdge {
+            source: "tmux_session_opaque".into(),
+            target: "host_local".into(),
+            relationship: dockermap_core::RuntimeRelationshipKind::RunsOn,
+            metadata: BTreeMap::from([(
+                TMUX_EVIDENCE_SESSION_LISTING_MARKER.into(),
+                "observed".into(),
+            )]),
+            evidence_refs: Vec::new(),
+        });
+        collection
+    }
+
     fn host_collection() -> ProviderCollection {
         let mut collection = ProviderCollection::default();
         collection.set_state(ProviderSlot::HostScoped, ProviderStateKind::Fresh);
@@ -1564,6 +1706,241 @@ mod scheduler_tests {
             assert_eq!(evidence.collected_at, 42);
             assert_eq!(evidence.freshness, expected);
         }
+    }
+
+    #[test]
+    fn tmux_session_listing_evidence_is_slot_bound_target_gated_and_redacted() {
+        for (observation, expected) in [
+            (
+                RuntimeProviderState::Fresh(marked_tmux_session()),
+                RuntimeEvidenceFreshness::Fresh,
+            ),
+            (
+                RuntimeProviderState::Degraded(Some(marked_tmux_session())),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                RuntimeProviderState::TimedOut(Some(marked_tmux_session())),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
+        ] {
+            let mut provider_slots = slots();
+            let tmux = provider_slots.get_mut(&ProviderSlot::Tmux).unwrap();
+            tmux.observation = observation;
+            tmux.freshness.data_revision = Some(SlotDataRevision::first());
+            tmux.freshness.last_success_ms = Some(42);
+            // A completed Tmux pass alone must not publish a dangling edge.
+            let no_host = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &provider_slots,
+                "docker-observation",
+            );
+            assert!(no_host
+                .edges
+                .iter()
+                .all(|edge| edge.source != "tmux_session_opaque"));
+
+            let host = provider_slots.get_mut(&ProviderSlot::HostScoped).unwrap();
+            host.observation = RuntimeProviderState::Fresh(host_collection());
+            host.freshness.data_revision = Some(SlotDataRevision::first());
+            host.freshness.last_success_ms = Some(42);
+            let map = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &provider_slots,
+                "docker-observation",
+            );
+            let edge = map
+                .edges
+                .iter()
+                .find(|edge| edge.source == "tmux_session_opaque")
+                .expect("canonical host admits tmux edge");
+            assert!(edge.metadata.is_empty());
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 5);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Tmux);
+            assert_eq!(evidence.kind, RuntimeEvidenceKind::TmuxSessionListing);
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Observed
+            );
+            assert_eq!(evidence.summary, "tmux listed a local session");
+            assert_eq!(evidence.provider_slot, Some(ProviderSlot::Tmux));
+            assert_eq!(evidence.collected_at, 42);
+            assert_eq!(evidence.freshness, expected);
+            assert!(!evidence.provider_revision.is_empty());
+            let serialized = serde_json::to_string(evidence).expect("evidence serializes");
+            for sentinel in [
+                "DOCKERMAP_TEST_TMUX_SESSION_NAME_SECRET",
+                "DOCKERMAP_TEST_TMUX_SESSION_METADATA_SECRET",
+            ] {
+                assert!(
+                    !serialized.contains(sentinel),
+                    "session data must never enter tmux evidence"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tmux_evidence_fails_closed_for_ambiguous_source_missing_lifecycle_reset_and_mock() {
+        let mut slots_without_revision = slots();
+        let tmux = slots_without_revision.get_mut(&ProviderSlot::Tmux).unwrap();
+        tmux.observation = RuntimeProviderState::Fresh(marked_tmux_session());
+        slots_without_revision
+            .get_mut(&ProviderSlot::HostScoped)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &slots_without_revision,
+            "docker-observation",
+        );
+        let edge = map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "tmux_session_opaque")
+            .expect("identity is visible without an attesting lifecycle");
+        assert!(edge.evidence_refs.is_empty() && edge.metadata.is_empty());
+
+        let mut disabled = slots();
+        let mut collection = marked_tmux_session();
+        collection.set_state(ProviderSlot::Tmux, ProviderStateKind::Disabled);
+        let tmux = disabled.get_mut(&ProviderSlot::Tmux).unwrap();
+        tmux.observation = RuntimeProviderState::Fresh(collection);
+        tmux.freshness.data_revision = Some(SlotDataRevision::first());
+        tmux.freshness.last_success_ms = Some(42);
+        disabled
+            .get_mut(&ProviderSlot::HostScoped)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &disabled,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "tmux_session_opaque")
+            .expect("disabled tmux identity remains visible without evidence")
+            .evidence_refs
+            .is_empty());
+
+        let mut ambiguous = slots();
+        let mut collection = marked_tmux_session();
+        collection.nodes_mut().push(RuntimeMapNode {
+            id: "tmux_session_opaque".into(),
+            provider: RuntimeProviderKind::Process,
+            kind: RuntimeNodeKind::Process,
+            label: "duplicate".into(),
+            status: None,
+            layer: Some(RuntimeNodeLayer::Session),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        });
+        let tmux = ambiguous.get_mut(&ProviderSlot::Tmux).unwrap();
+        tmux.observation = RuntimeProviderState::Fresh(collection);
+        tmux.freshness.data_revision = Some(SlotDataRevision::first());
+        tmux.freshness.last_success_ms = Some(42);
+        ambiguous
+            .get_mut(&ProviderSlot::HostScoped)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &ambiguous,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .all(|edge| edge.source != "tmux_session_opaque"));
+
+        // The canonical host target must be unique and have the closed Host shape.
+        // A colliding or misclassified `host_local` must not make the session edge
+        // routable or attestable.
+        for host in [
+            {
+                let mut host = host_collection();
+                host.nodes_mut().push(RuntimeMapNode {
+                    id: "host_local".into(),
+                    provider: RuntimeProviderKind::Host,
+                    kind: RuntimeNodeKind::Host,
+                    label: "duplicate host".into(),
+                    status: Some("online".into()),
+                    layer: Some(RuntimeNodeLayer::Host),
+                    metadata: BTreeMap::new(),
+                    service: None,
+                    package: None,
+                });
+                host
+            },
+            {
+                let mut host = host_collection();
+                let node = host.nodes_mut().first_mut().expect("host node");
+                node.provider = RuntimeProviderKind::Tmux;
+                node.kind = RuntimeNodeKind::TmuxSession;
+                host
+            },
+        ] {
+            let mut invalid_host = slots();
+            let tmux = invalid_host.get_mut(&ProviderSlot::Tmux).unwrap();
+            tmux.observation = RuntimeProviderState::Fresh(marked_tmux_session());
+            tmux.freshness.data_revision = Some(SlotDataRevision::first());
+            tmux.freshness.last_success_ms = Some(42);
+            let host_slot = invalid_host.get_mut(&ProviderSlot::HostScoped).unwrap();
+            host_slot.observation = RuntimeProviderState::Fresh(host);
+            host_slot.freshness.data_revision = Some(SlotDataRevision::first());
+            host_slot.freshness.last_success_ms = Some(42);
+            let map = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &invalid_host,
+                "docker-observation",
+            );
+            assert!(map
+                .edges
+                .iter()
+                .all(|edge| edge.source != "tmux_session_opaque"));
+        }
+
+        let mut reset = source_reset_provider_slots();
+        reset.get_mut(&ProviderSlot::Tmux).unwrap().observation = RuntimeProviderState::Unavailable;
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &reset,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .all(|edge| edge.source != "tmux_session_opaque"));
+
+        let mut mock = slots();
+        let tmux = mock.get_mut(&ProviderSlot::Tmux).unwrap();
+        tmux.observation = RuntimeProviderState::Fresh(marked_tmux_session());
+        tmux.freshness.data_revision = Some(SlotDataRevision::first());
+        tmux.freshness.last_success_ms = Some(42);
+        mock.get_mut(&ProviderSlot::HostScoped).unwrap().observation =
+            RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Mock,
+            &mock,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .all(|edge| edge.source != "tmux_session_opaque"));
     }
 
     #[test]
@@ -2011,6 +2388,7 @@ mod scheduler_tests {
             slot_interval(ProviderSlot::HostScoped),
             Duration::from_secs(15)
         );
+        assert_eq!(slot_interval(ProviderSlot::Tmux), Duration::from_secs(15));
         assert_eq!(slot_interval(ProviderSlot::Cron), Duration::from_secs(15));
         assert_eq!(
             slot_interval(ProviderSlot::Systemd),
@@ -2060,6 +2438,7 @@ mod scheduler_tests {
         let invocations = |slot| 1 + window.as_secs() / slot_interval(slot).as_secs();
         assert_eq!(invocations(ProviderSlot::NetworkInfrastructure), 7);
         assert_eq!(invocations(ProviderSlot::HostScoped), 5);
+        assert_eq!(invocations(ProviderSlot::Tmux), 5);
         assert_eq!(invocations(ProviderSlot::Cron), 5);
         assert_eq!(invocations(ProviderSlot::Systemd), 5);
         assert_eq!(invocations(ProviderSlot::PythonProcesses), 7);
@@ -2127,12 +2506,13 @@ mod scheduler_tests {
         assert_eq!(publications, 31);
         assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
         assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+        assert_eq!(starts[&ProviderSlot::Tmux], 5);
         assert_eq!(starts[&ProviderSlot::Cron], 5);
         assert_eq!(starts[&ProviderSlot::Systemd], 5);
         assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);
         assert_eq!(starts[&ProviderSlot::NativeProcesses], 7);
         assert_eq!(starts[&ProviderSlot::ProjectNpm], 2);
-        assert_eq!(starts.values().sum::<usize>(), 38);
+        assert_eq!(starts.values().sum::<usize>(), 43);
         assert!(maximum_live_workers <= MAX_CONCURRENT_PROVIDER_SLOTS);
         // Before Systemd became independently schedulable, one aggregate
         // host-scoped pass covered it alongside the four other fixed bundles.
@@ -2165,7 +2545,7 @@ mod scheduler_tests {
                 .block_on(run_real_collector_churn_trace(&profile));
             match profile.as_str() {
                 "full-host" => {
-                    assert_eq!(starts.values().sum::<usize>(), 38);
+                    assert_eq!(starts.values().sum::<usize>(), 43);
                     // The old whole-runtime pass had five aggregate bundles;
                     // systemd was part of host-scoped collection, not a sixth
                     // independently scheduled unit.
@@ -2178,8 +2558,9 @@ mod scheduler_tests {
                     );
                 }
                 "restricted" => {
-                    assert_eq!(starts.values().sum::<usize>(), 14);
+                    assert_eq!(starts.values().sum::<usize>(), 15);
                     assert_eq!(starts[&ProviderSlot::HostScoped], 1);
+                    assert_eq!(starts[&ProviderSlot::Tmux], 1);
                     assert_eq!(starts[&ProviderSlot::Cron], 1);
                     assert_eq!(starts[&ProviderSlot::Systemd], 1);
                     assert_eq!(starts[&ProviderSlot::PythonProcesses], 1);
@@ -2389,6 +2770,7 @@ mod scheduler_tests {
         if profile == "restricted" {
             for slot in [
                 ProviderSlot::HostScoped,
+                ProviderSlot::Tmux,
                 ProviderSlot::Cron,
                 ProviderSlot::PythonProcesses,
                 ProviderSlot::NativeProcesses,
@@ -2402,6 +2784,7 @@ mod scheduler_tests {
         } else {
             assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
             assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+            assert_eq!(starts[&ProviderSlot::Tmux], 5);
             assert_eq!(starts[&ProviderSlot::Cron], 5);
             assert_eq!(starts[&ProviderSlot::Systemd], 5);
             assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);

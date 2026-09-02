@@ -394,7 +394,8 @@ fn docker_runtime_evidence(
         | RuntimeEvidenceKind::SystemdWants
         | RuntimeEvidenceKind::SystemdPartOf
         | RuntimeEvidenceKind::NpmPackageManifestDependency
-        | RuntimeEvidenceKind::CronScheduleDeclaration => {
+        | RuntimeEvidenceKind::CronScheduleDeclaration
+        | RuntimeEvidenceKind::TmuxSessionListing => {
             unreachable!("Docker evidence helper only accepts Docker evidence kinds")
         }
     };
@@ -414,7 +415,8 @@ fn docker_runtime_evidence(
         | RuntimeEvidenceKind::SystemdWants
         | RuntimeEvidenceKind::SystemdPartOf
         | RuntimeEvidenceKind::NpmPackageManifestDependency
-        | RuntimeEvidenceKind::CronScheduleDeclaration => {
+        | RuntimeEvidenceKind::CronScheduleDeclaration
+        | RuntimeEvidenceKind::TmuxSessionListing => {
             unreachable!("Docker evidence helper only accepts Docker evidence kinds")
         }
     };

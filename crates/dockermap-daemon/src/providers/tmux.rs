@@ -7,14 +7,20 @@
 use crate::process_runner::{run_command_with_timeout, PROVIDER_COMMAND_TIMEOUT};
 use crate::{push_provider_diagnostic, safe_runtime_id_component};
 use dockermap_core::{
-    service_entity_kind_name, DiagnosticSeverity, RuntimeMapDiagnostic, RuntimeMapNode,
-    RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind, ServiceEntityKind,
+    service_entity_kind_name, DiagnosticSeverity, RuntimeMapDiagnostic, RuntimeMapEdge,
+    RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
+    RuntimeRelationshipKind, ServiceEntityKind,
 };
 use std::{collections::BTreeMap, process::Command};
+
+/// Private handoff marker. Cache refresh removes it on every path and creates
+/// public evidence only after this exact Tmux slot owns a successful revision.
+pub(crate) const TMUX_EVIDENCE_SESSION_LISTING_MARKER: &str = "__dockermapTmuxSessionListing";
 
 /// Collect tmux sessions using its documented, fixed read-only listing form.
 pub(crate) fn collect_tmux_sessions(
     nodes: &mut Vec<RuntimeMapNode>,
+    edges: &mut Vec<RuntimeMapEdge>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
     let output = match run_command_with_timeout(
@@ -45,9 +51,30 @@ pub(crate) fn collect_tmux_sessions(
         return;
     }
 
-    nodes.extend(tmux_session_nodes_from_output(&String::from_utf8_lossy(
-        &output.stdout,
-    )));
+    let sessions = tmux_session_nodes_from_output(&String::from_utf8_lossy(&output.stdout));
+    edges.extend(tmux_session_listing_edges(&sessions));
+    nodes.extend(sessions);
+}
+
+fn tmux_session_listing_edges(sessions: &[RuntimeMapNode]) -> Vec<RuntimeMapEdge> {
+    sessions
+        .iter()
+        .filter(|session| {
+            session.provider == RuntimeProviderKind::Tmux
+                && session.kind == RuntimeNodeKind::TmuxSession
+                && session.id.starts_with("tmux_session_")
+        })
+        .map(|session| RuntimeMapEdge {
+            source: session.id.clone(),
+            target: "host_local".into(),
+            relationship: RuntimeRelationshipKind::RunsOn,
+            metadata: BTreeMap::from([(
+                TMUX_EVIDENCE_SESSION_LISTING_MARKER.into(),
+                "observed".into(),
+            )]),
+            evidence_refs: Vec::new(),
+        })
+        .collect()
 }
 
 fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
@@ -91,7 +118,10 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
 
 #[cfg(test)]
 mod tests {
-    use super::tmux_session_nodes_from_output;
+    use super::{
+        tmux_session_listing_edges, tmux_session_nodes_from_output,
+        TMUX_EVIDENCE_SESSION_LISTING_MARKER,
+    };
     use crate::{redact_runtime_node, REDACTED_VALUE};
     use dockermap_core::RuntimeNodeLayer;
 
@@ -138,5 +168,23 @@ mod tests {
         assert_eq!(nodes[2].label, "monitoring");
         assert_eq!(nodes[2].status.as_deref(), Some("attached"));
         assert_eq!(nodes[0].layer, Some(RuntimeNodeLayer::Session));
+    }
+
+    #[test]
+    fn session_listing_fixture_produces_only_private_observation_markers() {
+        let nodes = tmux_session_nodes_from_output(include_str!(
+            "../../../../tests/fixtures/providers/parser/tmux-sessions.txt"
+        ));
+        let edges = tmux_session_listing_edges(&nodes);
+
+        assert_eq!(edges.len(), nodes.len());
+        assert!(edges.iter().all(|edge| {
+            edge.source.starts_with("tmux_session_")
+                && edge.target == "host_local"
+                && edge.relationship == dockermap_core::RuntimeRelationshipKind::RunsOn
+                && edge.metadata.get(TMUX_EVIDENCE_SESSION_LISTING_MARKER)
+                    == Some(&"observed".into())
+                && edge.evidence_refs.is_empty()
+        }));
     }
 }
