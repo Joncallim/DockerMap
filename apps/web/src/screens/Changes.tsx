@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import { changeFeed, type ChangeEvent } from "../lib/stubs";
 import { observedChangeFeed } from "../lib/observedHistory";
+import { coherentObservedDockerEvents, observedDockerEventKindToken } from "../lib/observedDockerEvents";
 import { formatRelative } from "../lib/format";
 import { evidenceLabel } from "../lib/evidence";
 import {
@@ -22,7 +23,7 @@ const KINDS: { id: ChangeEvent["kind"] | "all"; label: string }[] = [
 ];
 
 export default function Changes() {
-  const { model, modelProvenance, loading, error, evidenceMode, observedHistory } = useApp();
+  const { model, modelProvenance, loading, error, evidenceMode, observedHistory, observedDockerEvents } = useApp();
   const [kind, setKind] = useState<ChangeEvent["kind"] | "all">("all");
   const history = useMemo(
     () => {
@@ -34,6 +35,10 @@ export default function Changes() {
   );
   const events = history.kind === "unavailable" ? [] : history.value;
   const filtered = kind === "all" ? events : events.filter((event) => event.kind === kind);
+  const streamHistory = useMemo(
+    () => coherentObservedDockerEvents(model, evidenceMode, modelProvenance, observedDockerEvents),
+    [model, evidenceMode, modelProvenance, observedDockerEvents]
+  );
 
   if (loading && !model) return <Loading label="Reconstructing change history…" />;
   if (error && !model) return <ErrorState title="Changes unavailable" body={error} />;
@@ -99,8 +104,77 @@ export default function Changes() {
           </ol>
         )}
       </Panel>
+
+      {streamHistory && <DockerEventObservations history={streamHistory} />}
     </div>
   );
+}
+
+function DockerEventObservations({ history }: { history: NonNullable<ReturnType<typeof coherentObservedDockerEvents>> }) {
+  const collectionLabel = collectionStateLabel(history.collectionState);
+  return (
+    <Panel
+      className="panel-docker-event-observations"
+      title="Docker event observations"
+      icon="history"
+      hint="Observed"
+    >
+      <p id="docker-event-observation-boundary" className="stream-observation-boundary">
+        Bounded daemon-lifetime observations from the read-only Docker event stream. They are separate from
+        snapshot-derived changes and are not a complete historical record; reconnects can leave gaps.
+      </p>
+      <p className="stream-collection-state" role="status" aria-live="polite">
+        Collection state: {collectionLabel}
+      </p>
+      {history.events.length === 0 ? (
+        <EmptyState
+          icon="history"
+          title="No retained stream observations"
+          body="Retention is bounded to the current daemon process lifetime."
+        />
+      ) : (
+        <ol className="stream-observation-list" aria-describedby="docker-event-observation-boundary">
+          {history.events.map((event) => (
+            <li className="stream-observation-row" key={event.id}>
+              <span className="stream-observation-marker" aria-hidden="true">
+                <Icon name="history" size={13} />
+              </span>
+              <div className="stream-observation-body">
+                <div className="stream-observation-top">
+                  <span className="stream-observation-title">Docker stream observation</span>
+                  <time className="timeline-time" dateTime={new Date(event.observedAtMs).toISOString()}>
+                    {formatRelative(event.observedAtMs)}
+                  </time>
+                </div>
+                <div className="stream-observation-meta">
+                  <span>Event kind</span>
+                  <code>{observedDockerEventKindToken(event.kind)}</code>
+                  <span>Stream source</span>
+                  <code>{event.evidenceSource}</code>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </Panel>
+  );
+}
+
+function collectionStateLabel(state: NonNullable<ReturnType<typeof coherentObservedDockerEvents>>["collectionState"]): string {
+  switch (state) {
+    case "connecting":
+      return "connecting";
+    case "collecting":
+      return "collecting";
+    case "reconnecting":
+      return "reconnecting; observations may be incomplete";
+    // coherentObservedDockerEvents excludes this state before this renderer is
+    // reached. Keep the branch exhaustive so a future call-site cannot turn
+    // an uncollected response into an implied stream record.
+    case "unavailable":
+      return "unavailable";
+  }
 }
 
 function iconForKind(kind: ChangeEvent["kind"]): Parameters<typeof Icon>[0]["name"] {

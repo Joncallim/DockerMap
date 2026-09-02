@@ -1913,6 +1913,82 @@ kbd {
   color: var(--muted);
 }
 
+/* Docker stream records are deliberately not timeline rows. They are a
+   bounded, independently collected observation source with no service links
+   or causal/impact treatment. */
+.stream-observation-boundary {
+  margin: 0 0 var(--s2);
+  max-width: 76ch;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.stream-collection-state {
+  margin: 0 0 var(--s3);
+  color: var(--muted-deep);
+  font-size: 12px;
+}
+
+.stream-observation-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.stream-observation-row {
+  display: flex;
+  gap: var(--s3);
+  padding: var(--s3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.stream-observation-row:last-child {
+  border-bottom: none;
+}
+
+.stream-observation-marker {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  flex: none;
+}
+
+.stream-observation-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.stream-observation-top,
+.stream-observation-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+
+.stream-observation-title {
+  font-weight: 600;
+}
+
+.stream-observation-meta {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.stream-observation-meta code {
+  overflow-wrap: anywhere;
+}
+
 /* ===========================================================================
    Copilot
    =========================================================================== */
@@ -2338,8 +2414,8 @@ kbd {
   .map-legend { right: var(--s3); flex-wrap: wrap; max-width: calc(100% - var(--s6)); }
   .map-impact { max-width: calc(100% - var(--s6)); overflow-wrap: anywhere; }
   .runtime-edge-target span { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
-  .svc-row, .feed-row, .timeline-top, .log-line { flex-wrap: wrap; }
-  .svc-name, .svc-meta, .feed-text, .timeline-detail, .diag-message, .runtime-node-copy, .kv-value, .detail-id, .screen-title { min-width: 0; overflow-wrap: anywhere; }
+  .svc-row, .feed-row, .timeline-top, .stream-observation-top, .log-line { flex-wrap: wrap; }
+  .svc-name, .svc-meta, .feed-text, .timeline-detail, .stream-observation-meta, .diag-message, .runtime-node-copy, .kv-value, .detail-id, .screen-title { min-width: 0; overflow-wrap: anywhere; }
   .log-svc, .log-time, .log-lvl { width: auto; overflow: visible; text-overflow: clip; }
 }
 
