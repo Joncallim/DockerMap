@@ -445,6 +445,10 @@ export function getDemoResponse<T>(path: string): T {
   if (pathname === "/api/graph") return demoGraph as T;
   if (pathname === "/api/runtime/map") return demoRuntimeMap as T;
   if (pathname === "/api/findings") return { findings: [], modelRevision: demoSnapshot.modelRevision } as FindingsResponse as T;
+  // Demo Mode has no observed host history. Return only the daemon's safe
+  // empty shape so the background resource request cannot turn a demo render
+  // into an error state; observedHistory.ts still rejects this mock source.
+  if (pathname === "/api/history") return { source: "mock", baselineEstablished: false, currentModelRevision: null, observedRevision: null, events: [] } as T;
   if (pathname === "/api/health") {
     return {
       node: { status: "ok", port: 4000 },
