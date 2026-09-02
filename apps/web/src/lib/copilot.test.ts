@@ -1,6 +1,6 @@
 import { testProviderStates } from "./testProviderStates";
 import { describe, expect, it } from "vitest";
-import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
+import type { DockerSnapshot, ObservedDockerEventHistoryResponse, RuntimeMap } from "@dockermap/contracts";
 import { answer } from "./copilot";
 import { getDemoResponse } from "./demoData";
 import { buildModel } from "./model";
@@ -9,6 +9,37 @@ const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevisi
 const liveSnapshot: DockerSnapshot = { containers: [{ id: "live-api", name: "api", image: "nginx:1", status: "running", role: "api", networks: [], ports: ["443:443"], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 
 const demoSnapshot = (): DockerSnapshot => getDemoResponse<DockerSnapshot>("/api/snapshot");
+
+const observedEvents: ObservedDockerEventHistoryResponse = {
+  source: "docker",
+  collectionState: "collecting",
+  currentModelRevision: "test-revision",
+  currentObservationRevision: "event-observation-revision",
+  // Deliberately reverse receipt order: Copilot must not rely on the current
+  // daemon implementation's newest-first transport ordering.
+  events: [
+    {
+      id: `docker_event_${"a".repeat(64)}`,
+      containerId: `docker_container_${"b".repeat(64)}`,
+      evidenceSource: "docker_event_stream",
+      kind: "container_started",
+      observedAtMs: 1,
+      sourceOccurredAtMs: 1,
+      anchorModelRevision: "test-revision",
+      anchorObservationRevision: "event-observation-revision"
+    },
+    {
+      id: `docker_event_${"c".repeat(64)}`,
+      containerId: `docker_container_${"d".repeat(64)}`,
+      evidenceSource: "docker_event_stream",
+      kind: "container_health_healthy",
+      observedAtMs: 2,
+      sourceOccurredAtMs: 2,
+      anchorModelRevision: "test-revision",
+      anchorObservationRevision: "event-observation-revision"
+    }
+  ]
+};
 
 describe("Copilot evidence vocabulary", () => {
   it("labels live answers with the claim's evidence kind", () => {
@@ -48,6 +79,38 @@ describe("Copilot update-status responses", () => {
       ]);
       expect(response.references).toEqual([]);
       expect(response.evidence).toBe("unavailable");
+    }
+  });
+
+  it("answers from only coherent live Docker stream observations without identities or causal claims", () => {
+    const response = answer(buildModel(liveSnapshot, runtime), "what changed recently", "live", "live", observedEvents);
+    const text = `${response.headline} ${response.body.join(" ")}`;
+    expect(response.headline).toBe("Most recent Docker stream observation");
+    expect(response.evidence).toBe("observed");
+    expect(response.references).toEqual([]);
+    expect(text).toContain("container_health_healthy");
+    expect(text).not.toContain(observedEvents.events[0]!.id);
+    expect(text).not.toContain(observedEvents.events[0]!.containerId);
+    expect(text).not.toMatch(/current state|service|cause|restart|deploy|failure/i);
+  });
+
+  it("reports a coherent empty stream as observed without claiming that nothing changed", () => {
+    const response = answer(buildModel(liveSnapshot, runtime), "what changed recently", "live", "live", {
+      ...observedEvents,
+      events: []
+    });
+    expect(response.headline).toBe("No retained Docker stream observations");
+    expect(response.evidence).toBe("observed");
+    expect(response.body.join(" ")).not.toMatch(/nothing changed/i);
+  });
+
+  it("fails closed to unavailable for a malformed or revision-incoherent stream", () => {
+    const malformed = structuredClone(observedEvents) as ObservedDockerEventHistoryResponse;
+    malformed.events[0]!.id = "untrusted";
+    for (const history of [malformed, { ...observedEvents, currentModelRevision: "different" }]) {
+      const response = answer(buildModel(liveSnapshot, runtime), "what changed recently", "live", "live", history);
+      expect(response.evidence).toBe("unavailable");
+      expect(response.headline).toBe("Recent and pending change");
     }
   });
 

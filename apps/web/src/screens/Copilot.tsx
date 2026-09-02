@@ -7,7 +7,7 @@ import Icon from "../components/Icon";
 import { EmptyState, ErrorState, Loading, Panel, StateDot, Tag } from "../components/primitives";
 
 export default function Copilot() {
-  const { model, loading, error, evidenceMode, modelProvenance } = useApp();
+  const { model, loading, error, evidenceMode, modelProvenance, observedDockerEvents } = useApp();
   const [params, setParams] = useSearchParams();
   const initial = params.get("q") ?? "";
   const [query, setQuery] = useState(initial);
@@ -21,8 +21,8 @@ export default function Copilot() {
 
   const result = useMemo<CopilotAnswer | null>(() => {
     if (!model || !submitted.trim()) return null;
-    return answer(model, submitted, evidenceMode, modelProvenance);
-  }, [model, submitted, evidenceMode, modelProvenance]);
+    return answer(model, submitted, evidenceMode, modelProvenance, observedDockerEvents);
+  }, [model, submitted, evidenceMode, modelProvenance, observedDockerEvents]);
 
   if (loading && !model) return <Loading label="Reading your topology…" />;
   if (error && !model) return <ErrorState title="Copilot unavailable" body={error} />;

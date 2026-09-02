@@ -3,6 +3,8 @@ import { identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVI
 import { UPDATE_STATUS_CLAIM, UPDATE_STATUS_LABEL } from "./updates";
 import { CHANGE_HISTORY_CLAIM, NOT_COLLECTED_LABEL } from "./history";
 import { type EvidenceKind, type EvidenceMode, type ModelProvenance } from "./evidence";
+import type { ObservedDockerEventHistoryResponse } from "@dockermap/contracts";
+import { coherentObservedDockerEvents } from "./observedDockerEvents";
 
 /**
  * The Copilot interprets the topology. It does not control anything and it does
@@ -73,7 +75,13 @@ function evidenceFor(liveKind: EvidenceKind, authority: Authority): EvidenceKind
   return authority === "host" ? liveKind : "demo";
 }
 
-export function answer(model: SystemModel, raw: string, mode: EvidenceMode | null, provenance: ModelProvenance | null): CopilotAnswer {
+export function answer(
+  model: SystemModel,
+  raw: string,
+  mode: EvidenceMode | null,
+  provenance: ModelProvenance | null,
+  observedDockerEvents?: ObservedDockerEventHistoryResponse | null
+): CopilotAnswer {
   const q = raw.trim();
   const lower = q.toLowerCase();
 
@@ -107,7 +115,7 @@ export function answer(model: SystemModel, raw: string, mode: EvidenceMode | nul
     return portAnswer(model, q, lower, authority);
   }
   if (/chang|recent|deploy|updat/.test(lower)) {
-    return changeAnswer(q, authority);
+    return changeAnswer(model, q, authority, mode, provenance, observedDockerEvents);
   }
   if (named) {
     return serviceOverviewAnswer(model, named, q, authority);
@@ -353,7 +361,55 @@ function portAnswer(model: SystemModel, q: string, lower: string, authority: Aut
   };
 }
 
-function changeAnswer(q: string, authority: Authority): CopilotAnswer {
+function changeAnswer(
+  model: SystemModel,
+  q: string,
+  authority: Authority,
+  mode: EvidenceMode | null,
+  provenance: ModelProvenance | null,
+  observedDockerEvents: ObservedDockerEventHistoryResponse | null | undefined
+): CopilotAnswer {
+  // This uses the same strict browser boundary as the Change Center. The
+  // temporal stream proves only its retained, closed event tokens: never a
+  // current container state, service identity, topology impact, or cause.
+  const history = coherentObservedDockerEvents(model, mode, provenance, observedDockerEvents);
+  if (authority === "host" && history) {
+    const collectionBoundary = `The collector is ${history.collectionState}; retained stream observations may be incomplete after reconnects.`;
+    if (history.events.length === 0) {
+      return {
+        question: q,
+        headline: "No retained Docker stream observations",
+        body: [
+          "No Docker stream observations are retained for this daemon process lifetime.",
+          collectionBoundary
+        ],
+        references: [],
+        evidence: "observed"
+      };
+    }
+
+    // The transport happens to publish newest-first, but ordering is not a
+    // browser contract. Select by receipt time, then opaque ID solely as a
+    // deterministic tie-breaker; neither identity is rendered.
+    const latest = history.events.reduce((selected, event) => (
+      event.observedAtMs > selected.observedAtMs
+        || (event.observedAtMs === selected.observedAtMs && event.id > selected.id)
+        ? event
+        : selected
+    ));
+    return {
+      question: q,
+      headline: "Most recent Docker stream observation",
+      body: [
+        `The most recently received retained Docker stream observation has event kind ${latest.kind}.`,
+        "This is a bounded daemon-lifetime observation, not a complete historical record.",
+        collectionBoundary
+      ],
+      references: [],
+      evidence: "observed"
+    };
+  }
+
   return {
     question: q,
     headline: "Recent and pending change",
