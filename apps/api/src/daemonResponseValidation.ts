@@ -22,6 +22,7 @@ export const DAEMON_RESPONSE_SCHEMA_PATHS = [
   { path: "/daemon/graph", routeId: "graph", schema: RUST_ROUTE_RESPONSE_SCHEMAS.graph },
   { path: "/daemon/runtime/map", routeId: "runtime-map", schema: RUST_ROUTE_RESPONSE_SCHEMAS["runtime-map"] },
   { path: "/daemon/findings", routeId: "findings", schema: RUST_ROUTE_RESPONSE_SCHEMAS.findings },
+  { path: "/daemon/history", routeId: "history", schema: RUST_ROUTE_RESPONSE_SCHEMAS.history },
   { path: "/daemon/containers", routeId: "containers", schema: RUST_ROUTE_RESPONSE_SCHEMAS.containers },
   { path: "/daemon/containers/:name", routeId: "container", schema: RUST_ROUTE_RESPONSE_SCHEMAS.container },
   { path: "/daemon/images", routeId: "images", schema: RUST_ROUTE_RESPONSE_SCHEMAS.images },
@@ -292,6 +293,32 @@ function hasCoherentFindings(payload: unknown): boolean {
   });
 }
 
+// History is a deliberately narrow observation envelope. In particular mock
+// mode cannot inherit a Docker baseline, revisions, or events. Schema checks
+// field types; this binds the fields into the only supported state machine.
+function hasCoherentObservedHistory(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const history = payload as Record<string, unknown>;
+  const source = history.source;
+  const baseline = history.baselineEstablished;
+  const currentRevision = history.currentModelRevision;
+  const observedRevision = history.observedRevision;
+  const events = history.events;
+  if ((source !== "docker" && source !== "mock") || typeof baseline !== "boolean" || !Array.isArray(events)) return false;
+  if (source === "mock" || !baseline) return currentRevision === null && observedRevision === null && events.length === 0;
+  if (typeof currentRevision !== "string" || !currentRevision || typeof observedRevision !== "string" || !observedRevision) return false;
+  return events.every((candidate) => {
+    if (!candidate || typeof candidate !== "object") return false;
+    const event = candidate as Record<string, unknown>;
+    if (typeof event.id !== "string" || !event.id || typeof event.containerId !== "string" || !event.containerId.startsWith("docker_container_")) return false;
+    const previous = event.previousStatus;
+    const current = event.currentStatus;
+    if (event.kind === "container_appeared") return previous === null && typeof current === "string";
+    if (event.kind === "container_disappeared") return typeof previous === "string" && current === null;
+    return event.kind === "container_status_changed" && typeof previous === "string" && typeof current === "string" && previous !== current;
+  });
+}
+
 export function daemonResponseSchemaId(path: string): RustResponseSchemaId | undefined {
   const pathname = path.split("?", 1)[0];
   if (pathname === "/daemon/containers") return "ContainersResponse";
@@ -325,7 +352,8 @@ export function validateDaemonResponse(path: string, payload: unknown) {
   const validator = schema && validators.get(schema);
   if (!validator || !validator(payload)
     || (schema === "RuntimeMap" && (!hasCompleteProviderStateVector(payload) || !hasCoherentProviderFreshness(payload) || !hasCoherentRuntimeEvidence(payload)))
-    || (schema === "FindingsResponse" && !hasCoherentFindings(payload))) {
+    || (schema === "FindingsResponse" && !hasCoherentFindings(payload))
+    || (schema === "ObservedChangeHistoryResponse" && !hasCoherentObservedHistory(payload))) {
     throw new DaemonResponseValidationError();
   }
   return payload;

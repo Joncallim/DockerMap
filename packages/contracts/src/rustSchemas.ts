@@ -2523,16 +2523,15 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         "currentStatus": {
-          "description": "Closed status classes prevent raw Docker status text from entering the\ntemporal-history boundary.",
-          "enum": [
-            "running",
-            "stopped",
-            "other"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservedContainerStatus"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "Schema-only union keeps optional status values required on the wire while\naccurately admitting the null state used by appearance/disappearance."
         },
         "id": {
           "maxLength": 64,
@@ -2549,16 +2548,15 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "integer"
         },
         "previousStatus": {
-          "description": "Closed status classes prevent raw Docker status text from entering the\ntemporal-history boundary.",
-          "enum": [
-            "running",
-            "stopped",
-            "other"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservedContainerStatus"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "Schema-only union keeps optional status values required on the wire while\naccurately admitting the null state used by appearance/disappearance."
         }
       },
       "required": [
@@ -2577,6 +2575,15 @@ export const RUST_RESPONSE_SCHEMAS = {
         "container_appeared",
         "container_disappeared",
         "container_status_changed"
+      ],
+      "type": "string"
+    },
+    "ObservedContainerStatus": {
+      "description": "Closed status classes prevent raw Docker status text from entering the\ntemporal-history boundary.",
+      "enum": [
+        "running",
+        "stopped",
+        "other"
       ],
       "type": "string"
     },
@@ -5164,16 +5171,15 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         "currentStatus": {
-          "description": "Closed status classes prevent raw Docker status text from entering the\ntemporal-history boundary.",
-          "enum": [
-            "running",
-            "stopped",
-            "other"
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/ObservedChangeHistoryResponse/$defs/ObservedContainerStatus"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "Schema-only union keeps optional status values required on the wire while\naccurately admitting the null state used by appearance/disappearance."
         },
         "id": {
           "maxLength": 64,
@@ -5190,16 +5196,15 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "integer"
         },
         "previousStatus": {
-          "description": "Closed status classes prevent raw Docker status text from entering the\ntemporal-history boundary.",
-          "enum": [
-            "running",
-            "stopped",
-            "other"
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/ObservedChangeHistoryResponse/$defs/ObservedContainerStatus"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "Schema-only union keeps optional status values required on the wire while\naccurately admitting the null state used by appearance/disappearance."
         }
       },
       "required": [
@@ -5218,6 +5223,15 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "container_appeared",
         "container_disappeared",
         "container_status_changed"
+      ],
+      "type": "string"
+    },
+    "ObservedContainerStatus": {
+      "description": "Closed status classes prevent raw Docker status text from entering the\ntemporal-history boundary.",
+      "enum": [
+        "running",
+        "stopped",
+        "other"
       ],
       "type": "string"
     },

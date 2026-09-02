@@ -15,7 +15,8 @@ export type RustDaemonModels =
   | ImagesResponse
   | NetworksResponse
   | VolumesResponse
-  | FindingsResponse;
+  | FindingsResponse
+  | ObservedChangeHistoryResponse;
 export type ComposeMountKind = 'bind' | 'named_volume' | 'anonymous_volume' | 'unsupported';
 export type RuntimeMode = 'docker' | 'mock';
 export type RelationshipKind = 'connected_to' | 'mounts';
@@ -159,6 +160,16 @@ export type FindingRule =
  * not expose provider output or prescribe an automated remediation.
  */
 export type FindingSeverity = 'warning' | 'advisory';
+/**
+ * Closed status classes prevent raw Docker status text from entering the
+ * temporal-history boundary.
+ */
+export type ObservedContainerStatus = 'running' | 'stopped' | 'other';
+/**
+ * A deliberately small, daemon-lifetime observation delta. It is derived
+ * from two published Docker inventories, not from Docker's event stream.
+ */
+export type ObservedChangeKind = 'container_appeared' | 'container_disappeared' | 'container_status_changed';
 
 export interface DockerSnapshot {
   containers: ContainerRecord[];
@@ -599,6 +610,40 @@ export interface Finding {
   subjectRef: string;
   summary: string;
   targetRef: string;
+}
+/**
+ * Bounded in-memory history for the daemon process only. `mock` never
+ * inherits a Docker baseline or events from an earlier source generation.
+ */
+export interface ObservedChangeHistoryResponse {
+  baselineEstablished: boolean;
+  currentModelRevision: string | null;
+  /**
+   * @maxItems 64
+   */
+  events: ObservedChangeEvent[];
+  observedRevision: string | null;
+  source: RuntimeMode;
+}
+/**
+ * One observed inventory delta. `containerId` is the collision-resistant
+ * Docker runtime-node identity, never a raw Docker ID or container name.
+ */
+export interface ObservedChangeEvent {
+  containerId: string;
+  /**
+   * Schema-only union keeps optional status values required on the wire while
+   * accurately admitting the null state used by appearance/disappearance.
+   */
+  currentStatus: ObservedContainerStatus | null;
+  id: string;
+  kind: ObservedChangeKind;
+  observedAtMs: number;
+  /**
+   * Schema-only union keeps optional status values required on the wire while
+   * accurately admitting the null state used by appearance/disappearance.
+   */
+  previousStatus: ObservedContainerStatus | null;
 }
 
 // Rust's transparent route wrapper serializes as the record itself.
