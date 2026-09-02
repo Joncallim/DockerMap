@@ -319,13 +319,14 @@ export interface RuntimeEvidenceRef {
    */
   providerRevision: string;
   /**
-   * Version-two provider evidence is explicitly tied to the finite
-   * scheduler slot that supplied its revision and freshness. Version one
-   * Docker evidence intentionally has no host-provider slot.
+   * Version-two-and-later provider evidence is explicitly tied to the
+   * finite scheduler slot that supplied its revision and freshness.
+   * Version-one Docker evidence intentionally has no host-provider slot.
    */
   providerSlot?: ProviderSlot | null;
   /**
-   * The already-public runtime entity whose Docker fact was observed.
+   * The already-public runtime entity directly attested by this bounded
+   * provider fact.
    */
   subjectRef: string;
   /**
