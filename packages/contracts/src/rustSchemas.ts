@@ -2646,6 +2646,153 @@ export const RUST_RESPONSE_SCHEMAS = {
   "title": "ObservedChangeHistoryResponse",
   "type": "object"
 },
+  ObservedDockerEventHistoryResponse: {
+  "$defs": {
+    "ObservedDockerEvent": {
+      "additionalProperties": false,
+      "description": "One safe, digest-only Docker stream event. Anchor revisions identify the\ncoherent daemon publication at receipt time; they do not claim that a\nfollowing inventory snapshot already reflects the event.",
+      "properties": {
+        "anchorModelRevision": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "anchorObservationRevision": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "containerId": {
+          "pattern": "^docker_container_[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "evidenceSource": {
+          "$ref": "#/$defs/ObservedDockerEventEvidenceSource"
+        },
+        "id": {
+          "pattern": "^docker_event_[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObservedDockerEventKind"
+        },
+        "observedAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sourceOccurredAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "evidenceSource",
+        "observedAtMs",
+        "sourceOccurredAtMs",
+        "containerId",
+        "anchorModelRevision",
+        "anchorObservationRevision"
+      ],
+      "type": "object"
+    },
+    "ObservedDockerEventCollectionState": {
+      "description": "Closed lifecycle state of the daemon-owned Docker event collector. It is\noperational state for a single fixed read-only stream, not an assertion\nabout the contents of an inventory snapshot.",
+      "enum": [
+        "connecting",
+        "collecting",
+        "reconnecting",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "ObservedDockerEventEvidenceSource": {
+      "description": "The evidence source is closed so a later source cannot be silently\nrelabelled as Docker event-stream evidence.",
+      "enum": [
+        "docker_event_stream"
+      ],
+      "type": "string"
+    },
+    "ObservedDockerEventKind": {
+      "description": "The small vocabulary retained from Docker's container event stream. Raw\naction text, actor attributes, exit messages and names are discarded before\nthis model can be constructed.",
+      "enum": [
+        "container_created",
+        "container_started",
+        "container_stopped",
+        "container_died",
+        "container_restarted",
+        "container_destroyed",
+        "container_health_starting",
+        "container_health_healthy",
+        "container_health_unhealthy"
+      ],
+      "type": "string"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Bounded daemon-lifetime history of the separately collected Docker event\nstream. This root deliberately never mixes stream evidence with\nsnapshot-derived `/daemon/history` deltas.",
+  "properties": {
+    "collectionState": {
+      "$ref": "#/$defs/ObservedDockerEventCollectionState"
+    },
+    "currentModelRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "currentObservationRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/ObservedDockerEvent"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
+    "source": {
+      "$ref": "#/$defs/RuntimeMode"
+    }
+  },
+  "required": [
+    "source",
+    "collectionState",
+    "currentModelRevision",
+    "currentObservationRevision",
+    "events"
+  ],
+  "title": "ObservedDockerEventHistoryResponse",
+  "type": "object"
+},
 } as const;
 
 export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
@@ -5291,6 +5438,153 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "events"
   ],
   "title": "ObservedChangeHistoryResponse",
+  "type": "object"
+},
+  ObservedDockerEventHistoryResponse: {
+  "$defs": {
+    "ObservedDockerEvent": {
+      "additionalProperties": false,
+      "description": "One safe, digest-only Docker stream event. Anchor revisions identify the\ncoherent daemon publication at receipt time; they do not claim that a\nfollowing inventory snapshot already reflects the event.",
+      "properties": {
+        "anchorModelRevision": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "anchorObservationRevision": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "containerId": {
+          "pattern": "^docker_container_[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "evidenceSource": {
+          "$ref": "#/components/schemas/ObservedDockerEventHistoryResponse/$defs/ObservedDockerEventEvidenceSource"
+        },
+        "id": {
+          "pattern": "^docker_event_[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/components/schemas/ObservedDockerEventHistoryResponse/$defs/ObservedDockerEventKind"
+        },
+        "observedAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sourceOccurredAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "evidenceSource",
+        "observedAtMs",
+        "sourceOccurredAtMs",
+        "containerId",
+        "anchorModelRevision",
+        "anchorObservationRevision"
+      ],
+      "type": "object"
+    },
+    "ObservedDockerEventCollectionState": {
+      "description": "Closed lifecycle state of the daemon-owned Docker event collector. It is\noperational state for a single fixed read-only stream, not an assertion\nabout the contents of an inventory snapshot.",
+      "enum": [
+        "connecting",
+        "collecting",
+        "reconnecting",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "ObservedDockerEventEvidenceSource": {
+      "description": "The evidence source is closed so a later source cannot be silently\nrelabelled as Docker event-stream evidence.",
+      "enum": [
+        "docker_event_stream"
+      ],
+      "type": "string"
+    },
+    "ObservedDockerEventKind": {
+      "description": "The small vocabulary retained from Docker's container event stream. Raw\naction text, actor attributes, exit messages and names are discarded before\nthis model can be constructed.",
+      "enum": [
+        "container_created",
+        "container_started",
+        "container_stopped",
+        "container_died",
+        "container_restarted",
+        "container_destroyed",
+        "container_health_starting",
+        "container_health_healthy",
+        "container_health_unhealthy"
+      ],
+      "type": "string"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Bounded daemon-lifetime history of the separately collected Docker event\nstream. This root deliberately never mixes stream evidence with\nsnapshot-derived `/daemon/history` deltas.",
+  "properties": {
+    "collectionState": {
+      "$ref": "#/components/schemas/ObservedDockerEventHistoryResponse/$defs/ObservedDockerEventCollectionState"
+    },
+    "currentModelRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "currentObservationRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "events": {
+      "items": {
+        "$ref": "#/components/schemas/ObservedDockerEventHistoryResponse/$defs/ObservedDockerEvent"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
+    "source": {
+      "$ref": "#/components/schemas/ObservedDockerEventHistoryResponse/$defs/RuntimeMode"
+    }
+  },
+  "required": [
+    "source",
+    "collectionState",
+    "currentModelRevision",
+    "currentObservationRevision",
+    "events"
+  ],
+  "title": "ObservedDockerEventHistoryResponse",
   "type": "object"
 },
 } as const;
