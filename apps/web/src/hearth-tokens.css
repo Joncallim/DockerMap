@@ -22,9 +22,26 @@
   --hearth-azure-strong: #006fd6;
   --hearth-azure-text: #a7d7fb;
   --hearth-azure-soft: rgb(22 139 255 / 18%);
+  --hearth-on-azure: #ffffff;
   --hearth-ai: #b9a4ff;
+  --hearth-ai-strong: #7054b8;
   --hearth-ai-soft: #231c3a;
+  --hearth-on-ai: #ffffff;
+  --hearth-surface-sunken: #2b3443;
   --hearth-shadow: 0 8px 24px rgb(0 0 0 / 20%);
+  --hearth-radius-sm: 7px;
+  --hearth-radius-md: 11px;
+  --hearth-radius-lg: 16px;
+  --hearth-space-1: 4px;
+  --hearth-space-2: 8px;
+  --hearth-space-3: 12px;
+  --hearth-space-4: 16px;
+  --hearth-space-5: 24px;
+  --hearth-space-6: 32px;
+  --hearth-type-xs: 11px;
+  --hearth-type-sm: 12px;
+  --hearth-type-body: 14px;
+  --hearth-type-title: 26px;
   --hearth-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter, system-ui, sans-serif;
   --hearth-mono: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", ui-monospace, monospace;
 }
@@ -44,7 +61,11 @@
   --hearth-azure-strong: #004f8f;
   --hearth-azure-text: #0067b8;
   --hearth-azure-soft: rgb(22 139 255 / 20%);
+  --hearth-on-azure: #ffffff;
   --hearth-ai: #6f42c1;
+  --hearth-ai-strong: #5d32aa;
   --hearth-ai-soft: #f2ecff;
+  --hearth-on-ai: #ffffff;
+  --hearth-surface-sunken: #e2e8f0;
   --hearth-shadow: 0 8px 24px rgb(27 36 43 / 8%);
 }

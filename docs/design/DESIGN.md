@@ -71,16 +71,24 @@ change so the two never rely on colour alone.
 
 ## Visual Tokens
 
-The canonical token set lives in the `:root` block of
-[apps/web/src/styles.css](../../apps/web/src/styles.css). Highlights:
+The public-safe Hearth primitive export lives in
+[apps/web/src/hearth-tokens.css](../../apps/web/src/hearth-tokens.css). DockerMap aliases
+those roles in `:root` in [apps/web/src/styles.css](../../apps/web/src/styles.css), then
+keeps operational state colours local. Highlights:
 
 - **Surfaces** — a near-black base (`--bg`) with three raised surface levels and two
   hairline border weights. Dense layouts stay calm because contrast between surfaces is low
   and intentional.
-- **Typography** — system UI sans for the interface, `--mono` for paths, IDs, ports, log
-  lines, and clocks. Numeric and technical text is always mono.
-- **Shape** — `--r-sm/md/lg` (7/11/16px). Pills are fully rounded only for compact metadata.
-- **Spacing** — a single `--s1…--s6` scale (4–32px) drives rhythm everywhere.
+- **Typography** — Hearth's `--hearth-type-xs/sm/body/title` roles drive common control and
+  interface text; `--mono` is reserved for paths, IDs, ports, log lines, and clocks.
+- **Shape and spacing** — Hearth's `--hearth-radius-*` and `--hearth-space-*` roles drive
+  common actions and forms. Pills are fully rounded only for compact metadata.
+- **Operational exceptions** — `--s-*` service state, map network, edge-health, and log
+  severity colours remain DockerMap-owned because they encode observed topology and health,
+  not a decorative theme. Map nodes, edge geometry, and the 30px map-view controls likewise
+  retain their local spatial measurements: they describe graph interaction targets rather
+  than ordinary form controls. The binary settings switch also retains its knob and track
+  measurements so its checked state remains visually unambiguous.
 - **Motion** — one easing token (`--t`, ~140ms). Motion explains (focus, selection, data
   refresh); it never decorates. Respect `prefers-reduced-motion`.
 
