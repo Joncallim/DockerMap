@@ -1276,6 +1276,8 @@ pub enum FindingRule {
     DockerInternalNetworkMemberPublishesPort,
     #[serde(rename = "docker.daemon_state_bind_mount")]
     DockerDaemonStateBindMount,
+    #[serde(rename = "docker.compose_declared_target_not_active")]
+    DockerComposeDeclaredTargetNotActive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

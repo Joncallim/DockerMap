@@ -157,7 +157,8 @@ export type HealthState = 'ok' | 'degraded';
 export type FindingRule =
   | 'systemd.requires_target_not_active'
   | 'docker.internal_network_member_publishes_port'
-  | 'docker.daemon_state_bind_mount';
+  | 'docker.daemon_state_bind_mount'
+  | 'docker.compose_declared_target_not_active';
 /**
  * Findings are intentionally a small, closed advisory vocabulary. They do
  * not expose provider output or prescribe an automated remediation.
