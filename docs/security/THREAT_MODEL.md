@@ -56,6 +56,13 @@ changes them:
 - Docker daemon-state bind-mount evidence is a single closed, path-free fact. It never exposes
   a mount path, mount ID, mount options, or raw Docker configuration. npm dependency evidence
   is likewise a bounded declaration with a curated summary, never raw `package.json` content.
+- The daemon-state-and-host-port warning is a cached, static review derivation, not a collector.
+  It accepts only one fresh version-1 Docker daemon-state fact and one fresh Docker port-publication
+  fact for the same unique container, recorded at the same observation time and provider revision;
+  the port fact must already prove a validated nonzero host-to-container binding. It is suppressed
+  for mock, stale, malformed, duplicate, collided, mismatched, private-only, zero, or non-Docker
+  input. It does not disclose the mount or port value and does not assert Internet reachability,
+  traffic, exploitability, compromise, breach, impact, or causality.
 - The Compose target-state advisory is a cached read-only derivation, not a collector. It accepts
   only one fresh version-1 Docker `docker_compose_depends_on` observed-declaration reference for
   a unique running Docker-container source and unique stopped/failed Docker-container target.
@@ -172,6 +179,10 @@ Automated tests currently cover:
   runtime evidence or evidence-derived findings; private container ports have no host-publication
   evidence; daemon-state facts remain path-free; and Systemd/npm declarations retain only their
   closed slot revision, timestamp, and freshness vocabulary.
+- Finding boundary tests include the daemon-state-and-host-port warning: only the ordered fresh
+  Docker pair for one unique subject with matching collection timestamp and provider revision is
+  accepted. Tests suppress private-only, zero, malformed, stale, duplicate, crossed, collided,
+  non-Docker, and mock inputs; the presentation remains static and does not expose evidence values.
 - GUI smoke coverage against daemon fallback mode.
 - Route and middleware completeness: every Express layer must be wrapped in
   `trackedMiddleware()` and every route registered through `registerRoute()` with

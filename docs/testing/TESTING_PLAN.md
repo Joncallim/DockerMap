@@ -24,6 +24,13 @@ containers, or services.
   collided, ambiguous, non-Docker, and non-matching-status inputs. These are projection tests:
   they add no collection and never assert requiredness, readiness, health, traffic, start-order,
   root-cause, or drift conclusions.
+- The daemon-state-and-host-port warning accepts only an ordered pair of fresh version-1 Docker
+  observations for one unique container: a path-free daemon-state risk fact followed by a port
+  publication with a validated nonzero host binding. Tests require matching observation timestamp
+  and provider revision, and suppress private-only, zero, malformed, stale, duplicate, crossed,
+  collided, non-Docker, and mock inputs. They verify static review wording only; no test treats the
+  pair as proof of Internet reachability, traffic, exploitability, compromise, breach, impact, or
+  causality, and the projection adds no collection or write behavior.
 - Rust-owned JSON Schema and generated TypeScript declarations, Node-owned
   envelope/request/SSE schemas, and readable contract fixtures. The contract
   check fails on stale generated output, invalid fixtures, incomplete

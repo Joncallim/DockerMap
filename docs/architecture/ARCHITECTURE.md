@@ -144,6 +144,19 @@ flags, and raw configuration never enter the runtime edge, finding, or browser
 response. Missing, stale, duplicate, malformed, or collided facts produce no
 finding.
 
+`docker.daemon_state_bind_mount_publishes_port` emits a warning only when the
+same uniquely identified Docker container has an exact pair of fresh version-1
+Docker observations from the same collection: the path-free daemon-state risk
+fact and a validated nonzero host-to-container port publication. Its canonical
+evidence order is daemon-state first, then port publication. This is a static
+review prompt for the co-occurrence of those facts, not an Internet-reachability,
+traffic, exploitability, compromise, breach, impact, or causal conclusion.
+Private container listeners, zero or malformed bindings, stale or mismatched
+observation timestamps or provider revisions, duplicate or collided facts, and
+non-Docker input produce no finding. The projection is derived from the cached
+runtime map: it adds no collector, host scan, or write capability, and mock
+mode publishes neither evidence nor evidence-derived findings.
+
 `docker.compose_declared_target_not_active` emits an advisory only when one
 fresh, uniquely identified `depends_on` relationship is a Docker-recorded
 Compose declaration from a running Docker container to a uniquely identified
