@@ -94,8 +94,11 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
   gateway restarted, exactly three new opaque events and one advisory appeared,
   and cleanup completed. This evidence remains pending PR review and merge; it
   does not close #70.
-- [ ] Add residual live temporal evidence for daemon-restart empty-history
-  behavior. The current isolated sequence does not cover this case.
+- [ ] Decide and document the daemon-restart persistence/replay policy. A
+  restarted collector may replay up to five minutes of Docker events, so an
+  empty endpoint is not a truthful acceptance condition. Any later restart
+  evidence must verify that no response or UI makes a pre-restart persistence
+  or continuity claim, rather than requiring retained rows to remain empty.
 - [ ] Keep #70 open for remaining product scope: a reviewed Copilot policy for
   temporal observations, resource telemetry, and an explicit persistence and
   cross-restart continuity decision. The current three-die-event rule is only

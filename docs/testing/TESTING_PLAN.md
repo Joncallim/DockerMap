@@ -189,9 +189,13 @@ checks a raw/unsafe event request is denied by the filtered gateway, and
 completes cleanup. This is isolated test evidence, not a general host-history
 claim, and it remains pending PR review and merge.
 
-The sequence still does not cover daemon-restart empty-history behavior. Record
-that separately before using the stream as complete release evidence for a
-candidate.
+Daemon restart must not be accepted by asserting an empty endpoint: the
+collector may replay up to five minutes of recent Docker events and promptly
+repopulate its in-memory ring. Before using the stream as complete release
+evidence for a candidate, make and document an explicit persistence/replay
+policy decision. Any later restart test must verify that the response and UI do
+not claim pre-restart persistence or continuity; it must not require the
+endpoint to stay empty.
 
 ## Sandbox Fixture
 
