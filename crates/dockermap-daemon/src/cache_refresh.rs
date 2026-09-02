@@ -960,7 +960,15 @@ fn bind_systemd_evidence(edges: &mut [RuntimeMapEdge], state: &SlotRuntimeState)
                 continue;
             }
         };
-        if edge.relationship != dockermap_core::RuntimeRelationshipKind::DependsOn
+        let expected_relationship = match kind {
+            RuntimeEvidenceKind::SystemdRequires => {
+                dockermap_core::RuntimeRelationshipKind::Requires
+            }
+            RuntimeEvidenceKind::SystemdWants => dockermap_core::RuntimeRelationshipKind::Wants,
+            RuntimeEvidenceKind::SystemdPartOf => dockermap_core::RuntimeRelationshipKind::PartOf,
+            _ => unreachable!("closed systemd marker maps only to systemd evidence"),
+        };
+        if edge.relationship != expected_relationship
             || !edge.source.starts_with("systemd_service_")
             || !edge.target.starts_with("systemd_service_")
             || edge.source == edge.target
@@ -1200,7 +1208,7 @@ mod scheduler_tests {
         collection.parts_mut().1.push(RuntimeMapEdge {
             source: "systemd_service_application".into(),
             target: "systemd_service_database".into(),
-            relationship: dockermap_core::RuntimeRelationshipKind::DependsOn,
+            relationship: dockermap_core::RuntimeRelationshipKind::Requires,
             metadata: BTreeMap::from([(
                 SYSTEMD_EVIDENCE_KIND_MARKER.into(),
                 SYSTEMD_EVIDENCE_REQUIRES.into(),
@@ -1243,6 +1251,10 @@ mod scheduler_tests {
             assert_eq!(evidence.version, 2);
             assert_eq!(evidence.provider, RuntimeEvidenceProvider::Systemd);
             assert_eq!(evidence.kind, RuntimeEvidenceKind::SystemdRequires);
+            assert_eq!(
+                edge.relationship,
+                dockermap_core::RuntimeRelationshipKind::Requires
+            );
             assert_eq!(
                 evidence.assertion_kind,
                 RuntimeEvidenceAssertionKind::Declared

@@ -37,6 +37,14 @@ impl SystemdDependencyKind {
             Self::PartOf => SYSTEMD_EVIDENCE_PART_OF,
         }
     }
+
+    fn relationship(self) -> RuntimeRelationshipKind {
+        match self {
+            Self::Requires => RuntimeRelationshipKind::Requires,
+            Self::Wants => RuntimeRelationshipKind::Wants,
+            Self::PartOf => RuntimeRelationshipKind::PartOf,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,7 +205,7 @@ pub(crate) fn collect_systemd_services(
         edges.push(RuntimeMapEdge {
             source,
             target,
-            relationship: RuntimeRelationshipKind::DependsOn,
+            relationship: kind.relationship(),
             metadata,
             evidence_refs: Vec::new(),
         });
