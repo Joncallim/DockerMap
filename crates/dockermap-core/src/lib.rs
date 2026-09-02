@@ -222,6 +222,13 @@ mod tests {
         let graph = derive_graph(&snapshot);
         assert_eq!(graph.nodes.len(), snapshot.containers.len());
         assert!(graph.edges.is_empty());
+
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        assert!(runtime_map.edges.iter().all(|edge| {
+            edge.evidence_refs
+                .iter()
+                .all(|evidence| evidence.kind != RuntimeEvidenceKind::DockerComposeDependsOn)
+        }));
     }
 
     #[test]
@@ -242,6 +249,12 @@ mod tests {
         };
 
         assert!(derive_graph(&snapshot).edges.is_empty());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        assert!(runtime_map.edges.iter().all(|edge| {
+            edge.evidence_refs
+                .iter()
+                .all(|evidence| evidence.kind != RuntimeEvidenceKind::DockerComposeDependsOn)
+        }));
     }
 
     #[test]
@@ -705,6 +718,51 @@ mod tests {
             !serialized.contains("confidence"),
             "observed Docker facts must not imply numerical confidence"
         );
+    }
+
+    #[test]
+    fn docker_runtime_compose_dependencies_are_bounded_observed_declarations() {
+        let snapshot = mock_snapshot();
+        let runtime_map = derive_runtime_map(
+            &snapshot,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            "opaque-docker-observation",
+        );
+        let dependencies = runtime_map
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.evidence_refs
+                    .iter()
+                    .any(|evidence| evidence.kind == RuntimeEvidenceKind::DockerComposeDependsOn)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(dependencies.len(), 5);
+        for edge in dependencies {
+            assert_eq!(edge.relationship, RuntimeRelationshipKind::DependsOn);
+            assert!(edge.source.starts_with("docker_container_"));
+            assert!(edge.target.starts_with("docker_container_"));
+            assert_ne!(edge.source, edge.target);
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 1);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Docker);
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Observed
+            );
+            assert_eq!(evidence.freshness, RuntimeEvidenceFreshness::Fresh);
+            assert_eq!(evidence.subject_ref, edge.source);
+            assert_eq!(evidence.collected_at, snapshot.last_updated);
+            assert_eq!(evidence.provider_revision, "opaque-docker-observation");
+            assert_eq!(
+                evidence.summary,
+                "Docker recorded Compose dependency declaration"
+            );
+        }
     }
 
     #[test]
