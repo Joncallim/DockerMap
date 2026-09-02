@@ -64,7 +64,7 @@ export function createDaemonClient(options: DaemonClientOptions) {
         // This is an internal, closed diagnostic label. It is intentionally
         // not added to the browser error: a daemon response must never choose
         // its own validation detail or use it as an exfiltration channel.
-        console.error(`[DockerMap] daemon response validation rejected ${path}: ${error.reason}`);
+        console.error(`[DockerMap] daemon response validation rejected schema=${error.schema} reason=${error.reason}`);
         throw new HttpError(502, {
           code: "daemon_invalid_response",
           message: "Daemon response did not match its declared contract"

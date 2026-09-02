@@ -497,7 +497,10 @@ export function daemonResponseSchemaId(path: string): RustResponseSchemaId | und
 
 /** A daemon response is syntactically JSON but violates its Rust-owned model. */
 export class DaemonResponseValidationError extends Error {
-  constructor(readonly reason: "schema" | "provider_state_vector" | "provider_freshness" | RuntimeEvidenceDiagnostic | "findings") {
+  constructor(
+    readonly schema: RustResponseSchemaId | "unknown",
+    readonly reason: "schema" | "provider_state_vector" | "provider_freshness" | RuntimeEvidenceDiagnostic | "findings",
+  ) {
     // Keep the public error deliberately independent of schema paths/errors:
     // a compromised daemon must not use validator output as an exfiltration channel.
     super("Daemon response did not match its declared contract");
@@ -512,13 +515,13 @@ export class DaemonResponseValidationError extends Error {
 export function validateDaemonResponse(path: string, payload: unknown) {
   const schema = daemonResponseSchemaId(path);
   const validator = schema && validators.get(schema);
-  if (!validator || !validator(payload)) throw new DaemonResponseValidationError("schema");
+  if (!validator || !validator(payload)) throw new DaemonResponseValidationError(schema ?? "unknown", "schema");
   if (schema === "RuntimeMap") {
-    if (!hasCompleteProviderStateVector(payload)) throw new DaemonResponseValidationError("provider_state_vector");
-    if (!hasCoherentProviderFreshness(payload)) throw new DaemonResponseValidationError("provider_freshness");
+    if (!hasCompleteProviderStateVector(payload)) throw new DaemonResponseValidationError(schema, "provider_state_vector");
+    if (!hasCoherentProviderFreshness(payload)) throw new DaemonResponseValidationError(schema, "provider_freshness");
     const evidenceDiagnostic = runtimeEvidenceDiagnostic(payload);
-    if (evidenceDiagnostic) throw new DaemonResponseValidationError(evidenceDiagnostic);
+    if (evidenceDiagnostic) throw new DaemonResponseValidationError(schema, evidenceDiagnostic);
   }
-  if (schema === "FindingsResponse" && !hasCoherentFindings(payload)) throw new DaemonResponseValidationError("findings");
+  if (schema === "FindingsResponse" && !hasCoherentFindings(payload)) throw new DaemonResponseValidationError(schema, "findings");
   return payload;
 }

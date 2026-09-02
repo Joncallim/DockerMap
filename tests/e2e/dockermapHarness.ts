@@ -167,7 +167,7 @@ export async function startProductionImageStack(options: { liveDocker?: boolean 
     productionValidationDiagnostics: () => dockerOutputIncludingStderr(docker, ["logs", "--tail", "100", container], repoRoot)
       .split("\n")
       .flatMap((line) => {
-        const match = line.match(/\[DockerMap\] daemon response validation rejected \/daemon\/runtime\/map: (schema|provider_state_vector|provider_freshness|runtime_evidence_(?:edge_shape|base_tuple|edge_binding|source_binding|daemon_state_target|port_listener_missing|port_listener_ambiguous|port_listener_shape|port_listener_grammar|revision)|findings)/);
+        const match = line.match(/\[DockerMap\] daemon response validation rejected schema=RuntimeMap reason=(schema|provider_state_vector|provider_freshness|runtime_evidence_(?:edge_shape|base_tuple|edge_binding|source_binding|daemon_state_target|port_listener_missing|port_listener_ambiguous|port_listener_shape|port_listener_grammar|revision)|findings)/);
         return match ? [match[1]] : [];
       }),
     postProductionSessionBurst: (client, spoofedXForwardedForPrefix) => {

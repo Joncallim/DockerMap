@@ -989,6 +989,32 @@ test("authenticated daemon schema violations fail closed instead of reaching bro
   );
 });
 
+test("internal daemon validation logs use closed schema and reason labels, never request paths", async () => {
+  const { createDaemonClient, HttpError } = await import("../src/daemonClient.js");
+  const sentinel = "DOCKERMAP_TEST_PATH_SENTINEL?token=DOCKERMAP_TEST_QUERY_SENTINEL";
+  const daemon = await startStubDaemon((_req, res) => sendJson(res, 200, { forged: true }));
+  const emitted: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...values: unknown[]) => emitted.push(values.map(String).join(" "));
+  try {
+    const fetchDaemon = createDaemonClient({
+      baseUrl: `http://127.0.0.1:${daemon.port}`,
+      token: null,
+      allowMockFallback: false,
+      exposeErrorDetails: false,
+      mockResponse: () => ({})
+    });
+    await assert.rejects(
+      () => fetchDaemon(`/daemon/snapshot/${sentinel}`),
+      (error: unknown) => error instanceof HttpError && error.status === 502 && error.body.code === "daemon_invalid_response"
+    );
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.deepEqual(emitted, ["[DockerMap] daemon response validation rejected schema=unknown reason=schema"]);
+  assert.ok(emitted.every((line) => !line.includes("DOCKERMAP_TEST_PATH_SENTINEL") && !line.includes("DOCKERMAP_TEST_QUERY_SENTINEL")));
+});
+
 test("daemon model responses require non-empty revision and complete provider state bytes", async () => {
   const fixture = async (name: string) => JSON.parse(
     await readFile(new URL(`../../../tests/fixtures/contracts/${name}`, import.meta.url), "utf8")
@@ -1317,6 +1343,13 @@ test("runtime evidence is required and fails closed before browser publication",
   assert.throws(
     () => validateDaemonResponse("/daemon/runtime/map", conflictingListener),
     "Docker port-publication evidence must fail closed when duplicate listener records disagree"
+  );
+
+  const malformedDuplicateListener = structuredClone(duplicateListener);
+  malformedDuplicateListener.nodes[malformedDuplicateListener.nodes.length - 1].metadata.extra = "not-a-listener-fact";
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", malformedDuplicateListener),
+    "Docker port-publication evidence must reject duplicate listeners with extra metadata"
   );
 
   const npmEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "npm_project_dockermap");
