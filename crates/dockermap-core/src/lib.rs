@@ -1176,6 +1176,89 @@ mod tests {
     }
 
     #[test]
+    fn private_container_ports_remain_listeners_without_host_publication_evidence() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers = vec![ContainerRecord {
+            id: "private-port-container".into(),
+            name: "private-port".into(),
+            image: "example:latest".into(),
+            status: "running".into(),
+            role: "service".into(),
+            networks: Vec::new(),
+            ports: vec!["80/tcp".into()],
+            mounts: Vec::new(),
+            depends_on: Vec::new(),
+        }];
+        snapshot.networks.clear();
+        snapshot.volumes.clear();
+
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        let listener = runtime_map
+            .nodes
+            .iter()
+            .find(|node| node.kind == RuntimeNodeKind::NetworkListener)
+            .expect("private container port remains visible as a listener");
+        assert_eq!(
+            listener.metadata.get("port").map(String::as_str),
+            Some("80/tcp")
+        );
+        let edge = runtime_map
+            .edges
+            .iter()
+            .find(|edge| edge.target == listener.id)
+            .expect("private listener remains connected to its container");
+        assert!(
+            edge.evidence_refs.is_empty(),
+            "private-only listener has no host-publication attestation"
+        );
+
+        let serialized = serde_json::to_string(&runtime_map).expect("runtime map serializes");
+        assert!(!serialized.contains("Docker reported container port publication"));
+        assert!(!serialized.contains("docker_port_publication"));
+    }
+
+    #[test]
+    fn nonzero_host_bindings_receive_bounded_publication_evidence() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers = vec![ContainerRecord {
+            id: "published-port-container".into(),
+            name: "published-port".into(),
+            image: "example:latest".into(),
+            status: "running".into(),
+            role: "service".into(),
+            networks: Vec::new(),
+            ports: vec!["8443:443/tcp".into(), "0:53/udp".into(), "53/udp".into()],
+            mounts: Vec::new(),
+            depends_on: Vec::new(),
+        }];
+        snapshot.networks.clear();
+        snapshot.volumes.clear();
+
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        let publication_edges = runtime_map
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.evidence_refs
+                    .iter()
+                    .any(|evidence| evidence.kind == RuntimeEvidenceKind::DockerPortPublication)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(publication_edges.len(), 1);
+        assert_eq!(
+            publication_edges[0].evidence_refs[0].summary,
+            "Docker reported container port publication"
+        );
+        assert!(publication_edges[0].has_valid_evidence_refs());
+        let serialized =
+            serde_json::to_string(publication_edges[0]).expect("publication edge serializes");
+        assert!(
+            !serialized.contains("8443:443/tcp"),
+            "evidence itself never copies port data"
+        );
+    }
+
+    #[test]
     fn equivalent_reordered_snapshots_produce_the_same_runtime_topology() {
         let first = mock_snapshot();
         let mut reordered = first.clone();
