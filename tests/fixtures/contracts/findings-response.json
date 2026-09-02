@@ -53,7 +53,7 @@
           "provider": "docker",
           "kind": "docker_port_publication",
           "assertionKind": "observed",
-          "summary": "Docker reported a published container port",
+          "summary": "Docker reported container port publication",
           "subjectRef": "docker_container_api",
           "collectedAt": 1710000000000,
           "providerRevision": "fixture-docker-observation",
@@ -78,6 +78,43 @@
           "kind": "docker_daemon_state_bind_mount",
           "assertionKind": "observed",
           "summary": "Docker reported a bind mount exposing Docker daemon state",
+          "subjectRef": "docker_container_api",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-docker-observation",
+          "providerSlot": null,
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "id": "finding_docker_daemon_state_bind_mount_publishes_port_docker_container_api-host_risk_docker_daemon_sta--7c39cf98a47c28348c58f8e56ae21c68de6104082cc126499d18cb0eecaa0bcc",
+      "ruleId": "docker.daemon_state_bind_mount_publishes_port",
+      "severity": "warning",
+      "summary": "A container with Docker daemon state access also has a published host port.",
+      "recommendation": "Review whether the daemon-state access and host-port publication are both intended.",
+      "subjectRef": "docker_container_api",
+      "targetRef": "host_risk_docker_daemon_state",
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "docker_daemon_state_bind_mount:docker_container_api:host_risk_docker_daemon_state",
+          "provider": "docker",
+          "kind": "docker_daemon_state_bind_mount",
+          "assertionKind": "observed",
+          "summary": "Docker reported a bind mount exposing Docker daemon state",
+          "subjectRef": "docker_container_api",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-docker-observation",
+          "providerSlot": null,
+          "freshness": "fresh"
+        },
+        {
+          "version": 1,
+          "id": "docker_port_publication:docker_container_api:network_listener_api_8080",
+          "provider": "docker",
+          "kind": "docker_port_publication",
+          "assertionKind": "observed",
+          "summary": "Docker reported container port publication",
           "subjectRef": "docker_container_api",
           "collectedAt": 1710000000000,
           "providerRevision": "fixture-docker-observation",
