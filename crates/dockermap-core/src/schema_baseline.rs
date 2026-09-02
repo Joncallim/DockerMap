@@ -5,16 +5,17 @@
 
 use crate::{
     ComposeEditPlan, ComposeGraph, ComposeScan, ContainerDetailResponse, ContainersResponse,
-    DockerSnapshot, GraphResponse, HealthResponse, ImagesResponse, LogsResponse, NetworksResponse,
-    RuntimeMap, VolumesResponse,
+    DockerSnapshot, FindingsResponse, GraphResponse, HealthResponse, ImagesResponse, LogsResponse,
+    NetworksResponse, RuntimeMap, VolumesResponse,
 };
 use schemars::{schema_for, Schema};
 use serde_json::Value;
 
-pub const DAEMON_SCHEMA_NAMES: [&str; 13] = [
+pub const DAEMON_SCHEMA_NAMES: [&str; 14] = [
     "DockerSnapshot",
     "GraphResponse",
     "RuntimeMap",
+    "FindingsResponse",
     "ComposeScan",
     "ComposeGraph",
     "ComposeEditPlan",
@@ -33,11 +34,12 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 13] = [
 /// that standard `JSON.parse` cannot preserve.
 pub const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
-pub fn daemon_schemas() -> [Schema; 13] {
+pub fn daemon_schemas() -> [Schema; 14] {
     [
         schema_for!(DockerSnapshot),
         schema_for!(GraphResponse),
         schema_for!(RuntimeMap),
+        schema_for!(FindingsResponse),
         schema_for!(ComposeScan),
         schema_for!(ComposeGraph),
         schema_for!(ComposeEditPlan),
@@ -55,7 +57,7 @@ pub fn daemon_schemas() -> [Schema; 13] {
 /// forward-compatible when deserializing, while fixtures reject typoed or
 /// unreviewed response fields rather than silently redefining the contract.
 /// This changes schema validation only, never daemon serialization behavior.
-pub fn daemon_schema_documents() -> [Value; 13] {
+pub fn daemon_schema_documents() -> [Value; 14] {
     daemon_schemas().map(|schema| {
         let mut document = serde_json::to_value(schema).expect("schemars schema serializes");
         deny_unknown_object_properties(&mut document);
@@ -160,11 +162,34 @@ mod tests {
             .expect("provider state property exists");
         assert_eq!(
             states.get("minItems").and_then(|value| value.as_u64()),
-            Some(5)
+            Some(7)
         );
         assert_eq!(
             states.get("maxItems").and_then(|value| value.as_u64()),
-            Some(5)
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn runtime_evidence_schema_admits_the_closed_version_four_cron_shape() {
+        let schema = DAEMON_SCHEMA_NAMES
+            .iter()
+            .zip(daemon_schema_documents())
+            .find_map(|(name, schema)| (*name == "RuntimeMap").then_some(schema))
+            .expect("runtime map schema exists");
+        let evidence = schema
+            .pointer("/$defs/RuntimeEvidenceRef")
+            .expect("runtime evidence definition exists");
+        assert_eq!(
+            evidence
+                .pointer("/properties/version/maximum")
+                .and_then(|value| value.as_u64()),
+            Some(4),
+            "generated schema must not reject the newest closed evidence version"
+        );
+        assert!(
+            evidence.pointer("/properties/provider/$ref").is_some(),
+            "provider stays a closed generated enum"
         );
     }
 

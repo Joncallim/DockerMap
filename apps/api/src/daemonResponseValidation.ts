@@ -21,6 +21,7 @@ export const DAEMON_RESPONSE_SCHEMA_PATHS = [
   { path: "/daemon/snapshot", routeId: "snapshot", schema: RUST_ROUTE_RESPONSE_SCHEMAS.snapshot },
   { path: "/daemon/graph", routeId: "graph", schema: RUST_ROUTE_RESPONSE_SCHEMAS.graph },
   { path: "/daemon/runtime/map", routeId: "runtime-map", schema: RUST_ROUTE_RESPONSE_SCHEMAS["runtime-map"] },
+  { path: "/daemon/findings", routeId: "findings", schema: RUST_ROUTE_RESPONSE_SCHEMAS.findings },
   { path: "/daemon/containers", routeId: "containers", schema: RUST_ROUTE_RESPONSE_SCHEMAS.containers },
   { path: "/daemon/containers/:name", routeId: "container", schema: RUST_ROUTE_RESPONSE_SCHEMAS.container },
   { path: "/daemon/images", routeId: "images", schema: RUST_ROUTE_RESPONSE_SCHEMAS.images },
@@ -32,7 +33,7 @@ export const DAEMON_RESPONSE_SCHEMA_PATHS = [
   { path: "/daemon/compose/edit-plan", routeId: "compose-edit-plan", schema: RUST_ROUTE_RESPONSE_SCHEMAS["compose-edit-plan"] },
 ] as const satisfies readonly { path: string; schema: RustResponseSchemaId; routeId?: keyof typeof RUST_ROUTE_RESPONSE_SCHEMAS }[];
 
-const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } });
+const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint8: true, uint32: true, uint64: true } });
 const validators = new Map<RustResponseSchemaId, ValidateFunction>(
   (Object.entries(RUST_RESPONSE_SCHEMAS) as [RustResponseSchemaId, (typeof RUST_RESPONSE_SCHEMAS)[RustResponseSchemaId]][])
     .map(([schema, definition]) => [schema, ajv.compile(definition)]),
@@ -45,12 +46,57 @@ const validators = new Map<RustResponseSchemaId, ValidateFunction>(
 const PROVIDER_STATE_SLOT_SET = {
   network_infrastructure: true,
   host_scoped: true,
+  systemd: true,
   python_processes: true,
   native_processes: true,
   project_npm: true,
+  cron: true,
 } as const satisfies Record<ProviderSlot, true>;
 const PROVIDER_STATE_SLOTS = Object.keys(PROVIDER_STATE_SLOT_SET) as ProviderSlot[];
 const U32_MAX = 4_294_967_295;
+const SYSTEMD_REQUIRES_FINDING_RULE = "systemd.requires_target_not_active";
+const SYSTEMD_REQUIRES_FINDING_SUMMARY = "An active systemd service requires a target that is inactive or failed";
+const SYSTEMD_REQUIRES_FINDING_RECOMMENDATION = "Inspect the target service state and its declared dependency configuration.";
+const INTERNAL_NETWORK_PORT_FINDING_RULE = "docker.internal_network_member_publishes_port";
+const INTERNAL_NETWORK_PORT_FINDING_SUMMARY = "A container on an internal Docker network also has a published host port.";
+const INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION = "Review whether the host-port publication is intended for this internal-network service.";
+const DOCKER_DAEMON_STATE_FINDING_RULE = "docker.daemon_state_bind_mount";
+const DOCKER_DAEMON_STATE_FINDING_SUMMARY = "A container has Docker daemon state access that may provide Docker daemon API authority.";
+const DOCKER_DAEMON_STATE_FINDING_RECOMMENDATION = "Review whether this container requires Docker daemon API authority.";
+
+// Version-one evidence is intentionally a discriminated Docker observation,
+// not a generic provenance bag. JSON Schema owns each field's closed enum;
+// this small cross-field table binds an emitted fact to the relationship it
+// can actually support. A later evidence version must add an explicit row.
+const V1_EVIDENCE_EDGE = {
+  docker_network_membership: { relationship: "connected_to", sourcePrefix: "docker_container_", targetPrefix: "docker_network_" },
+  docker_volume_mount: { relationship: "mounts", sourcePrefix: "docker_container_", targetPrefix: "docker_volume_" },
+  docker_port_publication: { relationship: "exposes", sourcePrefix: "docker_container_", targetPrefix: "network_listener_" },
+  docker_compose_depends_on: { relationship: "depends_on", sourcePrefix: "docker_container_", targetPrefix: "docker_container_" },
+  docker_daemon_state_bind_mount: { relationship: "exposes_daemon_state", sourcePrefix: "docker_container_", targetPrefix: "host_risk_docker_daemon_state" },
+} as const;
+
+// Version two is the intentionally narrow systemd declaration vocabulary.
+// It is tied to Systemd's independently scheduled slot, rather than to the
+// broader host collection, so retained freshness stays attributable.
+const V2_EVIDENCE_EDGE = {
+  systemd_requires: { relationship: "requires", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_" },
+  systemd_wants: { relationship: "wants", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_" },
+  systemd_part_of: { relationship: "part_of", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_" },
+} as const;
+
+// Version three is equally narrow: a package manifest declaration from the
+// separately scheduled ProjectNpm slot.  It says nothing about installation,
+// resolution, execution, or package safety.
+const V3_EVIDENCE_EDGE = {
+  npm_package_manifest_dependency: { relationship: "depends_on", sourcePrefix: "npm_project_", targetPrefix: "npm_package_" },
+} as const;
+
+// Version four is a parsed cron declaration from Cron's own scheduler slot.
+// It makes no execution, successful-run, or host-health claim.
+const V4_EVIDENCE_EDGE = {
+  cron_schedule_declaration: { relationship: "runs_on", sourcePrefix: "scheduled_job_", targetPrefix: "host_", target: "host_local" },
+} as const;
 
 function hasCompleteProviderStateVector(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
@@ -119,6 +165,162 @@ function hasCoherentProviderFreshness(payload: unknown): boolean {
   });
 }
 
+function hasCoherentRuntimeEvidence(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const edges = (payload as { edges?: unknown }).edges;
+  if (!Array.isArray(edges)) return false;
+  return edges.every((edge) => {
+    if (!edge || typeof edge !== "object") return false;
+    const candidate = edge as { source?: unknown; target?: unknown; relationship?: unknown; evidenceRefs?: unknown };
+    if (!Array.isArray(candidate.evidenceRefs)) return false;
+    return candidate.evidenceRefs.every((evidence) => {
+      if (!evidence || typeof evidence !== "object") return false;
+      const value = evidence as {
+        version?: unknown; provider?: unknown; kind?: unknown; assertionKind?: unknown;
+        freshness?: unknown; providerRevision?: unknown; collectedAt?: unknown; subjectRef?: unknown;
+        providerSlot?: unknown;
+      };
+      const isV1 = value.version === 1
+        && value.provider === "docker"
+        && value.assertionKind === "observed"
+        && value.freshness === "fresh"
+        && (value.providerSlot === null || value.providerSlot === undefined);
+      const isV2 = value.version === 2
+        && value.provider === "systemd"
+        && value.assertionKind === "declared"
+        && value.providerSlot === "systemd"
+        && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
+      const isV3 = value.version === 3
+        && value.provider === "npm"
+        && value.assertionKind === "declared"
+        && value.providerSlot === "project_npm"
+        && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
+      const isV4 = value.version === 4
+        && value.provider === "cron"
+        && value.assertionKind === "declared"
+        && value.providerSlot === "cron"
+        && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
+      if (!isV1 && !isV2 && !isV3 && !isV4) return false;
+      const expected = typeof value.kind === "string"
+        ? (isV1
+          ? V1_EVIDENCE_EDGE[value.kind as keyof typeof V1_EVIDENCE_EDGE]
+          : isV2
+            ? V2_EVIDENCE_EDGE[value.kind as keyof typeof V2_EVIDENCE_EDGE]
+            : isV3
+              ? V3_EVIDENCE_EDGE[value.kind as keyof typeof V3_EVIDENCE_EDGE]
+              : V4_EVIDENCE_EDGE[value.kind as keyof typeof V4_EVIDENCE_EDGE])
+        : undefined;
+      if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return false;
+      if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix)) return false;
+      if (isV4 && candidate.target !== "host_local") return false;
+      if (value.kind === "docker_daemon_state_bind_mount" && candidate.target !== "host_risk_docker_daemon_state") return false;
+      if (candidate.source === candidate.target) return false;
+      // An opaque observation token must never be the collection timestamp
+      // re-labelled as a revision. The daemon produces it independently.
+      return typeof value.providerRevision === "string" && value.providerRevision !== String(value.collectedAt);
+    });
+  });
+}
+
+// Findings are a deliberately tiny conclusion vocabulary, not a daemon-supplied
+// diagnostics channel. The generated schema owns field shape; this exact rule
+// table prevents a compromised daemon from inventing mutable claims or copying
+// arbitrary strings through the new endpoint.
+function hasCoherentFindings(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const findings = (payload as { findings?: unknown }).findings;
+  if (!Array.isArray(findings)) return false;
+  return findings.every((candidate) => {
+    if (!candidate || typeof candidate !== "object") return false;
+    const finding = candidate as Record<string, unknown>;
+    if (finding.ruleId === SYSTEMD_REQUIRES_FINDING_RULE) return finding.severity === "warning"
+      && finding.summary === SYSTEMD_REQUIRES_FINDING_SUMMARY
+      && finding.recommendation === SYSTEMD_REQUIRES_FINDING_RECOMMENDATION
+      && typeof finding.id === "string"
+      && finding.id.startsWith("finding_systemd_requires_target_not_active_")
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("systemd_service_")
+      && typeof finding.targetRef === "string"
+      && finding.targetRef.startsWith("systemd_service_")
+      && finding.subjectRef !== finding.targetRef
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 1
+      && (() => {
+        const candidateEvidence = finding.evidenceRefs[0];
+        if (!candidateEvidence || typeof candidateEvidence !== "object") return false;
+        const evidence = candidateEvidence as Record<string, unknown>;
+        return evidence.version === 2
+          && evidence.provider === "systemd"
+          && evidence.kind === "systemd_requires"
+          && evidence.assertionKind === "declared"
+          && evidence.providerSlot === "systemd"
+          && evidence.freshness === "fresh"
+          && evidence.subjectRef === finding.subjectRef;
+      })();
+    if (finding.ruleId === DOCKER_DAEMON_STATE_FINDING_RULE) return finding.severity === "warning"
+      && finding.summary === DOCKER_DAEMON_STATE_FINDING_SUMMARY
+      && finding.recommendation === DOCKER_DAEMON_STATE_FINDING_RECOMMENDATION
+      && typeof finding.id === "string"
+      && finding.id.startsWith("finding_docker_daemon_state_bind_mount_")
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("docker_container_")
+      && finding.targetRef === "host_risk_docker_daemon_state"
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 1
+      && (() => {
+        const candidateEvidence = finding.evidenceRefs[0];
+        if (!candidateEvidence || typeof candidateEvidence !== "object") return false;
+        const evidence = candidateEvidence as Record<string, unknown>;
+        return evidence.version === 1
+          && evidence.provider === "docker"
+          && evidence.kind === "docker_daemon_state_bind_mount"
+          && evidence.assertionKind === "observed"
+          && evidence.summary === "Docker reported a bind mount exposing Docker daemon state"
+          && evidence.subjectRef === finding.subjectRef
+          && evidence.providerSlot === null
+          && evidence.freshness === "fresh"
+          && typeof evidence.providerRevision === "string"
+          && evidence.providerRevision !== String(evidence.collectedAt);
+      })();
+    if (finding.ruleId !== INTERNAL_NETWORK_PORT_FINDING_RULE) return false;
+    return finding.severity === "advisory"
+      && finding.summary === INTERNAL_NETWORK_PORT_FINDING_SUMMARY
+      && finding.recommendation === INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION
+      && typeof finding.id === "string"
+      && finding.id.startsWith("finding_docker_internal_network_member_publishes_port_")
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("docker_container_")
+      && typeof finding.targetRef === "string"
+      && finding.targetRef.startsWith("docker_network_")
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 2
+      && (() => {
+        const [membership, port] = finding.evidenceRefs;
+        if (!membership || typeof membership !== "object" || !port || typeof port !== "object") return false;
+        const networkEvidence = membership as Record<string, unknown>;
+        const portEvidence = port as Record<string, unknown>;
+        return networkEvidence.version === 1
+          && networkEvidence.provider === "docker"
+          && networkEvidence.kind === "docker_network_membership"
+          && networkEvidence.assertionKind === "observed"
+          && networkEvidence.freshness === "fresh"
+          && networkEvidence.providerSlot === null
+          && networkEvidence.subjectRef === finding.subjectRef
+          && typeof networkEvidence.providerRevision === "string"
+          && networkEvidence.providerRevision !== String(networkEvidence.collectedAt)
+          && portEvidence.version === 1
+          && portEvidence.provider === "docker"
+          && portEvidence.kind === "docker_port_publication"
+          && portEvidence.assertionKind === "observed"
+          && portEvidence.freshness === "fresh"
+          && portEvidence.providerSlot === null
+          && portEvidence.subjectRef === finding.subjectRef
+          && typeof portEvidence.providerRevision === "string"
+          && portEvidence.providerRevision !== String(portEvidence.collectedAt);
+      })();
+  });
+}
+
 export function daemonResponseSchemaId(path: string): RustResponseSchemaId | undefined {
   const pathname = path.split("?", 1)[0];
   if (pathname === "/daemon/containers") return "ContainersResponse";
@@ -150,7 +352,9 @@ export class DaemonResponseValidationError extends Error {
 export function validateDaemonResponse(path: string, payload: unknown) {
   const schema = daemonResponseSchemaId(path);
   const validator = schema && validators.get(schema);
-  if (!validator || !validator(payload) || (schema === "RuntimeMap" && (!hasCompleteProviderStateVector(payload) || !hasCoherentProviderFreshness(payload)))) {
+  if (!validator || !validator(payload)
+    || (schema === "RuntimeMap" && (!hasCompleteProviderStateVector(payload) || !hasCoherentProviderFreshness(payload) || !hasCoherentRuntimeEvidence(payload)))
+    || (schema === "FindingsResponse" && !hasCoherentFindings(payload))) {
     throw new DaemonResponseValidationError();
   }
   return payload;

@@ -8,6 +8,12 @@
 use crate::{
     docker_collector::DockerCollector,
     provider_contract::ProviderCollection,
+    providers::cron::CRON_EVIDENCE_SCHEDULE_MARKER,
+    providers::npm::NPM_EVIDENCE_DEPENDENCY_MARKER,
+    providers::systemd::{
+        SYSTEMD_EVIDENCE_KIND_MARKER, SYSTEMD_EVIDENCE_PART_OF, SYSTEMD_EVIDENCE_REQUIRES,
+        SYSTEMD_EVIDENCE_WANTS,
+    },
     publication::{publish_docker_snapshot, redact_health_response, redact_runtime_map},
     runtime_collection::{
         collect_provider_slot_bounded, runtime_map_from_collection, slot_interval,
@@ -15,9 +21,12 @@ use crate::{
     },
 };
 use dockermap_core::{
-    derive_images, mock_snapshot, DiagnosticSeverity, DockerSnapshot, HealthResponse, HealthState,
-    ProviderSlot, ProviderState, ProviderStateKind, ProviderStatusReason, RuntimeMap,
-    RuntimeMapDiagnostic, RuntimeMode, RuntimeProviderKind,
+    collision_resistant_id_component, derive_findings, derive_images, mock_snapshot,
+    DiagnosticSeverity, DockerSnapshot, FindingsResponse, HealthResponse, HealthState,
+    ProviderSlot, ProviderState, ProviderStateKind, ProviderStatusReason,
+    RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
+    RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
+    RuntimeMode, RuntimeProviderKind,
 };
 use std::{
     collections::BTreeMap,
@@ -58,11 +67,16 @@ pub(crate) struct DaemonCache {
     pub(crate) snapshot: DockerSnapshot,
     pub(crate) health: HealthResponse,
     pub(crate) runtime_map: RuntimeMap,
+    pub(crate) findings: FindingsResponse,
     runtime_providers: RuntimeProviderSlots,
     /// Increments on every Docker/mock source transition. A late worker must
     /// match this generation as well as evidence, so Docker→mock→Docker can
     /// never accept a completion from the earlier live generation.
     source_generation: u64,
+    /// Opaque source-observation token attached to Docker-native evidence.
+    /// This is intentionally distinct from the broader publication revision:
+    /// provider slot state may change without changing Docker facts.
+    docker_observation_revision: DockerObservationRevision,
     revision: PublicationRevision,
 }
 
@@ -129,6 +143,54 @@ impl PublicationRevision {
     }
 }
 
+/// Per-process opaque identity for the current sanitized Docker observation.
+/// It advances only when bounded Docker semantics (or source mode) change,
+/// never for the two-second observation timestamp tick.
+#[derive(Clone)]
+struct DockerObservationRevision {
+    boot: String,
+    sequence: u64,
+    last_observable: Option<String>,
+}
+
+impl DockerObservationRevision {
+    fn new() -> Self {
+        Self {
+            boot: opaque_revision_boot_component(),
+            sequence: 0,
+            last_observable: None,
+        }
+    }
+
+    fn current(&self) -> String {
+        format!("{}-{}", self.boot, self.sequence)
+    }
+
+    fn assign(&mut self, snapshot: &DockerSnapshot, mode: &RuntimeMode) {
+        let mut published = publish_docker_snapshot(snapshot);
+        // Observation time and the publication revision do not describe a
+        // Docker fact. Clearing them prevents a healthy refresh ticker from
+        // fabricating a new evidence revision every two seconds.
+        published.last_updated = 0;
+        published.model_revision.clear();
+        let observable = serde_json::to_string(&(mode, published))
+            .expect("public Docker observation is serializable");
+        if self.last_observable.as_deref() != Some(observable.as_str()) {
+            self.sequence = self
+                .sequence
+                .checked_add(1)
+                .expect("Docker observation revision sequence overflow");
+            self.last_observable = Some(observable);
+        }
+    }
+}
+
+fn opaque_revision_boot_component() -> String {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).expect("OS CSPRNG for opaque revision boot component");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Remove only fields which record when Docker was observed from the cloned,
 /// already-public model used to decide whether a semantic publication changed.
 /// The cache and HTTP responses retain the original values. In particular,
@@ -146,6 +208,15 @@ fn clear_volatile_observation_markers(
     health.last_updated = 0;
     health.snapshot_version.clear();
     runtime_map.last_updated = 0;
+    // Docker evidence retains its real collection time for clients, but it is
+    // not semantic topology. The stable opaque provider token remains in the
+    // comparison so a genuine sanitized Docker observation still advances the
+    // model revision exactly once.
+    for edge in &mut runtime_map.edges {
+        for evidence in &mut edge.evidence_refs {
+            evidence.collected_at = 0;
+        }
+    }
 }
 
 fn boot_instance_component() -> String {
@@ -239,6 +310,8 @@ impl SlotDataRevision {
 pub(crate) struct ProviderSlotFlights {
     network: Arc<AtomicBool>,
     host: Arc<AtomicBool>,
+    cron: Arc<AtomicBool>,
+    systemd: Arc<AtomicBool>,
     python: Arc<AtomicBool>,
     native: Arc<AtomicBool>,
     npm: Arc<AtomicBool>,
@@ -249,6 +322,8 @@ impl Default for ProviderSlotFlights {
         Self {
             network: Arc::new(AtomicBool::new(false)),
             host: Arc::new(AtomicBool::new(false)),
+            cron: Arc::new(AtomicBool::new(false)),
+            systemd: Arc::new(AtomicBool::new(false)),
             python: Arc::new(AtomicBool::new(false)),
             native: Arc::new(AtomicBool::new(false)),
             npm: Arc::new(AtomicBool::new(false)),
@@ -264,6 +339,8 @@ impl ProviderSlotFlights {
         match slot {
             ProviderSlot::NetworkInfrastructure => self.network.clone(),
             ProviderSlot::HostScoped => self.host.clone(),
+            ProviderSlot::Cron => self.cron.clone(),
+            ProviderSlot::Systemd => self.systemd.clone(),
             ProviderSlot::PythonProcesses => self.python.clone(),
             ProviderSlot::NativeProcesses => self.native.clone(),
             ProviderSlot::ProjectNpm => self.npm.clone(),
@@ -274,6 +351,8 @@ impl ProviderSlotFlights {
         [
             &self.network,
             &self.host,
+            &self.cron,
+            &self.systemd,
             &self.python,
             &self.native,
             &self.npm,
@@ -312,10 +391,13 @@ impl DaemonCache {
                 provider_states: unavailable_provider_states(),
                 ..Default::default()
             },
+            findings: FindingsResponse::default(),
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
+            docker_observation_revision: DockerObservationRevision::new(),
             revision: PublicationRevision::new(),
         };
+        cache.assign_docker_observation_revision();
         cache.assign_revision();
         cache
     }
@@ -325,6 +407,32 @@ impl DaemonCache {
         // publication. Provider state is runtime-topology evidence only.
         self.revision
             .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
+        // Findings are a pure projection of the sanitized runtime map, so
+        // calculate and cache them only after the publication revision exists.
+        self.findings = FindingsResponse {
+            findings: derive_findings(&self.runtime_map),
+            model_revision: self.runtime_map.model_revision.clone(),
+        };
+    }
+
+    fn assign_docker_observation_revision(&mut self) {
+        self.docker_observation_revision
+            .assign(&self.snapshot, &self.health.mode);
+    }
+
+    fn docker_observation_token(&self) -> String {
+        self.docker_observation_revision.current()
+    }
+
+    fn rebuild_runtime_map(&mut self) {
+        self.assign_docker_observation_revision();
+        let docker_observation_token = self.docker_observation_token();
+        self.runtime_map = runtime_map_for_snapshot(
+            &self.snapshot,
+            &self.health.mode,
+            &self.runtime_providers,
+            &docker_observation_token,
+        );
     }
 }
 
@@ -407,7 +515,8 @@ async fn publish_docker_snapshot_cache(
     if same_source && !same_collection_evidence(&cache.snapshot, &updated.snapshot) {
         mark_network_observation_stale(&mut updated.runtime_providers);
     }
-    updated.runtime_map = runtime_map_for_snapshot(&updated.snapshot, &updated.runtime_providers);
+    updated.docker_observation_revision = cache.docker_observation_revision.clone();
+    updated.rebuild_runtime_map();
     updated.revision = cache.revision.clone();
     updated.assign_revision();
     *cache = updated;
@@ -465,8 +574,10 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     snapshot,
                     health,
                     runtime_map: empty_runtime_map(0),
+                    findings: FindingsResponse::default(),
                     runtime_providers: unavailable_provider_slots(),
                     source_generation: 0,
+                    docker_observation_revision: DockerObservationRevision::new(),
                     revision: PublicationRevision::new(),
                 }
             }
@@ -599,7 +710,7 @@ async fn claim_due_provider_slots(state: &AppState, now: Duration) -> Vec<Provid
         state.provider_slot_in_flight.active_count(),
     );
     if !due.is_empty() {
-        cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
+        cache.rebuild_runtime_map();
         cache.assign_revision();
     }
     due
@@ -698,7 +809,7 @@ async fn apply_provider_slot_outcome(
             slot_state.completed_at = Some(completed_at);
         }
     }
-    cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
+    cache.rebuild_runtime_map();
     cache.assign_revision();
     let current_snapshot = cache.snapshot.clone();
     let current_mode = cache.health.mode.clone();
@@ -758,30 +869,341 @@ fn same_collection_evidence(left: &DockerSnapshot, right: &DockerSnapshot) -> bo
     left == right
 }
 
-fn runtime_map_for_snapshot(snapshot: &DockerSnapshot, slots: &RuntimeProviderSlots) -> RuntimeMap {
+fn runtime_map_for_snapshot(
+    snapshot: &DockerSnapshot,
+    mode: &RuntimeMode,
+    slots: &RuntimeProviderSlots,
+    docker_observation_revision: &str,
+) -> RuntimeMap {
     let mut combined = ProviderCollection::default();
     let mut extra_diagnostics = Vec::new();
     for slot in STATIC_PROVIDER_SLOTS.iter().copied() {
-        let state = &slots[&slot].observation;
-        if let Some(collection) = retained_collection(state) {
-            let (nodes, edges, diagnostics) = collection.into_parts();
+        let slot_state = &slots[&slot];
+        let observation = &slot_state.observation;
+        if let Some(collection) = retained_collection(observation) {
+            let (nodes, mut edges, diagnostics) = collection.into_parts();
+            if slot == ProviderSlot::Systemd {
+                bind_systemd_evidence(&mut edges, slot_state);
+            } else if slot == ProviderSlot::ProjectNpm {
+                bind_npm_evidence(&mut edges, slot_state);
+            } else if slot == ProviderSlot::Cron {
+                bind_cron_evidence(&mut edges, slot_state);
+            }
             let (target_nodes, target_edges, target_diagnostics) = combined.parts_mut();
             target_nodes.extend(nodes);
             target_edges.extend(edges);
             target_diagnostics.extend(diagnostics);
         }
-        if !matches!(state, RuntimeProviderState::Fresh(_)) {
+        if !matches!(observation, RuntimeProviderState::Fresh(_)) {
             extra_diagnostics.push(RuntimeMapDiagnostic {
                 provider: RuntimeProviderKind::Other,
                 severity: DiagnosticSeverity::Warning,
-                message: slot_diagnostic(slot, state).into(),
+                message: slot_diagnostic(slot, observation).into(),
             });
         }
     }
-    let mut runtime_map = runtime_map_from_collection(snapshot, &combined);
+    // Cron's declaration target is canonical only when the independently
+    // retained HostScoped observation supplied `host_local`. Startup and host
+    // refresh ordering can otherwise leave a dangling relationship; omit it
+    // rather than publishing an unverifiable target or borrowing host state.
+    let has_canonical_host = combined.nodes().iter().any(|node| {
+        node.id == "host_local"
+            && node.provider == RuntimeProviderKind::Host
+            && node.kind == dockermap_core::RuntimeNodeKind::Host
+    });
+    if !has_canonical_host {
+        combined.parts_mut().1.retain(|edge| {
+            !(edge.source.starts_with("scheduled_job_")
+                && edge.target == "host_local"
+                && edge.relationship == dockermap_core::RuntimeRelationshipKind::RunsOn)
+        });
+    }
+    let mut runtime_map =
+        runtime_map_from_collection(snapshot, &combined, docker_observation_revision, mode);
     runtime_map.provider_states = provider_states_for(slots);
     runtime_map.diagnostics.extend(extra_diagnostics);
     runtime_map
+}
+
+/// Bind a parsed cron declaration only to the independently scheduled Cron
+/// slot. The private marker is removed in every path. A cron relationship is
+/// fail-closed until the canonical retained host node exists.
+fn bind_cron_evidence(edges: &mut [RuntimeMapEdge], state: &SlotRuntimeState) {
+    let disabled = retained_collection(&state.observation)
+        .as_ref()
+        .is_some_and(|collection| {
+            collection.states().iter().any(|candidate| {
+                candidate.slot == ProviderSlot::Cron
+                    && candidate.state == ProviderStateKind::Disabled
+            })
+        });
+    let freshness = match &state.observation {
+        RuntimeProviderState::Fresh(_) => RuntimeEvidenceFreshness::Fresh,
+        RuntimeProviderState::Collecting(Some(_)) | RuntimeProviderState::Degraded(Some(_)) => {
+            RuntimeEvidenceFreshness::Stale
+        }
+        RuntimeProviderState::TimedOut(Some(_)) => RuntimeEvidenceFreshness::TimedOut,
+        RuntimeProviderState::Unavailable
+        | RuntimeProviderState::Collecting(None)
+        | RuntimeProviderState::Degraded(None)
+        | RuntimeProviderState::TimedOut(None) => {
+            clear_cron_evidence(edges);
+            return;
+        }
+    };
+    let (Some(revision), Some(collected_at)) = (
+        state
+            .freshness
+            .data_revision
+            .as_ref()
+            .map(SlotDataRevision::public),
+        state.freshness.last_success_ms,
+    ) else {
+        clear_cron_evidence(edges);
+        return;
+    };
+    if disabled {
+        clear_cron_evidence(edges);
+        return;
+    }
+    for edge in edges.iter_mut() {
+        let marker = edge.metadata.remove(CRON_EVIDENCE_SCHEDULE_MARKER);
+        if marker.as_deref() != Some("declared")
+            || edge.relationship != dockermap_core::RuntimeRelationshipKind::RunsOn
+            || !edge.source.starts_with("scheduled_job_")
+            || edge.target != "host_local"
+            || edge.source == edge.target
+        {
+            edge.evidence_refs.clear();
+            continue;
+        }
+        edge.evidence_refs = vec![RuntimeEvidenceRef {
+            version: 4,
+            id: format!(
+                "cron_evidence_schedule_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            provider: RuntimeEvidenceProvider::Cron,
+            kind: RuntimeEvidenceKind::CronScheduleDeclaration,
+            assertion_kind: RuntimeEvidenceAssertionKind::Declared,
+            summary: "cron declared a scheduled job".into(),
+            subject_ref: edge.source.clone(),
+            collected_at,
+            provider_revision: revision.clone(),
+            provider_slot: Some(ProviderSlot::Cron),
+            freshness,
+        }];
+    }
+}
+
+fn clear_cron_evidence(edges: &mut [RuntimeMapEdge]) {
+    for edge in edges.iter_mut() {
+        edge.metadata.remove(CRON_EVIDENCE_SCHEDULE_MARKER);
+        edge.evidence_refs.clear();
+    }
+}
+
+/// Convert the private NPM manifest marker into public evidence only after
+/// this exact ProjectNpm slot has a sanitized opaque revision and successful
+/// collection timestamp. Retention is explicit: stale/timed-out observations
+/// remain labelled as such, while disabled, unavailable, revision-less, and
+/// source-reset observations publish no NPM evidence.
+fn bind_npm_evidence(edges: &mut [RuntimeMapEdge], state: &SlotRuntimeState) {
+    let disabled = retained_collection(&state.observation)
+        .as_ref()
+        .is_some_and(|collection| {
+            collection.states().iter().any(|candidate| {
+                candidate.slot == ProviderSlot::ProjectNpm
+                    && candidate.state == ProviderStateKind::Disabled
+            })
+        });
+    let freshness = match &state.observation {
+        RuntimeProviderState::Fresh(_) => RuntimeEvidenceFreshness::Fresh,
+        RuntimeProviderState::Collecting(Some(_)) | RuntimeProviderState::Degraded(Some(_)) => {
+            RuntimeEvidenceFreshness::Stale
+        }
+        RuntimeProviderState::TimedOut(Some(_)) => RuntimeEvidenceFreshness::TimedOut,
+        RuntimeProviderState::Unavailable
+        | RuntimeProviderState::Collecting(None)
+        | RuntimeProviderState::Degraded(None)
+        | RuntimeProviderState::TimedOut(None) => {
+            clear_npm_evidence(edges);
+            return;
+        }
+    };
+    if disabled {
+        clear_npm_evidence(edges);
+        return;
+    }
+    let Some(revision) = state
+        .freshness
+        .data_revision
+        .as_ref()
+        .map(SlotDataRevision::public)
+    else {
+        clear_npm_evidence(edges);
+        return;
+    };
+    let Some(collected_at) = state.freshness.last_success_ms else {
+        clear_npm_evidence(edges);
+        return;
+    };
+
+    for edge in edges {
+        let marker = edge.metadata.remove(NPM_EVIDENCE_DEPENDENCY_MARKER);
+        if marker.as_deref() != Some("declared")
+            || edge.relationship != dockermap_core::RuntimeRelationshipKind::DependsOn
+            || !edge.source.starts_with("npm_project_")
+            || !edge.target.starts_with("npm_package_")
+            || edge.source == edge.target
+        {
+            edge.evidence_refs.clear();
+            continue;
+        }
+        edge.evidence_refs = vec![RuntimeEvidenceRef {
+            version: 3,
+            id: format!(
+                "npm_evidence_manifest_dependency_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            provider: RuntimeEvidenceProvider::Npm,
+            kind: RuntimeEvidenceKind::NpmPackageManifestDependency,
+            assertion_kind: RuntimeEvidenceAssertionKind::Declared,
+            summary: "package manifest declared a dependency".into(),
+            subject_ref: edge.source.clone(),
+            collected_at,
+            provider_revision: revision.clone(),
+            provider_slot: Some(ProviderSlot::ProjectNpm),
+            freshness,
+        }];
+    }
+}
+
+fn clear_npm_evidence(edges: &mut [RuntimeMapEdge]) {
+    for edge in edges {
+        edge.metadata.remove(NPM_EVIDENCE_DEPENDENCY_MARKER);
+        edge.evidence_refs.clear();
+    }
+}
+
+/// Convert the private, closed systemd dependency marker into public evidence
+/// only after this exact slot completed and owns a sanitized opaque revision.
+/// Retained observations deliberately become stale/timed-out evidence instead
+/// of being relabelled as fresh; a disabled or revision-less observation emits
+/// no evidence at all.
+fn bind_systemd_evidence(edges: &mut [RuntimeMapEdge], state: &SlotRuntimeState) {
+    let is_disabled = retained_collection(&state.observation)
+        .as_ref()
+        .map(|collection| {
+            collection.states().iter().any(|candidate| {
+                candidate.slot == ProviderSlot::Systemd
+                    && candidate.state == ProviderStateKind::Disabled
+            })
+        })
+        .unwrap_or(false);
+    if is_disabled {
+        for edge in edges {
+            edge.metadata.remove(SYSTEMD_EVIDENCE_KIND_MARKER);
+            edge.evidence_refs.clear();
+        }
+        return;
+    }
+    let freshness = match &state.observation {
+        RuntimeProviderState::Fresh(_) => RuntimeEvidenceFreshness::Fresh,
+        RuntimeProviderState::Collecting(Some(_)) | RuntimeProviderState::Degraded(Some(_)) => {
+            RuntimeEvidenceFreshness::Stale
+        }
+        RuntimeProviderState::TimedOut(Some(_)) => RuntimeEvidenceFreshness::TimedOut,
+        RuntimeProviderState::Unavailable
+        | RuntimeProviderState::Collecting(None)
+        | RuntimeProviderState::Degraded(None)
+        | RuntimeProviderState::TimedOut(None) => {
+            for edge in edges {
+                edge.metadata.remove(SYSTEMD_EVIDENCE_KIND_MARKER);
+                edge.evidence_refs.clear();
+            }
+            return;
+        }
+    };
+    let Some(revision) = state
+        .freshness
+        .data_revision
+        .as_ref()
+        .map(SlotDataRevision::public)
+    else {
+        for edge in edges {
+            edge.metadata.remove(SYSTEMD_EVIDENCE_KIND_MARKER);
+            edge.evidence_refs.clear();
+        }
+        return;
+    };
+    let Some(collected_at) = state.freshness.last_success_ms else {
+        for edge in edges {
+            edge.metadata.remove(SYSTEMD_EVIDENCE_KIND_MARKER);
+            edge.evidence_refs.clear();
+        }
+        return;
+    };
+
+    for edge in edges {
+        let kind = match edge
+            .metadata
+            .remove(SYSTEMD_EVIDENCE_KIND_MARKER)
+            .as_deref()
+        {
+            Some(SYSTEMD_EVIDENCE_REQUIRES) => RuntimeEvidenceKind::SystemdRequires,
+            Some(SYSTEMD_EVIDENCE_WANTS) => RuntimeEvidenceKind::SystemdWants,
+            Some(SYSTEMD_EVIDENCE_PART_OF) => RuntimeEvidenceKind::SystemdPartOf,
+            _ => {
+                edge.evidence_refs.clear();
+                continue;
+            }
+        };
+        let expected_relationship = match kind {
+            RuntimeEvidenceKind::SystemdRequires => {
+                dockermap_core::RuntimeRelationshipKind::Requires
+            }
+            RuntimeEvidenceKind::SystemdWants => dockermap_core::RuntimeRelationshipKind::Wants,
+            RuntimeEvidenceKind::SystemdPartOf => dockermap_core::RuntimeRelationshipKind::PartOf,
+            _ => unreachable!("closed systemd marker maps only to systemd evidence"),
+        };
+        if edge.relationship != expected_relationship
+            || !edge.source.starts_with("systemd_service_")
+            || !edge.target.starts_with("systemd_service_")
+            || edge.source == edge.target
+        {
+            edge.evidence_refs.clear();
+            continue;
+        }
+        let kind_id = match kind {
+            RuntimeEvidenceKind::SystemdRequires => "requires",
+            RuntimeEvidenceKind::SystemdWants => "wants",
+            RuntimeEvidenceKind::SystemdPartOf => "part-of",
+            _ => unreachable!("closed systemd marker maps only to systemd evidence"),
+        };
+        edge.evidence_refs = vec![RuntimeEvidenceRef {
+            version: 2,
+            id: format!(
+                "systemd_evidence_{kind_id}_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            provider: RuntimeEvidenceProvider::Systemd,
+            kind,
+            assertion_kind: RuntimeEvidenceAssertionKind::Declared,
+            summary: match kind {
+                RuntimeEvidenceKind::SystemdRequires => "systemd declared a Requires dependency",
+                RuntimeEvidenceKind::SystemdWants => "systemd declared a Wants dependency",
+                RuntimeEvidenceKind::SystemdPartOf => "systemd declared a PartOf dependency",
+                _ => unreachable!("closed systemd marker maps only to systemd evidence"),
+            }
+            .into(),
+            subject_ref: edge.source.clone(),
+            collected_at,
+            provider_revision: revision.clone(),
+            provider_slot: Some(ProviderSlot::Systemd),
+            freshness,
+        }];
+    }
 }
 
 fn slot_diagnostic(_slot: ProviderSlot, state: &RuntimeProviderState) -> &'static str {
@@ -896,10 +1318,17 @@ fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
 mod scheduler_tests {
     use super::*;
     use crate::provider_contract::ProviderDiagnostic;
-    use dockermap_core::{mock_snapshot, HealthState, RuntimeProviderKind};
+    use dockermap_core::{
+        mock_snapshot, ComposeMountKind, ContainerMount, HealthState, RuntimeMapNode,
+        RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
+    };
     use std::{
         collections::BTreeMap as TestBTreeMap, fs, os::unix::fs::PermissionsExt, process::Command,
     };
+
+    // Before Systemd was extracted into its own independently scheduled slot,
+    // every two-second pass ran these five aggregate collection bundles.
+    const LEGACY_AGGREGATE_SLOT_COUNT: u64 = 5;
 
     const SCHEDULER_CHURN_CHILD_ENV: &str = "DOCKERMAP_SCHEDULER_CHURN_CHILD";
     const SCHEDULER_CHURN_ATTESTATION_PATH_ENV: &str = "DOCKERMAP_SCHEDULER_CHURN_ATTESTATION_PATH";
@@ -956,9 +1385,527 @@ mod scheduler_tests {
         unavailable_provider_slots()
     }
 
+    fn marked_systemd_dependency() -> ProviderCollection {
+        let mut collection = ProviderCollection::default();
+        collection.set_state(ProviderSlot::Systemd, ProviderStateKind::Fresh);
+        for (id, label) in [
+            ("systemd_service_application", "application"),
+            ("systemd_service_database", "database"),
+        ] {
+            collection.nodes_mut().push(RuntimeMapNode {
+                id: id.into(),
+                provider: RuntimeProviderKind::Systemd,
+                kind: RuntimeNodeKind::SystemdService,
+                label: label.into(),
+                status: Some(
+                    if id == "systemd_service_application" {
+                        "active"
+                    } else {
+                        "failed"
+                    }
+                    .into(),
+                ),
+                layer: Some(RuntimeNodeLayer::Service),
+                metadata: BTreeMap::new(),
+                service: None,
+                package: None,
+            });
+        }
+        collection.parts_mut().1.push(RuntimeMapEdge {
+            source: "systemd_service_application".into(),
+            target: "systemd_service_database".into(),
+            relationship: dockermap_core::RuntimeRelationshipKind::Requires,
+            metadata: BTreeMap::from([(
+                SYSTEMD_EVIDENCE_KIND_MARKER.into(),
+                SYSTEMD_EVIDENCE_REQUIRES.into(),
+            )]),
+            evidence_refs: Vec::new(),
+        });
+        collection
+    }
+
+    fn marked_npm_dependency() -> ProviderCollection {
+        let mut collection = ProviderCollection::default();
+        collection.set_state(ProviderSlot::ProjectNpm, ProviderStateKind::Fresh);
+        for (id, label, kind) in [
+            (
+                "npm_project_application",
+                "application",
+                RuntimeNodeKind::Package,
+            ),
+            (
+                "npm_package_dependency",
+                "dependency",
+                RuntimeNodeKind::PackageDependency,
+            ),
+        ] {
+            collection.nodes_mut().push(RuntimeMapNode {
+                id: id.into(),
+                provider: RuntimeProviderKind::Npm,
+                kind,
+                label: label.into(),
+                status: None,
+                layer: Some(RuntimeNodeLayer::Package),
+                metadata: BTreeMap::new(),
+                service: None,
+                package: None,
+            });
+        }
+        collection.parts_mut().1.push(RuntimeMapEdge {
+            source: "npm_project_application".into(),
+            target: "npm_package_dependency".into(),
+            relationship: dockermap_core::RuntimeRelationshipKind::DependsOn,
+            metadata: BTreeMap::from([(NPM_EVIDENCE_DEPENDENCY_MARKER.into(), "declared".into())]),
+            evidence_refs: Vec::new(),
+        });
+        collection
+    }
+
+    fn marked_cron_declaration() -> ProviderCollection {
+        let mut collection = ProviderCollection::default();
+        collection.set_state(ProviderSlot::Cron, ProviderStateKind::Fresh);
+        collection.nodes_mut().push(RuntimeMapNode {
+            id: "scheduled_job_declared".into(),
+            provider: RuntimeProviderKind::ScheduledJob,
+            kind: RuntimeNodeKind::ScheduledJob,
+            label: "scheduled job".into(),
+            status: Some("scheduled".into()),
+            layer: Some(RuntimeNodeLayer::Process),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        });
+        collection.parts_mut().1.push(RuntimeMapEdge {
+            source: "scheduled_job_declared".into(),
+            target: "host_local".into(),
+            relationship: dockermap_core::RuntimeRelationshipKind::RunsOn,
+            metadata: BTreeMap::from([(CRON_EVIDENCE_SCHEDULE_MARKER.into(), "declared".into())]),
+            evidence_refs: Vec::new(),
+        });
+        collection
+    }
+
+    fn host_collection() -> ProviderCollection {
+        let mut collection = ProviderCollection::default();
+        collection.set_state(ProviderSlot::HostScoped, ProviderStateKind::Fresh);
+        collection.nodes_mut().push(RuntimeMapNode {
+            id: "host_local".into(),
+            provider: RuntimeProviderKind::Host,
+            kind: RuntimeNodeKind::Host,
+            label: "host".into(),
+            status: Some("online".into()),
+            layer: Some(RuntimeNodeLayer::Host),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        });
+        collection
+    }
+
+    #[test]
+    fn cron_declaration_evidence_is_slot_bound_and_target_gated() {
+        for (observation, expected) in [
+            (
+                RuntimeProviderState::Fresh(marked_cron_declaration()),
+                RuntimeEvidenceFreshness::Fresh,
+            ),
+            (
+                RuntimeProviderState::Degraded(Some(marked_cron_declaration())),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                RuntimeProviderState::TimedOut(Some(marked_cron_declaration())),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
+        ] {
+            let mut provider_slots = slots();
+            let cron = provider_slots.get_mut(&ProviderSlot::Cron).unwrap();
+            cron.observation = observation;
+            cron.freshness.data_revision = Some(SlotDataRevision::first());
+            cron.freshness.last_success_ms = Some(42);
+            // A completed Cron pass alone must not publish a dangling edge.
+            let no_host = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &provider_slots,
+                "docker-observation",
+            );
+            assert!(no_host
+                .edges
+                .iter()
+                .all(|edge| edge.source != "scheduled_job_declared"));
+
+            let host = provider_slots.get_mut(&ProviderSlot::HostScoped).unwrap();
+            host.observation = RuntimeProviderState::Fresh(host_collection());
+            host.freshness.data_revision = Some(SlotDataRevision::first());
+            host.freshness.last_success_ms = Some(42);
+            let map = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &provider_slots,
+                "docker-observation",
+            );
+            let edge = map
+                .edges
+                .iter()
+                .find(|edge| edge.source == "scheduled_job_declared")
+                .expect("canonical host admits cron edge");
+            assert!(edge.metadata.is_empty());
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 4);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Cron);
+            assert_eq!(evidence.kind, RuntimeEvidenceKind::CronScheduleDeclaration);
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Declared
+            );
+            assert_eq!(evidence.provider_slot, Some(ProviderSlot::Cron));
+            assert_eq!(evidence.collected_at, 42);
+            assert_eq!(evidence.freshness, expected);
+        }
+    }
+
+    #[test]
+    fn cron_marker_never_publishes_without_lifecycle_or_after_reset() {
+        let mut provider_slots = slots();
+        let cron = provider_slots.get_mut(&ProviderSlot::Cron).unwrap();
+        cron.observation = RuntimeProviderState::Fresh(marked_cron_declaration());
+        let host = provider_slots.get_mut(&ProviderSlot::HostScoped).unwrap();
+        host.observation = RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &provider_slots,
+            "docker-observation",
+        );
+        let edge = map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "scheduled_job_declared")
+            .unwrap();
+        assert!(edge.evidence_refs.is_empty() && edge.metadata.is_empty());
+
+        let mut disabled = slots();
+        let cron = disabled.get_mut(&ProviderSlot::Cron).unwrap();
+        let mut collection = marked_cron_declaration();
+        collection.set_state(ProviderSlot::Cron, ProviderStateKind::Disabled);
+        cron.observation = RuntimeProviderState::Fresh(collection);
+        cron.freshness.data_revision = Some(SlotDataRevision::first());
+        cron.freshness.last_success_ms = Some(42);
+        disabled
+            .get_mut(&ProviderSlot::HostScoped)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &disabled,
+            "docker-observation",
+        );
+        let edge = map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "scheduled_job_declared")
+            .unwrap();
+        assert!(edge.evidence_refs.is_empty() && edge.metadata.is_empty());
+    }
+
+    #[test]
+    fn systemd_evidence_is_slot_bound_and_truthfully_retained() {
+        for (observation, expected) in [
+            (
+                RuntimeProviderState::Fresh(marked_systemd_dependency()),
+                RuntimeEvidenceFreshness::Fresh,
+            ),
+            (
+                RuntimeProviderState::Degraded(Some(marked_systemd_dependency())),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                RuntimeProviderState::TimedOut(Some(marked_systemd_dependency())),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
+        ] {
+            let mut slots = slots();
+            let state = slots.get_mut(&ProviderSlot::Systemd).unwrap();
+            state.observation = observation;
+            state.freshness.data_revision = Some(SlotDataRevision::first());
+            state.freshness.last_success_ms = Some(42);
+            let map = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &slots,
+                "docker-observation",
+            );
+            let edge = map
+                .edges
+                .iter()
+                .find(|edge| edge.source == "systemd_service_application")
+                .expect("systemd relationship is retained");
+            assert!(edge.metadata.is_empty(), "private marker never publishes");
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 2);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Systemd);
+            assert_eq!(evidence.kind, RuntimeEvidenceKind::SystemdRequires);
+            assert_eq!(
+                edge.relationship,
+                dockermap_core::RuntimeRelationshipKind::Requires
+            );
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Declared
+            );
+            assert_eq!(evidence.provider_slot, Some(ProviderSlot::Systemd));
+            assert_eq!(evidence.collected_at, 42);
+            assert_eq!(evidence.freshness, expected);
+            assert!(!evidence.provider_revision.is_empty());
+        }
+    }
+
+    #[test]
+    fn npm_manifest_evidence_is_slot_bound_redacted_and_truthfully_retained() {
+        for (observation, expected) in [
+            (
+                RuntimeProviderState::Fresh(marked_npm_dependency()),
+                RuntimeEvidenceFreshness::Fresh,
+            ),
+            (
+                RuntimeProviderState::Degraded(Some(marked_npm_dependency())),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                RuntimeProviderState::TimedOut(Some(marked_npm_dependency())),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
+        ] {
+            let mut slots = slots();
+            let state = slots.get_mut(&ProviderSlot::ProjectNpm).unwrap();
+            state.observation = observation;
+            state.freshness.data_revision = Some(SlotDataRevision::first());
+            state.freshness.last_success_ms = Some(42);
+            let map = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &slots,
+                "docker-observation",
+            );
+            let edge = map
+                .edges
+                .iter()
+                .find(|edge| edge.source == "npm_project_application")
+                .expect("npm dependency remains visible");
+            assert!(edge.metadata.is_empty(), "private marker never publishes");
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 3);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Npm);
+            assert_eq!(
+                evidence.kind,
+                RuntimeEvidenceKind::NpmPackageManifestDependency
+            );
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Declared
+            );
+            assert_eq!(evidence.provider_slot, Some(ProviderSlot::ProjectNpm));
+            assert_eq!(evidence.freshness, expected);
+            assert_eq!(evidence.summary, "package manifest declared a dependency");
+            assert!(!evidence.summary.contains("package.json"));
+        }
+    }
+
+    #[test]
+    fn npm_manifest_marker_cannot_publish_without_success_revision_or_after_source_reset() {
+        let mut provider_slots = slots();
+        let state = provider_slots.get_mut(&ProviderSlot::ProjectNpm).unwrap();
+        state.observation = RuntimeProviderState::Fresh(marked_npm_dependency());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &provider_slots,
+            "docker-observation",
+        );
+        let npm_edges = map
+            .edges
+            .iter()
+            .filter(|edge| edge.source.starts_with("npm_project_"))
+            .collect::<Vec<_>>();
+        assert!(npm_edges.iter().all(|edge| edge.evidence_refs.is_empty()));
+        assert!(npm_edges.iter().all(|edge| edge.metadata.is_empty()));
+
+        let mut disabled = slots();
+        let state = disabled.get_mut(&ProviderSlot::ProjectNpm).unwrap();
+        let mut collection = marked_npm_dependency();
+        collection.set_state(ProviderSlot::ProjectNpm, ProviderStateKind::Disabled);
+        state.observation = RuntimeProviderState::Fresh(collection);
+        state.freshness.data_revision = Some(SlotDataRevision::first());
+        state.freshness.last_success_ms = Some(42);
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &disabled,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .filter(|edge| edge.source.starts_with("npm_project_"))
+            .all(|edge| edge.evidence_refs.is_empty() && edge.metadata.is_empty()));
+
+        let mut reset = source_reset_provider_slots();
+        let state = reset.get_mut(&ProviderSlot::ProjectNpm).unwrap();
+        state.observation = RuntimeProviderState::Unavailable;
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &reset,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .filter(|edge| edge.source.starts_with("npm_project_"))
+            .all(|edge| edge.evidence_refs.is_empty()));
+    }
+
+    #[test]
+    fn findings_are_cached_only_after_the_runtime_map_revision_is_published() {
+        let mut cache = docker_cache(mock_snapshot());
+        let mut provider_slots = slots();
+        let state = provider_slots.get_mut(&ProviderSlot::Systemd).unwrap();
+        state.observation = RuntimeProviderState::Fresh(marked_systemd_dependency());
+        state.freshness.data_revision = Some(SlotDataRevision::first());
+        state.freshness.last_success_ms = Some(42);
+        cache.runtime_providers = provider_slots;
+        cache.rebuild_runtime_map();
+        assert!(cache.runtime_map.model_revision.is_empty());
+        assert!(cache.findings.model_revision.is_empty());
+
+        cache.assign_revision();
+
+        assert_eq!(
+            cache.findings.model_revision,
+            cache.runtime_map.model_revision
+        );
+        let finding = cache
+            .findings
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id == dockermap_core::FindingRule::SystemdRequiresTargetNotActive
+            })
+            .expect("fresh systemd evidence produces its warning alongside other cached findings");
+        assert_eq!(finding.evidence_refs.len(), 1);
+        assert_eq!(finding.evidence_refs[0].version, 2);
+        let serialized = serde_json::to_string(finding).unwrap();
+        assert!(serialized.contains("evidenceRefs"));
+        assert!(serialized.contains("systemd_requires"));
+
+        let docker_finding = cache
+            .findings
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id
+                    == dockermap_core::FindingRule::DockerInternalNetworkMemberPublishesPort
+            })
+            .expect("a Docker-mode representative topology produces the bounded internal-network advisory");
+        assert_eq!(docker_finding.evidence_refs.len(), 2);
+        assert_eq!(
+            docker_finding.evidence_refs[0].kind,
+            RuntimeEvidenceKind::DockerNetworkMembership
+        );
+        assert_eq!(
+            docker_finding.evidence_refs[1].kind,
+            RuntimeEvidenceKind::DockerPortPublication
+        );
+    }
+
+    #[test]
+    fn daemon_state_bind_mount_finding_is_cached_after_publication() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers[0].mounts = vec![ContainerMount {
+            id: "private-mount-id".into(),
+            kind: ComposeMountKind::Bind,
+            source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+            target: "/private/target".into(),
+            read_only: true,
+        }];
+        let mut cache = docker_cache(snapshot);
+        cache.rebuild_runtime_map();
+        cache.assign_revision();
+        let finding = cache
+            .findings
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id == dockermap_core::FindingRule::DockerDaemonStateBindMount
+            })
+            .expect("cached runtime map produces the daemon-state warning");
+        assert_eq!(finding.evidence_refs.len(), 1);
+        assert_eq!(
+            finding.evidence_refs[0].kind,
+            RuntimeEvidenceKind::DockerDaemonStateBindMount
+        );
+        let serialized = serde_json::to_string(finding).unwrap();
+        for forbidden in [
+            "DOCKERMAP_TEST_DAEMON_STATE",
+            "/private/target",
+            "private-mount-id",
+            "readOnly",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "cached finding leaked {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn revisionless_or_disabled_systemd_collection_cannot_publish_evidence() {
+        let mut slots = slots();
+        slots.get_mut(&ProviderSlot::Systemd).unwrap().observation =
+            RuntimeProviderState::Fresh(marked_systemd_dependency());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &slots,
+            "docker-observation",
+        );
+        let edge = map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "systemd_service_application")
+            .expect("systemd relationship remains visible without evidence");
+        assert!(edge.evidence_refs.is_empty());
+        assert!(edge.metadata.is_empty());
+
+        let mut disabled = marked_systemd_dependency();
+        disabled.set_state(ProviderSlot::Systemd, ProviderStateKind::Disabled);
+        let state = slots.get_mut(&ProviderSlot::Systemd).unwrap();
+        state.observation = RuntimeProviderState::Fresh(disabled);
+        state.freshness.data_revision = Some(SlotDataRevision::first());
+        state.freshness.last_success_ms = Some(42);
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &slots,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "systemd_service_application")
+            .expect("disabled systemd relationship remains visible without evidence")
+            .evidence_refs
+            .is_empty());
+    }
+
     fn docker_cache(snapshot: DockerSnapshot) -> DaemonCache {
         let last_updated = snapshot.last_updated;
-        DaemonCache {
+        let mut cache = DaemonCache {
             snapshot,
             health: HealthResponse {
                 status: HealthState::Ok,
@@ -970,10 +1917,26 @@ mod scheduler_tests {
                 message: Some("controlled Docker cache".into()),
             },
             runtime_map: empty_runtime_map(last_updated),
+            findings: FindingsResponse::default(),
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
+            docker_observation_revision: DockerObservationRevision::new(),
             revision: PublicationRevision::new(),
-        }
+        };
+        cache.assign_docker_observation_revision();
+        cache
+    }
+
+    fn first_docker_evidence_revision(cache: &DaemonCache) -> String {
+        cache
+            .runtime_map
+            .edges
+            .iter()
+            .flat_map(|edge| &edge.evidence_refs)
+            .next()
+            .expect("Docker runtime map carries evidence")
+            .provider_revision
+            .clone()
     }
 
     /// Complete a claimed fixed slot without running a host collector. This is
@@ -1003,7 +1966,7 @@ mod scheduler_tests {
         for slot in claimed {
             complete_synthetic_slot(&mut cache.runtime_providers, *slot, completed_at);
         }
-        cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
+        cache.rebuild_runtime_map();
         cache.assign_revision();
     }
 
@@ -1046,6 +2009,11 @@ mod scheduler_tests {
         );
         assert_eq!(
             slot_interval(ProviderSlot::HostScoped),
+            Duration::from_secs(15)
+        );
+        assert_eq!(slot_interval(ProviderSlot::Cron), Duration::from_secs(15));
+        assert_eq!(
+            slot_interval(ProviderSlot::Systemd),
             Duration::from_secs(15)
         );
         assert_eq!(
@@ -1092,6 +2060,8 @@ mod scheduler_tests {
         let invocations = |slot| 1 + window.as_secs() / slot_interval(slot).as_secs();
         assert_eq!(invocations(ProviderSlot::NetworkInfrastructure), 7);
         assert_eq!(invocations(ProviderSlot::HostScoped), 5);
+        assert_eq!(invocations(ProviderSlot::Cron), 5);
+        assert_eq!(invocations(ProviderSlot::Systemd), 5);
         assert_eq!(invocations(ProviderSlot::PythonProcesses), 7);
         assert_eq!(invocations(ProviderSlot::NativeProcesses), 7);
         assert_eq!(invocations(ProviderSlot::ProjectNpm), 2);
@@ -1157,14 +2127,20 @@ mod scheduler_tests {
         assert_eq!(publications, 31);
         assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
         assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+        assert_eq!(starts[&ProviderSlot::Cron], 5);
+        assert_eq!(starts[&ProviderSlot::Systemd], 5);
         assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);
         assert_eq!(starts[&ProviderSlot::NativeProcesses], 7);
         assert_eq!(starts[&ProviderSlot::ProjectNpm], 2);
-        assert_eq!(starts.values().sum::<usize>(), 28);
+        assert_eq!(starts.values().sum::<usize>(), 38);
         assert!(maximum_live_workers <= MAX_CONCURRENT_PROVIDER_SLOTS);
-        let legacy_slot_passes =
-            (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * STATIC_PROVIDER_SLOTS.len() as u64;
-        assert_eq!(legacy_slot_passes, 155);
+        // Before Systemd became independently schedulable, one aggregate
+        // host-scoped pass covered it alongside the four other fixed bundles.
+        // Preserve that actual historical five-bundle baseline rather than
+        // retroactively multiplying the old cadence by today's six slots.
+        let legacy_aggregate_passes =
+            (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * LEGACY_AGGREGATE_SLOT_COUNT;
+        assert_eq!(legacy_aggregate_passes, 155);
     }
 
     /// The scheduler's timing trace above deliberately counts claims rather
@@ -1189,15 +2165,23 @@ mod scheduler_tests {
                 .block_on(run_real_collector_churn_trace(&profile));
             match profile.as_str() {
                 "full-host" => {
-                    assert_eq!(starts.values().sum::<usize>(), 28);
-                    let legacy_starts = (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs())
-                        * STATIC_PROVIDER_SLOTS.len() as u64;
-                    assert_eq!(legacy_starts, 155);
-                    assert_eq!(legacy_starts * 8 / STATIC_PROVIDER_SLOTS.len() as u64, 248);
+                    assert_eq!(starts.values().sum::<usize>(), 38);
+                    // The old whole-runtime pass had five aggregate bundles;
+                    // systemd was part of host-scoped collection, not a sixth
+                    // independently scheduled unit.
+                    let legacy_aggregate_starts =
+                        (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * LEGACY_AGGREGATE_SLOT_COUNT;
+                    assert_eq!(legacy_aggregate_starts, 155);
+                    assert_eq!(
+                        legacy_aggregate_starts * 8 / LEGACY_AGGREGATE_SLOT_COUNT,
+                        248
+                    );
                 }
                 "restricted" => {
-                    assert_eq!(starts.values().sum::<usize>(), 12);
+                    assert_eq!(starts.values().sum::<usize>(), 14);
                     assert_eq!(starts[&ProviderSlot::HostScoped], 1);
+                    assert_eq!(starts[&ProviderSlot::Cron], 1);
+                    assert_eq!(starts[&ProviderSlot::Systemd], 1);
                     assert_eq!(starts[&ProviderSlot::PythonProcesses], 1);
                     assert_eq!(starts[&ProviderSlot::NativeProcesses], 1);
                 }
@@ -1405,6 +2389,7 @@ mod scheduler_tests {
         if profile == "restricted" {
             for slot in [
                 ProviderSlot::HostScoped,
+                ProviderSlot::Cron,
                 ProviderSlot::PythonProcesses,
                 ProviderSlot::NativeProcesses,
             ] {
@@ -1417,6 +2402,8 @@ mod scheduler_tests {
         } else {
             assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
             assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+            assert_eq!(starts[&ProviderSlot::Cron], 5);
+            assert_eq!(starts[&ProviderSlot::Systemd], 5);
             assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);
             assert_eq!(starts[&ProviderSlot::NativeProcesses], 7);
             assert_eq!(starts[&ProviderSlot::ProjectNpm], 2);
@@ -1441,8 +2428,7 @@ mod scheduler_tests {
             .expect("fixed python slot exists");
         python.observation =
             RuntimeProviderState::Collecting(retained_collection(&python.observation));
-        initial.runtime_map =
-            runtime_map_for_snapshot(&initial.snapshot, &initial.runtime_providers);
+        initial.rebuild_runtime_map();
         initial.assign_revision();
         let state = AppState {
             cache: Arc::new(RwLock::new(initial)),
@@ -1513,7 +2499,7 @@ mod scheduler_tests {
     #[test]
     fn disabled_slots_are_never_queued_after_profile_fact_is_observed() {
         let mut slots = slots();
-        let slot = ProviderSlot::HostScoped;
+        let slot = ProviderSlot::Systemd;
         let mut collection = ProviderCollection::default();
         collection.set_state(slot, ProviderStateKind::Disabled);
         let entry = slots.get_mut(&slot).unwrap();
@@ -1531,7 +2517,8 @@ mod scheduler_tests {
         collection.set_state(slot, ProviderStateKind::Fresh);
         slots.get_mut(&slot).unwrap().observation =
             RuntimeProviderState::TimedOut(Some(collection));
-        let map = runtime_map_for_snapshot(&snapshot, &slots);
+        let map =
+            runtime_map_for_snapshot(&snapshot, &RuntimeMode::Docker, &slots, "test-observation");
         assert!(map
             .provider_states
             .iter()
@@ -1657,7 +2644,8 @@ mod scheduler_tests {
         collection.set_state(slot, ProviderStateKind::Fresh);
         slots.get_mut(&slot).unwrap().observation =
             RuntimeProviderState::Degraded(Some(collection));
-        let map = runtime_map_for_snapshot(&snapshot, &slots);
+        let map =
+            runtime_map_for_snapshot(&snapshot, &RuntimeMode::Docker, &slots, "test-observation");
         assert!(map
             .nodes
             .iter()
@@ -1704,7 +2692,7 @@ mod scheduler_tests {
     #[test]
     fn provider_freshness_projection_is_safe_and_retains_good_evidence_on_failure() {
         let snapshot = mock_snapshot();
-        let slot = ProviderSlot::PythonProcesses;
+        let slot = ProviderSlot::Systemd;
         let mut slots = slots();
         let entry = slots.get_mut(&slot).unwrap();
         let mut collection = ProviderCollection::default();
@@ -1739,11 +2727,12 @@ mod scheduler_tests {
             entry.freshness.status_reason = Some(ProviderStatusReason::Refreshing);
             retained
         };
-        let refreshing = runtime_map_for_snapshot(&snapshot, &slots)
-            .provider_states
-            .into_iter()
-            .find(|state| state.slot == slot)
-            .unwrap();
+        let refreshing =
+            runtime_map_for_snapshot(&snapshot, &RuntimeMode::Docker, &slots, "test-observation")
+                .provider_states
+                .into_iter()
+                .find(|state| state.slot == slot)
+                .unwrap();
         assert_eq!(refreshing.state, ProviderStateKind::Stale);
         assert_eq!(refreshing.last_attempt_ms, Some(120));
         assert_eq!(refreshing.last_success_ms, Some(110));
@@ -1757,11 +2746,12 @@ mod scheduler_tests {
         entry.observation = RuntimeProviderState::TimedOut(retained);
         entry.freshness.consecutive_failure_count = 1;
         entry.freshness.status_reason = Some(ProviderStatusReason::CollectionTimedOut);
-        let timed_out = runtime_map_for_snapshot(&snapshot, &slots)
-            .provider_states
-            .into_iter()
-            .find(|state| state.slot == slot)
-            .unwrap();
+        let timed_out =
+            runtime_map_for_snapshot(&snapshot, &RuntimeMode::Docker, &slots, "test-observation")
+                .provider_states
+                .into_iter()
+                .find(|state| state.slot == slot)
+                .unwrap();
         assert_eq!(timed_out.state, ProviderStateKind::TimedOut);
         assert_eq!(timed_out.last_attempt_ms, Some(120));
         assert_eq!(timed_out.last_success_ms, Some(110));
@@ -1776,7 +2766,7 @@ mod scheduler_tests {
 
     #[test]
     fn source_reset_clears_provider_freshness_without_exposing_private_state() {
-        let slot = ProviderSlot::NetworkInfrastructure;
+        let slot = ProviderSlot::Systemd;
         let mut slots = source_reset_provider_slots();
         let state = provider_states_for(&slots)
             .into_iter()
@@ -1805,7 +2795,7 @@ mod scheduler_tests {
 
     #[test]
     fn opaque_data_revision_changes_only_for_sanitized_observable_data() {
-        let slot = ProviderSlot::NativeProcesses;
+        let slot = ProviderSlot::Systemd;
         let mut freshness = SlotFreshness::default();
         let mut first = ProviderCollection::default();
         first.set_state(slot, ProviderStateKind::Fresh);
@@ -1868,6 +2858,47 @@ mod scheduler_tests {
             .any(|diagnostic| diagnostic
                 .message
                 .contains("controlled live slot observation")));
+        assert!(cache.runtime_map.nodes.iter().any(|node| {
+            node.provider == RuntimeProviderKind::Docker && node.kind == RuntimeNodeKind::Container
+        }));
+        assert!(
+            !cache.runtime_map.edges.is_empty(),
+            "mock topology remains useful"
+        );
+        assert!(cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(cache.findings.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn forced_mock_mode_preserves_sample_topology_without_runtime_evidence() {
+        // The collector checks this flag before it can connect to the Docker
+        // gateway. This regression therefore proves the explicit forced-mock
+        // path, rather than merely constructing a sample cache by hand.
+        std::env::set_var("DOCKERMAP_FORCE_MOCK", "true");
+        let collected = collect_snapshot(&AppState::new()).await;
+        std::env::remove_var("DOCKERMAP_FORCE_MOCK");
+        assert_eq!(collected.health.mode, RuntimeMode::Mock);
+
+        let state = AppState::new();
+        publish_docker_snapshot_cache(&state, collected).await;
+        let cache = state.cache.read().await;
+        assert!(cache.runtime_map.nodes.iter().any(|node| {
+            node.provider == RuntimeProviderKind::Docker && node.kind == RuntimeNodeKind::Container
+        }));
+        assert!(
+            !cache.runtime_map.edges.is_empty(),
+            "sample edges remain visible"
+        );
+        assert!(cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(cache.findings.findings.is_empty());
     }
 
     #[tokio::test]
@@ -1937,5 +2968,52 @@ mod scheduler_tests {
             cache.runtime_providers[&ProviderSlot::NetworkInfrastructure].observation,
             RuntimeProviderState::Fresh(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn docker_evidence_token_tracks_sanitized_source_semantics_not_refresh_ticks() {
+        let mut first = mock_snapshot();
+        first.last_updated = 10;
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        publish_docker_snapshot_cache(&state, docker_cache(first.clone())).await;
+        let first_cache = state.cache.read().await;
+        let first_token = first_docker_evidence_revision(&first_cache);
+        let first_model_revision = first_cache.snapshot.model_revision.clone();
+        assert_ne!(first_token, first.last_updated.to_string());
+        drop(first_cache);
+
+        let mut ticker_only = first.clone();
+        ticker_only.last_updated = 12;
+        publish_docker_snapshot_cache(&state, docker_cache(ticker_only.clone())).await;
+        let ticker_cache = state.cache.read().await;
+        assert_eq!(first_docker_evidence_revision(&ticker_cache), first_token);
+        assert_eq!(ticker_cache.snapshot.model_revision, first_model_revision);
+        drop(ticker_cache);
+
+        let mut changed = ticker_only.clone();
+        changed.containers[0].name = "semantic-container-change".into();
+        changed.last_updated = 14;
+        publish_docker_snapshot_cache(&state, docker_cache(changed.clone())).await;
+        let changed_cache = state.cache.read().await;
+        let changed_token = first_docker_evidence_revision(&changed_cache);
+        assert_ne!(changed_token, first_token);
+        assert_ne!(changed_token, changed.last_updated.to_string());
+        drop(changed_cache);
+
+        // A Docker/mock source transition is semantic evidence even when the
+        // bounded inventory happens to have the same visible entities.
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let mock_cache = state.cache.read().await;
+        assert!(mock_cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(mock_cache.findings.findings.is_empty());
     }
 }

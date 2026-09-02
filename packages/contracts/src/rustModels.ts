@@ -14,7 +14,8 @@ export type RustDaemonModels =
   | ContainerRecord
   | ImagesResponse
   | NetworksResponse
-  | VolumesResponse;
+  | VolumesResponse
+  | FindingsResponse;
 export type ComposeMountKind = 'bind' | 'named_volume' | 'anonymous_volume' | 'unsupported';
 export type RuntimeMode = 'docker' | 'mock';
 export type RelationshipKind = 'connected_to' | 'mounts';
@@ -42,6 +43,40 @@ export type RuntimeProviderKind =
   | 'kubernetes'
   | 'other';
 export type DiagnosticSeverity = 'info' | 'warning' | 'error' | 'blocked';
+/**
+ * Evidence assertion semantics are deliberately closed. A declaration says
+ * what a source configured, never that its target is healthy or was invoked.
+ */
+export type RuntimeEvidenceAssertionKind = 'observed' | 'declared';
+export type RuntimeEvidenceFreshness = 'fresh' | 'stale' | 'timed_out';
+/**
+ * Safe, provider-specific fact families supported by the first provenance
+ * slice.  New sources require an explicit enum addition rather than an
+ * arbitrary source string or metadata map.
+ */
+export type RuntimeEvidenceKind =
+  | ('docker_network_membership' | 'docker_volume_mount' | 'docker_port_publication')
+  | 'docker_compose_depends_on'
+  | 'docker_daemon_state_bind_mount'
+  | 'systemd_requires'
+  | 'systemd_wants'
+  | 'systemd_part_of'
+  | 'npm_package_manifest_dependency'
+  | 'cron_schedule_declaration';
+/**
+ * Evidence providers are deliberately closed.  Version two adds systemd only
+ * after it received its own scheduler slot; it cannot inherit a broader host
+ * collection's freshness or revision.
+ */
+export type RuntimeEvidenceProvider = 'docker' | 'systemd' | 'npm' | 'cron';
+/**
+ * Fixed, schema-backed host-provider slots. This is not a plugin or policy
+ * interface: the daemon owns the complete finite list.
+ */
+export type ProviderSlot =
+  | ('network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm')
+  | 'cron'
+  | 'systemd';
 export type RuntimeRelationshipKind =
   | 'connected_to'
   | 'depends_on'
@@ -56,6 +91,7 @@ export type RuntimeRelationshipKind =
   | 'mounts'
   | 'manages'
   | 'exposes'
+  | 'exposes_daemon_state'
   | 'runs_on'
   | 'uses'
   | 'calls'
@@ -78,6 +114,7 @@ export type RuntimeNodeKind =
   | 'docker_network'
   | 'docker_volume'
   | 'host'
+  | 'host_risk'
   | 'service'
   | 'systemd_service'
   | 'scheduled_job'
@@ -99,12 +136,6 @@ export type RuntimeNodeKind =
   | 'process'
   | 'network_listener'
   | 'orchestrator_workload';
-/**
- * Fixed, schema-backed host-provider slots. This is not a plugin or policy
- * interface: the daemon owns the complete finite list.
- */
-export type ProviderSlot =
-  'network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm';
 export type ProviderStateKind = 'fresh' | 'stale' | 'collecting' | 'unavailable' | 'timed_out' | 'disabled';
 /**
  * A deliberately small, non-diagnostic explanation for a provider slot that
@@ -119,6 +150,19 @@ export type ComposeRelationshipKind = 'declares_mount' | 'mounted_at';
 export type ComposeNodeKind = 'service' | 'host_path' | 'container_path' | 'named_volume' | 'anonymous_volume';
 export type LogLevel = 'info' | 'warn' | 'error';
 export type HealthState = 'ok' | 'degraded';
+/**
+ * Closed rule identifiers keep clients from treating findings as arbitrary
+ * provider messages. New rules require an explicit contract addition.
+ */
+export type FindingRule =
+  | 'systemd.requires_target_not_active'
+  | 'docker.internal_network_member_publishes_port'
+  | 'docker.daemon_state_bind_mount';
+/**
+ * Findings are intentionally a small, closed advisory vocabulary. They do
+ * not expose provider output or prescribe an automated remediation.
+ */
+export type FindingSeverity = 'warning' | 'advisory';
 
 export interface DockerSnapshot {
   containers: ContainerRecord[];
@@ -196,10 +240,18 @@ export interface RuntimeMap {
   modelRevision: string;
   nodes: RuntimeMapNode[];
   /**
-   * @minItems 5
-   * @maxItems 5
+   * @minItems 7
+   * @maxItems 7
    */
-  providerStates: [ProviderState, ProviderState, ProviderState, ProviderState, ProviderState];
+  providerStates: [
+    ProviderState,
+    ProviderState,
+    ProviderState,
+    ProviderState,
+    ProviderState,
+    ProviderState,
+    ProviderState
+  ];
   /**
    * ACTUAL source of these bytes: "docker" or "mock" (#85 A3). Stamped by
    * the daemon route layer from the cache's runtime mode.
@@ -212,12 +264,91 @@ export interface RuntimeMapDiagnostic {
   severity: DiagnosticSeverity;
 }
 export interface RuntimeMapEdge {
+  /**
+   * Empty for relationship families that have not yet been migrated to the
+   * evidence model. It remains present on the wire so API/UI consumers have
+   * one stable, bounded relationship shape while the migration continues.
+   *
+   * @maxItems 8
+   */
+  evidenceRefs:
+    | []
+    | [RuntimeEvidenceRef]
+    | [RuntimeEvidenceRef, RuntimeEvidenceRef]
+    | [RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef]
+    | [RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef]
+    | [RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef]
+    | [
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef
+      ]
+    | [
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef
+      ]
+    | [
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef
+      ];
   metadata: {
     [k: string]: string;
   };
   relationship: RuntimeRelationshipKind;
   source: string;
   target: string;
+}
+/**
+ * A compact, versioned reference to the bounded fact supporting a runtime
+ * relationship.  It intentionally contains no raw command output, config
+ * fragment, path, process arguments, or generic metadata bag.
+ */
+export interface RuntimeEvidenceRef {
+  assertionKind: RuntimeEvidenceAssertionKind;
+  collectedAt: number;
+  freshness: RuntimeEvidenceFreshness;
+  id: string;
+  kind: RuntimeEvidenceKind;
+  provider: RuntimeEvidenceProvider;
+  /**
+   * Opaque provider observation token, not a cache-publication revision,
+   * command output, or source dump.
+   */
+  providerRevision: string;
+  /**
+   * Version-two-and-later provider evidence is explicitly tied to the
+   * finite scheduler slot that supplied its revision and freshness.
+   * Version-one Docker evidence intentionally has no host-provider slot.
+   */
+  providerSlot?: ProviderSlot | null;
+  /**
+   * The already-public runtime entity directly attested by this bounded
+   * provider fact.
+   */
+  subjectRef: string;
+  /**
+   * A bounded, curated explanation; it is never copied from a raw source.
+   */
+  summary: string;
+  /**
+   * Version of this closed evidence representation, not a provider API
+   * version.  It lets future additions remain explicit and reviewable.
+   */
+  version: number;
 }
 export interface RuntimeMapNode {
   id: string;
@@ -459,6 +590,28 @@ export interface NetworksResponse {
 }
 export interface VolumesResponse {
   volumes: VolumeRecord[];
+}
+export interface FindingsResponse {
+  findings: Finding[];
+  modelRevision: string;
+}
+export interface Finding {
+  /**
+   * Canonical, already-sanitized runtime evidence that directly triggered
+   * this finding. Each closed rule has a fixed, small evidence budget,
+   * preventing this response from becoming a generic metadata channel.
+   *
+   * @minItems 1
+   * @maxItems 2
+   */
+  evidenceRefs: [RuntimeEvidenceRef] | [RuntimeEvidenceRef, RuntimeEvidenceRef];
+  id: string;
+  recommendation: string;
+  ruleId: FindingRule;
+  severity: FindingSeverity;
+  subjectRef: string;
+  summary: string;
+  targetRef: string;
 }
 
 // Rust's transparent route wrapper serializes as the record itself.

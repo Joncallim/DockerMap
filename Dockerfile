@@ -44,6 +44,13 @@ RUN npm run check:version && npm run check:contracts && npm run build
 # Build and assert the entire package artifact, rather than relying on a
 # source-tree module that happened to be copied into the image.
 RUN test -f packages/contracts/dist/index.js && test -f packages/contracts/dist/nodeSchemas.js
+# The runtime image needs the API's production dependency closure only. Prune
+# after all builders have finished, so compiler/test tooling never crosses the
+# runtime boundary. npm's workspace resolver may hoist that closure to the
+# repository root, which is the only node_modules tree copied below.
+RUN npm prune --omit=dev \
+    && test ! -e node_modules/.bin/tsx && test ! -e node_modules/.bin/vite \
+    && test ! -d node_modules/typescript && test ! -e node_modules/@playwright/test/package.json
 
 # ---- Runtime image ----------------------------------------------------------
 FROM node:22-bookworm-slim AS runtime
@@ -62,10 +69,6 @@ RUN groupadd --gid 10003 dockermap && \
 WORKDIR /opt/dockermap
 
 COPY --from=js-builder /src/node_modules ./node_modules
-# npm nests workspace deps in the lockfile layout (apps/api/node_modules/express
-# etc.); the runtime image must mirror that layout or the API cannot resolve
-# its deps.
-COPY --from=js-builder /src/apps/api/node_modules ./apps/api/node_modules
 COPY --from=js-builder /src/package.json ./package.json
 COPY --from=js-builder /src/apps/api/dist ./apps/api/dist
 COPY --from=js-builder /src/apps/api/package.json ./apps/api/package.json
@@ -81,6 +84,15 @@ COPY deploy/docker/entrypoint.sh /entrypoint.sh
 COPY deploy/docker/frontend-entrypoint.sh /frontend-entrypoint.sh
 COPY deploy/docker/healthcheck.sh /usr/local/bin/dockermap-healthcheck
 RUN chmod +x /entrypoint.sh /frontend-entrypoint.sh /usr/local/bin/dockermap-healthcheck
+# The Node base image includes package-manager CLIs that DockerMap never uses
+# at runtime. Remove them after staging the already-pruned closure; `node`
+# remains available for the compiled API, while npm/npx cannot become an
+# in-container mutation surface.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+    && ! command -v npm && ! command -v npx \
+    && test ! -e node_modules/.bin/tsx && test ! -e node_modules/.bin/vite \
+    && test ! -d node_modules/typescript && test ! -e node_modules/@playwright/test/package.json
 
 ENV NODE_ENV=production \
     PORT=4000 \

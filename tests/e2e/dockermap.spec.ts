@@ -171,8 +171,102 @@ test.describe("DockerMap GUI", () => {
     await expect(page.getByText("Sample data", { exact: true })).toHaveCount(0);
   });
 
+  test("high-density map keeps isolates in the directory and focuses them without widening the default graph", async ({ page }) => {
+    stack = await startMockStack();
+    const revision = "e2e-dense-map-v1";
+    await page.route("**/api/events/stream*", async (route) => {
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `event: snapshot\ndata: {"status":"ok","mode":"mock","dockerReachable":false,"message":"dense fixture","lastUpdated":0,"snapshotVersion":"${revision}","modelRevision":"${revision}"}\n\n`
+      });
+    });
+    await page.route("**/api/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = (await response.json()) as Record<string, unknown>;
+      const containers = Array.from({ length: 44 }, (_, index) => ({
+        id: `dense-${String(index).padStart(2, "0")}`,
+        name: `dense-${String(index).padStart(2, "0")}`,
+        image: "busybox:1",
+        status: "running",
+        role: "service",
+        networks: ["dense-network"],
+        ports: [],
+        mounts: [],
+        dependsOn: index === 1 ? ["dense-00"] : index === 2 ? ["dense-01"] : []
+      }));
+      snapshot.containers = containers;
+      snapshot.images = [];
+      snapshot.volumes = [];
+      snapshot.networks = [{ id: "dense-network", name: "dense-network", driver: "bridge", internal: false, members: containers.map((container) => container.name) }];
+      snapshot.modelRevision = revision;
+      await route.fulfill({ response, json: snapshot });
+    });
+    await page.route("**/api/runtime/map", async (route) => {
+      const response = await route.fetch();
+      const runtimeMap = (await response.json()) as Record<string, unknown>;
+      runtimeMap.modelRevision = revision;
+      await route.fulfill({ response, json: runtimeMap });
+    });
+
+    await page.goto(`${stack.webUrl}/map`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Service Map" })).toBeVisible();
+    await expect(page.locator(".service-directory .runtime-node-btn")).toHaveCount(44);
+    await expect(page.locator("g.node")).toHaveCount(3);
+
+    await page.locator(".service-directory .runtime-node-btn", { hasText: "dense-43" }).click();
+    await expect(page.locator("g.node")).toHaveCount(1);
+    await expect(page.locator("g.node", { hasText: "dense-43" })).toHaveCount(1);
+  });
+
   test("runtime relation navigation widens filters, keeps the destination selected and focused", async ({ page }) => {
     stack = await startMockStack();
+
+    // This inspector exercise needs a coherent Docker-attested publication.
+    // Keep the default mock-stack tests (including the explicit no-evidence
+    // assertions) as the mock safety coverage; this narrowly upgrades only
+    // the fixture used to prove the live evidence renderer.
+    const revision = "e2e-runtime-evidence-docker-v1";
+    await page.route("**/api/events/stream*", async (route) => {
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `event: snapshot\ndata: {"status":"ok","mode":"docker","dockerReachable":true,"message":"Docker fixture","lastUpdated":1,"snapshotVersion":"${revision}","modelRevision":"${revision}"}\n\n`
+      });
+    });
+    await page.route("**/api/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = (await response.json()) as Record<string, unknown>;
+      snapshot.source = "docker";
+      snapshot.modelRevision = revision;
+      await route.fulfill({ response, json: snapshot });
+    });
+    await page.route("**/api/runtime/map", async (route) => {
+      const response = await route.fetch();
+      const runtimeMap = (await response.json()) as {
+        source?: unknown;
+        modelRevision?: unknown;
+        nodes?: Array<{ id: string; label: string; provider: string; type: string }>;
+        edges?: Array<{ source: string; target: string; evidenceRefs?: unknown[] }>;
+      };
+      runtimeMap.source = "docker";
+      runtimeMap.modelRevision = revision;
+      const api = runtimeMap.nodes?.find((node) => node.provider === "docker" && node.type === "container" && node.label === "api");
+      const application = runtimeMap.nodes?.find((node) => node.provider === "docker" && node.type === "docker_network" && node.label === "application");
+      const edge = runtimeMap.edges?.find((candidate) => candidate.source === api?.id && candidate.target === application?.id);
+      if (!edge) throw new Error("runtime evidence fixture is missing the api-to-application relation");
+      edge.evidenceRefs = [{
+        version: 1,
+        id: "e2e-docker-network-membership-api-application",
+        provider: "docker",
+        kind: "docker_network_membership",
+        assertionKind: "observed",
+        summary: "Docker reported container network membership",
+        subjectRef: edge.source,
+        collectedAt: 1,
+        providerRevision: "e2e-docker-observation",
+        freshness: "fresh"
+      }];
+      await route.fulfill({ response, json: runtimeMap });
+    });
 
     await page.goto(stack.webUrl, { waitUntil: "domcontentloaded" });
     await openSpace(page, "Runtime", "/runtime");
@@ -192,6 +286,18 @@ test.describe("DockerMap GUI", () => {
     await page.getByRole("button", { name: /^docker \(\d+\)$/ }).click();
     const applicationNode = page.locator("button.runtime-node-btn", { hasText: "application" }).filter({ hasText: "docker network" });
     await expect(applicationNode).toHaveCount(0);
+
+    // Edge evidence is selected independently of endpoint navigation. The
+    // inspector must expose the canonical Docker fact, not reconstruct a
+    // rationale from the two visible labels.
+    const inspectEvidence = page
+      .locator(".runtime-edge-row", { has: page.locator(".runtime-edge-target", { hasText: "application" }) })
+      .getByRole("button", { name: "Inspect evidence" });
+    await inspectEvidence.click();
+    await expect(inspectEvidence).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByText("Relationship evidence", { exact: true })).toBeVisible();
+    await expect(page.getByText("Observed fact", { exact: true })).toBeVisible();
+    await expect(page.getByText("Docker reported container network membership", { exact: true })).toBeVisible();
 
     // Follow the relation anyway: the destination must become visible (the
     // incompatible layer filter is widened), stay SELECTED, and receive FOCUS

@@ -147,11 +147,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # Issue #42: the runtime stage must mirror the lockfile's nested
-      # workspace layout (apps/api/node_modules) or the API cannot resolve
-      # express. Build the image on every PR so regressions ship nowhere.
+      # The runtime stage copies the pruned workspace dependency closure from
+      # the resolver's root. Build on every PR so hoisting or closure drift
+      # cannot ship unnoticed.
       - name: Build image
         run: docker build -t dockermap:ci .
+
+      - name: Assert runtime dependency boundary
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh dockermap:ci -ec '
+            ! command -v npm
+            ! command -v npx
+            test ! -e /opt/dockermap/node_modules/.bin/tsx
+            test ! -e /opt/dockermap/node_modules/.bin/vite
+            test ! -d /opt/dockermap/node_modules/typescript
+            test ! -e /opt/dockermap/node_modules/@playwright/test/package.json
+            node -e "import(\"express\").then(() => import(\"@dockermap/contracts\"))"
+          '
 
       - name: Smoke-test runtime image
         run: |

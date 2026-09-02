@@ -9,7 +9,7 @@ import { buildModel } from "../lib/model";
 import MapScreen from "./Map";
 
 const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0 };
-const containers = Array.from({ length: 32 }, (_, index) => ({
+const containers = Array.from({ length: 44 }, (_, index) => ({
   id: `service-${String(index).padStart(2, "0")}`,
   name: `service-${String(index).padStart(2, "0")}`,
   image: "busybox:1",
@@ -36,13 +36,13 @@ function renderMap(source: DockerSnapshot) {
 describe("high-density Service Map", () => {
   it("keeps the default graph to recorded topology while retaining every observed service in the directory", () => {
     const html = renderMap(snapshot());
-    expect(html).toContain("Services in this snapshot</span><strong class=\"metric-value\">32");
+    expect(html).toContain("Services in this snapshot</span><strong class=\"metric-value\">44");
     expect(html).toContain("Resolved start-order links</span><strong class=\"metric-value\">2");
-    expect(html).toContain("No recorded declaration</span><strong class=\"metric-value\">29");
-    // The graph has only the three evidence-connected services, not 32 labels.
+    expect(html).toContain("No recorded declaration</span><strong class=\"metric-value\">41");
+    // The graph has only the three evidence-connected services, not 44 labels.
     expect(html.split('<g class="node').length - 1).toBe(3);
-    // The directory keeps every service reachable, including the 29 isolates.
-    expect(html.split('class="runtime-node-btn').length - 1).toBe(32);
+    // The directory keeps every service reachable, including the 41 isolates.
+    expect(html.split('class="runtime-node-btn').length - 1).toBe(44);
     expect(html).toContain("Shared networks and storage are context, not proof of communication or causality.");
     expect(html).not.toContain("via main");
   });

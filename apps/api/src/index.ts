@@ -422,13 +422,20 @@ function getMockResponse<T>(path: string): T {
       lastUpdated: mockSnapshot.lastUpdated ?? Date.now(),
       modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1",
       providerStates: [
-        unavailableProviderState("network_infrastructure"), unavailableProviderState("host_scoped"),
+        unavailableProviderState("network_infrastructure"), unavailableProviderState("host_scoped"), unavailableProviderState("systemd"),
         unavailableProviderState("python_processes"), unavailableProviderState("native_processes"),
-        unavailableProviderState("project_npm")
+        unavailableProviderState("project_npm"), unavailableProviderState("cron")
       ],
       source: "mock"
     };
     return runtimeMap as T;
+  }
+
+  if (path === "/daemon/findings") {
+    return {
+      findings: [],
+      modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1"
+    } as T;
   }
 
   if (path === "/daemon/containers") {
@@ -577,6 +584,7 @@ registerRoute("auth-whoami", (req, res) => {
 registerRoute("snapshot", readHandlers.snapshot);
 registerRoute("graph", readHandlers.graph);
 registerRoute("runtime-map", readHandlers.runtimeMap);
+registerRoute("findings", readHandlers.findings);
 registerRoute("diagnostics", readHandlers.diagnostics);
 registerRoute("containers", readHandlers.containers);
 registerRoute("container", readHandlers.container);
@@ -680,7 +688,13 @@ type ExpressLayer = {
 };
 
 export function registeredRoutes(appInstance: express.Express): RegisteredRoute[] {
-  const router = appInstance as express.Express & { _router?: { stack?: ExpressLayer[] } };
+  // Express 5 exposes the live router at `router`; Express 4 used the
+  // underscored `_router` property. This inspection is test/startup-policy
+  // evidence only: runtime request routing remains wholly Express-owned.
+  const router = appInstance as express.Express & {
+    router?: { stack?: ExpressLayer[] };
+    _router?: { stack?: ExpressLayer[] };
+  };
   const routes: RegisteredRoute[] = [];
   const unknownLayers: string[] = [];
   const walk = (stack: readonly ExpressLayer[]) => {
@@ -701,7 +715,7 @@ export function registeredRoutes(appInstance: express.Express): RegisteredRoute[
       }
     }
   };
-  walk(router._router?.stack ?? []);
+  walk(router.router?.stack ?? router._router?.stack ?? []);
   if (unknownLayers.length) throw new Error(`Unknown Express layer(s): ${unknownLayers.join(", ")}`);
   return routes;
 }

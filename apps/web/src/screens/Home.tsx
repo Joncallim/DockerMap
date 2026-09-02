@@ -19,7 +19,7 @@ import { resourceFor } from "../lib/stubs";
 import { UPDATE_STATUS_CLAIM, UPDATE_STATUS_LABEL } from "../lib/updates";
 
 export default function Home() {
-  const { model, modelProvenance, loading, error, evidenceMode } = useApp();
+  const { model, modelProvenance, loading, error, evidenceMode, findings } = useApp();
   const history = useMemo(
     () => (model ? changeFeed(model, evidenceMode, modelProvenance) : CHANGE_HISTORY_CLAIM),
     [model, evidenceMode, modelProvenance]
@@ -54,6 +54,7 @@ export default function Home() {
         <Metric label="Healthy" value={<span className="s-healthy-text">{summary.healthy}</span>} />
         <Metric label="Need attention" value={<span className={summary.attention ? "s-warning-text" : ""}>{summary.attention}</span>} />
         <Metric label="Offline" value={<span className={summary.offline ? "s-offline-text" : ""}>{summary.offline}</span>} />
+        <Metric label="Findings" value={findings ? findings.findings.length : "—"} sub={findings ? "Live evidence only" : "Not collected"} />
         <Metric className="metric-updates" label="Updates" value={UPDATE_STATUS_LABEL} sub={UPDATE_STATUS_CLAIM.detail} />
       </section>
 
@@ -115,6 +116,16 @@ export default function Home() {
                 <Tag key={bucket.id} tone={bucket.attention ? "warn" : "muted"}>{bucket.id} {bucket.count}</Tag>
               ))}
             </div>
+          </Panel>
+
+          <Panel title="Findings" icon="alert" hint={findings ? "Live evidence" : "Not collected"} actions={<Link className="ghost-link" to="/findings">Review</Link>}>
+            {findings ? (
+              findings.findings.length === 0
+                ? <EmptyState icon="check" title="No current findings" body="No supported declared-dependency condition is currently detected." />
+                : <p className="muted-copy">{findings.findings.length} bounded finding{findings.findings.length === 1 ? "" : "s"} available for review.</p>
+            ) : (
+              <EmptyState icon="alert" title="Not collected" body="Findings require a coherent live Docker model." />
+            )}
           </Panel>
 
           <Panel className="panel-recent-change" title="Recent change" icon="history" hint={evidenceLabel(history.kind).label}>

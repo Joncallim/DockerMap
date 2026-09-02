@@ -21,8 +21,10 @@ const runtime: RuntimeMap = {
   providerStates: [
     collectionState("network_infrastructure", "fresh"),
     collectionState("host_scoped", "stale", { consecutiveFailureCount: 1, statusReason: "collection_failed" }),
-    collectionState("python_processes", "collecting", { statusReason: "refreshing" }),
-    collectionState("native_processes", "timed_out", { consecutiveFailureCount: 1, statusReason: "collection_timed_out" }),
+    collectionState("cron", "fresh"),
+    collectionState("systemd", "collecting", { lastSuccessMs: null, lastDurationMs: null, dataRevision: null, statusReason: "refreshing" }),
+    collectionState("python_processes", "timed_out", { consecutiveFailureCount: 1, statusReason: "collection_timed_out" }),
+    collectionState("native_processes", "disabled", { lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, dataRevision: null, statusReason: "disabled" }),
     collectionState("project_npm", "disabled", { lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, dataRevision: null, statusReason: "disabled" })
   ]
 };
@@ -44,10 +46,12 @@ describe("Runtime collection evidence", () => {
     const html = render();
 
     expect(html).toContain("Collection evidence");
-    expect(html).toContain("Collection state only — it does not describe service health");
-    expect(html.match(/class="provider-state-row /g)).toHaveLength(5);
+    expect(html).toContain("Collection state only — it does not describe service health or cron execution");
+    expect(html.match(/class="provider-state-row /g)).toHaveLength(7);
     expect(html).toContain("Network infrastructure");
     expect(html).toContain("Host-scoped services");
+    expect(html).toContain("Cron schedule declarations");
+    expect(html).toContain("systemd services");
     expect(html).toContain("Python processes");
     expect(html).toContain("Native processes");
     expect(html).toContain("Project npm");

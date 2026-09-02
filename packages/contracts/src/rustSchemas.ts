@@ -339,14 +339,28 @@ export const RUST_RESPONSE_SCHEMAS = {
     },
     "ProviderSlot": {
       "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
-      "enum": [
-        "network_infrastructure",
-        "host_scoped",
-        "python_processes",
-        "native_processes",
-        "project_npm"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "network_infrastructure",
+            "host_scoped",
+            "python_processes",
+            "native_processes",
+            "project_npm"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "cron",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "type": "string"
+        },
+        {
+          "const": "systemd",
+          "description": "systemd has an independent collector lifecycle.  It must not inherit\nfreshness from the broader host-scoped observation slot.",
+          "type": "string"
+        }
+      ]
     },
     "ProviderState": {
       "additionalProperties": false,
@@ -487,6 +501,156 @@ export const RUST_RESPONSE_SCHEMAS = {
       ],
       "type": "object"
     },
+    "RuntimeEvidenceAssertionKind": {
+      "description": "Evidence assertion semantics are deliberately closed. A declaration says\nwhat a source configured, never that its target is healthy or was invoked.",
+      "enum": [
+        "observed",
+        "declared"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceFreshness": {
+      "enum": [
+        "fresh",
+        "stale",
+        "timed_out"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceKind": {
+      "description": "Safe, provider-specific fact families supported by the first provenance\nslice.  New sources require an explicit enum addition rather than an\narbitrary source string or metadata map.",
+      "oneOf": [
+        {
+          "enum": [
+            "docker_network_membership",
+            "docker_volume_mount",
+            "docker_port_publication"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_depends_on",
+          "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
+          "type": "string"
+        },
+        {
+          "const": "docker_daemon_state_bind_mount",
+          "description": "A bind mount that matches the closed Docker socket/data-root predicate.\nThe public evidence and target intentionally omit the mount path.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_requires",
+          "description": "A systemd `Requires=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_wants",
+          "description": "A systemd `Wants=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_part_of",
+          "description": "A systemd `PartOf=` declaration. It is not an ordering assertion.",
+          "type": "string"
+        },
+        {
+          "const": "npm_package_manifest_dependency",
+          "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
+          "type": "string"
+        },
+        {
+          "const": "cron_schedule_declaration",
+          "description": "A parsed cron declaration. This does not claim the command ran.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuntimeEvidenceProvider": {
+      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
+      "enum": [
+        "docker",
+        "systemd",
+        "npm",
+        "cron"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceRef": {
+      "additionalProperties": false,
+      "description": "A compact, versioned reference to the bounded fact supporting a runtime\nrelationship.  It intentionally contains no raw command output, config\nfragment, path, process arguments, or generic metadata bag.",
+      "properties": {
+        "assertionKind": {
+          "$ref": "#/$defs/RuntimeEvidenceAssertionKind"
+        },
+        "collectedAt": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freshness": {
+          "$ref": "#/$defs/RuntimeEvidenceFreshness"
+        },
+        "id": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/RuntimeEvidenceKind"
+        },
+        "provider": {
+          "$ref": "#/$defs/RuntimeEvidenceProvider"
+        },
+        "providerRevision": {
+          "description": "Opaque provider observation token, not a cache-publication revision,\ncommand output, or source dump.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerSlot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderSlot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
+        },
+        "subjectRef": {
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "A bounded, curated explanation; it is never copied from a raw source.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
+          "format": "uint8",
+          "maximum": 4,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "provider",
+        "kind",
+        "assertionKind",
+        "summary",
+        "subjectRef",
+        "collectedAt",
+        "providerRevision",
+        "freshness"
+      ],
+      "type": "object"
+    },
     "RuntimeHealth": {
       "additionalProperties": false,
       "properties": {
@@ -621,6 +785,14 @@ export const RUST_RESPONSE_SCHEMAS = {
     "RuntimeMapEdge": {
       "additionalProperties": false,
       "properties": {
+        "evidenceRefs": {
+          "description": "Empty for relationship families that have not yet been migrated to the\nevidence model. It remains present on the wire so API/UI consumers have\none stable, bounded relationship shape while the migration continues.",
+          "items": {
+            "$ref": "#/$defs/RuntimeEvidenceRef"
+          },
+          "maxItems": 8,
+          "type": "array"
+        },
         "metadata": {
           "additionalProperties": {
             "type": "string"
@@ -641,7 +813,8 @@ export const RUST_RESPONSE_SCHEMAS = {
         "source",
         "target",
         "relationship",
-        "metadata"
+        "metadata",
+        "evidenceRefs"
       ],
       "type": "object"
     },
@@ -725,6 +898,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "docker_network",
         "docker_volume",
         "host",
+        "host_risk",
         "service",
         "systemd_service",
         "scheduled_job",
@@ -992,6 +1166,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "mounts",
         "manages",
         "exposes",
+        "exposes_daemon_state",
         "runs_on",
         "uses",
         "calls",
@@ -1130,8 +1305,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/$defs/ProviderState"
       },
-      "maxItems": 5,
-      "minItems": 5,
+      "maxItems": 7,
+      "minItems": 7,
       "type": "array"
     },
     "source": {
@@ -1155,6 +1330,274 @@ export const RUST_RESPONSE_SCHEMAS = {
     "providerStates"
   ],
   "title": "RuntimeMap",
+  "type": "object"
+},
+  FindingsResponse: {
+  "$defs": {
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "evidenceRefs": {
+          "description": "Canonical, already-sanitized runtime evidence that directly triggered\nthis finding. Each closed rule has a fixed, small evidence budget,\npreventing this response from becoming a generic metadata channel.",
+          "items": {
+            "$ref": "#/$defs/RuntimeEvidenceRef"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "recommendation": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "ruleId": {
+          "$ref": "#/$defs/FindingRule"
+        },
+        "severity": {
+          "$ref": "#/$defs/FindingSeverity"
+        },
+        "subjectRef": {
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "ruleId",
+        "severity",
+        "summary",
+        "recommendation",
+        "subjectRef",
+        "targetRef",
+        "evidenceRefs"
+      ],
+      "type": "object"
+    },
+    "FindingRule": {
+      "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
+      "enum": [
+        "systemd.requires_target_not_active",
+        "docker.internal_network_member_publishes_port",
+        "docker.daemon_state_bind_mount"
+      ],
+      "type": "string"
+    },
+    "FindingSeverity": {
+      "description": "Findings are intentionally a small, closed advisory vocabulary. They do\nnot expose provider output or prescribe an automated remediation.",
+      "enum": [
+        "warning",
+        "advisory"
+      ],
+      "type": "string"
+    },
+    "ProviderSlot": {
+      "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
+      "oneOf": [
+        {
+          "enum": [
+            "network_infrastructure",
+            "host_scoped",
+            "python_processes",
+            "native_processes",
+            "project_npm"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "cron",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "type": "string"
+        },
+        {
+          "const": "systemd",
+          "description": "systemd has an independent collector lifecycle.  It must not inherit\nfreshness from the broader host-scoped observation slot.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuntimeEvidenceAssertionKind": {
+      "description": "Evidence assertion semantics are deliberately closed. A declaration says\nwhat a source configured, never that its target is healthy or was invoked.",
+      "enum": [
+        "observed",
+        "declared"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceFreshness": {
+      "enum": [
+        "fresh",
+        "stale",
+        "timed_out"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceKind": {
+      "description": "Safe, provider-specific fact families supported by the first provenance\nslice.  New sources require an explicit enum addition rather than an\narbitrary source string or metadata map.",
+      "oneOf": [
+        {
+          "enum": [
+            "docker_network_membership",
+            "docker_volume_mount",
+            "docker_port_publication"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_depends_on",
+          "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
+          "type": "string"
+        },
+        {
+          "const": "docker_daemon_state_bind_mount",
+          "description": "A bind mount that matches the closed Docker socket/data-root predicate.\nThe public evidence and target intentionally omit the mount path.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_requires",
+          "description": "A systemd `Requires=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_wants",
+          "description": "A systemd `Wants=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_part_of",
+          "description": "A systemd `PartOf=` declaration. It is not an ordering assertion.",
+          "type": "string"
+        },
+        {
+          "const": "npm_package_manifest_dependency",
+          "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
+          "type": "string"
+        },
+        {
+          "const": "cron_schedule_declaration",
+          "description": "A parsed cron declaration. This does not claim the command ran.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuntimeEvidenceProvider": {
+      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
+      "enum": [
+        "docker",
+        "systemd",
+        "npm",
+        "cron"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceRef": {
+      "additionalProperties": false,
+      "description": "A compact, versioned reference to the bounded fact supporting a runtime\nrelationship.  It intentionally contains no raw command output, config\nfragment, path, process arguments, or generic metadata bag.",
+      "properties": {
+        "assertionKind": {
+          "$ref": "#/$defs/RuntimeEvidenceAssertionKind"
+        },
+        "collectedAt": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freshness": {
+          "$ref": "#/$defs/RuntimeEvidenceFreshness"
+        },
+        "id": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/RuntimeEvidenceKind"
+        },
+        "provider": {
+          "$ref": "#/$defs/RuntimeEvidenceProvider"
+        },
+        "providerRevision": {
+          "description": "Opaque provider observation token, not a cache-publication revision,\ncommand output, or source dump.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerSlot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderSlot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
+        },
+        "subjectRef": {
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "A bounded, curated explanation; it is never copied from a raw source.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
+          "format": "uint8",
+          "maximum": 4,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "provider",
+        "kind",
+        "assertionKind",
+        "summary",
+        "subjectRef",
+        "collectedAt",
+        "providerRevision",
+        "freshness"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "type": "array"
+    },
+    "modelRevision": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "findings",
+    "modelRevision"
+  ],
+  "title": "FindingsResponse",
   "type": "object"
 },
   ComposeScan: {
@@ -2442,14 +2885,28 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     },
     "ProviderSlot": {
       "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
-      "enum": [
-        "network_infrastructure",
-        "host_scoped",
-        "python_processes",
-        "native_processes",
-        "project_npm"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "network_infrastructure",
+            "host_scoped",
+            "python_processes",
+            "native_processes",
+            "project_npm"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "cron",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "type": "string"
+        },
+        {
+          "const": "systemd",
+          "description": "systemd has an independent collector lifecycle.  It must not inherit\nfreshness from the broader host-scoped observation slot.",
+          "type": "string"
+        }
+      ]
     },
     "ProviderState": {
       "additionalProperties": false,
@@ -2590,6 +3047,156 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       ],
       "type": "object"
     },
+    "RuntimeEvidenceAssertionKind": {
+      "description": "Evidence assertion semantics are deliberately closed. A declaration says\nwhat a source configured, never that its target is healthy or was invoked.",
+      "enum": [
+        "observed",
+        "declared"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceFreshness": {
+      "enum": [
+        "fresh",
+        "stale",
+        "timed_out"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceKind": {
+      "description": "Safe, provider-specific fact families supported by the first provenance\nslice.  New sources require an explicit enum addition rather than an\narbitrary source string or metadata map.",
+      "oneOf": [
+        {
+          "enum": [
+            "docker_network_membership",
+            "docker_volume_mount",
+            "docker_port_publication"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_depends_on",
+          "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
+          "type": "string"
+        },
+        {
+          "const": "docker_daemon_state_bind_mount",
+          "description": "A bind mount that matches the closed Docker socket/data-root predicate.\nThe public evidence and target intentionally omit the mount path.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_requires",
+          "description": "A systemd `Requires=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_wants",
+          "description": "A systemd `Wants=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_part_of",
+          "description": "A systemd `PartOf=` declaration. It is not an ordering assertion.",
+          "type": "string"
+        },
+        {
+          "const": "npm_package_manifest_dependency",
+          "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
+          "type": "string"
+        },
+        {
+          "const": "cron_schedule_declaration",
+          "description": "A parsed cron declaration. This does not claim the command ran.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuntimeEvidenceProvider": {
+      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
+      "enum": [
+        "docker",
+        "systemd",
+        "npm",
+        "cron"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceRef": {
+      "additionalProperties": false,
+      "description": "A compact, versioned reference to the bounded fact supporting a runtime\nrelationship.  It intentionally contains no raw command output, config\nfragment, path, process arguments, or generic metadata bag.",
+      "properties": {
+        "assertionKind": {
+          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceAssertionKind"
+        },
+        "collectedAt": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freshness": {
+          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceFreshness"
+        },
+        "id": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceKind"
+        },
+        "provider": {
+          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceProvider"
+        },
+        "providerRevision": {
+          "description": "Opaque provider observation token, not a cache-publication revision,\ncommand output, or source dump.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerSlot": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/RuntimeMap/$defs/ProviderSlot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
+        },
+        "subjectRef": {
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "A bounded, curated explanation; it is never copied from a raw source.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
+          "format": "uint8",
+          "maximum": 4,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "provider",
+        "kind",
+        "assertionKind",
+        "summary",
+        "subjectRef",
+        "collectedAt",
+        "providerRevision",
+        "freshness"
+      ],
+      "type": "object"
+    },
     "RuntimeHealth": {
       "additionalProperties": false,
       "properties": {
@@ -2724,6 +3331,14 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "RuntimeMapEdge": {
       "additionalProperties": false,
       "properties": {
+        "evidenceRefs": {
+          "description": "Empty for relationship families that have not yet been migrated to the\nevidence model. It remains present on the wire so API/UI consumers have\none stable, bounded relationship shape while the migration continues.",
+          "items": {
+            "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceRef"
+          },
+          "maxItems": 8,
+          "type": "array"
+        },
         "metadata": {
           "additionalProperties": {
             "type": "string"
@@ -2744,7 +3359,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "source",
         "target",
         "relationship",
-        "metadata"
+        "metadata",
+        "evidenceRefs"
       ],
       "type": "object"
     },
@@ -2828,6 +3444,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "docker_network",
         "docker_volume",
         "host",
+        "host_risk",
         "service",
         "systemd_service",
         "scheduled_job",
@@ -3095,6 +3712,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "mounts",
         "manages",
         "exposes",
+        "exposes_daemon_state",
         "runs_on",
         "uses",
         "calls",
@@ -3233,8 +3851,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/components/schemas/RuntimeMap/$defs/ProviderState"
       },
-      "maxItems": 5,
-      "minItems": 5,
+      "maxItems": 7,
+      "minItems": 7,
       "type": "array"
     },
     "source": {
@@ -3258,6 +3876,274 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "providerStates"
   ],
   "title": "RuntimeMap",
+  "type": "object"
+},
+  FindingsResponse: {
+  "$defs": {
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "evidenceRefs": {
+          "description": "Canonical, already-sanitized runtime evidence that directly triggered\nthis finding. Each closed rule has a fixed, small evidence budget,\npreventing this response from becoming a generic metadata channel.",
+          "items": {
+            "$ref": "#/components/schemas/FindingsResponse/$defs/RuntimeEvidenceRef"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "recommendation": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "ruleId": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/FindingRule"
+        },
+        "severity": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/FindingSeverity"
+        },
+        "subjectRef": {
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetRef": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "ruleId",
+        "severity",
+        "summary",
+        "recommendation",
+        "subjectRef",
+        "targetRef",
+        "evidenceRefs"
+      ],
+      "type": "object"
+    },
+    "FindingRule": {
+      "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
+      "enum": [
+        "systemd.requires_target_not_active",
+        "docker.internal_network_member_publishes_port",
+        "docker.daemon_state_bind_mount"
+      ],
+      "type": "string"
+    },
+    "FindingSeverity": {
+      "description": "Findings are intentionally a small, closed advisory vocabulary. They do\nnot expose provider output or prescribe an automated remediation.",
+      "enum": [
+        "warning",
+        "advisory"
+      ],
+      "type": "string"
+    },
+    "ProviderSlot": {
+      "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
+      "oneOf": [
+        {
+          "enum": [
+            "network_infrastructure",
+            "host_scoped",
+            "python_processes",
+            "native_processes",
+            "project_npm"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "cron",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "type": "string"
+        },
+        {
+          "const": "systemd",
+          "description": "systemd has an independent collector lifecycle.  It must not inherit\nfreshness from the broader host-scoped observation slot.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuntimeEvidenceAssertionKind": {
+      "description": "Evidence assertion semantics are deliberately closed. A declaration says\nwhat a source configured, never that its target is healthy or was invoked.",
+      "enum": [
+        "observed",
+        "declared"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceFreshness": {
+      "enum": [
+        "fresh",
+        "stale",
+        "timed_out"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceKind": {
+      "description": "Safe, provider-specific fact families supported by the first provenance\nslice.  New sources require an explicit enum addition rather than an\narbitrary source string or metadata map.",
+      "oneOf": [
+        {
+          "enum": [
+            "docker_network_membership",
+            "docker_volume_mount",
+            "docker_port_publication"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_depends_on",
+          "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
+          "type": "string"
+        },
+        {
+          "const": "docker_daemon_state_bind_mount",
+          "description": "A bind mount that matches the closed Docker socket/data-root predicate.\nThe public evidence and target intentionally omit the mount path.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_requires",
+          "description": "A systemd `Requires=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_wants",
+          "description": "A systemd `Wants=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_part_of",
+          "description": "A systemd `PartOf=` declaration. It is not an ordering assertion.",
+          "type": "string"
+        },
+        {
+          "const": "npm_package_manifest_dependency",
+          "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
+          "type": "string"
+        },
+        {
+          "const": "cron_schedule_declaration",
+          "description": "A parsed cron declaration. This does not claim the command ran.",
+          "type": "string"
+        }
+      ]
+    },
+    "RuntimeEvidenceProvider": {
+      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
+      "enum": [
+        "docker",
+        "systemd",
+        "npm",
+        "cron"
+      ],
+      "type": "string"
+    },
+    "RuntimeEvidenceRef": {
+      "additionalProperties": false,
+      "description": "A compact, versioned reference to the bounded fact supporting a runtime\nrelationship.  It intentionally contains no raw command output, config\nfragment, path, process arguments, or generic metadata bag.",
+      "properties": {
+        "assertionKind": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/RuntimeEvidenceAssertionKind"
+        },
+        "collectedAt": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freshness": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/RuntimeEvidenceFreshness"
+        },
+        "id": {
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/RuntimeEvidenceKind"
+        },
+        "provider": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/RuntimeEvidenceProvider"
+        },
+        "providerRevision": {
+          "description": "Opaque provider observation token, not a cache-publication revision,\ncommand output, or source dump.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "providerSlot": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/FindingsResponse/$defs/ProviderSlot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
+        },
+        "subjectRef": {
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "A bounded, curated explanation; it is never copied from a raw source.",
+          "maxLength": 259,
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
+          "format": "uint8",
+          "maximum": 4,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "provider",
+        "kind",
+        "assertionKind",
+        "summary",
+        "subjectRef",
+        "collectedAt",
+        "providerRevision",
+        "freshness"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "findings": {
+      "items": {
+        "$ref": "#/components/schemas/FindingsResponse/$defs/Finding"
+      },
+      "type": "array"
+    },
+    "modelRevision": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "findings",
+    "modelRevision"
+  ],
+  "title": "FindingsResponse",
   "type": "object"
 },
   ComposeScan: {
