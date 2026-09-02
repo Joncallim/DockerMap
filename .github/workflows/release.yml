@@ -33,12 +33,12 @@ jobs:
         run: npm audit --omit=dev
 
       # This gate is repeated on the tag so a candidate cannot rely on a PR
-      # scan from a different commit.
+      # scan from a different commit. The exact locked tool supports Rust 1.88.
+      - name: Install pinned cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
       - name: Audit Rust dependencies
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: crates
+        run: cargo audit --file crates/Cargo.lock
 
       - name: Validate product version and release tag
         run: scripts/package-release.sh "${GITHUB_REF_NAME}" --check
