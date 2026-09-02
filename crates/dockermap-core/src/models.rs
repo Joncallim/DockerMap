@@ -153,6 +153,9 @@ pub enum RuntimeMode {
 pub enum ProviderSlot {
     NetworkInfrastructure,
     HostScoped,
+    /// systemd has an independent collector lifecycle.  It must not inherit
+    /// freshness from the broader host-scoped observation slot.
+    Systemd,
     PythonProcesses,
     NativeProcesses,
     ProjectNpm,

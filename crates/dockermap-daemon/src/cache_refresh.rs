@@ -300,6 +300,7 @@ impl SlotDataRevision {
 pub(crate) struct ProviderSlotFlights {
     network: Arc<AtomicBool>,
     host: Arc<AtomicBool>,
+    systemd: Arc<AtomicBool>,
     python: Arc<AtomicBool>,
     native: Arc<AtomicBool>,
     npm: Arc<AtomicBool>,
@@ -310,6 +311,7 @@ impl Default for ProviderSlotFlights {
         Self {
             network: Arc::new(AtomicBool::new(false)),
             host: Arc::new(AtomicBool::new(false)),
+            systemd: Arc::new(AtomicBool::new(false)),
             python: Arc::new(AtomicBool::new(false)),
             native: Arc::new(AtomicBool::new(false)),
             npm: Arc::new(AtomicBool::new(false)),
@@ -325,6 +327,7 @@ impl ProviderSlotFlights {
         match slot {
             ProviderSlot::NetworkInfrastructure => self.network.clone(),
             ProviderSlot::HostScoped => self.host.clone(),
+            ProviderSlot::Systemd => self.systemd.clone(),
             ProviderSlot::PythonProcesses => self.python.clone(),
             ProviderSlot::NativeProcesses => self.native.clone(),
             ProviderSlot::ProjectNpm => self.npm.clone(),
@@ -335,6 +338,7 @@ impl ProviderSlotFlights {
         [
             &self.network,
             &self.host,
+            &self.systemd,
             &self.python,
             &self.native,
             &self.npm,
@@ -1153,6 +1157,10 @@ mod scheduler_tests {
             Duration::from_secs(15)
         );
         assert_eq!(
+            slot_interval(ProviderSlot::Systemd),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
             slot_interval(ProviderSlot::PythonProcesses),
             Duration::from_secs(10)
         );
@@ -1196,6 +1204,7 @@ mod scheduler_tests {
         let invocations = |slot| 1 + window.as_secs() / slot_interval(slot).as_secs();
         assert_eq!(invocations(ProviderSlot::NetworkInfrastructure), 7);
         assert_eq!(invocations(ProviderSlot::HostScoped), 5);
+        assert_eq!(invocations(ProviderSlot::Systemd), 5);
         assert_eq!(invocations(ProviderSlot::PythonProcesses), 7);
         assert_eq!(invocations(ProviderSlot::NativeProcesses), 7);
         assert_eq!(invocations(ProviderSlot::ProjectNpm), 2);
@@ -1261,14 +1270,15 @@ mod scheduler_tests {
         assert_eq!(publications, 31);
         assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
         assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+        assert_eq!(starts[&ProviderSlot::Systemd], 5);
         assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);
         assert_eq!(starts[&ProviderSlot::NativeProcesses], 7);
         assert_eq!(starts[&ProviderSlot::ProjectNpm], 2);
-        assert_eq!(starts.values().sum::<usize>(), 28);
+        assert_eq!(starts.values().sum::<usize>(), 33);
         assert!(maximum_live_workers <= MAX_CONCURRENT_PROVIDER_SLOTS);
         let legacy_slot_passes =
             (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * STATIC_PROVIDER_SLOTS.len() as u64;
-        assert_eq!(legacy_slot_passes, 155);
+        assert_eq!(legacy_slot_passes, 186);
     }
 
     /// The scheduler's timing trace above deliberately counts claims rather
@@ -1293,15 +1303,16 @@ mod scheduler_tests {
                 .block_on(run_real_collector_churn_trace(&profile));
             match profile.as_str() {
                 "full-host" => {
-                    assert_eq!(starts.values().sum::<usize>(), 28);
+                    assert_eq!(starts.values().sum::<usize>(), 33);
                     let legacy_starts = (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs())
                         * STATIC_PROVIDER_SLOTS.len() as u64;
-                    assert_eq!(legacy_starts, 155);
+                    assert_eq!(legacy_starts, 186);
                     assert_eq!(legacy_starts * 8 / STATIC_PROVIDER_SLOTS.len() as u64, 248);
                 }
                 "restricted" => {
-                    assert_eq!(starts.values().sum::<usize>(), 12);
+                    assert_eq!(starts.values().sum::<usize>(), 13);
                     assert_eq!(starts[&ProviderSlot::HostScoped], 1);
+                    assert_eq!(starts[&ProviderSlot::Systemd], 1);
                     assert_eq!(starts[&ProviderSlot::PythonProcesses], 1);
                     assert_eq!(starts[&ProviderSlot::NativeProcesses], 1);
                 }
@@ -1521,6 +1532,7 @@ mod scheduler_tests {
         } else {
             assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
             assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+            assert_eq!(starts[&ProviderSlot::Systemd], 5);
             assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);
             assert_eq!(starts[&ProviderSlot::NativeProcesses], 7);
             assert_eq!(starts[&ProviderSlot::ProjectNpm], 2);
@@ -1616,7 +1628,7 @@ mod scheduler_tests {
     #[test]
     fn disabled_slots_are_never_queued_after_profile_fact_is_observed() {
         let mut slots = slots();
-        let slot = ProviderSlot::HostScoped;
+        let slot = ProviderSlot::Systemd;
         let mut collection = ProviderCollection::default();
         collection.set_state(slot, ProviderStateKind::Disabled);
         let entry = slots.get_mut(&slot).unwrap();
@@ -1807,7 +1819,7 @@ mod scheduler_tests {
     #[test]
     fn provider_freshness_projection_is_safe_and_retains_good_evidence_on_failure() {
         let snapshot = mock_snapshot();
-        let slot = ProviderSlot::PythonProcesses;
+        let slot = ProviderSlot::Systemd;
         let mut slots = slots();
         let entry = slots.get_mut(&slot).unwrap();
         let mut collection = ProviderCollection::default();
@@ -1879,7 +1891,7 @@ mod scheduler_tests {
 
     #[test]
     fn source_reset_clears_provider_freshness_without_exposing_private_state() {
-        let slot = ProviderSlot::NetworkInfrastructure;
+        let slot = ProviderSlot::Systemd;
         let mut slots = source_reset_provider_slots();
         let state = provider_states_for(&slots)
             .into_iter()
@@ -1908,7 +1920,7 @@ mod scheduler_tests {
 
     #[test]
     fn opaque_data_revision_changes_only_for_sanitized_observable_data() {
-        let slot = ProviderSlot::NativeProcesses;
+        let slot = ProviderSlot::Systemd;
         let mut freshness = SlotFreshness::default();
         let mut first = ProviderCollection::default();
         first.set_state(slot, ProviderStateKind::Fresh);
