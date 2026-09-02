@@ -253,7 +253,7 @@
           "$ref": "#/$defs/RuntimeEvidenceProvider"
         },
         "providerRevision": {
-          "description": "Opaque Docker observation token, not a cache-publication revision or\nsource dump.",
+          "description": "Opaque provider observation token, not a cache-publication revision,\ncommand output, or source dump.",
           "maxLength": 259,
           "minLength": 1,
           "type": "string"

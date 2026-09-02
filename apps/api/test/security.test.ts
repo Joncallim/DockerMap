@@ -1186,6 +1186,41 @@ test("runtime evidence is required and fails closed before browser publication",
       `${kind} must not support ${relationship}`
     );
   }
+
+  const systemd = structuredClone(fixture);
+  Object.assign(systemd.edges[0], {
+    source: "systemd_service_application",
+    target: "systemd_service_database",
+    relationship: "requires"
+  });
+  Object.assign(systemd.edges[0].evidenceRefs[0], {
+    version: 2,
+    provider: "systemd",
+    kind: "systemd_requires",
+    assertionKind: "declared",
+    summary: "systemd declared a Requires dependency",
+    subjectRef: "systemd_service_application",
+    providerRevision: "opaque-systemd-observation",
+    providerSlot: "systemd",
+    freshness: "stale"
+  });
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", systemd));
+  for (const [kind, relationship] of [
+    ["systemd_requires", "wants"],
+    ["systemd_wants", "part_of"],
+    ["systemd_part_of", "requires"]
+  ] as const) {
+    const mismatched = structuredClone(systemd);
+    mismatched.edges[0].evidenceRefs[0].kind = kind;
+    mismatched.edges[0].relationship = relationship;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", mismatched),
+      `${kind} must not support ${relationship}`
+    );
+  }
+  const wrongSlot = structuredClone(systemd);
+  wrongSlot.edges[0].evidenceRefs[0].providerSlot = "host_scoped";
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongSlot));
 });
 
 test("fabricated runtime evidence is rejected over the authenticated API boundary", async () => {
