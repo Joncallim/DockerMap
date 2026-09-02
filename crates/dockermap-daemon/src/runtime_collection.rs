@@ -48,6 +48,7 @@ pub(crate) type StaticProviderSlot = ProviderSlot;
 pub(crate) const STATIC_PROVIDER_SLOTS: &[StaticProviderSlot] = &[
     StaticProviderSlot::NetworkInfrastructure,
     StaticProviderSlot::HostScoped,
+    StaticProviderSlot::Cron,
     StaticProviderSlot::Systemd,
     StaticProviderSlot::PythonProcesses,
     StaticProviderSlot::NativeProcesses,
@@ -60,6 +61,7 @@ pub(crate) fn slot_interval(slot: StaticProviderSlot) -> Duration {
     match slot {
         StaticProviderSlot::NetworkInfrastructure => Duration::from_secs(10),
         StaticProviderSlot::HostScoped => Duration::from_secs(15),
+        StaticProviderSlot::Cron => Duration::from_secs(15),
         StaticProviderSlot::Systemd => Duration::from_secs(15),
         StaticProviderSlot::PythonProcesses => Duration::from_secs(10),
         StaticProviderSlot::NativeProcesses => Duration::from_secs(10),
@@ -180,6 +182,17 @@ fn collect_provider_slot(
                 },
             );
         }
+        StaticProviderSlot::Cron => {
+            collect_cron_runtime_provider(pid_namespace, &mut collection);
+            collection.set_state(
+                slot,
+                if pid_namespace.is_restricted() {
+                    ProviderStateKind::Disabled
+                } else {
+                    ProviderStateKind::Fresh
+                },
+            );
+        }
         StaticProviderSlot::Systemd => {
             collect_systemd_runtime_provider(pid_namespace, &mut collection);
             collection.set_state(
@@ -271,10 +284,6 @@ pub(crate) fn collect_host_scoped_runtime_providers(
                 "Network listener discovery omitted because the daemon runs in a restricted PID namespace",
             ),
             (
-                RuntimeProviderKind::ScheduledJob,
-                "Scheduled job discovery omitted because the daemon runs in a restricted PID namespace",
-            ),
-            (
                 RuntimeProviderKind::Pm2,
                 "PM2 discovery omitted because the daemon runs in a restricted PID namespace",
             ),
@@ -294,9 +303,27 @@ pub(crate) fn collect_host_scoped_runtime_providers(
 
     let (nodes, _, diagnostics) = collection.parts_mut();
     collect_network_listeners(nodes, diagnostics);
-    collect_scheduled_jobs(nodes, diagnostics);
     collect_pm2_apps(nodes, diagnostics);
     collect_tmux_sessions(nodes, diagnostics);
+}
+
+/// Cron is independently scheduled so declaration evidence has its own
+/// revision, freshness, timeout and single-flight guard. It reuses the
+/// existing fixed read-only command and bounded fixed filesystem roots.
+fn collect_cron_runtime_provider(
+    pid_namespace: PidNamespaceScope,
+    collection: &mut ProviderCollection,
+) {
+    if pid_namespace.is_restricted() {
+        collection.push_diagnostic(ProviderDiagnostic::new(
+            RuntimeProviderKind::ScheduledJob,
+            DiagnosticSeverity::Info,
+            "Scheduled job discovery omitted because the daemon runs in a restricted PID namespace",
+        ));
+        return;
+    }
+    let (nodes, edges, diagnostics) = collection.parts_mut();
+    collect_scheduled_jobs(nodes, edges, diagnostics);
 }
 
 /// systemd's unit graph is independently scheduled so its relationship facts
@@ -363,7 +390,6 @@ mod tests {
         assert!(edges.is_empty());
         for provider in [
             RuntimeProviderKind::Network,
-            RuntimeProviderKind::ScheduledJob,
             RuntimeProviderKind::Pm2,
             RuntimeProviderKind::Tmux,
         ] {
@@ -371,6 +397,22 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.provider == provider));
         }
+    }
+
+    #[test]
+    fn restricted_namespace_keeps_cron_as_a_distinct_disabled_slot() {
+        let mut cron = ProviderCollection::default();
+        collect_cron_runtime_provider(PidNamespaceScope::Restricted, &mut cron);
+        cron.set_state(StaticProviderSlot::Cron, ProviderStateKind::Disabled);
+        assert!(cron.states().iter().any(|state| {
+            state.slot == StaticProviderSlot::Cron && state.state == ProviderStateKind::Disabled
+        }));
+        let (nodes, edges, diagnostics) = cron.into_parts();
+        assert!(nodes.is_empty() && edges.is_empty());
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::ScheduledJob
+                && diagnostic.message.contains("restricted PID namespace")
+        }));
     }
 
     #[test]
@@ -418,6 +460,7 @@ mod tests {
             [
                 StaticProviderSlot::NetworkInfrastructure,
                 StaticProviderSlot::HostScoped,
+                StaticProviderSlot::Cron,
                 StaticProviderSlot::Systemd,
                 StaticProviderSlot::PythonProcesses,
                 StaticProviderSlot::NativeProcesses,

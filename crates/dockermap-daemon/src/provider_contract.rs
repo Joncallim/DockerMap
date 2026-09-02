@@ -49,6 +49,10 @@ pub(crate) struct ProviderCollection {
 }
 
 impl ProviderCollection {
+    pub(crate) fn nodes(&self) -> &[RuntimeMapNode] {
+        &self.nodes
+    }
+
     pub(crate) fn nodes_mut(&mut self) -> &mut Vec<RuntimeMapNode> {
         &mut self.nodes
     }

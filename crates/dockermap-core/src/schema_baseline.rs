@@ -162,11 +162,34 @@ mod tests {
             .expect("provider state property exists");
         assert_eq!(
             states.get("minItems").and_then(|value| value.as_u64()),
-            Some(6)
+            Some(7)
         );
         assert_eq!(
             states.get("maxItems").and_then(|value| value.as_u64()),
-            Some(6)
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn runtime_evidence_schema_admits_the_closed_version_four_cron_shape() {
+        let schema = DAEMON_SCHEMA_NAMES
+            .iter()
+            .zip(daemon_schema_documents())
+            .find_map(|(name, schema)| (*name == "RuntimeMap").then_some(schema))
+            .expect("runtime map schema exists");
+        let evidence = schema
+            .pointer("/$defs/RuntimeEvidenceRef")
+            .expect("runtime evidence definition exists");
+        assert_eq!(
+            evidence
+                .pointer("/properties/version/maximum")
+                .and_then(|value| value.as_u64()),
+            Some(4),
+            "generated schema must not reject the newest closed evidence version"
+        );
+        assert!(
+            evidence.pointer("/properties/provider/$ref").is_some(),
+            "provider stays a closed generated enum"
         );
     }
 

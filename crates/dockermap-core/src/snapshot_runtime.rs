@@ -393,7 +393,8 @@ fn docker_runtime_evidence(
         RuntimeEvidenceKind::SystemdRequires
         | RuntimeEvidenceKind::SystemdWants
         | RuntimeEvidenceKind::SystemdPartOf
-        | RuntimeEvidenceKind::NpmPackageManifestDependency => {
+        | RuntimeEvidenceKind::NpmPackageManifestDependency
+        | RuntimeEvidenceKind::CronScheduleDeclaration => {
             unreachable!("Docker evidence helper only accepts Docker evidence kinds")
         }
     };
@@ -412,7 +413,8 @@ fn docker_runtime_evidence(
         RuntimeEvidenceKind::SystemdRequires
         | RuntimeEvidenceKind::SystemdWants
         | RuntimeEvidenceKind::SystemdPartOf
-        | RuntimeEvidenceKind::NpmPackageManifestDependency => {
+        | RuntimeEvidenceKind::NpmPackageManifestDependency
+        | RuntimeEvidenceKind::CronScheduleDeclaration => {
             unreachable!("Docker evidence helper only accepts Docker evidence kinds")
         }
     };
