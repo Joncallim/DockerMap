@@ -52,22 +52,28 @@ acceptance work are recorded in [`CONTRACT_AUTHORITY.md`](CONTRACT_AUTHORITY.md)
 
 ### Relationship evidence lifecycle
 
-Each runtime edge has a required `evidenceRefs` array. The current Docker
-slice emits bounded, versioned records alongside the edge during derivation;
-they are not reconstructed from labels in React:
+Each runtime edge has a required `evidenceRefs` array. The current Docker and
+Systemd slices emit bounded, versioned records alongside the edge during
+derivation; they are not reconstructed from labels in React:
 
 ```text
 collector -> bounded RuntimeEvidenceRef -> RuntimeMapEdge -> daemon publication/redaction -> API contract validation -> Runtime inspector
 ```
 
-The first facts are Docker network membership, volume attachment, port
-publication, and Docker-recorded Compose start-order declarations. They are `observed`, carry the Docker collection timestamp and
-an opaque Docker observation revision token (deliberately neither a timestamp
-nor the cache model revision), and declare `fresh` only for that Docker
-observation. Provider-slot freshness continues to describe optional host
-collection separately. An empty array is explicit migration state for a
-relationship family that has not yet gained provenance; it must not be
-silently presented as an observed fact.
+Version one facts are Docker network membership, volume attachment, port
+publication, and Docker-recorded Compose start-order declarations. They are
+`observed`, carry the Docker collection timestamp and an opaque Docker
+observation revision token (deliberately neither a timestamp nor the cache
+model revision), and declare `fresh` only for that Docker observation.
+
+Version two adds only Systemd `Requires`, `Wants`, and `PartOf` declarations.
+Each fact is `declared`, is tied to the independently scheduled `systemd`
+slot's opaque data revision and last successful collection timestamp, and can
+be `fresh`, retained `stale`, or `timed_out`. It never claims successful start,
+readiness, health, traffic, inverse dependency, or symmetric membership.
+Restricted PID mode emits no Systemd edge evidence. An empty array is explicit
+migration state for a relationship family that has not yet gained provenance;
+it must not be silently presented as an observed fact.
 
 The evidence representation is closed: provider, kind, assertion kind and
 freshness are enums, and there is no free-form metadata/config/command-line
@@ -84,7 +90,8 @@ Current relationship-source matrix:
 | Docker container -> volume | Docker volume attachment | observed | emitted |
 | Docker container -> listener | Docker published port | observed | emitted |
 | Docker container -> Docker container (`depends_on`) | Docker-recorded Compose start-order label | observed declaration, not health or traffic causality | emitted when both identities resolve uniquely |
-| systemd, npm, tmux, proxy, DNS, process and cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
+| systemd service -> systemd service (`requires`, `wants`, `part_of`) | Systemd `Requires=`, `Wants=`, `PartOf=` declaration | declared relationship, not start/health/traffic evidence | emitted only with a valid dedicated Systemd-slot observation; retained facts state freshness explicitly |
+| npm, tmux, proxy, DNS, process and cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
 
 The map is organized around a unified service concept. Docker containers, systemd
 services, tmux sessions, npm applications, Python applications, and native processes

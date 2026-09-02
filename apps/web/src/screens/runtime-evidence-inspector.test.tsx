@@ -12,7 +12,9 @@ const snapshot: DockerSnapshot = {
 const runtime: RuntimeMap = {
   nodes: [
     { id: "container-api", provider: "docker", type: "container", label: "api", status: "running", metadata: {} },
-    { id: "network-app", provider: "docker", type: "docker_network", label: "app-net", status: null, metadata: {} }
+    { id: "network-app", provider: "docker", type: "docker_network", label: "app-net", status: null, metadata: {} },
+    { id: "systemd_service_api", provider: "systemd", type: "systemd_service", label: "api.service", status: "running", metadata: {} },
+    { id: "systemd_service_database", provider: "systemd", type: "systemd_service", label: "database.service", status: "running", metadata: {} }
   ],
   edges: [
     {
@@ -39,6 +41,25 @@ const runtime: RuntimeMap = {
       relationship: "related_to",
       metadata: {},
       evidenceRefs: []
+    },
+    {
+      source: "systemd_service_api",
+      target: "systemd_service_database",
+      relationship: "requires",
+      metadata: {},
+      evidenceRefs: [{
+        version: 2,
+        id: "systemd-requires-api-database",
+        provider: "systemd",
+        kind: "systemd_requires",
+        assertionKind: "declared",
+        summary: "systemd declared a Requires dependency",
+        subjectRef: "systemd_service_api",
+        collectedAt: 1,
+        providerRevision: "systemd-observation-1",
+        providerSlot: "systemd",
+        freshness: "stale"
+      }]
     }
   ],
   diagnostics: [],
@@ -69,5 +90,16 @@ describe("Runtime relationship evidence inspector", () => {
 
     expect(html).toContain("No evidence references yet — this relationship family is still migrating.");
     expect(html).not.toContain("Observed fact");
+  });
+
+  it("renders retained Systemd declarations as collection evidence, not service health", () => {
+    const html = renderToStaticMarkup(<RuntimeEvidenceInspector edge={runtime.edges[2]} model={model} />);
+
+    expect(html).toContain("Declared relationship");
+    expect(html).toContain("systemd requires");
+    expect(html).toContain("systemd declared a Requires dependency");
+    expect(html).toContain("Retained observation");
+    expect(html).toContain("systemd-observation-1");
+    expect(html).not.toContain("healthy");
   });
 });
