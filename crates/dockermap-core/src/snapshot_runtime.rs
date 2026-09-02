@@ -355,6 +355,11 @@ fn docker_runtime_evidence(
         RuntimeEvidenceKind::DockerVolumeMount => "volume-mount",
         RuntimeEvidenceKind::DockerPortPublication => "port-publication",
         RuntimeEvidenceKind::DockerComposeDependsOn => "compose-depends-on",
+        RuntimeEvidenceKind::SystemdRequires
+        | RuntimeEvidenceKind::SystemdWants
+        | RuntimeEvidenceKind::SystemdPartOf => {
+            unreachable!("Docker evidence helper only accepts Docker evidence kinds")
+        }
     };
     let summary = match kind {
         RuntimeEvidenceKind::DockerNetworkMembership => {
@@ -364,6 +369,11 @@ fn docker_runtime_evidence(
         RuntimeEvidenceKind::DockerPortPublication => "Docker reported container port publication",
         RuntimeEvidenceKind::DockerComposeDependsOn => {
             "Docker recorded Compose dependency declaration"
+        }
+        RuntimeEvidenceKind::SystemdRequires
+        | RuntimeEvidenceKind::SystemdWants
+        | RuntimeEvidenceKind::SystemdPartOf => {
+            unreachable!("Docker evidence helper only accepts Docker evidence kinds")
         }
     };
     RuntimeEvidenceRef {
@@ -380,6 +390,7 @@ fn docker_runtime_evidence(
         subject_ref: source.into(),
         collected_at: snapshot.last_updated,
         provider_revision: provider_revision.into(),
+        provider_slot: None,
         freshness: RuntimeEvidenceFreshness::Fresh,
     }
 }

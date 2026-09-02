@@ -832,6 +832,40 @@ mod tests {
     }
 
     #[test]
+    fn version_two_systemd_evidence_requires_its_closed_slot_binding() {
+        let valid = serde_json::json!({
+            "version": 2,
+            "id": "systemd_evidence_requires_opaque",
+            "provider": "systemd",
+            "kind": "systemd_requires",
+            "assertionKind": "declared",
+            "summary": "systemd declared a Requires dependency",
+            "subjectRef": "systemd_service_app",
+            "collectedAt": 42,
+            "providerRevision": "opaque-systemd-revision",
+            "providerSlot": "systemd",
+            "freshness": "stale"
+        });
+        assert!(serde_json::from_value::<RuntimeEvidenceRef>(valid.clone()).is_ok());
+        for (field, invalid) in [
+            ("providerSlot", serde_json::json!("host_scoped")),
+            ("assertionKind", serde_json::json!("observed")),
+            ("freshness", serde_json::json!("unavailable")),
+            ("kind", serde_json::json!("docker_network_membership")),
+        ] {
+            let mut malformed = valid.clone();
+            malformed[field] = invalid;
+            assert!(serde_json::from_value::<RuntimeEvidenceRef>(malformed).is_err());
+        }
+        let mut missing_binding = valid;
+        missing_binding
+            .as_object_mut()
+            .unwrap()
+            .remove("providerSlot");
+        assert!(serde_json::from_value::<RuntimeEvidenceRef>(missing_binding).is_err());
+    }
+
+    #[test]
     fn version_one_evidence_cannot_attest_a_different_runtime_edge() {
         let snapshot = mock_snapshot();
         let edge = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
