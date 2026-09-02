@@ -310,7 +310,9 @@ function hasCoherentObservedHistory(payload: unknown): boolean {
   return events.every((candidate) => {
     if (!candidate || typeof candidate !== "object") return false;
     const event = candidate as Record<string, unknown>;
-    if (typeof event.id !== "string" || !event.id || typeof event.containerId !== "string" || !event.containerId.startsWith("docker_container_")) return false;
+    if (typeof event.id !== "string" || !event.id
+      || typeof event.containerId !== "string"
+      || !/^docker_container_[0-9a-f]{64}$/.test(event.containerId)) return false;
     const previous = event.previousStatus;
     const current = event.currentStatus;
     if (event.kind === "container_appeared") return previous === null && typeof current === "string";

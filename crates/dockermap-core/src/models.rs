@@ -177,7 +177,8 @@ pub struct ObservedChangeEvent {
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub observed_at_ms: u64,
     #[serde(rename = "containerId")]
-    #[schemars(length(min = 1, max = 192))]
+    #[serde(deserialize_with = "deserialize_observed_container_id")]
+    #[schemars(regex(pattern = "^docker_container_[0-9a-f]{64}$"))]
     pub container_id: String,
     #[serde(rename = "previousStatus")]
     #[schemars(required, with = "ObservedContainerStatusOrNull")]
@@ -185,6 +186,24 @@ pub struct ObservedChangeEvent {
     #[serde(rename = "currentStatus")]
     #[schemars(required, with = "ObservedContainerStatusOrNull")]
     pub current_status: Option<ObservedContainerStatus>,
+}
+
+fn deserialize_observed_container_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let container_id = String::deserialize(deserializer)?;
+    let is_valid = container_id
+        .strip_prefix("docker_container_")
+        .is_some_and(|suffix| {
+            suffix.len() == 64
+                && suffix.bytes().all(|byte| {
+                    byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte <= b'f')
+                })
+        });
+    is_valid.then_some(container_id).ok_or_else(|| {
+        serde::de::Error::custom("observed container ID must be an opaque SHA-256 identity")
+    })
 }
 
 /// Schema-only union keeps optional status values required on the wire while
