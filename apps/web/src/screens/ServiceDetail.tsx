@@ -13,6 +13,7 @@ import { IdentityRef } from "../components/identity";
 import { COLLISION_HINT, COLLISION_TAG, identityText, UNAVAILABLE_CONTAINER_ID, UNAVAILABLE_IMAGE, UNAVAILABLE_MOUNT_TARGET, UNAVAILABLE_NETWORK, UNAVAILABLE_PORT, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_ROLE, UNAVAILABLE_SERVICE_STATUS, UNAVAILABLE_VOLUME } from "../lib/identity";
 import { Bar, EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, Sparkline, StatePill, StateDot, Tag } from "../components/primitives";
 import { UPDATE_STATUS_LABEL } from "../lib/updates";
+import { isStaleResourceTelemetry } from "../lib/resourceTelemetry";
 
 type Tab = "overview" | "dependencies" | "resources" | "logs" | "config";
 const TABS: { id: Tab; label: string; icon: Parameters<typeof Icon>[0]["name"] }[] = [
@@ -25,7 +26,7 @@ const TABS: { id: Tab; label: string; icon: Parameters<typeof Icon>[0]["name"] }
 
 export default function ServiceDetail({ defaultTab = "overview", defaultOpen = false }: { defaultTab?: Tab; defaultOpen?: boolean }) {
   const { name = "" } = useParams();
-  const { model, modelProvenance, loading, error, tick, evidenceMode } = useApp();
+  const { model, modelProvenance, loading, error, tick, evidenceMode, resourceTelemetry } = useApp();
   const [tab, setTab] = useState<Tab>(defaultTab);
   const [focusedTab, setFocusedTab] = useState<Tab>(defaultTab);
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
@@ -128,7 +129,7 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
       <div id="service-tabpanel" role="tabpanel" aria-labelledby={`service-tab-${tab}`}>
         {tab === "overview" && <Overview service={service} model={model} />}
         {tab === "dependencies" && <Dependencies service={service} model={model} />}
-        {tab === "resources" && <Resources service={service} evidenceMode={evidenceMode} modelProvenance={modelProvenance} />}
+        {tab === "resources" && <Resources service={service} model={model} evidenceMode={evidenceMode} modelProvenance={modelProvenance} resourceTelemetry={resourceTelemetry} />}
         {tab === "logs" && <Logs name={service.name} tick={tick} evidenceMode={evidenceMode} />}
         {tab === "config" && (
           <Config service={service} model={model} showInternals={showInternals} onToggleInternals={() => setShowInternals((v) => !v)} />
@@ -208,20 +209,22 @@ function RelList({ model, occurrences, empty }: { model: SystemModel; occurrence
   );
 }
 
-function Resources({ service, evidenceMode, modelProvenance }: { service: Service; evidenceMode: EvidenceMode | null; modelProvenance: ModelProvenance | null }) {
-  const resources = resourceFor(service, evidenceMode, modelProvenance);
+function Resources({ service, model, evidenceMode, modelProvenance, resourceTelemetry }: { service: Service; model: SystemModel; evidenceMode: EvidenceMode | null; modelProvenance: ModelProvenance | null; resourceTelemetry: ReturnType<typeof useApp>["resourceTelemetry"] }) {
+  const resources = resourceFor(service, evidenceMode, modelProvenance, model, resourceTelemetry);
+  const currentObserved = resources.kind === "observed";
+  const stale = resources.kind === "unavailable" && isStaleResourceTelemetry(resources.detail);
   return (
-    <Panel className="panel-resources" title="Resources" icon="cpu" hint={evidenceLabel(resources.kind).label}>
+    <Panel className="panel-resources" title="Resources" icon="cpu" hint={currentObserved ? "Observed — current" : stale ? "Telemetry stale" : evidenceLabel(resources.kind).label}>
       {resources.kind === "unavailable" ? (
         <EmptyState icon="cpu" title={evidenceLabel(resources.kind).label} body={resources.detail} />
       ) : <div className="res-grid">
         <div className="res-cell">
           <Metric label="CPU" value={formatPercent(resources.value.cpuPercent)} />
-          <Sparkline data={resources.value.cpuSeries} state={service.state} />
+          {resources.kind === "demo" && <Sparkline data={resources.value.cpuSeries} state={service.state} />}
         </div>
         <div className="res-cell">
           <Metric label="Memory" value={formatMb(resources.value.memoryMb)} sub={formatPercent(resources.value.memoryPercent)} />
-          <Bar value={resources.value.memoryPercent} state={service.state} label={`Memory ${formatPercent(resources.value.memoryPercent)} — ${evidenceLabel(resources.kind).label}`} />
+          <Bar value={resources.value.memoryPercent} state={service.state} label={`Memory ${formatPercent(resources.value.memoryPercent)} — ${currentObserved ? "Observed, current" : evidenceLabel(resources.kind).label}`} />
         </div>
         <div className="res-cell">
           <Metric label="Network" value={formatKbps(resources.value.networkKbps)} />

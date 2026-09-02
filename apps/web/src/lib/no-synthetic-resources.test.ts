@@ -31,10 +31,13 @@ describe("resource samples are explicit-demo-only", () => {
       expect(claim.value).toBeNull();
       expect(claim.detail).toBe("Resource collectors not wired — DockerMap does not measure container CPU, memory or network");
       expect(Object.keys(claim)).not.toContain("cpuPercent");
-    } else {
+    } else if (claim.kind === "demo") {
       expect(expected).toBe("demo");
       expect(claim.value.cpuSeries).toHaveLength(24);
       expect(Object.values(claim.value).flatMap((value) => Array.isArray(value) ? value : [value]).every(Number.isFinite)).toBe(true);
+    } else {
+      // A three-argument call has no observed telemetry input.
+      expect.fail("resourceFor must not publish observed telemetry without an attested response");
     }
   });
 

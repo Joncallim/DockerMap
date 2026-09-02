@@ -449,6 +449,7 @@ export function getDemoResponse<T>(path: string): T {
   // empty shape so the background resource request cannot turn a demo render
   // into an error state; observedHistory.ts still rejects this mock source.
   if (pathname === "/api/history") return { source: "mock", baselineEstablished: false, currentModelRevision: null, observedRevision: null, events: [] } as T;
+  if (pathname === "/api/resource-telemetry") return { source: "mock", collectionState: "unavailable", currentModelRevision: null, currentObservationRevision: null, samples: [] } as T;
   if (pathname === "/api/health") {
     return {
       node: { status: "ok", port: 4000 },
