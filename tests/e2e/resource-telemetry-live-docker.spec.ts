@@ -28,6 +28,7 @@ test("collects bounded opaque Docker telemetry through the unfiltered fixture ga
   );
 
   let stack: Stack | undefined;
+  let testFailure: unknown;
   try {
     try {
       stack = await startLiveDockerStack({ apiToken: token, fixtureProfile: "unfiltered-telemetry" });
@@ -85,12 +86,25 @@ test("collects bounded opaque Docker telemetry through the unfiltered fixture ga
           && reset.samples.length === 0,
       ).toBe(true);
     }
+  } catch (error) {
+    testFailure = error;
+    throw error;
   } finally {
     if (stack) {
-      await stack.stop();
-      // Cleanup inspection is limited to the fixture's generated control name
-      // and exact fixture label; it never enumerates unrelated resources.
-      expect(stack.ownedFixtureResourcesAbsent?.()).toBe(true);
+      try {
+        await stack.stop();
+        // Cleanup inspection is limited to the fixture's generated control name
+        // and exact fixture label; it never enumerates unrelated resources.
+        expect(stack.ownedFixtureResourcesAbsent?.()).toBe(true);
+      } catch (cleanupFailure) {
+        if (testFailure) {
+          throw new AggregateError(
+            [testFailure, cleanupFailure],
+            "Live telemetry assertion and owned fixture cleanup both failed.",
+          );
+        }
+        throw cleanupFailure;
+      }
     }
   }
 });

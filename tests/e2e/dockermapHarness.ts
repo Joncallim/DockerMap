@@ -1093,8 +1093,16 @@ function cleanupLiveDocker(docker: string[], fixture: Fixture) {
  * scan, user-selected target, raw response, or diagnostic crosses this helper.
  */
 function ownedFixtureResourcesAbsent(docker: string[], fixture: Fixture): boolean {
-  const controlStillExists = dockerQuiet(docker, ["container", "inspect", fixture.controlContainerName], fixture.dir) !== null;
-  if (controlStillExists) return false;
+  // `inspect` cannot distinguish an absent container from an inaccessible
+  // Docker daemon without exposing stderr. A successful, anchored generated
+  // name query fails closed on either condition and cannot match another
+  // fixture's controls.
+  const controlMatches = dockerQuiet(
+    docker,
+    ["container", "ls", "--all", "--quiet", "--filter", `name=^/${fixture.controlContainerName}$`],
+    fixture.dir,
+  );
+  if (controlMatches === null || controlMatches.trim() !== "") return false;
   for (const kind of ["container", "network", "volume"] as const) {
     const args = kind === "container"
       ? ["container", "ls", "--all", "--quiet", "--filter", `label=${fixture.labelFilter}`]
