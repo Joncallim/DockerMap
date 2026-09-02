@@ -319,13 +319,41 @@ fn decode_filters(value: &str) -> Result<UniqueFilterMap, Deny> {
     if value.is_empty() {
         return Err(Deny::Query);
     }
-    let encoded = format!("filters={value}");
-    let mut pairs = url::form_urlencoded::parse(encoded.as_bytes());
-    let (key, decoded) = pairs.next().ok_or(Deny::Query)?;
-    if key != "filters" || pairs.next().is_some() {
-        return Err(Deny::Query);
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Err(Deny::Query);
+                }
+                let high = hex_value(bytes[index + 1]).ok_or(Deny::Query)?;
+                let low = hex_value(bytes[index + 2]).ok_or(Deny::Query)?;
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
     }
+    let decoded = String::from_utf8(decoded).map_err(|_| Deny::Query)?;
     serde_json::from_str(&decoded).map_err(|_| Deny::Query)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn valid_percent_encoding(value: &str) -> bool {
@@ -457,7 +485,10 @@ mod tests {
     use std::{
         collections::HashMap,
         path::Path,
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Mutex,
+        },
         time::{SystemTime, UNIX_EPOCH},
     };
     use tokio::{
@@ -553,6 +584,31 @@ mod tests {
             now
         );
         assert_eq!(Policy::new(None).allow_at(&req(&target), now), Ok(target));
+    }
+
+    #[test]
+    fn event_filters_reject_invalid_percent_decoded_utf8_before_label_comparison() {
+        let now = 1_800_000_000;
+        let prefix = encoded(
+            r#"{"type":["container"],"event":["create","start","stop","die","restart","destroy","health_status"],"label":[""#,
+        );
+        let suffix = encoded(r#""]}"#);
+        let replacement = "\u{fffd}";
+        let policy = Policy::new(Some(replacement.into()));
+        let valid = event_target(now - 1, None, &event_filters(Some(replacement)));
+        assert_eq!(policy.allow_at(&req(&valid), now), Ok(valid));
+
+        for invalid_utf8 in ["%FF", "%C0%AF", "%E2%82"] {
+            let target = format!(
+                "/events?since={}&filters={prefix}{invalid_utf8}{suffix}",
+                now - 1
+            );
+            assert_eq!(
+                policy.allow_at(&req(&target), now),
+                Err(Deny::Query),
+                "{invalid_utf8}"
+            );
+        }
     }
 
     #[test]
@@ -749,34 +805,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bollard_0_19_event_request_shape_is_accepted_without_json_key_order_assumptions() {
+    async fn bollard_0_19_event_request_traverses_the_real_gateway_and_only_safe_form_reaches_docker(
+    ) {
         let raw_socket = socket("bollard-events");
+        let gateway_socket = socket("bollard-events-filtered");
         let listener = UnixListener::bind(&raw_socket).unwrap();
-        let capture = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut bytes = [0; 1_024];
+        let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured_upstream = Arc::clone(&captured);
+        let upstream = tokio::spawn(async move {
             loop {
-                let read = stream.read(&mut bytes).await.unwrap();
-                if read == 0 {
-                    break;
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut bytes = [0; 1_024];
+                loop {
+                    let read = stream.read(&mut bytes).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&bytes[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                    assert!(request.len() <= 8_192);
                 }
-                request.extend_from_slice(&bytes[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-                assert!(request.len() <= 8_192);
+                captured_upstream
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8(request).unwrap());
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
             }
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
-                .await
-                .unwrap();
-            String::from_utf8(request)
-                .unwrap()
-                .lines()
-                .next()
-                .unwrap()
-                .to_owned()
         });
 
         let now = SystemTime::now()
@@ -784,6 +844,18 @@ mod tests {
             .unwrap()
             .as_secs();
         let label = "com.dockermap.fixture=trace-123";
+        let gateway = tokio::spawn(serve(GatewayConfig::new(
+            &gateway_socket,
+            &raw_socket,
+            Some(label.into()),
+        )));
+        for _ in 0..40 {
+            if gateway_socket.exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+
         let mut filters = HashMap::<String, Vec<String>>::new();
         filters.insert("type".into(), vec!["container".into()]);
         filters.insert(
@@ -800,27 +872,66 @@ mod tests {
             .filters(&filters)
             .build();
         let docker =
-            Docker::connect_with_unix(raw_socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
+            Docker::connect_with_unix(gateway_socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
                 .unwrap();
         let mut stream = Box::pin(docker.events(Some(options)));
         tokio::time::timeout(Duration::from_secs(2), stream.next())
             .await
-            .expect("Bollard event request completes against the stub");
+            .expect("approved Bollard event request completes through the gateway");
 
-        let line = capture.await.unwrap();
+        let mut unsafe_filters = filters;
+        unsafe_filters.insert("event".into(), vec!["start".into()]);
+        let unsafe_options = EventsOptionsBuilder::new()
+            .since(&(now - 30).to_string())
+            .filters(&unsafe_filters)
+            .build();
+        let mut unsafe_stream = Box::pin(docker.events(Some(unsafe_options)));
+        let denied = tokio::time::timeout(Duration::from_secs(2), unsafe_stream.next())
+            .await
+            .expect("gateway returns a bounded denial response");
+        assert!(denied.is_some_and(|result| result.is_err()));
+        sleep(Duration::from_millis(25)).await;
+
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1, "unsafe Bollard request reached Docker");
+        let request = &captured[0];
+        let (head, body) = request
+            .split_once("\r\n\r\n")
+            .expect("gateway emits a complete HTTP request head");
+        assert!(body.is_empty(), "gateway added an event request body");
+        let mut lines = head.lines();
+        let line = lines.next().unwrap();
         let target = line
             .strip_prefix("GET ")
             .and_then(|value| value.strip_suffix(" HTTP/1.1"))
-            .expect("Bollard uses an HTTP/1.1 GET origin-form target");
+            .expect("gateway preserves Bollard's HTTP/1.1 GET origin-form target");
         assert!(
             target.starts_with(&format!("/events?since={}&until={now}&filters=", now - 30)),
             "{line}"
         );
+        let headers = lines.collect::<Vec<_>>();
+        assert!(
+            headers
+                .iter()
+                .any(|line| line.eq_ignore_ascii_case("host: docker")),
+            "{headers:?}"
+        );
+        assert!(!headers.iter().any(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.starts_with("content-length:")
+                || lower.starts_with("transfer-encoding:")
+                || lower.starts_with("connection:")
+                || lower.starts_with("upgrade:")
+        }));
         assert_eq!(
             Policy::new(Some(label.into())).allow_at(&req(target), now),
             Ok(target.to_owned())
         );
+        drop(captured);
+        gateway.abort();
+        upstream.abort();
         let _ = std::fs::remove_file(raw_socket);
+        let _ = std::fs::remove_file(gateway_socket);
     }
 
     #[tokio::test]
