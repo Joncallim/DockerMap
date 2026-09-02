@@ -878,7 +878,7 @@ mod tests {
             .iter()
             .flat_map(|edge| &edge.evidence_refs)
             .next()
-            .expect("mock snapshot emits Docker evidence");
+            .expect("representative Docker snapshot emits Docker evidence");
 
         assert_eq!(evidence.collected_at, 42);
         assert_eq!(evidence.provider_revision, "opaque-docker-observation-17");
@@ -905,7 +905,7 @@ mod tests {
             .into_iter()
             .flat_map(|edge| edge.evidence_refs)
             .next()
-            .expect("mock snapshot emits version-one evidence");
+            .expect("representative Docker snapshot emits version-one evidence");
         let valid = serde_json::to_value(evidence).expect("evidence serializes");
 
         for (field, invalid) in [

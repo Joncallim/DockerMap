@@ -22,7 +22,7 @@ use crate::{
 };
 use dockermap_core::{
     derive_runtime_map, service_entity_kind_name, DiagnosticSeverity, DockerSnapshot, ProviderSlot,
-    ProviderStateKind, RuntimeMap, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer,
+    ProviderStateKind, RuntimeMap, RuntimeMapNode, RuntimeMode, RuntimeNodeKind, RuntimeNodeLayer,
     RuntimeProviderKind, ServiceEntityKind,
 };
 use std::{
@@ -116,6 +116,7 @@ pub(crate) fn runtime_map_from_collection(
     snapshot: &DockerSnapshot,
     collection: &ProviderCollection,
     docker_observation_revision: &str,
+    mode: &RuntimeMode,
 ) -> RuntimeMap {
     let (nodes, edges, diagnostics) = collection.clone().into_parts();
     let mut runtime_map = derive_runtime_map(
@@ -125,6 +126,14 @@ pub(crate) fn runtime_map_from_collection(
         diagnostics,
         docker_observation_revision,
     );
+    // `mock_snapshot` intentionally preserves a representative topology, but
+    // it is not an observation from Docker.  Never let derived Docker (or
+    // retained provider) evidence attest those sample nodes and edges.
+    if *mode != RuntimeMode::Docker {
+        for edge in &mut runtime_map.edges {
+            edge.evidence_refs.clear();
+        }
+    }
     redact_runtime_map(&mut runtime_map);
     runtime_map
 }
