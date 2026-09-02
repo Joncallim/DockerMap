@@ -2638,6 +2638,34 @@ mod tests {
     }
 
     #[test]
+    fn daemon_state_risk_evidence_stays_path_free_through_publication() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers[0].mounts = vec![ContainerMount {
+            id: "private-daemon-state-mount".into(),
+            kind: ComposeMountKind::Bind,
+            source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+            target: "/private/target".into(),
+            read_only: false,
+        }];
+        let mut map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        redact_runtime_map(&mut map);
+        let serialized = serde_json::to_string(&map).unwrap();
+        assert!(serialized.contains("host_risk_docker_daemon_state"));
+        assert!(serialized.contains("docker_daemon_state_bind_mount"));
+        for forbidden in [
+            "DOCKERMAP_TEST_DAEMON_STATE",
+            "/private/target",
+            "private-daemon-state-mount",
+            "readOnly",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "publication leaked {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn compose_publication_normalizes_diagnostics_and_graph_inputs() {
         let mut scan = ComposeScan {
             files: vec!["/project\u{202e}/compose.yaml".into()],
