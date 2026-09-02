@@ -23,7 +23,7 @@ epics rather than being deferred wholesale.
   caches snapshots, and can fall back to explicitly stamped mock data when configured.
 - `crates/dockermap-docker-gateway`: Rust default-deny proxy. It is the only DockerMap
   component with the raw Docker socket and permits only the measured inventory and
-  bounded-log Docker requests.
+  bounded-log, bounded-event, and finite unfiltered-stats Docker requests.
 - `packages/contracts`: TypeScript API contracts consumed by the web and API workspaces.
 
 ## Source Of Truth
@@ -157,6 +157,40 @@ This is the initial #70 slice, not a general telemetry system. It has no
 persistence across daemon restarts, no Docker `events` collection, no timing
 guarantee beyond the later compared snapshot, and no assertion of deployment,
 restart, failure, recovery, causality, health, reachability, or impact.
+
+### Current Docker resource telemetry
+
+`GET /daemon/resource-telemetry` and its authenticated browser aliases expose
+**current, sanitized numeric Docker telemetry**, not a resource-history API.
+It is available only to an unfiltered Docker Read Gateway profile. When
+`DOCKERMAP_DOCKER_LABEL_FILTER` is configured, the response is explicitly
+unavailable: Docker's per-container stats endpoint cannot carry the inventory
+label scope, so collector-side filtering cannot authorize the request.
+
+The daemon selects only containers in the already-published Docker snapshot.
+It retains at most 16 opaque container rows, starts at most two finite stats
+requests per refresh, times each request out after 750 ms, and gives each
+published metric an 8-second expiry. The retained prior numeric counters are
+private and exist only to calculate the next CPU or network rate; the public
+response contains no raw stats object, Docker name/ID, interface name, PID,
+counter, or historical series. A metric may be absent when Docker did not
+provide enough safe numeric inputs.
+
+Every active response attests `source: docker`, the current model revision, and
+the current Docker-observation revision. Every metric has its own observation
+and expiry time. A source transition discards both public rows and the private
+rate baselines; out-of-date completions cannot join a later model or Docker
+observation. The browser accepts a row only for the current live model, with a
+matching model revision and unexpired, finite metrics. Otherwise it shows an
+unavailable or stale state rather than reusing a demo sample or retained value.
+
+This is deliberately bounded current-state evidence, not proof of workload
+health, demand, performance cause, traffic destination, restart behavior, or a
+complete account of host resource use. The labelled live-Docker fixture uses a
+Docker label scope, so it intentionally exercises the unavailable path rather
+than real stats collection. Before release claims include live telemetry, the
+project still needs isolated **unfiltered** live-Docker evidence for the finite
+request, cap/timeout behavior, expiry, and cleanup/resource-budget effects.
 
 #### Current finding policy
 

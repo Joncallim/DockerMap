@@ -61,8 +61,10 @@ clean-host installation or host-reboot recovery evidence below.
   Interactive SSO is deployment-specific evidence, not an alpha blocker.
 - Clean-host installation and host-reboot recovery remain required before a
   broader support claim. This is a private alpha candidate only.
-- DockerMap intentionally has no persistent event history, resource telemetry,
-  image-update/advisory lookup, or write mode. Those are later roadmap epics.
+- DockerMap intentionally has no persistent event or resource-telemetry
+  history, image-update/advisory lookup, or write mode. Current in-memory
+  Docker resource telemetry is an unfiltered-only bounded slice; this baseline
+  does not record its required isolated unfiltered live-Docker evidence.
 - Full-host/native inspection is intentionally more trusted than the default
   Docker-only profile. Tailscale and Headscale remain opt-in and do not add
   credentials or control-plane permissions.

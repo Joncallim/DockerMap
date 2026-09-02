@@ -109,6 +109,37 @@ Protections:
   not evidence of a deployment, restart, failure, recovery, causal chain,
   compromise, reachability, or impact.
 
+### Current Docker Resource Telemetry
+
+Risk: Docker stats can expose container names, process-adjacent details,
+network-interface counters, long-lived activity patterns, or unbounded work.
+
+Protections:
+
+- The gateway permits exactly one finite per-container stats request and only
+  on an unfiltered profile. A configured Docker label scope denies every stats
+  request before it reaches Docker because the stats endpoint cannot express
+  that scope.
+- The daemon chooses targets solely from its published sanitized snapshot; a
+  caller cannot choose a container, query, cadence, or timeout.
+- Retention is bounded to 16 current opaque-container rows, with at most two
+  in-flight requests, a 750 ms request timeout, and an 8-second metric expiry.
+  It stores private previous numeric counters only long enough to derive the
+  next bounded rate.
+- Raw Docker stats, names and raw IDs, interface names, PIDs, counter values,
+  and historical series are discarded at the collector boundary. They do not
+  enter cache publication, API bytes, contracts, fixtures, or the browser.
+- An active response must attest live Docker source, the current model revision,
+  and Docker observation revision; each browser-rendered value must also match
+  the current live model and an unexpired metric. Source changes discard public
+  values and private baselines; mismatched, expired, missing, mock, and demo
+  data fail closed.
+
+Current limitations: this is numeric current-state evidence only. It does not
+authorize streaming stats, prove performance cause or workload health, or make
+the label-scoped fixture eligible for stats collection. Real unfiltered
+live-Docker collection and resource-budget evidence remain a release gap.
+
 ### Host Provider Expansion
 
 Risk: systemd units, tmux panes, Python/native processes, reverse proxies, DNS configs, and

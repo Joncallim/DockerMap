@@ -23,6 +23,10 @@ containers, or services.
   a daemon-lifetime 64-row newest-first bound, source reset, mock-empty behavior,
   opaque/closed response shapes, authenticated API routing, and live-model revision
   coherence in the browser.
+- Current Docker resource-telemetry tests for the finite unfiltered gateway
+  authority, label-scoped denial, 16-row/two-request/750-ms/8-second bounds,
+  source reset and revision coherence, raw-stat exclusion, contract/API
+  validation, and browser freshness checks.
 - Playwright smoke tests for the GUI through `npm run test:e2e`, with live-Docker
   coverage opt-in through `npm run test:live-docker`.
 
@@ -161,6 +165,14 @@ npm run test:live-docker
 The live-Docker harness labels its Compose resources, sets
 `DOCKERMAP_DOCKER_LABEL_FILTER`, and creates an unlabeled control container to prove
 DockerMap excludes unrelated Docker resources.
+
+That label-scoped setup intentionally makes current resource telemetry
+unavailable: the gateway must deny per-container stats when a label filter is
+configured. It is evidence for scoped denial, not evidence that Docker stats
+were collected. A separate isolated unfiltered live-Docker run is still needed
+to record finite stats collection, expiry, bounded concurrency/cadence, and
+its resource-budget/cleanup behavior before a release can claim live telemetry
+evidence.
 
 ## Sandbox Fixture
 
