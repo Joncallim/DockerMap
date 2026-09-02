@@ -8,6 +8,10 @@
 use crate::{
     docker_collector::DockerCollector,
     provider_contract::ProviderCollection,
+    providers::systemd::{
+        SYSTEMD_EVIDENCE_KIND_MARKER, SYSTEMD_EVIDENCE_PART_OF, SYSTEMD_EVIDENCE_REQUIRES,
+        SYSTEMD_EVIDENCE_WANTS,
+    },
     publication::{publish_docker_snapshot, redact_health_response, redact_runtime_map},
     runtime_collection::{
         collect_provider_slot_bounded, runtime_map_from_collection, slot_interval,
@@ -15,9 +19,11 @@ use crate::{
     },
 };
 use dockermap_core::{
-    derive_images, mock_snapshot, DiagnosticSeverity, DockerSnapshot, HealthResponse, HealthState,
-    ProviderSlot, ProviderState, ProviderStateKind, ProviderStatusReason, RuntimeMap,
-    RuntimeMapDiagnostic, RuntimeMode, RuntimeProviderKind,
+    collision_resistant_id_component, derive_images, mock_snapshot, DiagnosticSeverity,
+    DockerSnapshot, HealthResponse, HealthState, ProviderSlot, ProviderState, ProviderStateKind,
+    ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness,
+    RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap,
+    RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMode, RuntimeProviderKind,
 };
 use std::{
     collections::BTreeMap,
@@ -854,19 +860,23 @@ fn runtime_map_for_snapshot(
     let mut combined = ProviderCollection::default();
     let mut extra_diagnostics = Vec::new();
     for slot in STATIC_PROVIDER_SLOTS.iter().copied() {
-        let state = &slots[&slot].observation;
-        if let Some(collection) = retained_collection(state) {
-            let (nodes, edges, diagnostics) = collection.into_parts();
+        let slot_state = &slots[&slot];
+        let observation = &slot_state.observation;
+        if let Some(collection) = retained_collection(observation) {
+            let (nodes, mut edges, diagnostics) = collection.into_parts();
+            if slot == ProviderSlot::Systemd {
+                bind_systemd_evidence(&mut edges, slot_state);
+            }
             let (target_nodes, target_edges, target_diagnostics) = combined.parts_mut();
             target_nodes.extend(nodes);
             target_edges.extend(edges);
             target_diagnostics.extend(diagnostics);
         }
-        if !matches!(state, RuntimeProviderState::Fresh(_)) {
+        if !matches!(observation, RuntimeProviderState::Fresh(_)) {
             extra_diagnostics.push(RuntimeMapDiagnostic {
                 provider: RuntimeProviderKind::Other,
                 severity: DiagnosticSeverity::Warning,
-                message: slot_diagnostic(slot, state).into(),
+                message: slot_diagnostic(slot, observation).into(),
             });
         }
     }
@@ -875,6 +885,118 @@ fn runtime_map_for_snapshot(
     runtime_map.provider_states = provider_states_for(slots);
     runtime_map.diagnostics.extend(extra_diagnostics);
     runtime_map
+}
+
+/// Convert the private, closed systemd dependency marker into public evidence
+/// only after this exact slot completed and owns a sanitized opaque revision.
+/// Retained observations deliberately become stale/timed-out evidence instead
+/// of being relabelled as fresh; a disabled or revision-less observation emits
+/// no evidence at all.
+fn bind_systemd_evidence(edges: &mut [RuntimeMapEdge], state: &SlotRuntimeState) {
+    let is_disabled = retained_collection(&state.observation)
+        .as_ref()
+        .map(|collection| {
+            collection.states().iter().any(|candidate| {
+                candidate.slot == ProviderSlot::Systemd
+                    && candidate.state == ProviderStateKind::Disabled
+            })
+        })
+        .unwrap_or(false);
+    if is_disabled {
+        for edge in edges {
+            edge.metadata.remove(SYSTEMD_EVIDENCE_KIND_MARKER);
+            edge.evidence_refs.clear();
+        }
+        return;
+    }
+    let freshness = match &state.observation {
+        RuntimeProviderState::Fresh(_) => RuntimeEvidenceFreshness::Fresh,
+        RuntimeProviderState::Collecting(Some(_)) | RuntimeProviderState::Degraded(Some(_)) => {
+            RuntimeEvidenceFreshness::Stale
+        }
+        RuntimeProviderState::TimedOut(Some(_)) => RuntimeEvidenceFreshness::TimedOut,
+        RuntimeProviderState::Unavailable
+        | RuntimeProviderState::Collecting(None)
+        | RuntimeProviderState::Degraded(None)
+        | RuntimeProviderState::TimedOut(None) => {
+            for edge in edges {
+                edge.metadata.remove(SYSTEMD_EVIDENCE_KIND_MARKER);
+                edge.evidence_refs.clear();
+            }
+            return;
+        }
+    };
+    let Some(revision) = state
+        .freshness
+        .data_revision
+        .as_ref()
+        .map(SlotDataRevision::public)
+    else {
+        for edge in edges {
+            edge.metadata.remove(SYSTEMD_EVIDENCE_KIND_MARKER);
+            edge.evidence_refs.clear();
+        }
+        return;
+    };
+    let Some(collected_at) = state.freshness.last_success_ms else {
+        for edge in edges {
+            edge.metadata.remove(SYSTEMD_EVIDENCE_KIND_MARKER);
+            edge.evidence_refs.clear();
+        }
+        return;
+    };
+
+    for edge in edges {
+        let kind = match edge
+            .metadata
+            .remove(SYSTEMD_EVIDENCE_KIND_MARKER)
+            .as_deref()
+        {
+            Some(SYSTEMD_EVIDENCE_REQUIRES) => RuntimeEvidenceKind::SystemdRequires,
+            Some(SYSTEMD_EVIDENCE_WANTS) => RuntimeEvidenceKind::SystemdWants,
+            Some(SYSTEMD_EVIDENCE_PART_OF) => RuntimeEvidenceKind::SystemdPartOf,
+            _ => {
+                edge.evidence_refs.clear();
+                continue;
+            }
+        };
+        if edge.relationship != dockermap_core::RuntimeRelationshipKind::DependsOn
+            || !edge.source.starts_with("systemd_service_")
+            || !edge.target.starts_with("systemd_service_")
+            || edge.source == edge.target
+        {
+            edge.evidence_refs.clear();
+            continue;
+        }
+        let kind_id = match kind {
+            RuntimeEvidenceKind::SystemdRequires => "requires",
+            RuntimeEvidenceKind::SystemdWants => "wants",
+            RuntimeEvidenceKind::SystemdPartOf => "part-of",
+            _ => unreachable!("closed systemd marker maps only to systemd evidence"),
+        };
+        edge.evidence_refs = vec![RuntimeEvidenceRef {
+            version: 2,
+            id: format!(
+                "systemd_evidence_{kind_id}_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            provider: RuntimeEvidenceProvider::Systemd,
+            kind,
+            assertion_kind: RuntimeEvidenceAssertionKind::Declared,
+            summary: match kind {
+                RuntimeEvidenceKind::SystemdRequires => "systemd declared a Requires dependency",
+                RuntimeEvidenceKind::SystemdWants => "systemd declared a Wants dependency",
+                RuntimeEvidenceKind::SystemdPartOf => "systemd declared a PartOf dependency",
+                _ => unreachable!("closed systemd marker maps only to systemd evidence"),
+            }
+            .into(),
+            subject_ref: edge.source.clone(),
+            collected_at,
+            provider_revision: revision.clone(),
+            provider_slot: Some(ProviderSlot::Systemd),
+            freshness,
+        }];
+    }
 }
 
 fn slot_diagnostic(_slot: ProviderSlot, state: &RuntimeProviderState) -> &'static str {
@@ -989,7 +1111,10 @@ fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
 mod scheduler_tests {
     use super::*;
     use crate::provider_contract::ProviderDiagnostic;
-    use dockermap_core::{mock_snapshot, HealthState, RuntimeProviderKind};
+    use dockermap_core::{
+        mock_snapshot, HealthState, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer,
+        RuntimeProviderKind,
+    };
     use std::{
         collections::BTreeMap as TestBTreeMap, fs, os::unix::fs::PermissionsExt, process::Command,
     };
@@ -1051,6 +1176,112 @@ mod scheduler_tests {
 
     fn slots() -> RuntimeProviderSlots {
         unavailable_provider_slots()
+    }
+
+    fn marked_systemd_dependency() -> ProviderCollection {
+        let mut collection = ProviderCollection::default();
+        collection.set_state(ProviderSlot::Systemd, ProviderStateKind::Fresh);
+        for (id, label) in [
+            ("systemd_service_application", "application"),
+            ("systemd_service_database", "database"),
+        ] {
+            collection.nodes_mut().push(RuntimeMapNode {
+                id: id.into(),
+                provider: RuntimeProviderKind::Systemd,
+                kind: RuntimeNodeKind::SystemdService,
+                label: label.into(),
+                status: None,
+                layer: Some(RuntimeNodeLayer::Service),
+                metadata: BTreeMap::new(),
+                service: None,
+                package: None,
+            });
+        }
+        collection.parts_mut().1.push(RuntimeMapEdge {
+            source: "systemd_service_application".into(),
+            target: "systemd_service_database".into(),
+            relationship: dockermap_core::RuntimeRelationshipKind::DependsOn,
+            metadata: BTreeMap::from([(
+                SYSTEMD_EVIDENCE_KIND_MARKER.into(),
+                SYSTEMD_EVIDENCE_REQUIRES.into(),
+            )]),
+            evidence_refs: Vec::new(),
+        });
+        collection
+    }
+
+    #[test]
+    fn systemd_evidence_is_slot_bound_and_truthfully_retained() {
+        for (observation, expected) in [
+            (
+                RuntimeProviderState::Fresh(marked_systemd_dependency()),
+                RuntimeEvidenceFreshness::Fresh,
+            ),
+            (
+                RuntimeProviderState::Degraded(Some(marked_systemd_dependency())),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                RuntimeProviderState::TimedOut(Some(marked_systemd_dependency())),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
+        ] {
+            let mut slots = slots();
+            let state = slots.get_mut(&ProviderSlot::Systemd).unwrap();
+            state.observation = observation;
+            state.freshness.data_revision = Some(SlotDataRevision::first());
+            state.freshness.last_success_ms = Some(42);
+            let map = runtime_map_for_snapshot(&mock_snapshot(), &slots, "docker-observation");
+            let edge = map
+                .edges
+                .iter()
+                .find(|edge| edge.source == "systemd_service_application")
+                .expect("systemd relationship is retained");
+            assert!(edge.metadata.is_empty(), "private marker never publishes");
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 2);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Systemd);
+            assert_eq!(evidence.kind, RuntimeEvidenceKind::SystemdRequires);
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Declared
+            );
+            assert_eq!(evidence.provider_slot, Some(ProviderSlot::Systemd));
+            assert_eq!(evidence.collected_at, 42);
+            assert_eq!(evidence.freshness, expected);
+            assert!(!evidence.provider_revision.is_empty());
+        }
+    }
+
+    #[test]
+    fn revisionless_or_disabled_systemd_collection_cannot_publish_evidence() {
+        let mut slots = slots();
+        slots.get_mut(&ProviderSlot::Systemd).unwrap().observation =
+            RuntimeProviderState::Fresh(marked_systemd_dependency());
+        let map = runtime_map_for_snapshot(&mock_snapshot(), &slots, "docker-observation");
+        let edge = map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "systemd_service_application")
+            .expect("systemd relationship remains visible without evidence");
+        assert!(edge.evidence_refs.is_empty());
+        assert!(edge.metadata.is_empty());
+
+        let mut disabled = marked_systemd_dependency();
+        disabled.set_state(ProviderSlot::Systemd, ProviderStateKind::Disabled);
+        let state = slots.get_mut(&ProviderSlot::Systemd).unwrap();
+        state.observation = RuntimeProviderState::Fresh(disabled);
+        state.freshness.data_revision = Some(SlotDataRevision::first());
+        state.freshness.last_success_ms = Some(42);
+        let map = runtime_map_for_snapshot(&mock_snapshot(), &slots, "docker-observation");
+        assert!(map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "systemd_service_application")
+            .expect("disabled systemd relationship remains visible without evidence")
+            .evidence_refs
+            .is_empty());
     }
 
     fn docker_cache(snapshot: DockerSnapshot) -> DaemonCache {

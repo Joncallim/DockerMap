@@ -1597,6 +1597,7 @@ mod tests {
             subject_ref: "docker_container_\u{202e}id".into(),
             collected_at: 1,
             provider_revision: oversized.clone(),
+            provider_slot: None,
             freshness: RuntimeEvidenceFreshness::Fresh,
         };
         let mut edges = vec![RuntimeMapEdge {
