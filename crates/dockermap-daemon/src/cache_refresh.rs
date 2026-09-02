@@ -22,10 +22,10 @@ use dockermap_core::{
     collision_resistant_id_component, derive_findings, derive_images, mock_snapshot,
     observed_container_inventory, DiagnosticSeverity, DockerSnapshot, FindingsResponse,
     HealthResponse, HealthState, ObservedChangeEvent, ObservedChangeHistoryResponse,
-    ObservedChangeKind, ObservedContainerInventory, ProviderSlot, ProviderState,
-    ProviderStateKind, ProviderStatusReason, RuntimeEvidenceAssertionKind,
-    RuntimeEvidenceFreshness, RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef,
-    RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMode, RuntimeProviderKind,
+    ObservedChangeKind, ObservedContainerInventory, ProviderSlot, ProviderState, ProviderStateKind,
+    ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness,
+    RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap,
+    RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMode, RuntimeProviderKind,
     MAX_OBSERVED_CHANGE_EVENTS,
 };
 use std::{
