@@ -64,6 +64,15 @@ const V1_EVIDENCE_EDGE = {
   docker_compose_depends_on: { relationship: "depends_on", sourcePrefix: "docker_container_", targetPrefix: "docker_container_" },
 } as const;
 
+// Version two is the intentionally narrow systemd declaration vocabulary.
+// It is tied to Systemd's independently scheduled slot, rather than to the
+// broader host collection, so retained freshness stays attributable.
+const V2_EVIDENCE_EDGE = {
+  systemd_requires: { relationship: "requires", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_" },
+  systemd_wants: { relationship: "wants", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_" },
+  systemd_part_of: { relationship: "part_of", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_" },
+} as const;
+
 function hasCompleteProviderStateVector(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
   const providerStates = (payload as { providerStates?: unknown }).providerStates;
@@ -144,12 +153,27 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
       const value = evidence as {
         version?: unknown; provider?: unknown; kind?: unknown; assertionKind?: unknown;
         freshness?: unknown; providerRevision?: unknown; collectedAt?: unknown; subjectRef?: unknown;
+        providerSlot?: unknown;
       };
-      if (value.version !== 1 || value.provider !== "docker" || value.assertionKind !== "observed" || value.freshness !== "fresh") return false;
-      const expected = typeof value.kind === "string" ? V1_EVIDENCE_EDGE[value.kind as keyof typeof V1_EVIDENCE_EDGE] : undefined;
+      const isV1 = value.version === 1
+        && value.provider === "docker"
+        && value.assertionKind === "observed"
+        && value.freshness === "fresh"
+        && (value.providerSlot === null || value.providerSlot === undefined);
+      const isV2 = value.version === 2
+        && value.provider === "systemd"
+        && value.assertionKind === "declared"
+        && value.providerSlot === "systemd"
+        && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
+      if (!isV1 && !isV2) return false;
+      const expected = typeof value.kind === "string"
+        ? (isV1
+          ? V1_EVIDENCE_EDGE[value.kind as keyof typeof V1_EVIDENCE_EDGE]
+          : V2_EVIDENCE_EDGE[value.kind as keyof typeof V2_EVIDENCE_EDGE])
+        : undefined;
       if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return false;
       if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix)) return false;
-      if (value.kind === "docker_compose_depends_on" && candidate.source === candidate.target) return false;
+      if (candidate.source === candidate.target) return false;
       // An opaque observation token must never be the collection timestamp
       // re-labelled as a revision. The daemon produces it independently.
       return typeof value.providerRevision === "string" && value.providerRevision !== String(value.collectedAt);
