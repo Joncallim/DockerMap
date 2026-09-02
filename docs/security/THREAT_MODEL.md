@@ -46,6 +46,10 @@ changes them:
   redaction and control-character publication boundary as all other daemon response text.
   A malformed evidence record is rejected at the API schema boundary rather than
   partially published.
+- Observed Docker inventory history is a daemon-lifetime, maximum-64-row
+  comparison of already-sanitized Docker snapshots. It never uses Docker's event
+  stream or persists rows. It exposes only opaque event/container identities and
+  closed status classes, resets on source changes, and is empty for mock fallback.
 
 ## Main Risks And Protections
 
@@ -76,6 +80,28 @@ Protections:
   targets, unknown queries, bodies, and upgrades before opening Docker.
 - A read-only socket mount is retained as a filesystem safeguard but is not
   treated as Docker API authorization.
+
+### Observed Inventory History
+
+Risk: a history feature could leak raw Docker metadata or imply that DockerMap
+knows why a service changed.
+
+Protections:
+
+- History is derived after snapshot sanitization and accepts only the closed
+  appeared/disappeared/status-changed vocabulary and `running`/`stopped`/`other`
+  status classes.
+- Public event IDs and revisions are opaque; raw Docker IDs, container names,
+  status strings, paths, diagnostics, and Docker event payloads are not retained
+  or returned.
+- The baseline and rows reset across Docker/mock source transitions; mock is an
+  explicit empty/unavailable response rather than relabelled Docker history.
+- The browser renders observed rows only when authenticated `/api/history` data
+  attests Docker source and the current live model revision. Mismatched, missing,
+  mock, and demo data fail closed.
+- A row records only an inventory delta between successful publications. It is
+  not evidence of a deployment, restart, failure, recovery, causal chain,
+  compromise, reachability, or impact.
 
 ### Host Provider Expansion
 
@@ -151,6 +177,8 @@ Automated tests currently cover:
   output, reverse-proxy markers, DNS markers, provider diagnostics, and provider edge metadata.
 - Runtime-edge evidence schema rejection and publication redaction, including malformed
   provenance fields and secret/control-character-bearing evidence summaries or references.
+- Observed-history baseline, source-reset, mock-empty, cap/newest-first,
+  sanitization, schema-validation, auth, and browser revision-coherence cases.
 - GUI smoke coverage against daemon fallback mode.
 - Route and middleware completeness: every Express layer must be wrapped in
   `trackedMiddleware()` and every route registered through `registerRoute()` with

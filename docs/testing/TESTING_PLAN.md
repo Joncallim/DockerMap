@@ -19,6 +19,10 @@ containers, or services.
 - API security tests for bearer auth, CORS, daemon URL restrictions, query limits,
   mock fallback, read-only verb enforcement, fixed daemon route shaping, and error
   detail exposure.
+- Observed Docker inventory-history tests for post-sanitization delta derivation,
+  a daemon-lifetime 64-row newest-first bound, source reset, mock-empty behavior,
+  opaque/closed response shapes, authenticated API routing, and live-model revision
+  coherence in the browser.
 - Playwright smoke tests for the GUI through `npm run test:e2e`, with live-Docker
   coverage opt-in through `npm run test:live-docker`.
 
@@ -78,6 +82,9 @@ The API tests cover:
 - Read-only route behavior, including authenticated write-verb rejection.
 - Fixed daemon proxy paths and normalized query encoding for logs, Compose scan, and
   container detail requests.
+- Authenticated `/api/history` and `/api/v1/history` routing, including schema rejection
+  for malformed or incoherent daemon history responses and mock fallback that is empty
+  rather than a fabricated live timeline.
 - Hidden daemon error details by default, with opt-in detail exposure for JSON and SSE routes.
 
 These tests run against the real Express entry point with mock fallback or a stub daemon.
