@@ -1049,12 +1049,20 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[2].targetRef = "host_risk_untrusted"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[1].kind = "docker_volume_mount"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].summary = "DOCKERMAP_TEST_FORGED_COMPOSE_FINDING"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].id = "finding_docker_compose_declared_target_not_active_forged"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[0].freshness = "stale"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[0].kind = "docker_network_membership"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].unsafe = "DOCKERMAP_TEST_EXTRA"; return value; })()]
+    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[3].evidenceRefs[0], value.findings[3].evidenceRefs[1]] = [value.findings[3].evidenceRefs[1], value.findings[3].evidenceRefs[0]]; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].collectedAt += 1; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].providerRevision = "mismatched-revision"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].targetRef = "host_risk_untrusted"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].id = "finding_docker_daemon_state_bind_mount_publishes_port_forged"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].summary = "DOCKERMAP_TEST_FORGED_PORT"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].unsafe = "DOCKERMAP_TEST_EXTRA"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].summary = "DOCKERMAP_TEST_FORGED_COMPOSE_FINDING"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].id = "finding_docker_compose_declared_target_not_active_forged"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[0].kind = "docker_network_membership"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].unsafe = "DOCKERMAP_TEST_EXTRA"; return value; })()]
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
@@ -1269,6 +1277,19 @@ test("runtime evidence is required and fails closed before browser publication",
   assert.throws(
     () => validateDaemonResponse("/daemon/runtime/map", daemonStateWrongTarget),
     "Docker daemon-state evidence has one canonical synthetic target"
+  );
+
+  const hostPort = structuredClone(fixture);
+  const hostPortEdge = hostPort.edges.find((edge: { evidenceRefs?: Array<{ kind?: unknown }> }) =>
+    edge.evidenceRefs?.[0]?.kind === "docker_port_publication"
+  );
+  assert.ok(hostPortEdge, "canonical daemon fixture carries a Docker host-port publication");
+  const hostPortNode = hostPort.nodes.find((node: { id?: unknown }) => node.id === hostPortEdge.target);
+  assert.ok(hostPortNode, "host-port publication targets a listener node");
+  hostPortNode.metadata.port = "8080/tcp";
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", hostPort),
+    "Docker port-publication evidence requires host:private/protocol listener metadata"
   );
 
   const npmEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "npm_project_dockermap");

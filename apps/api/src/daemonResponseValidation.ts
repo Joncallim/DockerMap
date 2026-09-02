@@ -64,6 +64,9 @@ const INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION = "Review whether the host-po
 const DOCKER_DAEMON_STATE_FINDING_RULE = "docker.daemon_state_bind_mount";
 const DOCKER_DAEMON_STATE_FINDING_SUMMARY = "A container has Docker daemon state access that may provide Docker daemon API authority.";
 const DOCKER_DAEMON_STATE_FINDING_RECOMMENDATION = "Review whether this container requires Docker daemon API authority.";
+const DOCKER_DAEMON_STATE_PUBLISHED_PORT_FINDING_RULE = "docker.daemon_state_bind_mount_publishes_port";
+const DOCKER_DAEMON_STATE_PUBLISHED_PORT_FINDING_SUMMARY = "A container with Docker daemon state access also has a published host port.";
+const DOCKER_DAEMON_STATE_PUBLISHED_PORT_FINDING_RECOMMENDATION = "Review whether the daemon-state access and host-port publication are both intended.";
 const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RULE = "docker.compose_declared_target_not_active";
 const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_SUMMARY = "A running Docker Compose service declares a dependency whose container is not active.";
 const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RECOMMENDATION = "Review the declared dependency and the target container state.";
@@ -124,6 +127,26 @@ function collisionResistantIdComponent(value: string): string {
 
 function composeDeclaredTargetFindingId(subjectRef: string, targetRef: string): string {
   return `finding_docker_compose_declared_target_not_active_${collisionResistantIdComponent(`${subjectRef}\u001f${targetRef}`)}`;
+}
+
+function daemonStatePublishedPortFindingId(subjectRef: string): string {
+  return `finding_docker_daemon_state_bind_mount_publishes_port_${collisionResistantIdComponent(`${subjectRef}\u001fhost_risk_docker_daemon_state`)}`;
+}
+
+// Docker's bounded listener projection uses private/protocol for an
+// un-published listener and host:private/protocol for a host binding. Keep
+// this exact grammar at the browser boundary; a listener label or ID cannot
+// substitute for the observed port metadata.
+function isHostPublishedDockerPort(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const parts = value.split(":");
+  if (parts.length !== 2) return false;
+  const [host, privateAndProtocol] = parts;
+  const privateParts = privateAndProtocol.split("/");
+  if (privateParts.length !== 2) return false;
+  const [privatePort, protocol] = privateParts;
+  const isNonZeroPort = (port: string) => /^\d+$/.test(port) && Number(port) > 0 && Number(port) <= 65_535;
+  return isNonZeroPort(host) && isNonZeroPort(privatePort) && (protocol === "tcp" || protocol === "udp" || protocol === "sctp");
 }
 
 function hasCompleteProviderStateVector(payload: unknown): boolean {
@@ -195,8 +218,16 @@ function hasCoherentProviderFreshness(payload: unknown): boolean {
 
 function hasCoherentRuntimeEvidence(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
+  const nodes = (payload as { nodes?: unknown }).nodes;
   const edges = (payload as { edges?: unknown }).edges;
-  if (!Array.isArray(edges)) return false;
+  if (!Array.isArray(nodes) || !Array.isArray(edges)) return false;
+  const nodesById = new Map<string, Record<string, unknown>>();
+  for (const candidate of nodes) {
+    if (!candidate || typeof candidate !== "object") return false;
+    const node = candidate as Record<string, unknown>;
+    if (typeof node.id !== "string" || nodesById.has(node.id)) return false;
+    nodesById.set(node.id, node);
+  }
   return edges.every((edge) => {
     if (!edge || typeof edge !== "object") return false;
     const candidate = edge as { source?: unknown; target?: unknown; relationship?: unknown; evidenceRefs?: unknown };
@@ -242,6 +273,12 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
       if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix)) return false;
       if (isV4 && candidate.target !== "host_local") return false;
       if (value.kind === "docker_daemon_state_bind_mount" && candidate.target !== "host_risk_docker_daemon_state") return false;
+      if (value.kind === "docker_port_publication") {
+        const listener = nodesById.get(candidate.target);
+        if (listener?.provider !== "network" || listener.type !== "network_listener"
+          || !listener.metadata || typeof listener.metadata !== "object"
+          || !isHostPublishedDockerPort((listener.metadata as Record<string, unknown>).port)) return false;
+      }
       if (candidate.source === candidate.target) return false;
       // An opaque observation token must never be the collection timestamp
       // re-labelled as a revision. The daemon produces it independently.
@@ -309,6 +346,35 @@ function hasCoherentFindings(payload: unknown): boolean {
           && evidence.freshness === "fresh"
           && typeof evidence.providerRevision === "string"
           && evidence.providerRevision !== String(evidence.collectedAt);
+      })();
+    if (finding.ruleId === DOCKER_DAEMON_STATE_PUBLISHED_PORT_FINDING_RULE) return finding.severity === "warning"
+      && finding.summary === DOCKER_DAEMON_STATE_PUBLISHED_PORT_FINDING_SUMMARY
+      && finding.recommendation === DOCKER_DAEMON_STATE_PUBLISHED_PORT_FINDING_RECOMMENDATION
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("docker_container_")
+      && finding.targetRef === "host_risk_docker_daemon_state"
+      && finding.id === daemonStatePublishedPortFindingId(finding.subjectRef)
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 2
+      && (() => {
+        const [daemonState, port] = finding.evidenceRefs;
+        if (!daemonState || typeof daemonState !== "object" || !port || typeof port !== "object") return false;
+        const daemonEvidence = daemonState as Record<string, unknown>;
+        const portEvidence = port as Record<string, unknown>;
+        const isFreshDockerEvidence = (evidence: Record<string, unknown>, kind: string, summary: string) => evidence.version === 1
+          && evidence.provider === "docker"
+          && evidence.kind === kind
+          && evidence.assertionKind === "observed"
+          && evidence.summary === summary
+          && evidence.subjectRef === finding.subjectRef
+          && (evidence.providerSlot === undefined || evidence.providerSlot === null)
+          && evidence.freshness === "fresh"
+          && typeof evidence.providerRevision === "string"
+          && evidence.providerRevision !== String(evidence.collectedAt);
+        return isFreshDockerEvidence(daemonEvidence, "docker_daemon_state_bind_mount", "Docker reported a bind mount exposing Docker daemon state")
+          && isFreshDockerEvidence(portEvidence, "docker_port_publication", "Docker reported container port publication")
+          && daemonEvidence.collectedAt === portEvidence.collectedAt
+          && daemonEvidence.providerRevision === portEvidence.providerRevision;
       })();
     if (finding.ruleId === COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RULE) return finding.severity === "advisory"
       && finding.summary === COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_SUMMARY
