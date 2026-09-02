@@ -8,6 +8,7 @@ import { getDemoResponse } from "../lib/demoData";
 import { buildModel } from "../lib/model";
 import { observedChangeFeed } from "../lib/observedHistory";
 import { visibleText } from "../lib/test-utils";
+import type { ModelProvenance } from "../lib/evidence";
 import Changes from "./Changes";
 import Home from "./Home";
 
@@ -32,11 +33,17 @@ const inheritedSourceHistory = Object.assign(
   Object.create({ source: "docker" }),
   (({ source: _source, ...rest }) => rest)(coherentHistory)
 ) as ObservedChangeHistoryResponse;
+const omittedSourceHistory = (({ source: _source, ...rest }) => rest)(coherentHistory) as ObservedChangeHistoryResponse;
 
-function render(path: "/" | "/changes", history: ObservedChangeHistoryResponse | null, mode: AppContextValue["evidenceMode"] = "live") {
+function render(
+  path: "/" | "/changes",
+  history: ObservedChangeHistoryResponse | null,
+  mode: AppContextValue["evidenceMode"] = "live",
+  modelProvenance: ModelProvenance = "live"
+) {
   const value: AppContextValue = {
     model: buildModel(snapshot, runtime),
-    modelProvenance: "live",
+    modelProvenance,
     loading: false,
     error: null,
     health: null,
@@ -88,6 +95,7 @@ describe("observed inventory history", () => {
     ["revision mismatch", { ...coherentHistory, currentModelRevision: "other-revision" }, "live"],
     ["non-Docker source", { ...coherentHistory, source: "mock" }, "live"],
     ["inherited Docker source", inheritedSourceHistory, "live"],
+    ["omitted own source", omittedSourceHistory, "live"],
     ["mode mismatch", coherentHistory, "mock"]
   ] as const)("fails closed without rows or generated time for %s", (_caseName, history, mode) => {
     const now = vi.spyOn(Date, "now");
@@ -102,5 +110,14 @@ describe("observed inventory history", () => {
     expect(html).not.toContain("filter-chip");
     expect(visibleText(html)).not.toMatch(/\d+[smhd] ago/);
     expect(now).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a live-mode model carries mock provenance", () => {
+    const model = buildModel(snapshot, runtime);
+    expect(observedChangeFeed(model, "live", "mock", coherentHistory).kind).toBe("unavailable");
+    const html = render("/changes", coherentHistory, "live", "mock");
+    expect(visibleText(html)).toContain("Not collected");
+    expect(html).not.toContain("timeline-row");
+    expect(html).not.toContain("filter-chip");
   });
 });
