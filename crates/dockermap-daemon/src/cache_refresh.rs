@@ -994,6 +994,10 @@ mod scheduler_tests {
         collections::BTreeMap as TestBTreeMap, fs, os::unix::fs::PermissionsExt, process::Command,
     };
 
+    // Before Systemd was extracted into its own independently scheduled slot,
+    // every two-second pass ran these five aggregate collection bundles.
+    const LEGACY_AGGREGATE_SLOT_COUNT: u64 = 5;
+
     const SCHEDULER_CHURN_CHILD_ENV: &str = "DOCKERMAP_SCHEDULER_CHURN_CHILD";
     const SCHEDULER_CHURN_ATTESTATION_PATH_ENV: &str = "DOCKERMAP_SCHEDULER_CHURN_ATTESTATION_PATH";
     const SCHEDULER_CHURN_ATTESTATION_TOKEN_ENV: &str =
@@ -1280,7 +1284,8 @@ mod scheduler_tests {
         // host-scoped pass covered it alongside the four other fixed bundles.
         // Preserve that actual historical five-bundle baseline rather than
         // retroactively multiplying the old cadence by today's six slots.
-        let legacy_aggregate_passes = (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * 5;
+        let legacy_aggregate_passes =
+            (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * LEGACY_AGGREGATE_SLOT_COUNT;
         assert_eq!(legacy_aggregate_passes, 155);
     }
 
@@ -1307,10 +1312,16 @@ mod scheduler_tests {
             match profile.as_str() {
                 "full-host" => {
                     assert_eq!(starts.values().sum::<usize>(), 33);
-                    let legacy_starts = (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs())
-                        * STATIC_PROVIDER_SLOTS.len() as u64;
-                    assert_eq!(legacy_starts, 186);
-                    assert_eq!(legacy_starts * 8 / STATIC_PROVIDER_SLOTS.len() as u64, 248);
+                    // The old whole-runtime pass had five aggregate bundles;
+                    // systemd was part of host-scoped collection, not a sixth
+                    // independently scheduled unit.
+                    let legacy_aggregate_starts =
+                        (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * LEGACY_AGGREGATE_SLOT_COUNT;
+                    assert_eq!(legacy_aggregate_starts, 155);
+                    assert_eq!(
+                        legacy_aggregate_starts * 8 / LEGACY_AGGREGATE_SLOT_COUNT,
+                        248
+                    );
                 }
                 "restricted" => {
                     assert_eq!(starts.values().sum::<usize>(), 13);
