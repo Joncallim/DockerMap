@@ -93,6 +93,8 @@ test.describe("Docker temporal observations", () => {
     expect(liveStack.apiToken).toBeTruthy();
     expect(liveStack.restartFixtureWorker).toBeDefined();
     expect(liveStack.restartDockerGateway).toBeDefined();
+    expect(liveStack.stopDockerGateway).toBeDefined();
+    expect(liveStack.startDockerGateway).toBeDefined();
     expect(liveStack.rejectUnsafeGatewayEventRequest).toBeDefined();
     const auth = { Authorization: `Bearer ${liveStack.apiToken!}` };
     const observedUrl = `${liveStack.apiUrl}/api/observed-events`;
@@ -112,6 +114,31 @@ test.describe("Docker temporal observations", () => {
     );
     const initialDieIds = new Set(initial.events.filter((event) => event.kind === "container_died").map((event) => event.id));
     expect(JSON.stringify(initial)).not.toContain(liveStack.projectName!);
+
+    // Only the fixture's filtered gateway is paused. The daemon must discard
+    // Docker-derived event authority while its snapshot source falls back to
+    // mock, then regain a coherent Docker collection after that gateway alone
+    // returns. Replayed Docker events after recovery are permitted, so this
+    // test deliberately makes no empty-history assertion for the recovery.
+    await liveStack.stopDockerGateway!();
+    const mockDuringGatewayOutage = await pollJson<ObservedEventsResponse>(
+      "mock/unavailable Docker events after the fixture gateway stops",
+      () => getJson<ObservedEventsResponse>(observedUrl, auth),
+      isMockUnavailableObservedEvents,
+    );
+    expect(mockDuringGatewayOutage.currentModelRevision).toBeNull();
+    expect(mockDuringGatewayOutage.currentObservationRevision).toBeNull();
+    expect(mockDuringGatewayOutage.events).toEqual([]);
+
+    await liveStack.startDockerGateway!();
+    await pollJson<ObservedEventsResponse>(
+      "coherent Docker events after the fixture gateway recovers",
+      () => getJson<ObservedEventsResponse>(observedUrl, auth),
+      (response) => response.source === "docker"
+        && response.collectionState === "collecting"
+        && response.currentModelRevision !== null
+        && response.currentObservationRevision !== null,
+    );
 
     // This fixed malformed request is addressed only to the fixture's filtered
     // gateway socket. It lacks the closed /events query policy and must be
@@ -194,6 +221,14 @@ async function waitForNewDiedEvents(
       && response.collectionState === "collecting"
       && response.events.filter((event) => event.kind === "container_died" && !existingIds.has(event.id)).length >= expectedCount,
   );
+}
+
+function isMockUnavailableObservedEvents(response: ObservedEventsResponse) {
+  return response.source === "mock"
+    && response.collectionState === "unavailable"
+    && response.currentModelRevision === null
+    && response.currentObservationRevision === null
+    && response.events.length === 0;
 }
 
 async function getJson<T>(url: string, headers: HeadersInit): Promise<T> {

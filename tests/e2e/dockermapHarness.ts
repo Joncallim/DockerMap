@@ -26,6 +26,14 @@ export type Stack = {
   restartFixtureWorker?: () => Promise<void>;
   restartDockerGateway?: () => Promise<void>;
   /**
+   * Separately stop and restore only this fixture's filtered gateway.  These
+   * are deliberately not general Docker controls: they exercise the daemon's
+   * Docker-to-mock source reset and recovery paths without touching Docker
+   * itself or any unrelated container.
+   */
+  stopDockerGateway?: () => Promise<void>;
+  startDockerGateway?: () => Promise<void>;
+  /**
    * Sends one intentionally incomplete Docker event request to this fixture's
    * filtered gateway. The raw Docker socket is never exposed to the test.
    */
@@ -265,7 +273,7 @@ export async function startLiveDockerStack(options: { apiToken?: string } = {}):
     await ensureDaemonBinary();
     ensureContractsRuntimePackage();
     const gatewaySocket = join(fixture.dir, "docker-read.sock");
-    let gateway = startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter });
+    let gateway: ProcessHandle | null = startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter });
     processes.push(gateway);
     await waitForSocket(gatewaySocket);
     processes.push(startDaemon({
@@ -314,7 +322,18 @@ export async function startLiveDockerStack(options: { apiToken?: string } = {}):
         await waitForFixtureServiceRunning(docker, fixture, "worker");
       },
       restartDockerGateway: async () => {
+        if (gateway) await stopProcess(gateway);
+        gateway = startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter });
+        processes.push(gateway);
+        await waitForSocket(gatewaySocket);
+      },
+      stopDockerGateway: async () => {
+        if (!gateway) return;
         await stopProcess(gateway);
+        gateway = null;
+      },
+      startDockerGateway: async () => {
+        if (gateway) return;
         gateway = startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter });
         processes.push(gateway);
         await waitForSocket(gatewaySocket);
