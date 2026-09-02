@@ -93,25 +93,81 @@ configured, every `filters` key fails closed. The gateway applies the same
 bounded label-expression rules as the collector before comparing the canonical
 configured value.
 
+### Bounded Docker events foundation (#70)
+
+The gateway's
+`bollard_0_19_event_request_traverses_the_real_gateway_and_only_safe_form_reaches_docker`
+regression points Bollard 0.19.4 at the real filtered Unix gateway with an
+isolated raw-Docker Unix stub behind it. An approved request reaches the raw
+stub exactly once; a second Bollard request with an incomplete action filter is
+denied without reaching the stub. This exercises Bollard's actual headers,
+empty body, and HTTP framing through the production policy path. Its approved
+origin-form target is:
+
+```text
+/events?since=<unix-seconds>&until=<unix-seconds>&filters=<form-encoded JSON>
+```
+
+Bollard serializes the outer fields in `since`, optional `until`, `filters`
+order. Its `filters` value is JSON serialized from a Rust `HashMap`, so JSON
+object key order is not stable and cannot be used as an authority check. The
+gateway instead decodes that one value and accepts only this closed structure:
+
+```json
+{
+  "type": ["container"],
+  "event": ["create", "start", "stop", "die", "restart", "destroy", "health_status"]
+}
+```
+
+When `DOCKERMAP_DOCKER_LABEL_FILTER` is configured, the object must also
+contain exactly `"label": ["<configured expression>"]`. When it is not
+configured, a `label` event filter is rejected. Map and event-set order are
+semantically irrelevant only after the parser proves that all keys and values
+match this closed structure exactly; missing, duplicate, malformed, unrelated,
+or scope-widening filters fail closed.
+
+Form percent-decoding is byte-accurate and must produce strict UTF-8 before JSON
+or configured-label comparison. Malformed escapes, invalid bytes, overlong UTF-8
+and truncated sequences are rejected; they are never converted to replacement
+characters that could accidentally match a configured label. The approved raw
+target is forwarded verbatim only after these checks.
+
+Both accepted request forms require canonical unsigned Unix seconds:
+
+- A live tail has `since` and no `until`; `since` must be no more than 300
+  seconds behind the gateway clock and cannot be in the future.
+- A finite replay has `since` and `until`; both must be at or before the
+  gateway clock, `since <= until`, and the request must start within the same
+  300-second recent window.
+
+This is a gateway policy foundation only. The gateway forwards Docker's response
+body and makes no claim that raw Docker event payloads are redacted, safe to
+publish, or retained. The daemon event parser, deduplication, reconnect
+lifecycle, publication redaction, and evidence integration remain pending #70
+work and must be reviewed before any raw event is exposed beyond the collector.
+
 ## Gateway policy
 
-Until a separately reviewed change, allow only the measured requests above.
+Allow only the measured inventory/log requests and the bounded event form above.
+There is no general Docker read permission or path wildcard.
 
 - Method must be exactly `GET`; all other methods, including `HEAD`, are
   rejected until a separately reviewed contract adds them.
-- Paths are accepted only in origin form and must exactly match one of the four
+- Paths are accepted only in origin form and must exactly match one of the five
   route shapes. Empty query is allowed only for `/networks` and `/volumes`.
 - The container path segment must be a single non-empty, unescaped Docker
   name/ID segment. Encoded separators, duplicate slashes, dot segments and
   absolute-form targets are rejected, not normalised.
-- Query parameters are unique and exactly match the table. Unknown keys,
-  duplicate keys, empty/value-shape changes, and unbounded/following logs are
-  rejected.
+- Query parameters are unique and exactly match the applicable contract.
+  Unknown keys, duplicate keys, empty/value-shape changes, unbounded/following
+  logs, old event lookback, and unscoped event requests are rejected.
 - Inventory calls use the unfiltered form only when no gateway label filter is
   configured. With one configured label filter, all three require the measured
   single `filters` object; the gateway rejects scope widening or filter removal.
-- Requests with a body, `Upgrade`, `Connection: upgrade`, `CONNECT`, or other
-  hijack/streaming forms are rejected.
+- Requests with a body, `Upgrade`, `Connection: upgrade`, `CONNECT`, or
+  hijack framing are rejected. The approved `/events` call is a normal HTTP
+  response stream, not a protocol upgrade.
 - The gateway has no public listener or admin endpoint. Only the collector can
   reach its private network/socket.
 - Gateway unavailability is a Docker-provider failure. The collector must
@@ -130,10 +186,12 @@ socket paths and has no raw-socket retry path.
 Gateway regression tests use a fake raw Unix Docker endpoint to establish that
 allowed targets are forwarded verbatim and denied method, route, query,
 framing, upgrade, and encoded-path forms never reach Docker. They cover the
-representative mutation, inspect/archive/top/exec/events/stats/image/build, and
-request-ambiguity classes enumerated below. The isolated live-Docker and
-production-image suites cover allowed reads, denied mutations, and the split
-mount/network profile.
+representative mutation, inspect/archive/top/exec/stats/image/build, unsafe
+event-query, and request-ambiguity classes enumerated below. A Bollard-driven
+wire test proves that nondeterministic filter-map ordering is accepted only
+after exact semantic validation. The isolated live-Docker and production-image
+suites cover allowed reads, denied mutations, and the split mount/network
+profile.
 
 The single-container compatibility image starts the gateway before its
 collector and therefore exercises the filtered contract, but it is **not** the
@@ -141,9 +199,11 @@ production isolation profile: its processes share one container namespace and
 raw-socket mount. Use the split Compose deployment for Docker-only operation.
 
 This policy intentionally excludes container archive/export, top/processes,
-inspect, exec, events, stats, images, builds, plugin APIs and every mutation.
-Future #70 `events` or `stats` support requires a new explicit policy, negative
-tests, and review; it must not be enabled by a broad read wildcard.
+inspect, exec, stats, images, builds, plugin APIs and every mutation. It permits
+only the bounded, container-scoped event selection above; the daemon collector
+is not implemented by this slice. Any later event expansion or stats support
+requires a new explicit policy, negative tests, and review; it must not be
+enabled by a broad read wildcard.
 
 ## Deployment profiles
 

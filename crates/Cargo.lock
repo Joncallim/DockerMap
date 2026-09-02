@@ -354,11 +354,14 @@ dependencies = [
 name = "dockermap-docker-gateway"
 version = "0.1.0"
 dependencies = [
+ "bollard",
  "bytes",
+ "futures-util",
  "http",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "serde",
  "serde_json",
  "tokio",
  "url",

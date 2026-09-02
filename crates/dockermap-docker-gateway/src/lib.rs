@@ -5,7 +5,13 @@
 //! then forwards a newly-built request over that socket.  It is not a generic
 //! Docker proxy.
 
-use std::{io, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt, io,
+    path::PathBuf,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use bytes::Bytes;
 use http::{header, Method, Request, Response, StatusCode};
@@ -14,9 +20,23 @@ use hyper::{
     body::Incoming, client::conn::http1, server::conn::http1 as server_http1, service::service_fn,
 };
 use hyper_util::rt::TokioIo;
+use serde::de::{self, MapAccess, Visitor};
 use tokio::net::{UnixListener, UnixStream};
 
 pub const LOG_TAIL: &str = "4096";
+/// Event replay and live-tail starts may inspect at most this recent window.
+pub const EVENT_MAX_LOOKBACK_SECONDS: u64 = 300;
+
+const EVENT_MAX_QUERY_BYTES: usize = 2_048;
+const EVENT_ACTIONS: [&str; 7] = [
+    "create",
+    "start",
+    "stop",
+    "die",
+    "restart",
+    "destroy",
+    "health_status",
+];
 
 #[derive(Clone, Debug)]
 pub struct GatewayConfig {
@@ -65,6 +85,14 @@ impl Policy {
     /// Validates the parsed HTTP request without normalising suspicious targets.
     /// The caller must use the returned exact target verbatim upstream.
     pub fn allow<B>(&self, request: &Request<B>) -> Result<String, Deny> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Deny::Query)?
+            .as_secs();
+        self.allow_at(request, now)
+    }
+
+    fn allow_at<B>(&self, request: &Request<B>, now: u64) -> Result<String, Deny> {
         if request.method() != Method::GET {
             return Err(Deny::Method);
         }
@@ -106,6 +134,7 @@ impl Policy {
             "/containers/json" => self.inventory(target, "/containers/json?all=true&size=false"),
             "/networks" => self.inventory(target, "/networks?"),
             "/volumes" => self.inventory(target, "/volumes?"),
+            "/events" => self.events(target, query, now),
             _ if path.starts_with("/containers/") && path.ends_with("/logs") => {
                 self.logs(target, path, query)
             }
@@ -164,6 +193,186 @@ impl Policy {
         }
         Ok(target.into())
     }
+
+    fn events(&self, target: &str, query: &str, now: u64) -> Result<String, Deny> {
+        if query.is_empty() || query.len() > EVENT_MAX_QUERY_BYTES || !valid_percent_encoding(query)
+        {
+            return Err(Deny::Query);
+        }
+
+        let mut since = None;
+        let mut until = None;
+        let mut filters = None;
+        for pair in query.split('&') {
+            let (key, value) = pair.split_once('=').ok_or(Deny::Query)?;
+            match key {
+                "since" if since.is_none() => since = Some(parse_timestamp(value)?),
+                "until" if until.is_none() => until = Some(parse_timestamp(value)?),
+                "filters" if filters.is_none() => filters = Some(decode_filters(value)?),
+                "since" | "until" | "filters" => return Err(Deny::Query),
+                _ => return Err(Deny::Query),
+            }
+        }
+
+        let since = since.ok_or(Deny::Query)?;
+        if since > now || now - since > EVENT_MAX_LOOKBACK_SECONDS {
+            return Err(Deny::Query);
+        }
+        if let Some(until) = until {
+            // A finite replay cannot turn into an arbitrarily long live wait.
+            if until < since || until > now || until - since > EVENT_MAX_LOOKBACK_SECONDS {
+                return Err(Deny::Query);
+            }
+        }
+
+        self.validate_event_filters(filters.ok_or(Deny::Query)?)?;
+        Ok(target.into())
+    }
+
+    fn validate_event_filters(&self, mut filters: UniqueFilterMap) -> Result<(), Deny> {
+        let types = filters.0.remove("type").ok_or(Deny::Query)?;
+        if types.as_slice() != ["container"] {
+            return Err(Deny::Query);
+        }
+
+        let actions = filters.0.remove("event").ok_or(Deny::Query)?;
+        if actions.len() != EVENT_ACTIONS.len() {
+            return Err(Deny::Query);
+        }
+        let action_set: BTreeSet<&str> = actions.iter().map(String::as_str).collect();
+        if action_set.len() != EVENT_ACTIONS.len()
+            || !EVENT_ACTIONS
+                .iter()
+                .all(|action| action_set.contains(action))
+        {
+            return Err(Deny::Query);
+        }
+
+        match &self.label_filter {
+            Some(expected) => {
+                let labels = filters.0.remove("label").ok_or(Deny::Query)?;
+                if labels.len() != 1 || labels[0] != *expected {
+                    return Err(Deny::Query);
+                }
+            }
+            None if filters.0.contains_key("label") => return Err(Deny::Query),
+            None => {}
+        }
+
+        if filters.0.is_empty() {
+            Ok(())
+        } else {
+            Err(Deny::Query)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct UniqueFilterMap(BTreeMap<String, Vec<String>>);
+
+impl<'de> serde::Deserialize<'de> for UniqueFilterMap {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct UniqueFilterVisitor;
+
+        impl<'de> Visitor<'de> for UniqueFilterVisitor {
+            type Value = UniqueFilterMap;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an event filter object with unique string-array keys")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut values = BTreeMap::new();
+                while let Some((key, value)) = map.next_entry::<String, Vec<String>>()? {
+                    if values.insert(key.clone(), value).is_some() {
+                        return Err(de::Error::custom(format!(
+                            "duplicate event filter key: {key}"
+                        )));
+                    }
+                }
+                Ok(UniqueFilterMap(values))
+            }
+        }
+
+        deserializer.deserialize_map(UniqueFilterVisitor)
+    }
+}
+
+fn parse_timestamp(value: &str) -> Result<u64, Deny> {
+    if value.is_empty()
+        || value.len() > 20
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
+        return Err(Deny::Query);
+    }
+    value.parse().map_err(|_| Deny::Query)
+}
+
+fn decode_filters(value: &str) -> Result<UniqueFilterMap, Deny> {
+    if value.is_empty() {
+        return Err(Deny::Query);
+    }
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Err(Deny::Query);
+                }
+                let high = hex_value(bytes[index + 1]).ok_or(Deny::Query)?;
+                let low = hex_value(bytes[index + 2]).ok_or(Deny::Query)?;
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    let decoded = String::from_utf8(decoded).map_err(|_| Deny::Query)?;
+    serde_json::from_str(&decoded).map_err(|_| Deny::Query)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn valid_percent_encoding(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit()
+            {
+                return false;
+            }
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    true
 }
 
 fn valid_container_name(name: &str) -> bool {
@@ -271,9 +480,15 @@ fn empty_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bollard::{query_parameters::EventsOptionsBuilder, Docker, API_DEFAULT_VERSION};
+    use futures_util::StreamExt;
     use std::{
+        collections::HashMap,
         path::Path,
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Mutex,
+        },
         time::{SystemTime, UNIX_EPOCH},
     };
     use tokio::{
@@ -288,11 +503,203 @@ mod tests {
             .body(())
             .unwrap()
     }
+
+    fn encoded(json: &str) -> String {
+        url::form_urlencoded::byte_serialize(json.as_bytes()).collect()
+    }
+
+    fn event_filters(label: Option<&str>) -> String {
+        let label = label
+            .map(|value| format!(r#","label":[{}]"#, serde_json::to_string(value).unwrap()))
+            .unwrap_or_default();
+        format!(
+            r#"{{"type":["container"],"event":["create","start","stop","die","restart","destroy","health_status"]{label}}}"#
+        )
+    }
+
+    fn event_target(since: u64, until: Option<u64>, filters: &str) -> String {
+        match until {
+            Some(until) => format!(
+                "/events?since={since}&until={until}&filters={}",
+                encoded(filters)
+            ),
+            None => format!("/events?since={since}&filters={}", encoded(filters)),
+        }
+    }
+
     #[test]
     fn only_measured_unfiltered_requests_pass() {
         let policy = Policy::new(None);
         for target in ["/containers/json?all=true&size=false", "/networks?", "/volumes?", "/containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096"] { assert!(policy.allow(&req(target)).is_ok(), "{target}"); }
         for target in ["/containers/json?all=true", "/events", "/v1.44/containers/json?all=true&size=false", "/containers/api/json", "/containers/api/logs?follow=true&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096", "/containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4097"] { assert!(policy.allow(&req(target)).is_err(), "{target}"); }
+    }
+
+    #[test]
+    fn events_allow_only_recent_live_or_finite_replay_with_the_closed_filter_set() {
+        let now = 1_800_000_000;
+        let filters = event_filters(None);
+        let live = event_target(now - 30, None, &filters);
+        let replay = event_target(now - EVENT_MAX_LOOKBACK_SECONDS, Some(now), &filters);
+        let policy = Policy::new(None);
+
+        assert_eq!(policy.allow_at(&req(&live), now), Ok(live));
+        assert_eq!(policy.allow_at(&req(&replay), now), Ok(replay));
+
+        let configured_filters = event_filters(Some("com.dockermap.fixture=trace-123"));
+        let configured = event_target(now - 30, None, &configured_filters);
+        assert_eq!(
+            Policy::new(Some("com.dockermap.fixture=trace-123".into()))
+                .allow_at(&req(&configured), now),
+            Ok(configured)
+        );
+        assert_eq!(
+            Policy::new(Some("com.dockermap.fixture=other".into())).allow_at(
+                &req(&event_target(now - 30, None, &configured_filters)),
+                now
+            ),
+            Err(Deny::Query)
+        );
+        assert_eq!(
+            Policy::new(Some("com.dockermap.fixture=trace-123".into()))
+                .allow_at(&req(&event_target(now - 30, None, &filters)), now),
+            Err(Deny::Query)
+        );
+        assert_eq!(
+            policy.allow_at(
+                &req(&event_target(now - 30, None, &configured_filters)),
+                now
+            ),
+            Err(Deny::Query)
+        );
+    }
+
+    #[test]
+    fn event_filter_and_query_order_are_semantic_only_after_closed_validation() {
+        let now = 1_800_000_000;
+        let filters = r#"{"event":["health_status","destroy","restart","die","stop","start","create"],"type":["container"]}"#;
+        let target = format!(
+            "/events?filters={}&since={}&until={}",
+            encoded(filters),
+            now - 10,
+            now
+        );
+        assert_eq!(Policy::new(None).allow_at(&req(&target), now), Ok(target));
+    }
+
+    #[test]
+    fn event_filters_reject_invalid_percent_decoded_utf8_before_label_comparison() {
+        let now = 1_800_000_000;
+        let prefix = encoded(
+            r#"{"type":["container"],"event":["create","start","stop","die","restart","destroy","health_status"],"label":[""#,
+        );
+        let suffix = encoded(r#""]}"#);
+        let replacement = "\u{fffd}";
+        let policy = Policy::new(Some(replacement.into()));
+        let valid = event_target(now - 1, None, &event_filters(Some(replacement)));
+        assert_eq!(policy.allow_at(&req(&valid), now), Ok(valid));
+
+        for invalid_utf8 in ["%FF", "%C0%AF", "%E2%82"] {
+            let target = format!(
+                "/events?since={}&filters={prefix}{invalid_utf8}{suffix}",
+                now - 1
+            );
+            assert_eq!(
+                policy.allow_at(&req(&target), now),
+                Err(Deny::Query),
+                "{invalid_utf8}"
+            );
+        }
+    }
+
+    #[test]
+    fn hostile_event_queries_fail_closed() {
+        let now = 1_800_000_000;
+        let valid = encoded(&event_filters(None));
+        let missing_type = encoded(
+            r#"{"event":["create","start","stop","die","restart","destroy","health_status"]}"#,
+        );
+        let missing_event = encoded(r#"{"type":["container"]}"#);
+        let action_subset = encoded(r#"{"type":["container"],"event":["start"]}"#);
+        let duplicate_action = encoded(
+            r#"{"type":["container"],"event":["create","start","stop","die","restart","destroy","destroy"]}"#,
+        );
+        let unknown_action = encoded(
+            r#"{"type":["container"],"event":["create","start","stop","die","restart","destroy","exec_start"]}"#,
+        );
+        let wrong_type = encoded(
+            r#"{"type":["image"],"event":["create","start","stop","die","restart","destroy","health_status"]}"#,
+        );
+        let extra_filter = encoded(
+            r#"{"type":["container"],"event":["create","start","stop","die","restart","destroy","health_status"],"container":["victim"]}"#,
+        );
+        let duplicate_json_key = encoded(
+            r#"{"type":["container"],"type":["container"],"event":["create","start","stop","die","restart","destroy","health_status"]}"#,
+        );
+        let policy = Policy::new(None);
+        let targets = vec![
+            "/events".to_owned(),
+            "/events?".to_owned(),
+            format!("/events?filters={valid}"),
+            format!("/events?since={}", now - 10),
+            format!("/events?since={}&filters={valid}&filters={valid}", now - 10),
+            format!(
+                "/events?since={}&since={}&filters={valid}",
+                now - 10,
+                now - 9
+            ),
+            format!("/events?since={}&filters={valid}&unknown=1", now - 10),
+            format!("/events?since={}&filters=%GG", now - 10),
+            format!("/events?since={}&filters=%7B", now - 10),
+            format!("/events?since={}&filters={missing_type}", now - 10),
+            format!("/events?since={}&filters={missing_event}", now - 10),
+            format!("/events?since={}&filters={action_subset}", now - 10),
+            format!("/events?since={}&filters={duplicate_action}", now - 10),
+            format!("/events?since={}&filters={unknown_action}", now - 10),
+            format!("/events?since={}&filters={wrong_type}", now - 10),
+            format!("/events?since={}&filters={extra_filter}", now - 10),
+            format!("/events?since={}&filters={duplicate_json_key}", now - 10),
+            format!("/events?since=&filters={valid}"),
+            format!("/events?since=-1&filters={valid}"),
+            format!("/events?since=1.5&filters={valid}"),
+            format!("/events?since=01799999990&filters={valid}"),
+            format!("/events?since=18446744073709551616&filters={valid}"),
+            format!(
+                "/events?since={}&filters={valid}",
+                now - EVENT_MAX_LOOKBACK_SECONDS - 1
+            ),
+            format!("/events?since={}&filters={valid}", now + 1),
+            format!(
+                "/events?since={}&until={}&filters={valid}",
+                now - 5,
+                now - 6
+            ),
+            format!(
+                "/events?since={}&until={}&filters={valid}",
+                now - 5,
+                now + 1
+            ),
+            format!(
+                "/events?since={}&until={}&filters={valid}",
+                now - EVENT_MAX_LOOKBACK_SECONDS - 1,
+                now
+            ),
+            format!(
+                "/events?since={}&filters={}",
+                now - 10,
+                "x".repeat(EVENT_MAX_QUERY_BYTES)
+            ),
+            format!("/v1.44/events?since={}&filters={valid}", now - 10),
+            format!("/events/?since={}&filters={valid}", now - 10),
+            format!("/%65vents?since={}&filters={valid}", now - 10),
+            format!("/events%2f?since={}&filters={valid}", now - 10),
+            format!(
+                "/events/../containers/json?since={}&filters={valid}",
+                now - 10
+            ),
+        ];
+        for target in targets {
+            assert!(policy.allow_at(&req(&target), now).is_err(), "{target}");
+        }
     }
     #[test]
     fn filtered_inventory_requires_exact_label_scope() {
@@ -398,6 +805,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bollard_0_19_event_request_traverses_the_real_gateway_and_only_safe_form_reaches_docker(
+    ) {
+        let raw_socket = socket("bollard-events");
+        let gateway_socket = socket("bollard-events-filtered");
+        let listener = UnixListener::bind(&raw_socket).unwrap();
+        let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured_upstream = Arc::clone(&captured);
+        let upstream = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut bytes = [0; 1_024];
+                loop {
+                    let read = stream.read(&mut bytes).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&bytes[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                    assert!(request.len() <= 8_192);
+                }
+                captured_upstream
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8(request).unwrap());
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let label = "com.dockermap.fixture=trace-123";
+        let gateway = tokio::spawn(serve(GatewayConfig::new(
+            &gateway_socket,
+            &raw_socket,
+            Some(label.into()),
+        )));
+        for _ in 0..40 {
+            if gateway_socket.exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let mut filters = HashMap::<String, Vec<String>>::new();
+        filters.insert("type".into(), vec!["container".into()]);
+        filters.insert(
+            "event".into(),
+            EVENT_ACTIONS
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+        );
+        filters.insert("label".into(), vec![label.into()]);
+        let options = EventsOptionsBuilder::new()
+            .since(&(now - 30).to_string())
+            .until(&now.to_string())
+            .filters(&filters)
+            .build();
+        let docker =
+            Docker::connect_with_unix(gateway_socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
+                .unwrap();
+        let mut stream = Box::pin(docker.events(Some(options)));
+        tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("approved Bollard event request completes through the gateway");
+
+        let mut unsafe_filters = filters;
+        unsafe_filters.insert("event".into(), vec!["start".into()]);
+        let unsafe_options = EventsOptionsBuilder::new()
+            .since(&(now - 30).to_string())
+            .filters(&unsafe_filters)
+            .build();
+        let mut unsafe_stream = Box::pin(docker.events(Some(unsafe_options)));
+        let denied = tokio::time::timeout(Duration::from_secs(2), unsafe_stream.next())
+            .await
+            .expect("gateway returns a bounded denial response");
+        assert!(denied.is_some_and(|result| result.is_err()));
+        sleep(Duration::from_millis(25)).await;
+
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1, "unsafe Bollard request reached Docker");
+        let request = &captured[0];
+        let (head, body) = request
+            .split_once("\r\n\r\n")
+            .expect("gateway emits a complete HTTP request head");
+        assert!(body.is_empty(), "gateway added an event request body");
+        let mut lines = head.lines();
+        let line = lines.next().unwrap();
+        let target = line
+            .strip_prefix("GET ")
+            .and_then(|value| value.strip_suffix(" HTTP/1.1"))
+            .expect("gateway preserves Bollard's HTTP/1.1 GET origin-form target");
+        assert!(
+            target.starts_with(&format!("/events?since={}&until={now}&filters=", now - 30)),
+            "{line}"
+        );
+        let headers = lines.collect::<Vec<_>>();
+        assert!(
+            headers
+                .iter()
+                .any(|line| line.eq_ignore_ascii_case("host: docker")),
+            "{headers:?}"
+        );
+        assert!(!headers.iter().any(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.starts_with("content-length:")
+                || lower.starts_with("transfer-encoding:")
+                || lower.starts_with("connection:")
+                || lower.starts_with("upgrade:")
+        }));
+        assert_eq!(
+            Policy::new(Some(label.into())).allow_at(&req(target), now),
+            Ok(target.to_owned())
+        );
+        drop(captured);
+        gateway.abort();
+        upstream.abort();
+        let _ = std::fs::remove_file(raw_socket);
+        let _ = std::fs::remove_file(gateway_socket);
+    }
+
+    #[tokio::test]
     async fn denied_requests_never_reach_the_raw_docker_socket() {
         let raw_socket = socket("raw");
         let gateway_socket = socket("filtered");
@@ -469,6 +1006,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hostile_event_requests_never_reach_the_raw_docker_socket() {
+        let raw_socket = socket("raw-denied-events");
+        let gateway_socket = socket("filtered-denied-events");
+        let upstream_hits = Arc::new(AtomicUsize::new(0));
+        let listener = UnixListener::bind(&raw_socket).unwrap();
+        let hits = Arc::clone(&upstream_hits);
+        let upstream = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                hits.fetch_add(1, Ordering::SeqCst);
+                let mut bytes = [0; 2_048];
+                let _ = stream.read(&mut bytes).await.unwrap();
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                    .await
+                    .unwrap();
+            }
+        });
+        let label = "com.dockermap.fixture=trace-123";
+        let gateway = tokio::spawn(serve(GatewayConfig::new(
+            &gateway_socket,
+            &raw_socket,
+            Some(label.into()),
+        )));
+        for _ in 0..40 {
+            if gateway_socket.exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let valid = encoded(&event_filters(Some(label)));
+        let unscoped = encoded(&event_filters(None));
+        let subset = encoded(
+            r#"{"type":["container"],"event":["start"],"label":["com.dockermap.fixture=trace-123"]}"#,
+        );
+        let unrelated = encoded(
+            r#"{"type":["container"],"event":["create","start","stop","die","restart","destroy","health_status"],"label":["com.dockermap.fixture=trace-123"],"image":["private"]}"#,
+        );
+        let requests = vec![
+            format!("GET /events?since={} HTTP/1.1\r\nHost: docker\r\n\r\n", now - 1),
+            format!(
+                "GET /events?since={}&filters={subset} HTTP/1.1\r\nHost: docker\r\n\r\n",
+                now - 1
+            ),
+            format!(
+                "GET /events?since={}&filters={unscoped} HTTP/1.1\r\nHost: docker\r\n\r\n",
+                now - 1
+            ),
+            format!(
+                "GET /events?since={}&filters={unrelated} HTTP/1.1\r\nHost: docker\r\n\r\n",
+                now - 1
+            ),
+            format!(
+                "GET /events?since={}&filters={valid}&filters={valid} HTTP/1.1\r\nHost: docker\r\n\r\n",
+                now - 1
+            ),
+            format!(
+                "GET /v1.44/events?since={}&filters={valid} HTTP/1.1\r\nHost: docker\r\n\r\n",
+                now - 1
+            ),
+            format!(
+                "GET /events?since={}&filters={valid} HTTP/1.1\r\nHost: docker\r\nContent-Length: 1\r\n\r\nx",
+                now - 1
+            ),
+            format!(
+                "GET /events?since={}&filters={valid} HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+                now - 1
+            ),
+        ];
+        for raw in requests {
+            assert!(
+                !request(&gateway_socket, &raw)
+                    .await
+                    .starts_with("HTTP/1.1 200"),
+                "{raw}"
+            );
+        }
+        assert_eq!(upstream_hits.load(Ordering::SeqCst), 0);
+        gateway.abort();
+        upstream.abort();
+        let _ = std::fs::remove_file(raw_socket);
+        let _ = std::fs::remove_file(gateway_socket);
+    }
+
+    #[tokio::test]
     async fn exact_allowed_request_is_forwarded_verbatim_to_the_raw_socket() {
         let raw_socket = socket("raw-allowed");
         let gateway_socket = socket("filtered-allowed");
@@ -502,6 +1129,52 @@ mod tests {
         let response = request(&gateway_socket, "GET /containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=1706000124&timestamps=true&tail=4096 HTTP/1.1\r\nHost: docker\r\n\r\n").await;
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert_eq!(upstream.await.unwrap(), "GET /containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=1706000124&timestamps=true&tail=4096 HTTP/1.1");
+        gateway.abort();
+        let _ = std::fs::remove_file(raw_socket);
+        let _ = std::fs::remove_file(gateway_socket);
+    }
+
+    #[tokio::test]
+    async fn exact_safe_event_request_is_forwarded_verbatim_to_the_raw_socket() {
+        let raw_socket = socket("raw-events-allowed");
+        let gateway_socket = socket("filtered-events-allowed");
+        let listener = UnixListener::bind(&raw_socket).unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 2_048];
+            let read = stream.read(&mut bytes).await.unwrap();
+            let line = String::from_utf8_lossy(&bytes[..read])
+                .lines()
+                .next()
+                .unwrap()
+                .to_owned();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                .await
+                .unwrap();
+            line
+        });
+        let gateway = tokio::spawn(serve(GatewayConfig::new(
+            &gateway_socket,
+            &raw_socket,
+            None,
+        )));
+        for _ in 0..40 {
+            if gateway_socket.exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let target = event_target(now - 1, Some(now), &event_filters(None));
+        let raw = format!("GET {target} HTTP/1.1\r\nHost: docker\r\n\r\n");
+        let response = request(&gateway_socket, &raw).await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(upstream.await.unwrap(), format!("GET {target} HTTP/1.1"));
         gateway.abort();
         let _ = std::fs::remove_file(raw_socket);
         let _ = std::fs::remove_file(gateway_socket);
