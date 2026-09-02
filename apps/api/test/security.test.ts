@@ -462,7 +462,7 @@ test("route manifest completeness rejects every untracked response-capable layer
     'app.use("/api/outside-path", (_req, res) => res.status(204).end());',
     'app.use((_req, res, next) => process.env.DOCKERMAP_TEST_CONDITION === "respond" ? res.status(204).end() : next());',
     'const router = express.Router(); router.get("/outside-mounted", (_req, res) => res.status(204).end()); app.use("/api", router);',
-    'app.use("/api/outside-preauth", (_req, res) => res.status(204).end()); const planted = app._router.stack.pop(); app._router.stack.splice(app._router.stack.findIndex((layer) => layer.handle?.name === "limitSessionAttempts"), 0, planted);'
+    'app.use("/api/outside-preauth", (_req, res) => res.status(204).end()); const stack = (app.router ?? app._router).stack; const planted = stack.pop(); stack.splice(stack.findIndex((layer) => layer.handle?.name === "limitSessionAttempts"), 0, planted);'
   ];
   for (const mutation of mutations) {
     const result = await inspectLiveRoutes(mutation);
@@ -2409,7 +2409,7 @@ test("SSE error payloads and invalid log service names cannot reflect hostile in
 async function inspectLiveRoutes(mutation = "") {
   const port = await freePort();
   const script = `
-    import express from "./apps/api/node_modules/express/lib/express.js";
+    import express from "express";
     import { app, registeredRoutes } from "./apps/api/src/index.ts";
     import { assertRouteManifestComplete } from "./apps/api/src/routes.ts";
     ${mutation}

@@ -137,8 +137,13 @@ Protections:
 
 Current limitations: this is numeric current-state evidence only. It does not
 authorize streaming stats, prove performance cause or workload health, or make
-the label-scoped fixture eligible for stats collection. Real unfiltered
-live-Docker collection and resource-budget evidence remain a release gap.
+the label-scoped fixture eligible for stats collection. The focused unfiltered
+live-Docker proof is deliberately separate and requires both exact opt-ins
+(`DOCKERMAP_E2E_LIVE_DOCKER=1` and
+`DOCKERMAP_E2E_UNFILTERED_TELEMETRY=1`); it checks the fixed request,
+authentication, opaque bounded publication, source reset, and owned-fixture
+cleanup. It does not turn the ordinary label-scoped live browser suite into a
+green release gate.
 
 ### Host Provider Expansion
 

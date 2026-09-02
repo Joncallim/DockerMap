@@ -103,7 +103,16 @@ struct ResourceTelemetryCache {
     collection_state: ObservedResourceTelemetryCollectionState,
     samples: BTreeMap<String, TelemetryRecord>,
     rotation_cursor: usize,
-    in_flight: usize,
+    next_flight_id: u64,
+    in_flight: BTreeMap<u64, ResourceTelemetryFlight>,
+}
+
+/// Private cancellation-recovery record. This never reaches a response: it
+/// lets a subsequent refresh reclaim a cache slot if the entire refresh task
+/// was aborted while an attempt was pending.
+#[derive(Clone)]
+struct ResourceTelemetryFlight {
+    deadline: Duration,
 }
 
 #[derive(Clone)]
@@ -124,6 +133,7 @@ struct TelemetryCounters {
 
 #[derive(Clone)]
 struct ResourceTelemetryClaim {
+    flight_id: u64,
     raw_container_id: String,
     public_container_id: String,
     source_generation: u64,
@@ -137,7 +147,8 @@ impl Default for ResourceTelemetryCache {
             collection_state: ObservedResourceTelemetryCollectionState::Unavailable,
             samples: BTreeMap::new(),
             rotation_cursor: 0,
-            in_flight: 0,
+            next_flight_id: 0,
+            in_flight: BTreeMap::new(),
         }
     }
 }
@@ -145,6 +156,24 @@ impl Default for ResourceTelemetryCache {
 impl ResourceTelemetryCache {
     fn source_reset() -> Self {
         Self::default()
+    }
+
+    /// A timeout normally completes in the refresh-owned future. This is the
+    /// secondary recovery path for cancellation of that entire future: stale
+    /// claims cannot consume the fixed two-slot budget forever, and a late
+    /// completion cannot remove a newer claim because every flight is opaque
+    /// and unique.
+    fn reclaim_expired_flights(&mut self, now: Duration) {
+        self.in_flight.retain(|_, flight| flight.deadline > now);
+        if self.in_flight.is_empty()
+            && self.collection_state == ObservedResourceTelemetryCollectionState::Collecting
+        {
+            self.collection_state = if self.samples.is_empty() {
+                ObservedResourceTelemetryCollectionState::Stale
+            } else {
+                ObservedResourceTelemetryCollectionState::Fresh
+            };
+        }
     }
 }
 
@@ -737,9 +766,16 @@ pub(crate) async fn refresh_cache(state: &AppState) {
     }
 }
 
-/// Launch at most two finite, snapshot-selected stats requests per refresh.
+/// Complete at most two finite, snapshot-selected stats requests per refresh.
 /// The source generation and both revisions are captured before any I/O; a
 /// completion may publish only if all three still attest the same Docker view.
+///
+/// These futures deliberately remain owned by this refresh call rather than
+/// being detached. A detached task can be cancelled during shutdown or become
+/// non-cooperative below the HTTP boundary after its cache claim increments;
+/// in either case there would be no owner left to release the fixed in-flight
+/// slot. Waiting for the bounded attempts keeps the claim and its completion
+/// in one lifetime while the two requests still run concurrently.
 async fn refresh_resource_telemetry(
     state: &AppState,
     snapshot: DockerSnapshot,
@@ -758,10 +794,9 @@ async fn refresh_resource_telemetry(
         return;
     }
     let claims = claim_resource_telemetry(&state.cache, &snapshot, source_generation).await;
-    for claim in claims {
-        let state = state.clone();
+    let completions = futures_util::future::join_all(claims.into_iter().map(|claim| {
         let collector = collector.clone();
-        tokio::spawn(async move {
+        async move {
             let observed_at_ms = wall_clock_millis();
             let result = timeout(
                 RESOURCE_TELEMETRY_TIMEOUT,
@@ -771,8 +806,12 @@ async fn refresh_resource_telemetry(
             .ok()
             .and_then(Result::ok)
             .and_then(|stats| observed_at_ms.map(|at| (at, stats)));
-            apply_resource_telemetry(&state.cache, claim, result).await;
-        });
+            (claim, result)
+        }
+    }))
+    .await;
+    for (claim, result) in completions {
+        apply_resource_telemetry(&state.cache, claim, result).await;
     }
 }
 
@@ -788,7 +827,10 @@ async fn claim_resource_telemetry(
     let model_revision = cache.snapshot.model_revision.clone();
     let observation_revision = cache.docker_observation_token();
     let telemetry = &mut cache.resource_telemetry;
-    let remaining = MAX_CONCURRENT_RESOURCE_TELEMETRY_REQUESTS.saturating_sub(telemetry.in_flight);
+    let now = monotonic_now();
+    telemetry.reclaim_expired_flights(now);
+    let remaining =
+        MAX_CONCURRENT_RESOURCE_TELEMETRY_REQUESTS.saturating_sub(telemetry.in_flight.len());
     if remaining == 0 {
         return Vec::new();
     }
@@ -814,7 +856,21 @@ async fn claim_resource_telemetry(
         .map(|offset| {
             let (public_container_id, raw_container_id) =
                 containers[(telemetry.rotation_cursor + offset) % containers.len()].clone();
+            telemetry.next_flight_id = telemetry
+                .next_flight_id
+                .checked_add(1)
+                .expect("resource telemetry flight identifier overflow");
+            let flight_id = telemetry.next_flight_id;
+            telemetry.in_flight.insert(
+                flight_id,
+                ResourceTelemetryFlight {
+                    deadline: now
+                        .checked_add(RESOURCE_TELEMETRY_TIMEOUT)
+                        .expect("resource telemetry flight deadline overflow"),
+                },
+            );
             ResourceTelemetryClaim {
+                flight_id,
                 raw_container_id,
                 public_container_id,
                 source_generation,
@@ -824,7 +880,6 @@ async fn claim_resource_telemetry(
         })
         .collect::<Vec<_>>();
     telemetry.rotation_cursor = (telemetry.rotation_cursor + count) % containers.len();
-    telemetry.in_flight += claims.len();
     telemetry.collection_state = ObservedResourceTelemetryCollectionState::Collecting;
     claims
 }
@@ -849,12 +904,17 @@ async fn apply_resource_telemetry(
     let revision_changed = cache.snapshot.model_revision != claim.model_revision
         || cache.docker_observation_token() != claim.observation_revision;
     let telemetry = &mut cache.resource_telemetry;
-    telemetry.in_flight = telemetry.in_flight.saturating_sub(1);
+    // An expired claim was reclaimed after a cancelled refresh. Do not let
+    // its delayed response publish into a newer flight or consume that
+    // flight's capacity.
+    if telemetry.in_flight.remove(&claim.flight_id).is_none() {
+        return;
+    }
     // A newer Docker publication supersedes this sample. Release the fixed
     // concurrency claim, but never merge measurements from a different model
     // or observation revision into the current public envelope.
     if revision_changed || !still_current {
-        telemetry.collection_state = if telemetry.in_flight == 0 {
+        telemetry.collection_state = if telemetry.in_flight.is_empty() {
             ObservedResourceTelemetryCollectionState::Stale
         } else {
             ObservedResourceTelemetryCollectionState::Collecting
@@ -872,7 +932,7 @@ async fn apply_resource_telemetry(
             telemetry.samples.insert(claim.public_container_id, record);
         }
     }
-    telemetry.collection_state = if telemetry.in_flight == 0 {
+    telemetry.collection_state = if telemetry.in_flight.is_empty() {
         if telemetry.samples.is_empty() {
             ObservedResourceTelemetryCollectionState::Stale
         } else {
@@ -3969,6 +4029,147 @@ mod scheduler_tests {
         }
     }
 
+    #[tokio::test]
+    async fn resource_telemetry_timeout_is_completed_before_the_refresh_releases_its_claim() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("telemetry-timeout.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut connection, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut bytes = [0; 1_024];
+            loop {
+                let read = connection.read(&mut bytes).await.unwrap();
+                assert!(read > 0, "client closed before the fixed request head");
+                request.extend_from_slice(&bytes[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            assert!(
+                request.starts_with(b"GET /containers/"),
+                "only the snapshot-selected stats route is attempted"
+            );
+            // Headers prove the fixed request reached the gateway-like peer,
+            // while the intentionally absent response body keeps Bollard's
+            // stream pending until the daemon's own 750 ms bound cancels it.
+            connection
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let snapshot = mock_snapshot();
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(snapshot.clone()))),
+            docker: Arc::new(RwLock::new(Some(DockerCollector::with_client(
+                Docker::connect_with_unix(socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
+                    .unwrap(),
+                None,
+            )))),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        let started = tokio::time::Instant::now();
+        refresh_resource_telemetry(&state, snapshot, 0).await;
+        assert!(
+            started.elapsed() >= RESOURCE_TELEMETRY_TIMEOUT,
+            "the refresh owns the request until its timeout completes"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "a non-cooperative response body cannot outlive the finite bound"
+        );
+        let cache = state.cache.read().await;
+        assert!(cache.resource_telemetry.in_flight.is_empty());
+        assert!(cache.resource_telemetry.samples.is_empty());
+        assert_eq!(
+            cache.resource_telemetry.collection_state,
+            ObservedResourceTelemetryCollectionState::Stale
+        );
+        drop(cache);
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn aborted_telemetry_refresh_reclaims_only_its_expired_claim_before_retrying() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("telemetry-abort.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (claimed_tx, mut claimed_rx) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let (mut connection, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut bytes = [0; 1_024];
+            loop {
+                let read = connection.read(&mut bytes).await.unwrap();
+                assert!(read > 0, "client closed before the fixed request head");
+                request.extend_from_slice(&bytes[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            claimed_tx.send(()).unwrap();
+            connection
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let snapshot = mock_snapshot();
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(snapshot.clone()))),
+            docker: Arc::new(RwLock::new(Some(DockerCollector::with_client(
+                Docker::connect_with_unix(socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
+                    .unwrap(),
+                None,
+            )))),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        let refresh_state = state.clone();
+        let refresh_snapshot = snapshot.clone();
+        let refresh = tokio::spawn(async move {
+            refresh_resource_telemetry(&refresh_state, refresh_snapshot, 0).await;
+        });
+        tokio::time::timeout(Duration::from_secs(2), claimed_rx.recv())
+            .await
+            .expect("the fixed stats request is claimed before cancellation")
+            .expect("test gateway reports the claim");
+        refresh.abort();
+        assert!(refresh.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            state.cache.read().await.resource_telemetry.in_flight.len(),
+            MAX_CONCURRENT_RESOURCE_TELEMETRY_REQUESTS
+        );
+
+        tokio::time::sleep(RESOURCE_TELEMETRY_TIMEOUT + Duration::from_millis(25)).await;
+        let retry = claim_resource_telemetry(&state.cache, &snapshot, 0).await;
+        assert_eq!(
+            retry.len(),
+            MAX_CONCURRENT_RESOURCE_TELEMETRY_REQUESTS,
+            "the abandoned claim no longer consumes capacity"
+        );
+        let cache = state.cache.read().await;
+        assert_eq!(
+            cache.resource_telemetry.in_flight.len(),
+            MAX_CONCURRENT_RESOURCE_TELEMETRY_REQUESTS
+        );
+        assert_eq!(
+            cache.resource_telemetry.next_flight_id,
+            (MAX_CONCURRENT_RESOURCE_TELEMETRY_REQUESTS * 2) as u64
+        );
+        drop(cache);
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+
     #[test]
     fn telemetry_sanitizer_retains_only_numeric_metrics_and_derives_rates() {
         let first = sanitize_resource_telemetry(
@@ -4077,10 +4278,9 @@ mod scheduler_tests {
         telemetry
             .samples
             .insert(record.public.container_id.clone(), record);
-        telemetry.in_flight = 1;
         let reset = ResourceTelemetryCache::source_reset();
         assert!(reset.samples.is_empty());
-        assert_eq!(reset.in_flight, 0);
+        assert!(reset.in_flight.is_empty());
         assert_eq!(
             reset.collection_state,
             ObservedResourceTelemetryCollectionState::Unavailable

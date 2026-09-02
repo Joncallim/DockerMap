@@ -169,10 +169,23 @@ DockerMap excludes unrelated Docker resources.
 That label-scoped setup intentionally makes current resource telemetry
 unavailable: the gateway must deny per-container stats when a label filter is
 configured. It is evidence for scoped denial, not evidence that Docker stats
-were collected. A separate isolated unfiltered live-Docker run is still needed
-to record finite stats collection, expiry, bounded concurrency/cadence, and
-its resource-budget/cleanup behavior before a release can claim live telemetry
-evidence.
+were collected. Finite unfiltered collection is covered by the separately
+gated focused proof:
+
+```bash
+DOCKERMAP_E2E_LIVE_DOCKER=1 DOCKERMAP_E2E_UNFILTERED_TELEMETRY=1 \
+  npx playwright test --config tests/e2e/playwright.config.ts resource-telemetry-live-docker.spec.ts
+```
+
+Both values must be exactly `1`; the normal `npm run test:live-docker` command
+does not opt in to host-wide unfiltered inventory. The focused proof records
+authenticated canonical/v1 access, the fixed finite gateway request, opaque
+current telemetry capped at 16 rows, 8-second metric expiry, Docker-to-mock
+reset, and fixture cleanup. Deterministic daemon tests remain the evidence for
+the two-request and 750-ms bounds. At #247's integration head, this focused
+proof passed; the separate normal label-scoped live suite still has an
+Service Detail browser failure outside this focused proof. Its cause has not
+been established, so that broad suite is not recorded as green.
 
 ## Sandbox Fixture
 

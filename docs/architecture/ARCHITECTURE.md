@@ -188,9 +188,14 @@ This is deliberately bounded current-state evidence, not proof of workload
 health, demand, performance cause, traffic destination, restart behavior, or a
 complete account of host resource use. The labelled live-Docker fixture uses a
 Docker label scope, so it intentionally exercises the unavailable path rather
-than real stats collection. Before release claims include live telemetry, the
-project still needs isolated **unfiltered** live-Docker evidence for the finite
-request, cap/timeout behavior, expiry, and cleanup/resource-budget effects.
+than real stats collection. Isolated **unfiltered** live-Docker evidence is a
+separate exact dual opt-in (`DOCKERMAP_E2E_LIVE_DOCKER=1` and
+`DOCKERMAP_E2E_UNFILTERED_TELEMETRY=1`): it proves authenticated finite
+collection, public 16-row and 8-second-expiry bounds, source reset, and owned
+fixture cleanup without exposing raw Docker data. The deterministic daemon
+suite proves the two-request and 750-ms bounds. This focused proof does not
+make the ordinary label-scoped live browser suite green; that suite remains an
+independent release gate.
 
 #### Current finding policy
 

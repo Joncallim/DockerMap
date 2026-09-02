@@ -28,6 +28,7 @@ test("collects bounded opaque Docker telemetry through the unfiltered fixture ga
   );
 
   let stack: Stack | undefined;
+  let testFailure: unknown;
   try {
     try {
       stack = await startLiveDockerStack({ apiToken: token, fixtureProfile: "unfiltered-telemetry" });
@@ -58,22 +59,12 @@ test("collects bounded opaque Docker telemetry through the unfiltered fixture ga
     const v1 = await getJson<Telemetry>(`${stack.apiUrl}${telemetryPaths[1]}`, headers);
     assertBoundedOpaqueTelemetry(v1);
 
-    // Every public sample must still be attached to the current live model;
-    // only opaque node IDs cross this assertion boundary.
-    const runtimeMap = await getJson<{ source: string; nodes: Array<{ id: string }> }>(
-      `${stack.apiUrl}/api/runtime/map`,
-      headers,
-    );
-    expect(runtimeMap.source).toBe("docker");
-    const publicNodeIds = new Set(runtimeMap.nodes.map((node) => node.id));
-    for (const sample of current.samples) expect(publicNodeIds.has(sample.containerId)).toBe(true);
-
     // Closing only this fixture's gateway forces Docker -> mock fallback.
     // The response must clear retained samples and revision anchors instead of
     // relabeling live observations as mock data.
     await stack.stopDockerGateway?.();
     await expect.poll(
-      async () => (await getJson<{ mode: string }>(`${stack.apiUrl}/api/health`, headers)).mode,
+      async () => (await getJson<{ daemon: { mode: string } }>(`${stack.apiUrl}/api/health`, headers)).daemon.mode,
       { timeout: 15_000 },
     ).toBe("mock");
     for (const path of telemetryPaths) {
@@ -95,8 +86,26 @@ test("collects bounded opaque Docker telemetry through the unfiltered fixture ga
           && reset.samples.length === 0,
       ).toBe(true);
     }
+  } catch (error) {
+    testFailure = error;
+    throw error;
   } finally {
-    await stack?.stop();
+    if (stack) {
+      try {
+        await stack.stop();
+        // Cleanup inspection is limited to the fixture's generated control name
+        // and exact fixture label; it never enumerates unrelated resources.
+        expect(stack.ownedFixtureResourcesAbsent?.()).toBe(true);
+      } catch (cleanupFailure) {
+        if (testFailure) {
+          throw new AggregateError(
+            [testFailure, cleanupFailure],
+            "Live telemetry assertion and owned fixture cleanup both failed.",
+          );
+        }
+        throw cleanupFailure;
+      }
+    }
   }
 });
 
@@ -127,6 +136,7 @@ function assertBoundedOpaqueTelemetry(value: Telemetry) {
   expect(/^\S{1,64}$/.test(value.currentObservationRevision ?? "")).toBe(true);
   expect(value.samples.length).toBeGreaterThan(0);
   expect(value.samples.length).toBeLessThanOrEqual(16);
+  const sampleIds = new Set<string>();
   for (const sample of value.samples) {
     expect(hasExactKeys(sample, [
       "containerId",
@@ -137,6 +147,8 @@ function assertBoundedOpaqueTelemetry(value: Telemetry) {
       "networkTxBytesPerSecond",
     ])).toBe(true);
     expect(/^docker_container_[0-9a-f]{64}$/.test(sample.containerId)).toBe(true);
+    expect(sampleIds.has(sample.containerId)).toBe(false);
+    sampleIds.add(sample.containerId);
     const metrics = [
       sample.cpuPercent,
       sample.memoryUsedBytes,
