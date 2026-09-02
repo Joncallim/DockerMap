@@ -547,6 +547,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "systemd_part_of",
           "description": "A systemd `PartOf=` declaration. It is not an ordering assertion.",
           "type": "string"
+        },
+        {
+          "const": "npm_package_manifest_dependency",
+          "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
+          "type": "string"
         }
       ]
     },
@@ -554,7 +559,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
       "enum": [
         "docker",
-        "systemd"
+        "systemd",
+        "npm"
       ],
       "type": "string"
     },
@@ -600,10 +606,10 @@ export const RUST_RESPONSE_SCHEMAS = {
               "type": "null"
             }
           ],
-          "description": "Version-two provider evidence is explicitly tied to the finite\nscheduler slot that supplied its revision and freshness. Version one\nDocker evidence intentionally has no host-provider slot."
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
         },
         "subjectRef": {
-          "description": "The already-public runtime entity whose Docker fact was observed.",
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
           "type": "string"
         },
         "summary": {
@@ -615,7 +621,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 2,
+          "maximum": 3,
           "minimum": 1,
           "type": "integer"
         }
@@ -1457,6 +1463,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "systemd_part_of",
           "description": "A systemd `PartOf=` declaration. It is not an ordering assertion.",
           "type": "string"
+        },
+        {
+          "const": "npm_package_manifest_dependency",
+          "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
+          "type": "string"
         }
       ]
     },
@@ -1464,7 +1475,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
       "enum": [
         "docker",
-        "systemd"
+        "systemd",
+        "npm"
       ],
       "type": "string"
     },
@@ -1510,10 +1522,10 @@ export const RUST_RESPONSE_SCHEMAS = {
               "type": "null"
             }
           ],
-          "description": "Version-two provider evidence is explicitly tied to the finite\nscheduler slot that supplied its revision and freshness. Version one\nDocker evidence intentionally has no host-provider slot."
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
         },
         "subjectRef": {
-          "description": "The already-public runtime entity whose Docker fact was observed.",
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
           "type": "string"
         },
         "summary": {
@@ -1525,7 +1537,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 2,
+          "maximum": 3,
           "minimum": 1,
           "type": "integer"
         }
@@ -3059,6 +3071,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "systemd_part_of",
           "description": "A systemd `PartOf=` declaration. It is not an ordering assertion.",
           "type": "string"
+        },
+        {
+          "const": "npm_package_manifest_dependency",
+          "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
+          "type": "string"
         }
       ]
     },
@@ -3066,7 +3083,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
       "enum": [
         "docker",
-        "systemd"
+        "systemd",
+        "npm"
       ],
       "type": "string"
     },
@@ -3112,10 +3130,10 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
               "type": "null"
             }
           ],
-          "description": "Version-two provider evidence is explicitly tied to the finite\nscheduler slot that supplied its revision and freshness. Version one\nDocker evidence intentionally has no host-provider slot."
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
         },
         "subjectRef": {
-          "description": "The already-public runtime entity whose Docker fact was observed.",
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
           "type": "string"
         },
         "summary": {
@@ -3127,7 +3145,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 2,
+          "maximum": 3,
           "minimum": 1,
           "type": "integer"
         }
@@ -3969,6 +3987,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "systemd_part_of",
           "description": "A systemd `PartOf=` declaration. It is not an ordering assertion.",
           "type": "string"
+        },
+        {
+          "const": "npm_package_manifest_dependency",
+          "description": "A package.json dependency declaration. This is not proof that the\npackage was installed, resolved, executed, or is safe.",
+          "type": "string"
         }
       ]
     },
@@ -3976,7 +3999,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
       "enum": [
         "docker",
-        "systemd"
+        "systemd",
+        "npm"
       ],
       "type": "string"
     },
@@ -4022,10 +4046,10 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
               "type": "null"
             }
           ],
-          "description": "Version-two provider evidence is explicitly tied to the finite\nscheduler slot that supplied its revision and freshness. Version one\nDocker evidence intentionally has no host-provider slot."
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
         },
         "subjectRef": {
-          "description": "The already-public runtime entity whose Docker fact was observed.",
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
           "type": "string"
         },
         "summary": {
@@ -4037,7 +4061,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 2,
+          "maximum": 3,
           "minimum": 1,
           "type": "integer"
         }

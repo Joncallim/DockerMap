@@ -60,13 +60,14 @@ export type RuntimeEvidenceKind =
   | 'docker_daemon_state_bind_mount'
   | 'systemd_requires'
   | 'systemd_wants'
-  | 'systemd_part_of';
+  | 'systemd_part_of'
+  | 'npm_package_manifest_dependency';
 /**
  * Evidence providers are deliberately closed.  Version two adds systemd only
  * after it received its own scheduler slot; it cannot inherit a broader host
  * collection's freshness or revision.
  */
-export type RuntimeEvidenceProvider = 'docker' | 'systemd';
+export type RuntimeEvidenceProvider = 'docker' | 'systemd' | 'npm';
 /**
  * Fixed, schema-backed host-provider slots. This is not a plugin or policy
  * interface: the daemon owns the complete finite list.
@@ -318,13 +319,14 @@ export interface RuntimeEvidenceRef {
    */
   providerRevision: string;
   /**
-   * Version-two provider evidence is explicitly tied to the finite
-   * scheduler slot that supplied its revision and freshness. Version one
-   * Docker evidence intentionally has no host-provider slot.
+   * Version-two-and-later provider evidence is explicitly tied to the
+   * finite scheduler slot that supplied its revision and freshness.
+   * Version-one Docker evidence intentionally has no host-provider slot.
    */
   providerSlot?: ProviderSlot | null;
   /**
-   * The already-public runtime entity whose Docker fact was observed.
+   * The already-public runtime entity directly attested by this bounded
+   * provider fact.
    */
   subjectRef: string;
   /**

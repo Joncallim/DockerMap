@@ -969,6 +969,45 @@ mod tests {
     }
 
     #[test]
+    fn version_three_npm_manifest_evidence_requires_its_closed_slot_binding() {
+        let valid = serde_json::json!({
+            "version": 3,
+            "id": "npm_evidence_manifest_dependency_opaque",
+            "provider": "npm",
+            "kind": "npm_package_manifest_dependency",
+            "assertionKind": "declared",
+            "summary": "package manifest declared a dependency",
+            "subjectRef": "npm_project_app",
+            "collectedAt": 42,
+            "providerRevision": "opaque-npm-revision",
+            "providerSlot": "project_npm",
+            "freshness": "timed_out"
+        });
+        assert!(serde_json::from_value::<RuntimeEvidenceRef>(valid.clone()).is_ok());
+        for (field, invalid) in [
+            ("providerSlot", serde_json::json!("systemd")),
+            ("provider", serde_json::json!("systemd")),
+            ("assertionKind", serde_json::json!("observed")),
+            ("kind", serde_json::json!("systemd_requires")),
+        ] {
+            let mut malformed = valid.clone();
+            malformed[field] = invalid;
+            assert!(serde_json::from_value::<RuntimeEvidenceRef>(malformed).is_err());
+        }
+        let edge = serde_json::json!({
+            "source": "npm_project_app",
+            "target": "npm_package_dependency",
+            "relationship": "depends_on",
+            "metadata": {},
+            "evidenceRefs": [valid]
+        });
+        assert!(serde_json::from_value::<RuntimeMapEdge>(edge.clone()).is_ok());
+        let mut wrong_target = edge;
+        wrong_target["target"] = serde_json::json!("systemd_service_database");
+        assert!(serde_json::from_value::<RuntimeMapEdge>(wrong_target).is_err());
+    }
+
+    #[test]
     fn version_one_evidence_cannot_attest_a_different_runtime_edge() {
         let snapshot = mock_snapshot();
         let edge = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")

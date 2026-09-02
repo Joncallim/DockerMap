@@ -8,6 +8,7 @@
 use crate::{
     docker_collector::DockerCollector,
     provider_contract::ProviderCollection,
+    providers::npm::NPM_EVIDENCE_DEPENDENCY_MARKER,
     providers::systemd::{
         SYSTEMD_EVIDENCE_KIND_MARKER, SYSTEMD_EVIDENCE_PART_OF, SYSTEMD_EVIDENCE_REQUIRES,
         SYSTEMD_EVIDENCE_WANTS,
@@ -878,6 +879,8 @@ fn runtime_map_for_snapshot(
             let (nodes, mut edges, diagnostics) = collection.into_parts();
             if slot == ProviderSlot::Systemd {
                 bind_systemd_evidence(&mut edges, slot_state);
+            } else if slot == ProviderSlot::ProjectNpm {
+                bind_npm_evidence(&mut edges, slot_state);
             }
             let (target_nodes, target_edges, target_diagnostics) = combined.parts_mut();
             target_nodes.extend(nodes);
@@ -897,6 +900,89 @@ fn runtime_map_for_snapshot(
     runtime_map.provider_states = provider_states_for(slots);
     runtime_map.diagnostics.extend(extra_diagnostics);
     runtime_map
+}
+
+/// Convert the private NPM manifest marker into public evidence only after
+/// this exact ProjectNpm slot has a sanitized opaque revision and successful
+/// collection timestamp. Retention is explicit: stale/timed-out observations
+/// remain labelled as such, while disabled, unavailable, revision-less, and
+/// source-reset observations publish no NPM evidence.
+fn bind_npm_evidence(edges: &mut [RuntimeMapEdge], state: &SlotRuntimeState) {
+    let disabled = retained_collection(&state.observation)
+        .as_ref()
+        .is_some_and(|collection| {
+            collection.states().iter().any(|candidate| {
+                candidate.slot == ProviderSlot::ProjectNpm
+                    && candidate.state == ProviderStateKind::Disabled
+            })
+        });
+    let freshness = match &state.observation {
+        RuntimeProviderState::Fresh(_) => RuntimeEvidenceFreshness::Fresh,
+        RuntimeProviderState::Collecting(Some(_)) | RuntimeProviderState::Degraded(Some(_)) => {
+            RuntimeEvidenceFreshness::Stale
+        }
+        RuntimeProviderState::TimedOut(Some(_)) => RuntimeEvidenceFreshness::TimedOut,
+        RuntimeProviderState::Unavailable
+        | RuntimeProviderState::Collecting(None)
+        | RuntimeProviderState::Degraded(None)
+        | RuntimeProviderState::TimedOut(None) => {
+            clear_npm_evidence(edges);
+            return;
+        }
+    };
+    if disabled {
+        clear_npm_evidence(edges);
+        return;
+    }
+    let Some(revision) = state
+        .freshness
+        .data_revision
+        .as_ref()
+        .map(SlotDataRevision::public)
+    else {
+        clear_npm_evidence(edges);
+        return;
+    };
+    let Some(collected_at) = state.freshness.last_success_ms else {
+        clear_npm_evidence(edges);
+        return;
+    };
+
+    for edge in edges {
+        let marker = edge.metadata.remove(NPM_EVIDENCE_DEPENDENCY_MARKER);
+        if marker.as_deref() != Some("declared")
+            || edge.relationship != dockermap_core::RuntimeRelationshipKind::DependsOn
+            || !edge.source.starts_with("npm_project_")
+            || !edge.target.starts_with("npm_package_")
+            || edge.source == edge.target
+        {
+            edge.evidence_refs.clear();
+            continue;
+        }
+        edge.evidence_refs = vec![RuntimeEvidenceRef {
+            version: 3,
+            id: format!(
+                "npm_evidence_manifest_dependency_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            provider: RuntimeEvidenceProvider::Npm,
+            kind: RuntimeEvidenceKind::NpmPackageManifestDependency,
+            assertion_kind: RuntimeEvidenceAssertionKind::Declared,
+            summary: "package manifest declared a dependency".into(),
+            subject_ref: edge.source.clone(),
+            collected_at,
+            provider_revision: revision.clone(),
+            provider_slot: Some(ProviderSlot::ProjectNpm),
+            freshness,
+        }];
+    }
+}
+
+fn clear_npm_evidence(edges: &mut [RuntimeMapEdge]) {
+    for edge in edges {
+        edge.metadata.remove(NPM_EVIDENCE_DEPENDENCY_MARKER);
+        edge.evidence_refs.clear();
+    }
 }
 
 /// Convert the private, closed systemd dependency marker into public evidence
@@ -1237,6 +1323,43 @@ mod scheduler_tests {
         collection
     }
 
+    fn marked_npm_dependency() -> ProviderCollection {
+        let mut collection = ProviderCollection::default();
+        collection.set_state(ProviderSlot::ProjectNpm, ProviderStateKind::Fresh);
+        for (id, label, kind) in [
+            (
+                "npm_project_application",
+                "application",
+                RuntimeNodeKind::Package,
+            ),
+            (
+                "npm_package_dependency",
+                "dependency",
+                RuntimeNodeKind::PackageDependency,
+            ),
+        ] {
+            collection.nodes_mut().push(RuntimeMapNode {
+                id: id.into(),
+                provider: RuntimeProviderKind::Npm,
+                kind,
+                label: label.into(),
+                status: None,
+                layer: Some(RuntimeNodeLayer::Package),
+                metadata: BTreeMap::new(),
+                service: None,
+                package: None,
+            });
+        }
+        collection.parts_mut().1.push(RuntimeMapEdge {
+            source: "npm_project_application".into(),
+            target: "npm_package_dependency".into(),
+            relationship: dockermap_core::RuntimeRelationshipKind::DependsOn,
+            metadata: BTreeMap::from([(NPM_EVIDENCE_DEPENDENCY_MARKER.into(), "declared".into())]),
+            evidence_refs: Vec::new(),
+        });
+        collection
+    }
+
     #[test]
     fn systemd_evidence_is_slot_bound_and_truthfully_retained() {
         for (observation, expected) in [
@@ -1288,6 +1411,112 @@ mod scheduler_tests {
             assert_eq!(evidence.freshness, expected);
             assert!(!evidence.provider_revision.is_empty());
         }
+    }
+
+    #[test]
+    fn npm_manifest_evidence_is_slot_bound_redacted_and_truthfully_retained() {
+        for (observation, expected) in [
+            (
+                RuntimeProviderState::Fresh(marked_npm_dependency()),
+                RuntimeEvidenceFreshness::Fresh,
+            ),
+            (
+                RuntimeProviderState::Degraded(Some(marked_npm_dependency())),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                RuntimeProviderState::TimedOut(Some(marked_npm_dependency())),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
+        ] {
+            let mut slots = slots();
+            let state = slots.get_mut(&ProviderSlot::ProjectNpm).unwrap();
+            state.observation = observation;
+            state.freshness.data_revision = Some(SlotDataRevision::first());
+            state.freshness.last_success_ms = Some(42);
+            let map = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &slots,
+                "docker-observation",
+            );
+            let edge = map
+                .edges
+                .iter()
+                .find(|edge| edge.source == "npm_project_application")
+                .expect("npm dependency remains visible");
+            assert!(edge.metadata.is_empty(), "private marker never publishes");
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 3);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Npm);
+            assert_eq!(
+                evidence.kind,
+                RuntimeEvidenceKind::NpmPackageManifestDependency
+            );
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Declared
+            );
+            assert_eq!(evidence.provider_slot, Some(ProviderSlot::ProjectNpm));
+            assert_eq!(evidence.freshness, expected);
+            assert_eq!(evidence.summary, "package manifest declared a dependency");
+            assert!(!evidence.summary.contains("package.json"));
+        }
+    }
+
+    #[test]
+    fn npm_manifest_marker_cannot_publish_without_success_revision_or_after_source_reset() {
+        let mut provider_slots = slots();
+        let state = provider_slots.get_mut(&ProviderSlot::ProjectNpm).unwrap();
+        state.observation = RuntimeProviderState::Fresh(marked_npm_dependency());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &provider_slots,
+            "docker-observation",
+        );
+        let npm_edges = map
+            .edges
+            .iter()
+            .filter(|edge| edge.source.starts_with("npm_project_"))
+            .collect::<Vec<_>>();
+        assert!(npm_edges.iter().all(|edge| edge.evidence_refs.is_empty()));
+        assert!(npm_edges.iter().all(|edge| edge.metadata.is_empty()));
+
+        let mut disabled = slots();
+        let state = disabled.get_mut(&ProviderSlot::ProjectNpm).unwrap();
+        let mut collection = marked_npm_dependency();
+        collection.set_state(ProviderSlot::ProjectNpm, ProviderStateKind::Disabled);
+        state.observation = RuntimeProviderState::Fresh(collection);
+        state.freshness.data_revision = Some(SlotDataRevision::first());
+        state.freshness.last_success_ms = Some(42);
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &disabled,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .filter(|edge| edge.source.starts_with("npm_project_"))
+            .all(|edge| edge.evidence_refs.is_empty() && edge.metadata.is_empty()));
+
+        let mut reset = source_reset_provider_slots();
+        let state = reset.get_mut(&ProviderSlot::ProjectNpm).unwrap();
+        state.observation = RuntimeProviderState::Unavailable;
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &reset,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .filter(|edge| edge.source.starts_with("npm_project_"))
+            .all(|edge| edge.evidence_refs.is_empty()));
     }
 
     #[test]

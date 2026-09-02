@@ -828,6 +828,7 @@ pub struct RuntimeMapNode {
 pub enum RuntimeEvidenceProvider {
     Docker,
     Systemd,
+    Npm,
 }
 
 /// Evidence assertion semantics are deliberately closed. A declaration says
@@ -862,6 +863,9 @@ pub enum RuntimeEvidenceKind {
     SystemdWants,
     /// A systemd `PartOf=` declaration. It is not an ordering assertion.
     SystemdPartOf,
+    /// A package.json dependency declaration. This is not proof that the
+    /// package was installed, resolved, executed, or is safe.
+    NpmPackageManifestDependency,
 }
 
 /// A compact, versioned reference to the bounded fact supporting a runtime
@@ -872,7 +876,7 @@ pub enum RuntimeEvidenceKind {
 pub struct RuntimeEvidenceRef {
     /// Version of this closed evidence representation, not a provider API
     /// version.  It lets future additions remain explicit and reviewable.
-    #[schemars(range(min = 1, max = 2))]
+    #[schemars(range(min = 1, max = 3))]
     pub version: u8,
     #[schemars(length(min = 1, max = 259))]
     pub id: String,
@@ -883,7 +887,8 @@ pub struct RuntimeEvidenceRef {
     /// A bounded, curated explanation; it is never copied from a raw source.
     #[schemars(length(min = 1, max = 259))]
     pub summary: String,
-    /// The already-public runtime entity whose Docker fact was observed.
+    /// The already-public runtime entity directly attested by this bounded
+    /// provider fact.
     #[serde(rename = "subjectRef")]
     pub subject_ref: String,
     #[serde(rename = "collectedAt")]
@@ -894,9 +899,9 @@ pub struct RuntimeEvidenceRef {
     #[serde(rename = "providerRevision")]
     #[schemars(length(min = 1, max = 259))]
     pub provider_revision: String,
-    /// Version-two provider evidence is explicitly tied to the finite
-    /// scheduler slot that supplied its revision and freshness. Version one
-    /// Docker evidence intentionally has no host-provider slot.
+    /// Version-two-and-later provider evidence is explicitly tied to the
+    /// finite scheduler slot that supplied its revision and freshness.
+    /// Version-one Docker evidence intentionally has no host-provider slot.
     #[serde(rename = "providerSlot", skip_serializing_if = "Option::is_none")]
     pub provider_slot: Option<ProviderSlot>,
     pub freshness: RuntimeEvidenceFreshness,
@@ -943,6 +948,15 @@ impl RuntimeEvidenceRef {
                     | RuntimeEvidenceFreshness::Stale
                     | RuntimeEvidenceFreshness::TimedOut,
                 Some(ProviderSlot::Systemd),
+            ) | (
+                3,
+                RuntimeEvidenceProvider::Npm,
+                RuntimeEvidenceKind::NpmPackageManifestDependency,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh
+                    | RuntimeEvidenceFreshness::Stale
+                    | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::ProjectNpm),
             )
         )
     }
@@ -1120,6 +1134,21 @@ impl RuntimeMapEdge {
                 self.relationship == RuntimeRelationshipKind::Requires
                     && self.source.starts_with("systemd_service_")
                     && self.target.starts_with("systemd_service_")
+                    && self.source != self.target
+            }
+            (
+                3,
+                RuntimeEvidenceProvider::Npm,
+                RuntimeEvidenceKind::NpmPackageManifestDependency,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh
+                | RuntimeEvidenceFreshness::Stale
+                | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::ProjectNpm),
+            ) => {
+                self.relationship == RuntimeRelationshipKind::DependsOn
+                    && self.source.starts_with("npm_project_")
+                    && self.target.starts_with("npm_package_")
                     && self.source != self.target
             }
             (

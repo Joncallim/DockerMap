@@ -210,6 +210,39 @@
       "metadata": {
         "port": "6379:6379/tcp"
       }
+    },
+    {
+      "id": "npm_project_dockermap",
+      "provider": "npm",
+      "type": "package",
+      "label": "DockerMap",
+      "status": "discovered",
+      "layer": "package",
+      "metadata": {
+        "private": "true",
+        "serviceEntityKind": "node_application"
+      }
+    },
+    {
+      "id": "npm_package_express_5_1_0",
+      "provider": "npm",
+      "type": "package_dependency",
+      "label": "express",
+      "status": null,
+      "layer": "package",
+      "metadata": {
+        "package": "express",
+        "scope": "dependencies",
+        "serviceEntityKind": "package_dependency",
+        "version": "5.1.0"
+      },
+      "package": {
+        "name": "express",
+        "manager": "npm",
+        "version": "5.1.0",
+        "dependencies": [],
+        "dependents": []
+      }
     }
   ],
   "edges": [
@@ -529,6 +562,30 @@
           "subjectRef": "docker_container_container_worker",
           "collectedAt": 1787196125766,
           "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "source": "npm_project_dockermap",
+      "target": "npm_package_express_5_1_0",
+      "relationship": "depends_on",
+      "metadata": {
+        "scope": "dependencies",
+        "version": "5.1.0"
+      },
+      "evidenceRefs": [
+        {
+          "version": 3,
+          "id": "fixture-npm-manifest-dependency-dockermap-express",
+          "provider": "npm",
+          "kind": "npm_package_manifest_dependency",
+          "assertionKind": "declared",
+          "summary": "package manifest declared a dependency",
+          "subjectRef": "npm_project_dockermap",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-project-npm-observation-1",
+          "providerSlot": "project_npm",
           "freshness": "fresh"
         }
       ]
