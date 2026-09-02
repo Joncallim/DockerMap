@@ -5,16 +5,17 @@
 
 use crate::{
     ComposeEditPlan, ComposeGraph, ComposeScan, ContainerDetailResponse, ContainersResponse,
-    DockerSnapshot, GraphResponse, HealthResponse, ImagesResponse, LogsResponse, NetworksResponse,
-    RuntimeMap, VolumesResponse,
+    DockerSnapshot, FindingsResponse, GraphResponse, HealthResponse, ImagesResponse, LogsResponse,
+    NetworksResponse, RuntimeMap, VolumesResponse,
 };
 use schemars::{schema_for, Schema};
 use serde_json::Value;
 
-pub const DAEMON_SCHEMA_NAMES: [&str; 13] = [
+pub const DAEMON_SCHEMA_NAMES: [&str; 14] = [
     "DockerSnapshot",
     "GraphResponse",
     "RuntimeMap",
+    "FindingsResponse",
     "ComposeScan",
     "ComposeGraph",
     "ComposeEditPlan",
@@ -33,11 +34,12 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 13] = [
 /// that standard `JSON.parse` cannot preserve.
 pub const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
-pub fn daemon_schemas() -> [Schema; 13] {
+pub fn daemon_schemas() -> [Schema; 14] {
     [
         schema_for!(DockerSnapshot),
         schema_for!(GraphResponse),
         schema_for!(RuntimeMap),
+        schema_for!(FindingsResponse),
         schema_for!(ComposeScan),
         schema_for!(ComposeGraph),
         schema_for!(ComposeEditPlan),
@@ -55,7 +57,7 @@ pub fn daemon_schemas() -> [Schema; 13] {
 /// forward-compatible when deserializing, while fixtures reject typoed or
 /// unreviewed response fields rather than silently redefining the contract.
 /// This changes schema validation only, never daemon serialization behavior.
-pub fn daemon_schema_documents() -> [Value; 13] {
+pub fn daemon_schema_documents() -> [Value; 14] {
     daemon_schemas().map(|schema| {
         let mut document = serde_json::to_value(schema).expect("schemars schema serializes");
         deny_unknown_object_properties(&mut document);
