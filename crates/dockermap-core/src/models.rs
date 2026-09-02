@@ -1195,6 +1195,8 @@ pub enum FindingSeverity {
 pub enum FindingRule {
     #[serde(rename = "systemd.requires_target_not_active")]
     SystemdRequiresTargetNotActive,
+    #[serde(rename = "docker.internal_network_member_publishes_port")]
+    DockerInternalNetworkMemberPublishesPort,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -1214,10 +1216,10 @@ pub struct Finding {
     #[serde(rename = "targetRef")]
     pub target_ref: String,
     /// Canonical, already-sanitized runtime evidence that directly triggered
-    /// this finding. The rule admits exactly one fact, keeping the response
-    /// bounded and preventing a generic metadata channel.
+    /// this finding. Each closed rule has a fixed, small evidence budget,
+    /// preventing this response from becoming a generic metadata channel.
     #[serde(rename = "evidenceRefs")]
-    #[schemars(required, length(min = 1, max = 1))]
+    #[schemars(required, length(min = 1, max = 2))]
     pub evidence_refs: Vec<RuntimeEvidenceRef>,
 }
 

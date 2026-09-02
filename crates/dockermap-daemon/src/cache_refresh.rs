@@ -1302,17 +1302,38 @@ mod scheduler_tests {
             cache.findings.model_revision,
             cache.runtime_map.model_revision
         );
-        assert_eq!(cache.findings.findings.len(), 1);
-        let finding = &cache.findings.findings[0];
-        assert_eq!(
-            finding.rule_id,
-            dockermap_core::FindingRule::SystemdRequiresTargetNotActive
-        );
+        let finding = cache
+            .findings
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id == dockermap_core::FindingRule::SystemdRequiresTargetNotActive
+            })
+            .expect("fresh systemd evidence produces its warning alongside other cached findings");
         assert_eq!(finding.evidence_refs.len(), 1);
         assert_eq!(finding.evidence_refs[0].version, 2);
         let serialized = serde_json::to_string(finding).unwrap();
         assert!(serialized.contains("evidenceRefs"));
         assert!(serialized.contains("systemd_requires"));
+
+        let docker_finding = cache
+            .findings
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id
+                    == dockermap_core::FindingRule::DockerInternalNetworkMemberPublishesPort
+            })
+            .expect("mock Docker topology produces the bounded internal-network advisory");
+        assert_eq!(docker_finding.evidence_refs.len(), 2);
+        assert_eq!(
+            docker_finding.evidence_refs[0].kind,
+            RuntimeEvidenceKind::DockerNetworkMembership
+        );
+        assert_eq!(
+            docker_finding.evidence_refs[1].kind,
+            RuntimeEvidenceKind::DockerPortPublication
+        );
     }
 
     #[test]

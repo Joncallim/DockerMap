@@ -9,6 +9,10 @@ use std::collections::BTreeMap;
 const SUMMARY: &str = "An active systemd service requires a target that is inactive or failed";
 const RECOMMENDATION: &str =
     "Inspect the target service state and its declared dependency configuration.";
+const INTERNAL_NETWORK_PORT_SUMMARY: &str =
+    "A container on an internal Docker network also has a published host port.";
+const INTERNAL_NETWORK_PORT_RECOMMENDATION: &str =
+    "Review whether the host-port publication is intended for this internal-network service.";
 
 /// Derive bounded, deterministic advisory findings from the already-public
 /// runtime topology. The rule intentionally fails closed: it acts only on one
@@ -35,6 +39,19 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             *candidate_counts
                 .entry((edge.source.as_str(), edge.target.as_str()))
                 .or_default() += 1;
+        }
+    }
+
+    let mut membership_counts = BTreeMap::<(&str, &str), usize>::new();
+    let mut port_counts = BTreeMap::<&str, usize>::new();
+    for edge in &runtime_map.edges {
+        if is_docker_membership_shape(edge, &nodes) {
+            *membership_counts
+                .entry((edge.source.as_str(), edge.target.as_str()))
+                .or_default() += 1;
+        }
+        if is_docker_port_shape(edge, &nodes) {
+            *port_counts.entry(edge.source.as_str()).or_default() += 1;
         }
     }
 
@@ -71,6 +88,35 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             evidence_refs: vec![evidence],
         });
     }
+    for edge in &runtime_map.edges {
+        let pair = (edge.source.as_str(), edge.target.as_str());
+        if membership_counts.get(&pair) != Some(&1)
+            || port_counts.get(edge.source.as_str()) != Some(&1)
+            || !is_candidate_internal_network_membership(edge, &nodes)
+        {
+            continue;
+        }
+        let Some(port_edge) = runtime_map.edges.iter().find(|candidate| {
+            candidate.source == edge.source && is_candidate_port_publication(candidate, &nodes)
+        }) else {
+            continue;
+        };
+        let network_evidence = edge.evidence_refs[0].clone();
+        let port_evidence = port_edge.evidence_refs[0].clone();
+        findings.push(Finding {
+            id: format!(
+                "finding_docker_internal_network_member_publishes_port_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            rule_id: FindingRule::DockerInternalNetworkMemberPublishesPort,
+            severity: FindingSeverity::Advisory,
+            summary: INTERNAL_NETWORK_PORT_SUMMARY.into(),
+            recommendation: INTERNAL_NETWORK_PORT_RECOMMENDATION.into(),
+            subject_ref: edge.source.clone(),
+            target_ref: edge.target.clone(),
+            evidence_refs: vec![network_evidence, port_evidence],
+        });
+    }
     findings.sort_by(|left, right| {
         left.id
             .cmp(&right.id)
@@ -78,6 +124,67 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             .then_with(|| left.target_ref.cmp(&right.target_ref))
     });
     findings
+}
+
+fn is_docker_container(node: &crate::RuntimeMapNode) -> bool {
+    node.provider == RuntimeProviderKind::Docker && node.kind == RuntimeNodeKind::Container
+}
+
+fn is_docker_network(node: &crate::RuntimeMapNode) -> bool {
+    node.provider == RuntimeProviderKind::Docker
+        && node.kind == RuntimeNodeKind::DockerNetwork
+        && node.metadata.get("internal").map(String::as_str) == Some("true")
+}
+
+fn is_docker_listener(node: &crate::RuntimeMapNode) -> bool {
+    node.provider == RuntimeProviderKind::Network && node.kind == RuntimeNodeKind::NetworkListener
+}
+
+fn is_docker_membership_shape<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.relationship == RuntimeRelationshipKind::ConnectedTo
+        && matches!((nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
+            (Some(source), Some(target)) if is_docker_container(source) && is_docker_network(target))
+}
+
+fn is_docker_port_shape<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.relationship == RuntimeRelationshipKind::Exposes
+        && matches!((nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
+            (Some(source), Some(target)) if is_docker_container(source) && is_docker_listener(target))
+}
+
+fn is_candidate_internal_network_membership<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    is_docker_membership_shape(edge, nodes)
+        && is_fresh_docker_evidence(edge, RuntimeEvidenceKind::DockerNetworkMembership)
+}
+
+fn is_candidate_port_publication<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    is_docker_port_shape(edge, nodes)
+        && is_fresh_docker_evidence(edge, RuntimeEvidenceKind::DockerPortPublication)
+}
+
+fn is_fresh_docker_evidence(edge: &crate::RuntimeMapEdge, kind: RuntimeEvidenceKind) -> bool {
+    edge.has_valid_evidence_refs()
+        && edge.evidence_refs.len() == 1
+        && matches!(edge.evidence_refs.first(), Some(evidence)
+            if evidence.version == 1
+                && evidence.provider == RuntimeEvidenceProvider::Docker
+                && evidence.kind == kind
+                && evidence.assertion_kind == RuntimeEvidenceAssertionKind::Observed
+                && evidence.freshness == RuntimeEvidenceFreshness::Fresh
+                && evidence.subject_ref == edge.source
+                && evidence.provider_slot.is_none())
 }
 
 fn is_candidate_requires(edge: &crate::RuntimeMapEdge) -> bool {
@@ -222,5 +329,157 @@ mod tests {
         let mut input = map(edge(RuntimeEvidenceFreshness::Fresh));
         input.edges[0].evidence_refs[0].provider_revision.clear();
         assert!(derive_findings(&input).is_empty());
+    }
+
+    fn docker_node(
+        id: &str,
+        provider: RuntimeProviderKind,
+        kind: RuntimeNodeKind,
+        metadata: BTreeMap<String, String>,
+    ) -> RuntimeMapNode {
+        RuntimeMapNode {
+            id: id.into(),
+            provider,
+            kind,
+            label: "safe Docker entity".into(),
+            status: None,
+            layer: None,
+            metadata,
+            service: None,
+            package: None,
+        }
+    }
+
+    fn docker_evidence(kind: RuntimeEvidenceKind, source: &str) -> RuntimeEvidenceRef {
+        RuntimeEvidenceRef {
+            version: 1,
+            id: format!("docker_evidence_{source}"),
+            provider: RuntimeEvidenceProvider::Docker,
+            kind,
+            assertion_kind: RuntimeEvidenceAssertionKind::Observed,
+            summary: "Docker reported a bounded runtime fact".into(),
+            subject_ref: source.into(),
+            collected_at: 1,
+            provider_revision: "opaque-docker-observation".into(),
+            provider_slot: None,
+            freshness: RuntimeEvidenceFreshness::Fresh,
+        }
+    }
+
+    fn internal_network_port_map() -> RuntimeMap {
+        let container = "docker_container_safe";
+        let network = "docker_network_internal";
+        let listener = "network_listener_safe";
+        RuntimeMap {
+            nodes: vec![
+                docker_node(
+                    container,
+                    RuntimeProviderKind::Docker,
+                    RuntimeNodeKind::Container,
+                    BTreeMap::new(),
+                ),
+                docker_node(
+                    network,
+                    RuntimeProviderKind::Docker,
+                    RuntimeNodeKind::DockerNetwork,
+                    BTreeMap::from([("internal".into(), "true".into())]),
+                ),
+                docker_node(
+                    listener,
+                    RuntimeProviderKind::Network,
+                    RuntimeNodeKind::NetworkListener,
+                    BTreeMap::new(),
+                ),
+            ],
+            edges: vec![
+                RuntimeMapEdge {
+                    source: container.into(),
+                    target: network.into(),
+                    relationship: RuntimeRelationshipKind::ConnectedTo,
+                    metadata: BTreeMap::new(),
+                    evidence_refs: vec![docker_evidence(
+                        RuntimeEvidenceKind::DockerNetworkMembership,
+                        container,
+                    )],
+                },
+                RuntimeMapEdge {
+                    source: container.into(),
+                    target: listener.into(),
+                    relationship: RuntimeRelationshipKind::Exposes,
+                    metadata: BTreeMap::new(),
+                    evidence_refs: vec![docker_evidence(
+                        RuntimeEvidenceKind::DockerPortPublication,
+                        container,
+                    )],
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn emits_a_deterministic_advisory_with_exact_docker_evidence_pair() {
+        let input = internal_network_port_map();
+        let findings = derive_findings(&input);
+        assert_eq!(findings.len(), 1);
+        let finding = &findings[0];
+        assert_eq!(
+            finding.rule_id,
+            FindingRule::DockerInternalNetworkMemberPublishesPort
+        );
+        assert_eq!(finding.severity, FindingSeverity::Advisory);
+        assert_eq!(finding.summary, INTERNAL_NETWORK_PORT_SUMMARY);
+        assert_eq!(finding.recommendation, INTERNAL_NETWORK_PORT_RECOMMENDATION);
+        assert_eq!(finding.subject_ref, "docker_container_safe");
+        assert_eq!(finding.target_ref, "docker_network_internal");
+        assert_eq!(
+            finding.evidence_refs,
+            vec![
+                input.edges[0].evidence_refs[0].clone(),
+                input.edges[1].evidence_refs[0].clone(),
+            ]
+        );
+        assert!(finding
+            .id
+            .starts_with("finding_docker_internal_network_member_publishes_port_"));
+    }
+
+    #[test]
+    fn docker_internal_network_port_rule_fails_closed() {
+        let mut stale_membership = internal_network_port_map();
+        stale_membership.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
+        assert!(derive_findings(&stale_membership).is_empty());
+
+        let mut stale_port = internal_network_port_map();
+        stale_port.edges[1].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
+        assert!(derive_findings(&stale_port).is_empty());
+
+        let mut duplicate_port = internal_network_port_map();
+        duplicate_port.edges.push(duplicate_port.edges[1].clone());
+        assert!(derive_findings(&duplicate_port).is_empty());
+
+        let mut duplicate_membership = internal_network_port_map();
+        duplicate_membership
+            .edges
+            .push(duplicate_membership.edges[0].clone());
+        assert!(derive_findings(&duplicate_membership).is_empty());
+
+        let mut wrong_kind = internal_network_port_map();
+        wrong_kind.edges[1].evidence_refs[0].kind = RuntimeEvidenceKind::DockerNetworkMembership;
+        assert!(derive_findings(&wrong_kind).is_empty());
+
+        let mut not_exactly_internal = internal_network_port_map();
+        not_exactly_internal.nodes[1]
+            .metadata
+            .insert("internal".into(), "True".into());
+        assert!(derive_findings(&not_exactly_internal).is_empty());
+
+        let mut collision = internal_network_port_map();
+        collision.nodes.push(collision.nodes[1].clone());
+        assert!(derive_findings(&collision).is_empty());
+
+        let mut wrong_listener = internal_network_port_map();
+        wrong_listener.nodes[2].provider = RuntimeProviderKind::Docker;
+        assert!(derive_findings(&wrong_listener).is_empty());
     }
 }
