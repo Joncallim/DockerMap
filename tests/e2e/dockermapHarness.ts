@@ -25,6 +25,11 @@ export type Stack = {
    */
   restartFixtureWorker?: () => Promise<void>;
   restartDockerGateway?: () => Promise<void>;
+  /**
+   * Sends one intentionally incomplete Docker event request to this fixture's
+   * filtered gateway. The raw Docker socket is never exposed to the test.
+   */
+  rejectUnsafeGatewayEventRequest?: () => Promise<number>;
   productionSocketReadOnly?: boolean;
   postProductionSessionBurst?: (client: "a" | "b", spoofedXForwardedForPrefix: string) => {
     elapsedMs: number;
@@ -314,6 +319,7 @@ export async function startLiveDockerStack(options: { apiToken?: string } = {}):
         processes.push(gateway);
         await waitForSocket(gatewaySocket);
       },
+      rejectUnsafeGatewayEventRequest: () => requestFixedGatewayDenial(gatewaySocket),
       stop: async () => {
         await stopProcesses(processes);
         cleanupLiveDocker(docker, fixture);
@@ -480,6 +486,44 @@ function startGateway(options: { socket: string; labelFilter?: string }): Proces
       DOCKERMAP_RAW_DOCKER_SOCKET: "/var/run/docker.sock",
       ...(options.labelFilter ? { DOCKERMAP_DOCKER_LABEL_FILTER: options.labelFilter } : {})
     }
+  });
+}
+
+/**
+ * The request is deliberately fixed and malformed: /events without the
+ * required closed query/filter vocabulary. It can only reach the fixture's
+ * filtered gateway socket and contains no caller-supplied Docker input.
+ */
+function requestFixedGatewayDenial(socketPath: string): Promise<number> {
+  return new Promise((resolveStatus, reject) => {
+    const socket = net.createConnection({ path: socketPath });
+    let response = "";
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("Timed out waiting for fixed filtered-gateway denial."));
+    }, 5_000);
+    const finish = (error?: Error) => {
+      clearTimeout(timeout);
+      socket.destroy();
+      if (error) reject(error);
+    };
+    socket.once("connect", () => {
+      socket.write("GET /events HTTP/1.1\r\nHost: docker\r\n\r\n");
+    });
+    socket.on("data", (chunk: Buffer) => {
+      response += chunk.toString("ascii");
+      const match = /^HTTP\/1\.1 ([1-5]\d{2})\b/.exec(response);
+      if (!match) return;
+      clearTimeout(timeout);
+      socket.destroy();
+      resolveStatus(Number(match[1]));
+    });
+    socket.once("error", (error) => finish(new Error(`Fixed filtered-gateway denial request failed: ${error.message}`)));
+    socket.once("close", () => {
+      if (!/^HTTP\/1\.1 [1-5]\d{2}\b/.test(response)) {
+        finish(new Error("Fixed filtered-gateway denial returned no HTTP status."));
+      }
+    });
   });
 }
 

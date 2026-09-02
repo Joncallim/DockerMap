@@ -93,6 +93,7 @@ test.describe("Docker temporal observations", () => {
     expect(liveStack.apiToken).toBeTruthy();
     expect(liveStack.restartFixtureWorker).toBeDefined();
     expect(liveStack.restartDockerGateway).toBeDefined();
+    expect(liveStack.rejectUnsafeGatewayEventRequest).toBeDefined();
     const auth = { Authorization: `Bearer ${liveStack.apiToken!}` };
     const observedUrl = `${liveStack.apiUrl}/api/observed-events`;
     const findingsUrl = `${liveStack.apiUrl}/api/findings`;
@@ -111,6 +112,17 @@ test.describe("Docker temporal observations", () => {
     );
     const initialDieIds = new Set(initial.events.filter((event) => event.kind === "container_died").map((event) => event.id));
     expect(JSON.stringify(initial)).not.toContain(liveStack.projectName!);
+
+    // This fixed malformed request is addressed only to the fixture's filtered
+    // gateway socket. It lacks the closed /events query policy and must be
+    // rejected before any raw-Docker forwarding; the live collector remains
+    // usable through its independent permitted stream.
+    expect(await liveStack.rejectUnsafeGatewayEventRequest!()).toBe(403);
+    await pollJson<ObservedEventsResponse>(
+      "live Docker collection after a rejected unsafe gateway request",
+      () => getJson<ObservedEventsResponse>(observedUrl, auth),
+      (response) => response.source === "docker" && response.collectionState === "collecting",
+    );
 
     // Each action is a closed compose restart of this test's labelled worker.
     // No broad Docker stop/restart, ID lookup, or unrelated resource command
