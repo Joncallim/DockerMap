@@ -24,6 +24,14 @@ containers, or services.
   collided, ambiguous, non-Docker, and non-matching-status inputs. These are projection tests:
   they add no collection and never assert requiredness, readiness, health, traffic, start-order,
   root-cause, or drift conclusions.
+- Mutual Compose-advisory tests require exactly one fresh reciprocal Docker-recorded declaration
+  in each direction between the same unique Docker containers, with matching collection instant
+  and opaque observation revision. They preserve the ordered two-fact evidence budget and stable
+  single-pair result while rejecting mock, missing, stale/timed-out, duplicate, malformed,
+  self-referential, collided, non-Docker, and mismatched-observation inputs. These tests verify a
+  static advisory projection only; they do not treat it as evidence that Compose accepted a file,
+  applied a start order, required either dependency, or established readiness, health, traffic,
+  deployment failure, causality, Internet reachability, or compromise.
 - Rust-owned JSON Schema and generated TypeScript declarations, Node-owned
   envelope/request/SSE schemas, and readable contract fixtures. The contract
   check fails on stale generated output, invalid fixtures, incomplete

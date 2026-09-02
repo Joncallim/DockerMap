@@ -63,6 +63,14 @@ changes them:
   duplicate, collided, or non-Docker inputs are suppressed. It exposes no raw Compose content or
   identifiers beyond the existing opaque runtime references, and it does not claim dependency
   requiredness, readiness, health, traffic, start-order execution, root cause, or drift.
+- The mutual Compose-declaration advisory is also a cached read-only projection. It requires one
+  fresh, reciprocal Docker-recorded Compose declaration in each direction between the same two
+  unique Docker containers, from the same collection instant and opaque Docker observation
+  revision. Any missing, stale, duplicate, malformed, collided, non-Docker, self-referential, or
+  mismatched observation suppresses it, including all mock-mode data. It does not expose raw
+  Compose labels or configuration paths. It is not proof that a Compose file was accepted, that a
+  dependency is required, that start order ran, or that services are ready or healthy; it makes no
+  traffic, deployment-failure, causality, Internet-reachability, compromise, or incident claim.
 
 ## Main Risks And Protections
 
