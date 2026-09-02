@@ -21,10 +21,12 @@ use crate::{
 };
 use dockermap_core::{
     collision_resistant_id_component, derive_findings, derive_images, mock_snapshot,
-    observed_container_inventory, DiagnosticSeverity, DockerSnapshot, FindingsResponse,
-    HealthResponse, HealthState, ObservedChangeEvent, ObservedChangeHistoryResponse,
-    ObservedChangeKind, ObservedContainerInventory, ObservedDockerEventCollectionState,
-    ObservedDockerEventHistoryResponse, ProviderSlot, ProviderState, ProviderStateKind,
+    observed_container_identity, observed_container_inventory, DiagnosticSeverity, DockerSnapshot,
+    FindingsResponse, HealthResponse, HealthState, ObservedChangeEvent,
+    ObservedChangeHistoryResponse, ObservedChangeKind, ObservedContainerInventory,
+    ObservedDockerEventCollectionState, ObservedDockerEventHistoryResponse, ObservedResourceMetric,
+    ObservedResourceTelemetryCollectionState, ObservedResourceTelemetryResponse,
+    ObservedResourceTelemetrySample, ProviderSlot, ProviderState, ProviderStateKind,
     ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness,
     RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap,
     RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMode, RuntimeProviderKind,
@@ -35,7 +37,10 @@ use std::{
     sync::{atomic::AtomicBool, Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::{sync::RwLock, time::sleep};
+use tokio::{
+    sync::RwLock,
+    time::{sleep, timeout},
+};
 
 /// Current static Docker snapshot cadence. Optional provider collection is
 /// single-flight and may still be unwinding when the next snapshot publishes;
@@ -81,6 +86,66 @@ pub(crate) struct DaemonCache {
     docker_observation_revision: DockerObservationRevision,
     revision: PublicationRevision,
     observed_history: ObservedHistoryCache,
+    resource_telemetry: ResourceTelemetryCache,
+}
+
+const MAX_RESOURCE_TELEMETRY_SAMPLES: usize = 16;
+const MAX_CONCURRENT_RESOURCE_TELEMETRY_REQUESTS: usize = 2;
+const RESOURCE_TELEMETRY_TIMEOUT: Duration = Duration::from_millis(750);
+const RESOURCE_TELEMETRY_TTL: Duration = Duration::from_secs(8);
+
+/// Current-only, numeric-only stats retention. Docker's raw object is never
+/// cached: container names, interface names, PIDs, and counter histories are
+/// discarded at the collector boundary. `previous` is just enough numeric
+/// state to derive a rate on the next bounded observation.
+#[derive(Clone)]
+struct ResourceTelemetryCache {
+    collection_state: ObservedResourceTelemetryCollectionState,
+    samples: BTreeMap<String, TelemetryRecord>,
+    rotation_cursor: usize,
+    in_flight: usize,
+}
+
+#[derive(Clone)]
+struct TelemetryRecord {
+    public: ObservedResourceTelemetrySample,
+    previous: TelemetryCounters,
+}
+
+#[derive(Clone, Default)]
+struct TelemetryCounters {
+    at_ms: u64,
+    cpu_total: Option<u64>,
+    cpu_system: Option<u64>,
+    online_cpus: Option<u32>,
+    network_rx: Option<u64>,
+    network_tx: Option<u64>,
+}
+
+#[derive(Clone)]
+struct ResourceTelemetryClaim {
+    raw_container_id: String,
+    public_container_id: String,
+    source_generation: u64,
+    model_revision: String,
+    observation_revision: String,
+}
+
+impl Default for ResourceTelemetryCache {
+    fn default() -> Self {
+        Self {
+            collection_state: ObservedResourceTelemetryCollectionState::Unavailable,
+            samples: BTreeMap::new(),
+            rotation_cursor: 0,
+            in_flight: 0,
+        }
+    }
+}
+
+impl ResourceTelemetryCache {
+    fn source_reset() -> Self {
+        Self::default()
+    }
 }
 
 /// Daemon-lifetime inventory deltas only. This contains no Docker event stream
@@ -534,6 +599,7 @@ impl DaemonCache {
             docker_observation_revision: DockerObservationRevision::new(),
             revision: PublicationRevision::new(),
             observed_history: ObservedHistoryCache::new(),
+            resource_telemetry: ResourceTelemetryCache::default(),
         };
         cache.assign_docker_observation_revision();
         cache.assign_revision();
@@ -604,6 +670,35 @@ impl DaemonCache {
         }
     }
 
+    pub(crate) fn resource_telemetry_response(&self) -> ObservedResourceTelemetryResponse {
+        // Mock and label-scoped profiles have no telemetry authority. Do not
+        // relabel retained live values after either source condition changes.
+        if self.health.mode != RuntimeMode::Docker
+            || self.resource_telemetry.collection_state
+                == ObservedResourceTelemetryCollectionState::Unavailable
+        {
+            return ObservedResourceTelemetryResponse {
+                source: self.health.mode.clone(),
+                collection_state: ObservedResourceTelemetryCollectionState::Unavailable,
+                current_model_revision: None,
+                current_observation_revision: None,
+                samples: Vec::new(),
+            };
+        }
+        ObservedResourceTelemetryResponse {
+            source: RuntimeMode::Docker,
+            collection_state: self.resource_telemetry.collection_state,
+            current_model_revision: Some(self.snapshot.model_revision.clone()),
+            current_observation_revision: Some(self.docker_observation_token()),
+            samples: self
+                .resource_telemetry
+                .samples
+                .values()
+                .map(|record| record.public.clone())
+                .collect(),
+        }
+    }
+
     fn rebuild_runtime_map(&mut self) {
         self.assign_docker_observation_revision();
         let docker_observation_token = self.docker_observation_token();
@@ -631,8 +726,261 @@ pub(crate) async fn refresh_cache(state: &AppState) {
     // Docker client, or source-fallback authority.
     if mode == RuntimeMode::Docker {
         let due = claim_due_provider_slots(state, monotonic_now()).await;
-        spawn_provider_slots(state.clone(), snapshot, mode, source_generation, due);
+        spawn_provider_slots(
+            state.clone(),
+            snapshot.clone(),
+            mode,
+            source_generation,
+            due,
+        );
+        refresh_resource_telemetry(state, snapshot, source_generation).await;
     }
+}
+
+/// Launch at most two finite, snapshot-selected stats requests per refresh.
+/// The source generation and both revisions are captured before any I/O; a
+/// completion may publish only if all three still attest the same Docker view.
+async fn refresh_resource_telemetry(
+    state: &AppState,
+    snapshot: DockerSnapshot,
+    source_generation: u64,
+) {
+    let collector = match docker_collector(state).await {
+        Ok(collector) => collector,
+        Err(_) => return,
+    };
+    if !collector.stats_available() {
+        let mut cache = state.cache.write().await;
+        if cache.health.mode == RuntimeMode::Docker && cache.source_generation == source_generation
+        {
+            cache.resource_telemetry = ResourceTelemetryCache::default();
+        }
+        return;
+    }
+    let claims = claim_resource_telemetry(&state.cache, &snapshot, source_generation).await;
+    for claim in claims {
+        let state = state.clone();
+        let collector = collector.clone();
+        tokio::spawn(async move {
+            let observed_at_ms = wall_clock_millis();
+            let result = timeout(
+                RESOURCE_TELEMETRY_TIMEOUT,
+                collector.collect_one_shot_stats(&claim.raw_container_id),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|stats| observed_at_ms.map(|at| (at, stats)));
+            apply_resource_telemetry(&state.cache, claim, result).await;
+        });
+    }
+}
+
+async fn claim_resource_telemetry(
+    cache: &RwLock<DaemonCache>,
+    snapshot: &DockerSnapshot,
+    source_generation: u64,
+) -> Vec<ResourceTelemetryClaim> {
+    let mut cache = cache.write().await;
+    if cache.health.mode != RuntimeMode::Docker || cache.source_generation != source_generation {
+        return Vec::new();
+    }
+    let model_revision = cache.snapshot.model_revision.clone();
+    let observation_revision = cache.docker_observation_token();
+    let telemetry = &mut cache.resource_telemetry;
+    let remaining = MAX_CONCURRENT_RESOURCE_TELEMETRY_REQUESTS.saturating_sub(telemetry.in_flight);
+    if remaining == 0 {
+        return Vec::new();
+    }
+    let mut containers = snapshot
+        .containers
+        .iter()
+        .filter(|container| !container.id.is_empty())
+        .map(|container| {
+            (
+                observed_container_identity(&container.id),
+                container.id.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    containers.sort();
+    containers.truncate(MAX_RESOURCE_TELEMETRY_SAMPLES);
+    if containers.is_empty() {
+        telemetry.collection_state = ObservedResourceTelemetryCollectionState::Fresh;
+        return Vec::new();
+    }
+    let count = remaining.min(containers.len());
+    let claims = (0..count)
+        .map(|offset| {
+            let (public_container_id, raw_container_id) =
+                containers[(telemetry.rotation_cursor + offset) % containers.len()].clone();
+            ResourceTelemetryClaim {
+                raw_container_id,
+                public_container_id,
+                source_generation,
+                model_revision: model_revision.clone(),
+                observation_revision: observation_revision.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    telemetry.rotation_cursor = (telemetry.rotation_cursor + count) % containers.len();
+    telemetry.in_flight += claims.len();
+    telemetry.collection_state = ObservedResourceTelemetryCollectionState::Collecting;
+    claims
+}
+
+async fn apply_resource_telemetry(
+    cache: &RwLock<DaemonCache>,
+    claim: ResourceTelemetryClaim,
+    result: Option<(u64, bollard::models::ContainerStatsResponse)>,
+) {
+    let mut cache = cache.write().await;
+    if cache.health.mode != RuntimeMode::Docker
+        || cache.source_generation != claim.source_generation
+    {
+        return;
+    }
+    let current_snapshot = cache.snapshot.clone();
+    prune_resource_telemetry(&mut cache.resource_telemetry, &current_snapshot);
+    let still_current = cache.snapshot.containers.iter().any(|container| {
+        !container.id.is_empty()
+            && observed_container_identity(&container.id) == claim.public_container_id
+    });
+    let revision_changed = cache.snapshot.model_revision != claim.model_revision
+        || cache.docker_observation_token() != claim.observation_revision;
+    let telemetry = &mut cache.resource_telemetry;
+    telemetry.in_flight = telemetry.in_flight.saturating_sub(1);
+    // A newer Docker publication supersedes this sample. Release the fixed
+    // concurrency claim, but never merge measurements from a different model
+    // or observation revision into the current public envelope.
+    if revision_changed || !still_current {
+        telemetry.collection_state = if telemetry.in_flight == 0 {
+            ObservedResourceTelemetryCollectionState::Stale
+        } else {
+            ObservedResourceTelemetryCollectionState::Collecting
+        };
+        return;
+    }
+    if let Some((observed_at_ms, stats)) = result {
+        let previous = telemetry
+            .samples
+            .get(&claim.public_container_id)
+            .map(|record| record.previous.clone());
+        if let Some(record) =
+            sanitize_resource_telemetry(&claim.public_container_id, observed_at_ms, previous, stats)
+        {
+            telemetry.samples.insert(claim.public_container_id, record);
+        }
+    }
+    telemetry.collection_state = if telemetry.in_flight == 0 {
+        if telemetry.samples.is_empty() {
+            ObservedResourceTelemetryCollectionState::Stale
+        } else {
+            ObservedResourceTelemetryCollectionState::Fresh
+        }
+    } else {
+        ObservedResourceTelemetryCollectionState::Collecting
+    };
+}
+
+fn sanitize_resource_telemetry(
+    public_container_id: &str,
+    observed_at_ms: u64,
+    previous: Option<TelemetryCounters>,
+    stats: bollard::models::ContainerStatsResponse,
+) -> Option<TelemetryRecord> {
+    const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
+    if public_container_id.is_empty() {
+        return None;
+    }
+    let counters =
+        TelemetryCounters {
+            at_ms: observed_at_ms,
+            cpu_total: stats
+                .cpu_stats
+                .as_ref()
+                .and_then(|cpu| cpu.cpu_usage.as_ref())
+                .and_then(|usage| usage.total_usage)
+                .filter(|value| *value <= MAX_SAFE_JS_INTEGER),
+            cpu_system: stats
+                .cpu_stats
+                .as_ref()
+                .and_then(|cpu| cpu.system_cpu_usage)
+                .filter(|value| *value <= MAX_SAFE_JS_INTEGER),
+            online_cpus: stats.cpu_stats.as_ref().and_then(|cpu| cpu.online_cpus),
+            network_rx: stats.networks.as_ref().and_then(|networks| {
+                safe_telemetry_sum(networks.values().filter_map(|n| n.rx_bytes))
+            }),
+            network_tx: stats.networks.as_ref().and_then(|networks| {
+                safe_telemetry_sum(networks.values().filter_map(|n| n.tx_bytes))
+            }),
+        };
+    let metric = |value| {
+        if value > MAX_SAFE_JS_INTEGER {
+            return None;
+        }
+        let expires_at_ms = observed_at_ms.checked_add(RESOURCE_TELEMETRY_TTL.as_millis() as u64)?;
+        if expires_at_ms > MAX_SAFE_JS_INTEGER {
+            return None;
+        }
+        Some(ObservedResourceMetric {
+            value,
+            observed_at_ms,
+            expires_at_ms,
+        })
+    };
+    let cpu_percent = previous.as_ref().and_then(|prior| {
+        let cpu_delta = counters.cpu_total?.checked_sub(prior.cpu_total?)?;
+        let system_delta = counters.cpu_system?.checked_sub(prior.cpu_system?)?;
+        let cpus = u64::from(counters.online_cpus?);
+        (system_delta > 0)
+            .then(|| cpu_delta.saturating_mul(cpus).saturating_mul(100) / system_delta)
+            .and_then(metric)
+    });
+    let rate = |current: Option<u64>, prior: Option<u64>| {
+        previous.as_ref().and_then(|old| {
+            let elapsed = observed_at_ms.checked_sub(old.at_ms)?;
+            let delta = current?.checked_sub(prior?)?;
+            (elapsed > 0)
+                .then(|| delta.saturating_mul(1_000) / elapsed)
+                .and_then(metric)
+        })
+    };
+    let sample = ObservedResourceTelemetrySample {
+        container_id: public_container_id.to_owned(),
+        cpu_percent,
+        memory_used_bytes: stats
+            .memory_stats
+            .as_ref()
+            .and_then(|m| m.usage)
+            .filter(|value| *value <= MAX_SAFE_JS_INTEGER)
+            .and_then(metric),
+        memory_limit_bytes: stats
+            .memory_stats
+            .as_ref()
+            .and_then(|m| m.limit)
+            .filter(|value| *value <= MAX_SAFE_JS_INTEGER)
+            .and_then(metric),
+        network_rx_bytes_per_second: rate(
+            counters.network_rx,
+            previous.as_ref().and_then(|p| p.network_rx),
+        ),
+        network_tx_bytes_per_second: rate(
+            counters.network_tx,
+            previous.as_ref().and_then(|p| p.network_tx),
+        ),
+    };
+    Some(TelemetryRecord {
+        public: sample,
+        previous: counters,
+    })
+}
+
+fn safe_telemetry_sum(mut values: impl Iterator<Item = u64>) -> Option<u64> {
+    const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
+    values
+        .try_fold(0_u64, |total, value| total.checked_add(value))
+        .filter(|total| *total <= MAX_SAFE_JS_INTEGER)
 }
 
 /// Return the current live generation and its bounded replay cursor. Mock mode
@@ -765,6 +1113,17 @@ async fn publish_docker_snapshot_cache(
     } else {
         ObservedHistoryCache::new()
     };
+    // Stats are source-bound observations just like event history. A source
+    // transition always discards retained values and their numeric baselines.
+    updated.resource_telemetry = if same_source {
+        cache.resource_telemetry.clone()
+    } else {
+        ResourceTelemetryCache::source_reset()
+    };
+    // Both public samples and their private numeric rate baselines are only
+    // meaningful while the exact opaque container identity is in the current
+    // sanitized Docker inventory. Prune before this cache can be published.
+    prune_resource_telemetry(&mut updated.resource_telemetry, &updated.snapshot);
     updated.rebuild_runtime_map();
     updated.revision = cache.revision.clone();
     updated.assign_revision();
@@ -784,6 +1143,16 @@ async fn publish_docker_snapshot_cache(
         cache.health.mode.clone(),
         cache.source_generation,
     )
+}
+
+fn prune_resource_telemetry(telemetry: &mut ResourceTelemetryCache, snapshot: &DockerSnapshot) {
+    let current = snapshot
+        .containers
+        .iter()
+        .filter(|container| !container.id.is_empty())
+        .map(|container| observed_container_identity(&container.id))
+        .collect::<std::collections::BTreeSet<_>>();
+    telemetry.samples.retain(|id, _| current.contains(id));
 }
 
 /// Returns the cached gateway collector, connecting only to the configured
@@ -839,6 +1208,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     docker_observation_revision: DockerObservationRevision::new(),
                     revision: PublicationRevision::new(),
                     observed_history: ObservedHistoryCache::new(),
+                    resource_telemetry: ResourceTelemetryCache::default(),
                 }
             }
             Err(error) => {
@@ -1401,7 +1771,10 @@ mod scheduler_tests {
     };
     use crate::provider_contract::ProviderDiagnostic;
     use bollard::{
-        models::{EventActor, EventMessage, EventMessageTypeEnum},
+        models::{
+            ContainerCpuStats, ContainerCpuUsage, ContainerMemoryStats, ContainerNetworkStats,
+            ContainerStatsResponse, EventActor, EventMessage, EventMessageTypeEnum,
+        },
         Docker, API_DEFAULT_VERSION,
     };
     use dockermap_core::{
@@ -1873,6 +2246,7 @@ mod scheduler_tests {
             docker_observation_revision: DockerObservationRevision::new(),
             revision: PublicationRevision::new(),
             observed_history: ObservedHistoryCache::new(),
+            resource_telemetry: ResourceTelemetryCache::default(),
         };
         cache.assign_docker_observation_revision();
         cache
@@ -3558,5 +3932,182 @@ mod scheduler_tests {
         let after = state.cache.read().await.observed_history_response();
         assert_eq!(after.observed_revision, observed_revision);
         assert_eq!(after.events.len(), MAX_OBSERVED_CHANGE_EVENTS);
+    }
+
+    fn telemetry_stats(
+        cpu_total: u64,
+        system_total: u64,
+        rx: u64,
+        tx: u64,
+    ) -> ContainerStatsResponse {
+        ContainerStatsResponse {
+            cpu_stats: Some(ContainerCpuStats {
+                cpu_usage: Some(ContainerCpuUsage {
+                    total_usage: Some(cpu_total),
+                    ..Default::default()
+                }),
+                system_cpu_usage: Some(system_total),
+                online_cpus: Some(2),
+                ..Default::default()
+            }),
+            memory_stats: Some(ContainerMemoryStats {
+                usage: Some(123),
+                limit: Some(456),
+                ..Default::default()
+            }),
+            networks: Some(std::collections::HashMap::from([(
+                "secret-interface-name".into(),
+                ContainerNetworkStats {
+                    rx_bytes: Some(rx),
+                    tx_bytes: Some(tx),
+                    ..Default::default()
+                },
+            )])),
+            name: Some("secret-container-name".into()),
+            id: Some("secret-raw-id".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn telemetry_sanitizer_retains_only_numeric_metrics_and_derives_rates() {
+        let first = sanitize_resource_telemetry(
+            "docker_container_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            1_000,
+            None,
+            telemetry_stats(10, 100, 1_000, 2_000),
+        )
+        .expect("numeric sample");
+        assert_eq!(
+            first.public.memory_used_bytes.as_ref().map(|m| m.value),
+            Some(123)
+        );
+        assert!(first.public.cpu_percent.is_none());
+        assert!(first.public.network_rx_bytes_per_second.is_none());
+        let second = sanitize_resource_telemetry(
+            &first.public.container_id,
+            2_000,
+            Some(first.previous),
+            telemetry_stats(30, 200, 1_500, 2_750),
+        )
+        .expect("numeric sample");
+        assert_eq!(
+            second.public.cpu_percent.as_ref().map(|m| m.value),
+            Some(40)
+        );
+        assert_eq!(
+            second
+                .public
+                .network_rx_bytes_per_second
+                .as_ref()
+                .map(|m| m.value),
+            Some(500)
+        );
+        assert_eq!(
+            second
+                .public
+                .network_tx_bytes_per_second
+                .as_ref()
+                .map(|m| m.value),
+            Some(750)
+        );
+        let public = serde_json::to_string(&second.public).unwrap();
+        assert!(!public.contains("secret"));
+        assert!(!public.contains("interface"));
+        assert_eq!(
+            second.public.memory_used_bytes.unwrap().expires_at_ms,
+            10_000
+        );
+    }
+
+    #[test]
+    fn telemetry_sanitizer_keeps_partial_memory_when_cpu_or_network_are_absent() {
+        let sample = sanitize_resource_telemetry(
+            "docker_container_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            1_000,
+            None,
+            ContainerStatsResponse {
+                memory_stats: Some(ContainerMemoryStats {
+                    usage: Some(9),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .expect("partial numeric stats remain useful");
+        assert_eq!(
+            sample.public.memory_used_bytes.as_ref().map(|m| m.value),
+            Some(9)
+        );
+        assert!(sample.public.cpu_percent.is_none());
+        assert!(sample.public.network_rx_bytes_per_second.is_none());
+    }
+
+    #[test]
+    fn telemetry_sanitizer_omits_metrics_whose_expiry_is_not_browser_safe() {
+        let sample = sanitize_resource_telemetry(
+            "docker_container_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            9_007_199_254_740_000,
+            None,
+            ContainerStatsResponse {
+                memory_stats: Some(ContainerMemoryStats {
+                    usage: Some(9),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(sample.public.memory_used_bytes.is_none());
+    }
+
+    #[test]
+    fn telemetry_source_reset_discards_samples_and_private_baselines() {
+        let record = sanitize_resource_telemetry(
+            "docker_container_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            1_000,
+            None,
+            telemetry_stats(10, 100, 1, 1),
+        )
+        .unwrap();
+        let mut telemetry = ResourceTelemetryCache {
+            collection_state: ObservedResourceTelemetryCollectionState::Fresh,
+            ..Default::default()
+        };
+        telemetry
+            .samples
+            .insert(record.public.container_id.clone(), record);
+        telemetry.in_flight = 1;
+        let reset = ResourceTelemetryCache::source_reset();
+        assert!(reset.samples.is_empty());
+        assert_eq!(reset.in_flight, 0);
+        assert_eq!(
+            reset.collection_state,
+            ObservedResourceTelemetryCollectionState::Unavailable
+        );
+    }
+
+    #[test]
+    fn telemetry_prune_removes_replaced_container_and_allows_later_fresh_identity() {
+        let mut first = mock_snapshot();
+        let old_raw = first.containers[0].id.clone();
+        let old_id = observed_container_identity(&old_raw);
+        let old = sanitize_resource_telemetry(&old_id, 1_000, None, telemetry_stats(1, 10, 1, 1))
+            .unwrap();
+        let mut telemetry = ResourceTelemetryCache::default();
+        telemetry.samples.insert(old_id.clone(), old);
+        first.containers[0].id = "replacement-container-id".into();
+        prune_resource_telemetry(&mut telemetry, &first);
+        assert!(
+            telemetry.samples.is_empty(),
+            "removed container must lose both public sample and baseline"
+        );
+        let new_id = observed_container_identity(&first.containers[0].id);
+        let fresh = sanitize_resource_telemetry(&new_id, 2_000, None, telemetry_stats(2, 20, 2, 2))
+            .unwrap();
+        telemetry.samples.insert(new_id.clone(), fresh);
+        assert_eq!(telemetry.samples.len(), 1);
+        assert!(telemetry.samples.contains_key(&new_id));
+        assert!(!telemetry.samples.contains_key(&old_id));
     }
 }
