@@ -1,8 +1,7 @@
 //! Safe comparison primitives for the daemon's bounded observed-history cache.
 
-use crate::{
-    collision_resistant_id_component, ContainerRecord, DockerSnapshot, ObservedContainerStatus,
-};
+use crate::{ContainerRecord, DockerSnapshot, ObservedContainerStatus};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The daemon retains at most this many observed deltas for its own lifetime.
@@ -20,10 +19,7 @@ pub struct ObservedContainerInventory {
 pub fn observed_container_inventory(snapshot: &DockerSnapshot) -> ObservedContainerInventory {
     let mut candidates = BTreeMap::<String, Vec<&ContainerRecord>>::new();
     for container in &snapshot.containers {
-        let id = format!(
-            "docker_container_{}",
-            collision_resistant_id_component(&container.id)
-        );
+        let id = observed_container_identity(&container.id);
         candidates.entry(id).or_default().push(container);
     }
 
@@ -40,6 +36,18 @@ pub fn observed_container_inventory(snapshot: &DockerSnapshot) -> ObservedContai
         containers,
         ambiguous_ids,
     }
+}
+
+/// An opaque, stable history-only identity. History must retain enough
+/// identity to compare sanitized inventories, but must not make a readable
+/// portion of a Docker container ID observable through temporal events.
+fn observed_container_identity(raw_container_id: &str) -> String {
+    let digest = Sha256::digest(raw_container_id.as_bytes());
+    let encoded_digest = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("docker_container_{encoded_digest}")
 }
 
 fn observed_status_class(status: &str) -> ObservedContainerStatus {
@@ -59,9 +67,11 @@ mod tests {
     use crate::{mock_snapshot, DockerSnapshot};
 
     #[test]
-    fn inventory_uses_only_runtime_node_ids_and_closed_statuses() {
+    fn inventory_uses_opaque_container_identities_and_closed_statuses() {
         let mut snapshot = mock_snapshot();
-        snapshot.containers[0].id = "raw-id-token=DOCKERMAP_TEST_FAKE_HISTORY_SECRET".into();
+        const RAW_ID_PREFIX: &str = "history-identity-sentinel";
+        const RAW_ID_SENTINEL: &str = "history-identity-sentinel-7f2ac9e481";
+        snapshot.containers[0].id = RAW_ID_SENTINEL.into();
         snapshot.containers[0].name = "/srv/private/name".into();
         snapshot.containers[0].status = "Up 12 seconds (healthy)".into();
         let inventory = observed_container_inventory(&snapshot);
@@ -71,6 +81,8 @@ mod tests {
             .next()
             .expect("container identity");
         assert!(id.starts_with("docker_container_"));
+        assert!(!id.contains(RAW_ID_SENTINEL));
+        assert!(!id.contains(RAW_ID_PREFIX));
         assert!(!id.contains("/srv/private/name"));
         assert!(!id.contains("Up 12 seconds"));
         assert!(inventory

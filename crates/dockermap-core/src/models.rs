@@ -166,8 +166,8 @@ pub enum ObservedContainerStatus {
     Other,
 }
 
-/// One observed inventory delta. `containerId` is the collision-resistant
-/// Docker runtime-node identity, never a raw Docker ID or container name.
+/// One observed inventory delta. `containerId` is an opaque digest-derived
+/// history identity, never a raw Docker ID, readable ID fragment, or name.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ObservedChangeEvent {
     #[schemars(length(min = 1, max = 64))]
