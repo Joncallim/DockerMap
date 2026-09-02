@@ -251,79 +251,82 @@ export async function startLiveDockerStack(options: { apiToken?: string } = {}):
     cleanupLiveDocker(docker, fixture);
     throw new Error("Live Docker API token must not be empty when configured.");
   }
+  const processes: ProcessHandle[] = [];
   try {
     runDocker(docker, ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "up", "-d"], fixture.dir);
     runDocker(docker, ["run", "-d", "--name", fixture.controlContainerName, "busybox:1.36.1", "sh", "-c", "while true; do sleep 60; done"], fixture.dir);
+    const ports = await allocatePorts();
+
+    await ensureDaemonBinary();
+    ensureContractsRuntimePackage();
+    const gatewaySocket = join(fixture.dir, "docker-read.sock");
+    let gateway = startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter });
+    processes.push(gateway);
+    await waitForSocket(gatewaySocket);
+    processes.push(startDaemon({
+      port: ports.daemon,
+      cwd: fixture.dir,
+      useDockerAccess: true,
+      docker,
+      dockerLabelFilter: fixture.labelFilter,
+      gatewaySocket,
+      pathPrefix: fixture.stubBinDir,
+      daemonToken: apiToken,
+      // Match the recommended Docker-only deployment: it must never use the
+      // daemon process's partial PID namespace as host evidence.
+      pidNamespace: "restricted"
+    }));
+    const daemonRequest = apiToken ? { headers: { Authorization: `Bearer ${apiToken}` } } : undefined;
+    await waitForDockerHealth(`http://127.0.0.1:${ports.daemon}/daemon/health`, daemonRequest);
+    await waitForFixtureSnapshot(`http://127.0.0.1:${ports.daemon}/daemon/snapshot`, fixture.projectName, daemonRequest);
+
+    processes.push(startApi({
+      port: ports.api,
+      daemonPort: ports.daemon,
+      webPort: ports.web,
+      apiToken,
+      daemonToken: apiToken
+    }));
+    await waitForJson(`http://127.0.0.1:${ports.api}/api/health`, daemonRequest);
+
+    processes.push(startWeb({ port: ports.web, apiPort: ports.api }));
+    await waitForHttp(`http://127.0.0.1:${ports.web}`);
+
+    return {
+      apiUrl: `http://127.0.0.1:${ports.api}`,
+      webUrl: `http://127.0.0.1:${ports.web}`,
+      daemonUrl: `http://127.0.0.1:${ports.daemon}`,
+      fixtureDir: fixture.dir,
+      projectName: fixture.projectName,
+      controlContainerName: fixture.controlContainerName,
+      apiToken,
+      restartFixtureWorker: async () => {
+        runDocker(
+          docker,
+          ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "restart", "worker"],
+          fixture.dir,
+        );
+        await waitForFixtureServiceRunning(docker, fixture, "worker");
+      },
+      restartDockerGateway: async () => {
+        await stopProcess(gateway);
+        gateway = startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter });
+        processes.push(gateway);
+        await waitForSocket(gatewaySocket);
+      },
+      stop: async () => {
+        await stopProcesses(processes);
+        cleanupLiveDocker(docker, fixture);
+      }
+    };
   } catch (error) {
+    // Stack startup may have created Compose resources and one or more local
+    // subprocesses before the first readiness check fails. Unwind only those
+    // owned resources while preserving the error that caused startup to fail.
+    await stopProcesses(processes);
     cleanupLiveDocker(docker, fixture);
     throw error;
   }
-
-  const ports = await allocatePorts();
-  const processes: ProcessHandle[] = [];
-
-  await ensureDaemonBinary();
-  ensureContractsRuntimePackage();
-  const gatewaySocket = join(fixture.dir, "docker-read.sock");
-  let gateway = startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter });
-  processes.push(gateway);
-  await waitForSocket(gatewaySocket);
-  processes.push(startDaemon({
-    port: ports.daemon,
-    cwd: fixture.dir,
-    useDockerAccess: true,
-    docker,
-    dockerLabelFilter: fixture.labelFilter,
-    gatewaySocket,
-    pathPrefix: fixture.stubBinDir,
-    daemonToken: apiToken,
-    // Match the recommended Docker-only deployment: it must never use the
-    // daemon process's partial PID namespace as host evidence.
-    pidNamespace: "restricted"
-  }));
-  const daemonRequest = apiToken ? { headers: { Authorization: `Bearer ${apiToken}` } } : undefined;
-  await waitForDockerHealth(`http://127.0.0.1:${ports.daemon}/daemon/health`, daemonRequest);
-  await waitForFixtureSnapshot(`http://127.0.0.1:${ports.daemon}/daemon/snapshot`, fixture.projectName, daemonRequest);
-
-  processes.push(startApi({
-    port: ports.api,
-    daemonPort: ports.daemon,
-    webPort: ports.web,
-    apiToken,
-    daemonToken: apiToken
-  }));
-  await waitForJson(`http://127.0.0.1:${ports.api}/api/health`, daemonRequest);
-
-  processes.push(startWeb({ port: ports.web, apiPort: ports.api }));
-  await waitForHttp(`http://127.0.0.1:${ports.web}`);
-
-  return {
-    apiUrl: `http://127.0.0.1:${ports.api}`,
-    webUrl: `http://127.0.0.1:${ports.web}`,
-    daemonUrl: `http://127.0.0.1:${ports.daemon}`,
-    fixtureDir: fixture.dir,
-    projectName: fixture.projectName,
-    controlContainerName: fixture.controlContainerName,
-    apiToken,
-    restartFixtureWorker: async () => {
-      runDocker(
-        docker,
-        ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "restart", "worker"],
-        fixture.dir,
-      );
-      await waitForFixtureServiceRunning(docker, fixture, "worker");
-    },
-    restartDockerGateway: async () => {
-      await stopProcess(gateway);
-      gateway = startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter });
-      processes.push(gateway);
-      await waitForSocket(gatewaySocket);
-    },
-    stop: async () => {
-      await stopProcesses(processes);
-      cleanupLiveDocker(docker, fixture);
-    }
-  };
 }
 
 export async function startTokenConfiguredCompose(overrides: NodeJS.ProcessEnv = {}): Promise<{ health: string; stop: () => Promise<void> }> {

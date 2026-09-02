@@ -46,6 +46,39 @@ test.describe("Docker temporal observations", () => {
     stack = null;
   });
 
+  test("bounds polling timeout diagnostics without serializing API payloads", async () => {
+    const sentinel = "DOCKERMAP_TEST_TIMEOUT_PAYLOAD_MUST_NOT_APPEAR";
+    const timeout = await pollingFailure(
+      () => pollJson(
+        "safe timeout",
+        async () => ({
+          source: "docker",
+          collectionState: "collecting",
+          events: [{ raw: sentinel }],
+          findings: [{ raw: sentinel }]
+        }),
+        () => false,
+        1,
+      ),
+    );
+    expect(timeout.message).toContain("source=docker");
+    expect(timeout.message).toContain("collectionState=collecting");
+    expect(timeout.message).toContain("eventCount=1");
+    expect(timeout.message).toContain("findingCount=1");
+    expect(timeout.message).not.toContain(sentinel);
+
+    const requestFailure = await pollingFailure(
+      () => pollJson(
+        "safe request failure",
+        async () => { throw new Error(`${sentinel}: http://private.example/`); },
+        () => false,
+        1,
+      ),
+    );
+    expect(requestFailure.message).toContain("request failed");
+    expect(requestFailure.message).not.toContain(sentinel);
+  });
+
   test("publishes one authenticated repeated-die advisory from only its labelled fixture after gateway reconnect @live-docker", async () => {
     test.skip(!process.env.DOCKERMAP_E2E_LIVE_DOCKER, "Set DOCKERMAP_E2E_LIVE_DOCKER=1 to create live Docker fixtures.");
 
@@ -157,8 +190,13 @@ async function getJson<T>(url: string, headers: HeadersInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function pollJson<T>(label: string, request: () => Promise<T>, predicate: (response: T) => boolean): Promise<T> {
-  const deadline = Date.now() + 45_000;
+async function pollJson<T>(
+  label: string,
+  request: () => Promise<T>,
+  predicate: (response: T) => boolean,
+  timeoutMs = 45_000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
   let lastResponse: T | undefined;
   let lastError: unknown;
   while (Date.now() < deadline) {
@@ -171,10 +209,42 @@ async function pollJson<T>(label: string, request: () => Promise<T>, predicate: 
     }
     await delay(250);
   }
-  const detail = lastError instanceof Error
-    ? lastError.message
-    : lastResponse === undefined
+  const detail = lastError === undefined
+    ? lastResponse === undefined
       ? "no response"
-      : JSON.stringify(lastResponse);
+      : pollingResponseMetadata(lastResponse)
+    : pollingRequestErrorMetadata(lastError);
   throw new Error(`Timed out waiting for ${label}: ${detail}`);
+}
+
+function pollingResponseMetadata(value: unknown): string {
+  if (!value || typeof value !== "object") return "response metadata unavailable";
+  const response = value as Record<string, unknown>;
+  const details: string[] = [];
+  if (response.source === "docker" || response.source === "mock") details.push(`source=${response.source}`);
+  if (response.collectionState === "connecting" || response.collectionState === "collecting" || response.collectionState === "reconnecting" || response.collectionState === "unavailable") {
+    details.push(`collectionState=${response.collectionState}`);
+  }
+  if (Array.isArray(response.events)) details.push(`eventCount=${boundedCount(response.events.length)}`);
+  if (Array.isArray(response.findings)) details.push(`findingCount=${boundedCount(response.findings.length)}`);
+  return details.length === 0 ? "response metadata received" : `response metadata (${details.join(", ")})`;
+}
+
+function pollingRequestErrorMetadata(error: unknown): string {
+  if (!(error instanceof Error)) return "request failed";
+  const status = / returned ([1-5]\d{2})$/.exec(error.message)?.[1];
+  return status ? `HTTP ${status}` : "request failed";
+}
+
+function boundedCount(count: number) {
+  return Math.min(Math.max(0, count), 10_000);
+}
+
+async function pollingFailure(request: () => Promise<unknown>) {
+  try {
+    await request();
+  } catch (error) {
+    if (error instanceof Error) return error;
+  }
+  throw new Error("Expected polling request to time out");
 }
