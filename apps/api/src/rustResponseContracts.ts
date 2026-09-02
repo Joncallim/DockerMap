@@ -9,6 +9,7 @@ export const RUST_ROUTE_RESPONSE_SCHEMAS = {
   snapshot: "DockerSnapshot",
   graph: "GraphResponse",
   "runtime-map": "RuntimeMap",
+  findings: "FindingsResponse",
   containers: "ContainersResponse",
   container: "ContainerDetailResponse",
   images: "ImagesResponse",

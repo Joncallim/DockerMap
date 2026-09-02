@@ -11,6 +11,15 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 - [x] Normalize local check commands in `package.json`.
 - [x] Run JavaScript typecheck, build, and workspace tests from CI.
 - [x] Run Rust format, lint, and full workspace tests from CI.
+- [x] Make production dependency and built-image risk visible in CI: npm
+  production audit, RustSec advisory audit, locally built-image SPDX SBOM, and
+  a high/critical fixed-vulnerability gate. The severity and exception policy
+  is [the supply-chain baseline](SUPPLY_CHAIN.md).
+- [x] Pin every Dockerfile base image to a reviewed manifest digest and retain
+  an SPDX SBOM with each tagged release candidate.
+- [ ] Complete [security finding triage](SECURITY_FINDING_TRIAGE.md) for the
+  exact tagged candidate's full image report. The current remediation baseline
+  is untriaged and deferred; it is not release acceptance.
 - [x] Add API security tests for bearer auth, CORS, query limits, startup config, and error detail exposure.
 - [x] Add fixture-driven Compose validation tests for malformed files and blocked edit plans.
 - [x] Add non-live Playwright smoke coverage for the primary GUI pages.
@@ -128,8 +137,9 @@ before a broader beta.
 - [ ] Add a clean-host install test for systemd units and Nginx/Caddy proxy config.
 - [x] Add tag-triggered release automation for deploy artifacts and SHA-256
   checksums. [`.github/workflows/release.yml`](../../.github/workflows/release.yml)
-  validates the tag/version, builds, packages, checksums, and publishes the
-  prerelease assets (PR #98).
+  validates the tag/version, builds, packages, checksums, and retains the
+  candidate assets/SBOM for maintainer review. It does not publish a prerelease
+  automatically before the exact-tag evidence is complete.
 - [x] Add a documented support policy for Linux distro, Node, Rust, Docker, and browser versions.
   See [SUPPORT_POLICY.md](SUPPORT_POLICY.md); each release must still rerun the
   relevant gates against its exact candidate.

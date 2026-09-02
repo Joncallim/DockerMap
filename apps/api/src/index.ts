@@ -422,13 +422,20 @@ function getMockResponse<T>(path: string): T {
       lastUpdated: mockSnapshot.lastUpdated ?? Date.now(),
       modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1",
       providerStates: [
-        unavailableProviderState("network_infrastructure"), unavailableProviderState("host_scoped"),
+        unavailableProviderState("network_infrastructure"), unavailableProviderState("host_scoped"), unavailableProviderState("systemd"),
         unavailableProviderState("python_processes"), unavailableProviderState("native_processes"),
         unavailableProviderState("project_npm")
       ],
       source: "mock"
     };
     return runtimeMap as T;
+  }
+
+  if (path === "/daemon/findings") {
+    return {
+      findings: [],
+      modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1"
+    } as T;
   }
 
   if (path === "/daemon/containers") {
@@ -577,6 +584,7 @@ registerRoute("auth-whoami", (req, res) => {
 registerRoute("snapshot", readHandlers.snapshot);
 registerRoute("graph", readHandlers.graph);
 registerRoute("runtime-map", readHandlers.runtimeMap);
+registerRoute("findings", readHandlers.findings);
 registerRoute("diagnostics", readHandlers.diagnostics);
 registerRoute("containers", readHandlers.containers);
 registerRoute("container", readHandlers.container);

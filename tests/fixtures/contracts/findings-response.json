@@ -1,0 +1,90 @@
+{
+  "modelRevision": "fixture-findings-revision",
+  "findings": [
+    {
+      "id": "finding_systemd_requires_target_not_active_fixture",
+      "ruleId": "systemd.requires_target_not_active",
+      "severity": "warning",
+      "summary": "An active systemd service requires a target that is inactive or failed",
+      "recommendation": "Inspect the target service state and its declared dependency configuration.",
+      "subjectRef": "systemd_service_application",
+      "targetRef": "systemd_service_database",
+      "evidenceRefs": [
+        {
+          "version": 2,
+          "id": "systemd_requires:systemd_service_application:systemd_service_database",
+          "provider": "systemd",
+          "kind": "systemd_requires",
+          "assertionKind": "declared",
+          "summary": "systemd declared a Requires dependency",
+          "subjectRef": "systemd_service_application",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-systemd-observation",
+          "providerSlot": "systemd",
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "id": "finding_docker_internal_network_member_publishes_port_fixture",
+      "ruleId": "docker.internal_network_member_publishes_port",
+      "severity": "advisory",
+      "summary": "A container on an internal Docker network also has a published host port.",
+      "recommendation": "Review whether the host-port publication is intended for this internal-network service.",
+      "subjectRef": "docker_container_api",
+      "targetRef": "docker_network_internal",
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "docker_network_membership:docker_container_api:docker_network_internal",
+          "provider": "docker",
+          "kind": "docker_network_membership",
+          "assertionKind": "observed",
+          "summary": "Docker reported container network membership",
+          "subjectRef": "docker_container_api",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-docker-observation",
+          "providerSlot": null,
+          "freshness": "fresh"
+        },
+        {
+          "version": 1,
+          "id": "docker_port_publication:docker_container_api:network_listener_api_8080",
+          "provider": "docker",
+          "kind": "docker_port_publication",
+          "assertionKind": "observed",
+          "summary": "Docker reported a published container port",
+          "subjectRef": "docker_container_api",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-docker-observation",
+          "providerSlot": null,
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "id": "finding_docker_daemon_state_bind_mount_fixture",
+      "ruleId": "docker.daemon_state_bind_mount",
+      "severity": "warning",
+      "summary": "A container has Docker daemon state access that may provide Docker daemon API authority.",
+      "recommendation": "Review whether this container requires Docker daemon API authority.",
+      "subjectRef": "docker_container_api",
+      "targetRef": "host_risk_docker_daemon_state",
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "docker_daemon_state_bind_mount:docker_container_api:host_risk_docker_daemon_state",
+          "provider": "docker",
+          "kind": "docker_daemon_state_bind_mount",
+          "assertionKind": "observed",
+          "summary": "Docker reported a bind mount exposing Docker daemon state",
+          "subjectRef": "docker_container_api",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-docker-observation",
+          "providerSlot": null,
+          "freshness": "fresh"
+        }
+      ]
+    }
+  ]
+}
