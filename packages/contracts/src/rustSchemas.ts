@@ -606,10 +606,10 @@ export const RUST_RESPONSE_SCHEMAS = {
               "type": "null"
             }
           ],
-          "description": "Version-two provider evidence is explicitly tied to the finite\nscheduler slot that supplied its revision and freshness. Version one\nDocker evidence intentionally has no host-provider slot."
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
         },
         "subjectRef": {
-          "description": "The already-public runtime entity whose Docker fact was observed.",
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
           "type": "string"
         },
         "summary": {
@@ -1522,10 +1522,10 @@ export const RUST_RESPONSE_SCHEMAS = {
               "type": "null"
             }
           ],
-          "description": "Version-two provider evidence is explicitly tied to the finite\nscheduler slot that supplied its revision and freshness. Version one\nDocker evidence intentionally has no host-provider slot."
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
         },
         "subjectRef": {
-          "description": "The already-public runtime entity whose Docker fact was observed.",
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
           "type": "string"
         },
         "summary": {
@@ -3130,10 +3130,10 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
               "type": "null"
             }
           ],
-          "description": "Version-two provider evidence is explicitly tied to the finite\nscheduler slot that supplied its revision and freshness. Version one\nDocker evidence intentionally has no host-provider slot."
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
         },
         "subjectRef": {
-          "description": "The already-public runtime entity whose Docker fact was observed.",
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
           "type": "string"
         },
         "summary": {
@@ -4046,10 +4046,10 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
               "type": "null"
             }
           ],
-          "description": "Version-two provider evidence is explicitly tied to the finite\nscheduler slot that supplied its revision and freshness. Version one\nDocker evidence intentionally has no host-provider slot."
+          "description": "Version-two-and-later provider evidence is explicitly tied to the\nfinite scheduler slot that supplied its revision and freshness.\nVersion-one Docker evidence intentionally has no host-provider slot."
         },
         "subjectRef": {
-          "description": "The already-public runtime entity whose Docker fact was observed.",
+          "description": "The already-public runtime entity directly attested by this bounded\nprovider fact.",
           "type": "string"
         },
         "summary": {

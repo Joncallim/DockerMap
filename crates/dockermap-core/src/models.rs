@@ -887,7 +887,8 @@ pub struct RuntimeEvidenceRef {
     /// A bounded, curated explanation; it is never copied from a raw source.
     #[schemars(length(min = 1, max = 259))]
     pub summary: String,
-    /// The already-public runtime entity whose Docker fact was observed.
+    /// The already-public runtime entity directly attested by this bounded
+    /// provider fact.
     #[serde(rename = "subjectRef")]
     pub subject_ref: String,
     #[serde(rename = "collectedAt")]
