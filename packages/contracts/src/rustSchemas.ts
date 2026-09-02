@@ -2511,6 +2511,135 @@ export const RUST_RESPONSE_SCHEMAS = {
   "title": "VolumesResponse",
   "type": "object"
 },
+  ObservedChangeHistoryResponse: {
+  "$defs": {
+    "ObservedChangeEvent": {
+      "additionalProperties": false,
+      "description": "One observed inventory delta. `containerId` is the collision-resistant\nDocker runtime-node identity, never a raw Docker ID or container name.",
+      "properties": {
+        "containerId": {
+          "maxLength": 192,
+          "minLength": 1,
+          "type": "string"
+        },
+        "currentStatus": {
+          "description": "Closed status classes prevent raw Docker status text from entering the\ntemporal-history boundary.",
+          "enum": [
+            "running",
+            "stopped",
+            "other"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ObservedChangeKind"
+        },
+        "observedAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "previousStatus": {
+          "description": "Closed status classes prevent raw Docker status text from entering the\ntemporal-history boundary.",
+          "enum": [
+            "running",
+            "stopped",
+            "other"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "observedAtMs",
+        "containerId",
+        "previousStatus",
+        "currentStatus"
+      ],
+      "type": "object"
+    },
+    "ObservedChangeKind": {
+      "description": "A deliberately small, daemon-lifetime observation delta. It is derived\nfrom two published Docker inventories, not from Docker's event stream.",
+      "enum": [
+        "container_appeared",
+        "container_disappeared",
+        "container_status_changed"
+      ],
+      "type": "string"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Bounded in-memory history for the daemon process only. `mock` never\ninherits a Docker baseline or events from an earlier source generation.",
+  "properties": {
+    "baselineEstablished": {
+      "type": "boolean"
+    },
+    "currentModelRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/ObservedChangeEvent"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
+    "observedRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "$ref": "#/$defs/RuntimeMode"
+    }
+  },
+  "required": [
+    "source",
+    "baselineEstablished",
+    "currentModelRevision",
+    "observedRevision",
+    "events"
+  ],
+  "title": "ObservedChangeHistoryResponse",
+  "type": "object"
+},
 } as const;
 
 export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
@@ -5021,6 +5150,135 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "volumes"
   ],
   "title": "VolumesResponse",
+  "type": "object"
+},
+  ObservedChangeHistoryResponse: {
+  "$defs": {
+    "ObservedChangeEvent": {
+      "additionalProperties": false,
+      "description": "One observed inventory delta. `containerId` is the collision-resistant\nDocker runtime-node identity, never a raw Docker ID or container name.",
+      "properties": {
+        "containerId": {
+          "maxLength": 192,
+          "minLength": 1,
+          "type": "string"
+        },
+        "currentStatus": {
+          "description": "Closed status classes prevent raw Docker status text from entering the\ntemporal-history boundary.",
+          "enum": [
+            "running",
+            "stopped",
+            "other"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/components/schemas/ObservedChangeHistoryResponse/$defs/ObservedChangeKind"
+        },
+        "observedAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "previousStatus": {
+          "description": "Closed status classes prevent raw Docker status text from entering the\ntemporal-history boundary.",
+          "enum": [
+            "running",
+            "stopped",
+            "other"
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "observedAtMs",
+        "containerId",
+        "previousStatus",
+        "currentStatus"
+      ],
+      "type": "object"
+    },
+    "ObservedChangeKind": {
+      "description": "A deliberately small, daemon-lifetime observation delta. It is derived\nfrom two published Docker inventories, not from Docker's event stream.",
+      "enum": [
+        "container_appeared",
+        "container_disappeared",
+        "container_status_changed"
+      ],
+      "type": "string"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Bounded in-memory history for the daemon process only. `mock` never\ninherits a Docker baseline or events from an earlier source generation.",
+  "properties": {
+    "baselineEstablished": {
+      "type": "boolean"
+    },
+    "currentModelRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "events": {
+      "items": {
+        "$ref": "#/components/schemas/ObservedChangeHistoryResponse/$defs/ObservedChangeEvent"
+      },
+      "maxItems": 64,
+      "type": "array"
+    },
+    "observedRevision": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "$ref": "#/components/schemas/ObservedChangeHistoryResponse/$defs/RuntimeMode"
+    }
+  },
+  "required": [
+    "source",
+    "baselineEstablished",
+    "currentModelRevision",
+    "observedRevision",
+    "events"
+  ],
+  "title": "ObservedChangeHistoryResponse",
   "type": "object"
 },
 } as const;

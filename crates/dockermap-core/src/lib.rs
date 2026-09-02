@@ -8,6 +8,7 @@ mod fixtures;
 mod identity;
 mod logs;
 mod models;
+mod observed_history;
 pub mod schema_baseline;
 mod snapshot_runtime;
 
@@ -19,6 +20,9 @@ pub use logs::{
     MAX_LOG_PAGE_SIZE,
 };
 pub use models::*;
+pub use observed_history::{
+    observed_container_inventory, ObservedContainerInventory, MAX_OBSERVED_CHANGE_EVENTS,
+};
 pub use snapshot_runtime::{derive_graph, derive_images, derive_runtime_map};
 
 pub fn service_entity_kind_name(kind: &ServiceEntityKind) -> &'static str {

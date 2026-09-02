@@ -20,14 +20,16 @@ use crate::{
 };
 use dockermap_core::{
     collision_resistant_id_component, derive_findings, derive_images, mock_snapshot,
-    DiagnosticSeverity, DockerSnapshot, FindingsResponse, HealthResponse, HealthState,
-    ProviderSlot, ProviderState, ProviderStateKind, ProviderStatusReason,
-    RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
-    RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
-    RuntimeMode, RuntimeProviderKind,
+    observed_container_inventory, DiagnosticSeverity, DockerSnapshot, FindingsResponse,
+    HealthResponse, HealthState, ObservedChangeEvent, ObservedChangeHistoryResponse,
+    ObservedChangeKind, ObservedContainerInventory, ProviderSlot, ProviderState,
+    ProviderStateKind, ProviderStatusReason, RuntimeEvidenceAssertionKind,
+    RuntimeEvidenceFreshness, RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef,
+    RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMode, RuntimeProviderKind,
+    MAX_OBSERVED_CHANGE_EVENTS,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{atomic::AtomicBool, Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -76,6 +78,127 @@ pub(crate) struct DaemonCache {
     /// provider slot state may change without changing Docker facts.
     docker_observation_revision: DockerObservationRevision,
     revision: PublicationRevision,
+    observed_history: ObservedHistoryCache,
+}
+
+/// Daemon-lifetime inventory deltas only. This contains no Docker event stream
+/// payload, raw identity, status text, path, diagnostic, or causal claim.
+#[derive(Clone)]
+struct ObservedHistoryCache {
+    boot: String,
+    next_sequence: u64,
+    baseline: Option<ObservedContainerInventory>,
+    events: VecDeque<ObservedChangeEvent>,
+}
+
+impl ObservedHistoryCache {
+    fn new() -> Self {
+        Self {
+            boot: opaque_revision_boot_component(),
+            next_sequence: 0,
+            baseline: None,
+            events: VecDeque::new(),
+        }
+    }
+
+    /// Advance only after a successful Docker inventory has been cloned
+    /// through the publication sanitizer. A first snapshot is a baseline, not
+    /// an asserted change; ambiguous public IDs fail closed.
+    fn observe_published_snapshot(&mut self, snapshot: &DockerSnapshot) {
+        const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
+        let current = observed_container_inventory(snapshot);
+        let Some(previous) = self.baseline.replace(current.clone()) else {
+            return;
+        };
+        if snapshot.last_updated > MAX_SAFE_JS_INTEGER {
+            // Do not emit a browser-imprecise timestamp. The current
+            // sanitized inventory still becomes the next comparable baseline.
+            return;
+        }
+
+        for (container_id, previous_status) in &previous.containers {
+            if current.containers.contains_key(container_id)
+                || current.ambiguous_ids.contains(container_id)
+            {
+                continue;
+            }
+            self.push(
+                ObservedChangeKind::ContainerDisappeared,
+                snapshot.last_updated,
+                container_id.clone(),
+                Some(*previous_status),
+                None,
+            );
+        }
+        for (container_id, current_status) in &current.containers {
+            match previous.containers.get(container_id) {
+                None if !previous.ambiguous_ids.contains(container_id) => self.push(
+                    ObservedChangeKind::ContainerAppeared,
+                    snapshot.last_updated,
+                    container_id.clone(),
+                    None,
+                    Some(*current_status),
+                ),
+                Some(previous_status) if previous_status != current_status => self.push(
+                    ObservedChangeKind::ContainerStatusChanged,
+                    snapshot.last_updated,
+                    container_id.clone(),
+                    Some(*previous_status),
+                    Some(*current_status),
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    fn push(
+        &mut self,
+        kind: ObservedChangeKind,
+        observed_at_ms: u64,
+        container_id: String,
+        previous_status: Option<dockermap_core::ObservedContainerStatus>,
+        current_status: Option<dockermap_core::ObservedContainerStatus>,
+    ) {
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .expect("observed history sequence overflow");
+        self.events.push_back(ObservedChangeEvent {
+            id: format!("{}-{}", self.boot, self.next_sequence),
+            kind,
+            observed_at_ms,
+            container_id,
+            previous_status,
+            current_status,
+        });
+        while self.events.len() > MAX_OBSERVED_CHANGE_EVENTS {
+            self.events.pop_front();
+        }
+    }
+
+    fn response(
+        &self,
+        source: RuntimeMode,
+        current_model_revision: String,
+        observed_revision: String,
+    ) -> ObservedChangeHistoryResponse {
+        if source != RuntimeMode::Docker || self.baseline.is_none() {
+            return ObservedChangeHistoryResponse {
+                source,
+                baseline_established: false,
+                current_model_revision: None,
+                observed_revision: None,
+                events: Vec::new(),
+            };
+        }
+        ObservedChangeHistoryResponse {
+            source,
+            baseline_established: true,
+            current_model_revision: Some(current_model_revision),
+            observed_revision: Some(observed_revision),
+            events: self.events.iter().rev().cloned().collect(),
+        }
+    }
 }
 
 /// Per-process, opaque revision source. The boot value comes from the OS CSPRNG
@@ -390,6 +513,7 @@ impl DaemonCache {
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
             revision: PublicationRevision::new(),
+            observed_history: ObservedHistoryCache::new(),
         };
         cache.assign_docker_observation_revision();
         cache.assign_revision();
@@ -416,6 +540,14 @@ impl DaemonCache {
 
     fn docker_observation_token(&self) -> String {
         self.docker_observation_revision.current()
+    }
+
+    pub(crate) fn observed_history_response(&self) -> ObservedChangeHistoryResponse {
+        self.observed_history.response(
+            self.health.mode.clone(),
+            self.snapshot.model_revision.clone(),
+            self.docker_observation_token(),
+        )
     }
 
     fn rebuild_runtime_map(&mut self) {
@@ -509,9 +641,24 @@ async fn publish_docker_snapshot_cache(
         mark_network_observation_stale(&mut updated.runtime_providers);
     }
     updated.docker_observation_revision = cache.docker_observation_revision.clone();
+    updated.observed_history = if same_source {
+        cache.observed_history.clone()
+    } else {
+        ObservedHistoryCache::new()
+    };
     updated.rebuild_runtime_map();
     updated.revision = cache.revision.clone();
     updated.assign_revision();
+    if updated.health.mode == RuntimeMode::Docker {
+        // The input is publication-sanitized before it becomes retained state.
+        // History observes only this coherent successful cache publication.
+        let mut published = publish_docker_snapshot(&updated.snapshot);
+        published.last_updated = updated.snapshot.last_updated;
+        published.model_revision.clear();
+        updated
+            .observed_history
+            .observe_published_snapshot(&published);
+    }
     *cache = updated;
     (
         cache.snapshot.clone(),
@@ -572,6 +719,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     source_generation: 0,
                     docker_observation_revision: DockerObservationRevision::new(),
                     revision: PublicationRevision::new(),
+                    observed_history: ObservedHistoryCache::new(),
                 }
             }
             Err(error) => {
@@ -1425,6 +1573,7 @@ mod scheduler_tests {
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
             revision: PublicationRevision::new(),
+            observed_history: ObservedHistoryCache::new(),
         };
         cache.assign_docker_observation_revision();
         cache
@@ -2462,5 +2611,148 @@ mod scheduler_tests {
         publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
         let mock_cache = state.cache.read().await;
         assert_ne!(first_docker_evidence_revision(&mock_cache), changed_token);
+    }
+
+    #[tokio::test]
+    async fn observed_history_emits_only_sanitized_container_deltas_after_a_baseline() {
+        let mut first = mock_snapshot();
+        first.last_updated = 10;
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        publish_docker_snapshot_cache(&state, docker_cache(first.clone())).await;
+        assert_eq!(
+            state
+                .cache
+                .read()
+                .await
+                .observed_history_response()
+                .events
+                .len(),
+            0
+        );
+
+        let mut raw_only = first.clone();
+        raw_only.last_updated = 11;
+        raw_only.containers[0].name = "token=DOCKERMAP_TEST_FAKE_HISTORY_NAME".into();
+        raw_only.containers[0].role = "token=DOCKERMAP_TEST_FAKE_HISTORY_ROLE".into();
+        publish_docker_snapshot_cache(&state, docker_cache(raw_only)).await;
+        assert!(state
+            .cache
+            .read()
+            .await
+            .observed_history_response()
+            .events
+            .is_empty());
+
+        let mut changed = first;
+        changed.last_updated = 12;
+        changed.containers[0].status = "Exited (137) 1 second ago".into();
+        publish_docker_snapshot_cache(&state, docker_cache(changed)).await;
+        let response = state.cache.read().await.observed_history_response();
+        assert!(response.baseline_established);
+        assert_eq!(response.events.len(), 1);
+        let event = &response.events[0];
+        assert_eq!(event.kind, ObservedChangeKind::ContainerStatusChanged);
+        assert_eq!(
+            event.previous_status,
+            Some(dockermap_core::ObservedContainerStatus::Running)
+        );
+        assert_eq!(
+            event.current_status,
+            Some(dockermap_core::ObservedContainerStatus::Stopped)
+        );
+        assert!(event.container_id.starts_with("docker_container_"));
+        let encoded = serde_json::to_string(event).expect("event serializes");
+        for forbidden in [
+            "Exited (137)",
+            "/srv/private",
+            "DOCKERMAP_TEST_FAKE_HISTORY",
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "history leaked {forbidden}: {encoded}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn observed_history_resets_across_source_transitions_and_mock_is_unavailable() {
+        let mut first = mock_snapshot();
+        first.last_updated = 10;
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(first.clone())).await;
+        let mut changed = first.clone();
+        changed.last_updated = 11;
+        changed.containers.pop();
+        publish_docker_snapshot_cache(&state, docker_cache(changed)).await;
+        assert_eq!(
+            state
+                .cache
+                .read()
+                .await
+                .observed_history_response()
+                .events
+                .len(),
+            1
+        );
+
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let mock = state.cache.read().await.observed_history_response();
+        assert_eq!(mock.source, RuntimeMode::Mock);
+        assert!(!mock.baseline_established);
+        assert!(mock.current_model_revision.is_none());
+        assert!(mock.observed_revision.is_none());
+        assert!(mock.events.is_empty());
+        drop(mock);
+
+        publish_docker_snapshot_cache(&state, docker_cache(first)).await;
+        let docker = state.cache.read().await.observed_history_response();
+        assert_eq!(docker.source, RuntimeMode::Docker);
+        assert!(docker.baseline_established);
+        assert!(
+            docker.events.is_empty(),
+            "first Docker cache after reset is baseline only"
+        );
+    }
+
+    #[tokio::test]
+    async fn observed_history_is_bounded_newest_first_and_provider_revisions_do_not_change_observation_revision(
+    ) {
+        let mut first = mock_snapshot();
+        first.last_updated = 10;
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(first.clone())).await;
+        for index in 0..(MAX_OBSERVED_CHANGE_EVENTS + 3) {
+            let mut changed = first.clone();
+            changed.last_updated = 11 + index as u64;
+            changed.containers[0].status = if index % 2 == 0 { "exited" } else { "running" }.into();
+            publish_docker_snapshot_cache(&state, docker_cache(changed)).await;
+            first.containers[0].status = if index % 2 == 0 { "exited" } else { "running" }.into();
+        }
+        let before = state.cache.read().await.observed_history_response();
+        assert_eq!(before.events.len(), MAX_OBSERVED_CHANGE_EVENTS);
+        assert!(before
+            .events
+            .windows(2)
+            .all(|pair| pair[0].observed_at_ms >= pair[1].observed_at_ms));
+        let observed_revision = before.observed_revision.clone();
+        drop(before);
+
+        claim_due_provider_slots(&state, Duration::ZERO).await;
+        let after = state.cache.read().await.observed_history_response();
+        assert_eq!(after.observed_revision, observed_revision);
+        assert_eq!(after.events.len(), MAX_OBSERVED_CHANGE_EVENTS);
     }
 }
