@@ -85,11 +85,15 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
   behavior, and contract/browser tests. This is
   completed code evidence, not a claim that the related pull requests are
   merged or that #70 is resolved.
-- [ ] On an authorized Docker-capable Linux host, record an isolated live-Docker
-  event sequence through the filtered gateway: allowed scoped event, denied
-  unsafe event request, reconnect/replay dedupe, Docker/mock source reset and
-  recovery, and daemon-restart empty-history behavior. This evidence has not
-  yet been run for the temporal event-stream track.
+- [x] Record the initial isolated live-Docker temporal sequence. PR #215 commit
+  `db9514d` records targeted opt-in and full live-suite **2/2** passes: its
+  labelled worker stopped three times, the filtered gateway restarted, exactly
+  three new opaque events and one advisory appeared, and cleanup completed.
+  This evidence remains pending PR review and merge; it does not close #70.
+- [ ] Add residual live temporal evidence through the filtered gateway: a raw or
+  unsafe event request denied live, Docker-to-mock reset and Docker recovery,
+  and daemon-restart empty-history behavior. The initial 2/2 sequence does not
+  cover these cases.
 - [ ] Keep #70 open for remaining product scope: a reviewed Copilot policy for
   temporal observations, resource telemetry, and an explicit persistence and
   cross-restart continuity decision. The current three-die-event rule is only

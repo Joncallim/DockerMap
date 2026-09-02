@@ -176,15 +176,19 @@ DockerMap excludes unrelated Docker resources.
 The automated evidence is deliberately isolated: fake streams, a filtered Unix
 gateway stub, and contract/browser fixtures prove the closed policy and
 fail-closed publication behavior without reading a host's Docker history.
-Those checks prove implementation properties, not a complete live operational
-sequence. Before treating this stream as release evidence for a candidate, run
-and record an isolated live-Docker sequence on an authorized Docker-capable
-Linux host that verifies: a filtered event is retained; an out-of-scope event
-is denied by the gateway; reconnect/replay does not duplicate the displayed
-record; Docker-to-mock and Docker recovery clear the journal; and a daemon
-restart makes the prior in-memory journal unavailable rather than implying
-persistence. That isolated live-Docker/restart sequence has **not** been
-recorded for this code track.
+
+PR #215 records live evidence for commit `db9514d`: the targeted opt-in
+temporal sequence and the full opt-in live-Docker suite both passed (**2/2**).
+The labelled fixture restarted only its `worker` three times, restarted the
+filtered gateway, observed exactly three new opaque `container_died` rows, and
+produced exactly one advisory; fixture cleanup also completed. This is isolated
+test evidence, not a general host-history claim, and it remains pending PR
+review and merge.
+
+The sequence still does not cover a live Docker-to-mock transition and Docker
+recovery, daemon-restart empty-history behavior, or a live raw/unsafe event
+request denied by the gateway. Record those separately before using the stream
+as complete release evidence for a candidate.
 
 ## Sandbox Fixture
 
