@@ -17,6 +17,13 @@ containers, or services.
   requires a bounded nonzero host binding rather than a container-only listener; Docker
   daemon-state evidence is path-free; and Systemd/npm declaration evidence is checked against
   its dedicated scheduler-slot revision and `fresh`/`stale`/`timed_out` lifecycle.
+- Bounded-finding tests: the Compose advisory accepts only a fresh, uniquely resolved Docker
+  Compose declaration from a running container to a stopped/failed container, keeps the single
+  canonical `docker_compose_depends_on` evidence reference, assigns advisory severity and static
+  review wording, and deterministically suppresses stale/timed-out, malformed, duplicate,
+  collided, ambiguous, non-Docker, and non-matching-status inputs. These are projection tests:
+  they add no collection and never assert requiredness, readiness, health, traffic, start-order,
+  root-cause, or drift conclusions.
 - Rust-owned JSON Schema and generated TypeScript declarations, Node-owned
   envelope/request/SSE schemas, and readable contract fixtures. The contract
   check fails on stale generated output, invalid fixtures, incomplete

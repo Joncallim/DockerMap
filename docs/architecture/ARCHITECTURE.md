@@ -144,6 +144,31 @@ flags, and raw configuration never enter the runtime edge, finding, or browser
 response. Missing, stale, duplicate, malformed, or collided facts produce no
 finding.
 
+`docker.compose_declared_target_not_active` emits an advisory only when one
+fresh, uniquely identified `depends_on` relationship is a Docker-recorded
+Compose declaration from a running Docker container to a uniquely identified
+Docker container whose normalized state is stopped or failed. Its one canonical
+evidence reference is version 1 Docker `docker_compose_depends_on`, with an
+`observed` assertion, the source container as subject, `fresh` freshness, and
+no provider slot. The Docker observation attests the declared Compose edge; it
+does not turn that declaration into a runtime dependency guarantee.
+
+The rule is advisory, rather than a warning or error, because it is a bounded
+configuration state worth an operator review, not evidence of an outage or
+security incident. Its static action is only to review the declared dependency
+and the target container state. The derivation is deterministic (findings are
+ordered by their stable opaque identifiers) and fails closed: stale or timed-out
+evidence, malformed or extra edge metadata, non-Docker entities, non-running
+sources, target states other than stopped/failed, duplicate relationship facts,
+or identity collisions suppress it. It does not claim that the dependency is
+required, that either service is ready or healthy, that traffic flows, that
+Compose start order was applied, that one container caused the other's state,
+or that configuration drift exists.
+
+This rule reads no new host state and makes no new collection call. It is a
+cached, read-only projection of the already-published runtime map; mock mode
+has no runtime evidence and therefore cannot produce it.
+
 Each rule carries only its exact triggering evidence references. The API
 validates the fixed vocabulary, static display text, and rule-specific evidence
 shape before publication, and the browser displays findings only when their
