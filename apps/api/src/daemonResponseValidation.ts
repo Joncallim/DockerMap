@@ -50,6 +50,7 @@ const PROVIDER_STATE_SLOT_SET = {
   python_processes: true,
   native_processes: true,
   project_npm: true,
+  cron: true,
 } as const satisfies Record<ProviderSlot, true>;
 const PROVIDER_STATE_SLOTS = Object.keys(PROVIDER_STATE_SLOT_SET) as ProviderSlot[];
 const U32_MAX = 4_294_967_295;
@@ -89,6 +90,12 @@ const V2_EVIDENCE_EDGE = {
 // resolution, execution, or package safety.
 const V3_EVIDENCE_EDGE = {
   npm_package_manifest_dependency: { relationship: "depends_on", sourcePrefix: "npm_project_", targetPrefix: "npm_package_" },
+} as const;
+
+// Version four is a parsed cron declaration from Cron's own scheduler slot.
+// It makes no execution, successful-run, or host-health claim.
+const V4_EVIDENCE_EDGE = {
+  cron_schedule_declaration: { relationship: "runs_on", sourcePrefix: "scheduled_job_", targetPrefix: "host_", target: "host_local" },
 } as const;
 
 function hasCompleteProviderStateVector(payload: unknown): boolean {
@@ -188,16 +195,24 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
         && value.assertionKind === "declared"
         && value.providerSlot === "project_npm"
         && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
-      if (!isV1 && !isV2 && !isV3) return false;
+      const isV4 = value.version === 4
+        && value.provider === "cron"
+        && value.assertionKind === "declared"
+        && value.providerSlot === "cron"
+        && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
+      if (!isV1 && !isV2 && !isV3 && !isV4) return false;
       const expected = typeof value.kind === "string"
         ? (isV1
           ? V1_EVIDENCE_EDGE[value.kind as keyof typeof V1_EVIDENCE_EDGE]
           : isV2
             ? V2_EVIDENCE_EDGE[value.kind as keyof typeof V2_EVIDENCE_EDGE]
-            : V3_EVIDENCE_EDGE[value.kind as keyof typeof V3_EVIDENCE_EDGE])
+            : isV3
+              ? V3_EVIDENCE_EDGE[value.kind as keyof typeof V3_EVIDENCE_EDGE]
+              : V4_EVIDENCE_EDGE[value.kind as keyof typeof V4_EVIDENCE_EDGE])
         : undefined;
       if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return false;
       if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix)) return false;
+      if (isV4 && candidate.target !== "host_local") return false;
       if (value.kind === "docker_daemon_state_bind_mount" && candidate.target !== "host_risk_docker_daemon_state") return false;
       if (candidate.source === candidate.target) return false;
       // An opaque observation token must never be the collection timestamp

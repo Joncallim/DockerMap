@@ -424,7 +424,7 @@ function getMockResponse<T>(path: string): T {
       providerStates: [
         unavailableProviderState("network_infrastructure"), unavailableProviderState("host_scoped"), unavailableProviderState("systemd"),
         unavailableProviderState("python_processes"), unavailableProviderState("native_processes"),
-        unavailableProviderState("project_npm")
+        unavailableProviderState("project_npm"), unavailableProviderState("cron")
       ],
       source: "mock"
     };

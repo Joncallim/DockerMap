@@ -243,6 +243,28 @@
         "dependencies": [],
         "dependents": []
       }
+    },
+    {
+      "id": "host_local",
+      "provider": "host",
+      "type": "host",
+      "label": "host",
+      "status": "online",
+      "layer": "host",
+      "metadata": {}
+    },
+    {
+      "id": "scheduled_job_fixture_daily_backup",
+      "provider": "scheduled_job",
+      "type": "scheduled_job",
+      "label": "daily backup",
+      "status": "scheduled",
+      "layer": "process",
+      "metadata": {
+        "source": "fixture crontab",
+        "line": "1",
+        "command": "daily backup"
+      }
     }
   ],
   "edges": [
@@ -586,6 +608,27 @@
           "collectedAt": 1787196125766,
           "providerRevision": "fixture-project-npm-observation-1",
           "providerSlot": "project_npm",
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "source": "scheduled_job_fixture_daily_backup",
+      "target": "host_local",
+      "relationship": "runs_on",
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 4,
+          "id": "fixture-cron-schedule-declaration-daily-backup",
+          "provider": "cron",
+          "kind": "cron_schedule_declaration",
+          "assertionKind": "declared",
+          "summary": "cron declared a scheduled job",
+          "subjectRef": "scheduled_job_fixture_daily_backup",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-cron-observation-1",
+          "providerSlot": "cron",
           "freshness": "fresh"
         }
       ]
