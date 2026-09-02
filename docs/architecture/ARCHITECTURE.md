@@ -153,10 +153,76 @@ not linked to a current service because a historical container identity is not
 proof of a safe current-service mapping. Demo samples remain separately
 labelled sample data; they are not observed history.
 
-This is the initial #70 slice, not a general telemetry system. It has no
-persistence across daemon restarts, no Docker `events` collection, no timing
-guarantee beyond the later compared snapshot, and no assertion of deployment,
-restart, failure, recovery, causality, health, reachability, or impact.
+This is one #70 history source, not a general telemetry system. It has no
+persistence across daemon restarts, no timing guarantee beyond the later
+compared snapshot, and no assertion of deployment, restart, failure, recovery,
+causality, health, reachability, or impact.
+
+### Observed Docker event-stream history
+
+`GET /daemon/observed-events` and its browser aliases expose a second,
+explicitly separate history: safe observations retained from the read-only
+Docker event stream. Like other daemon/API read routes, they use the common
+bearer-token boundary when its daemon or API token is configured. This history
+must never be merged with the
+snapshot-derived `/daemon/history` deltas above. The stream root has its own
+source, collection state, current model/observation revisions, and at most 64
+newest-first rows. Each retained row has only opaque event and container
+identities, a closed event kind, Docker-event-stream evidence source, source
+occurrence time, receipt time, and the model/observation anchors current when
+the daemon received it. An anchor identifies the coherent publication beside
+which the row was received; it does not say that a later inventory snapshot
+contains the event.
+
+The collector runs once for the daemon lifetime, independently of the periodic
+provider scheduler. It connects only through the filtered Docker Read Gateway,
+asks only for the closed container event vocabulary (`create`, `start`, `stop`,
+`die`, `restart`, `destroy`, and the three `health_status` states), and replays
+at most 300 seconds. A 4,096-item bounded dedupe horizon prevents ordinary
+inclusive replay from reappearing as a fresh row. Disconnects retry with
+250-ms exponential backoff capped at 8 seconds; a stable stream resets that
+backoff. Source-generation changes cancel the old stream and reset its journal,
+cursor, and dedupe state. Mock fallback is unavailable and empty. There is no
+persistence or continuity guarantee across a daemon restart, and reconnects
+can leave gaps.
+
+Raw Docker message data is reduced before retention. Docker IDs, actor
+attributes, container names, exit text, labels, paths, diagnostics, and other
+provider-controlled text are not retained or returned. The parser rejects
+unknown types/actions, incomplete IDs, inconsistent timestamps, stale replay,
+and implausibly future source times. This history is an observation record,
+not proof that a container currently exists, that an event was caused by a
+deployment or restart, or that a service failed, recovered, is healthy,
+reachable, compromised, or impactful.
+
+The Change Center renders stream observations in a distinct “Docker event
+observations” panel only beside a coherent live Docker model. It labels a
+reconnecting collector as potentially incomplete, does not show raw subject
+identity or a link to a current service, and retains the separate
+snapshot-delta panel semantics. Demo and mock data do not become stream
+evidence.
+
+#### Temporal Docker advisory
+
+The current temporal rule is deliberately narrow: it produces an `advisory`
+when a qualifying three-event window of retained `container_died` observations
+for one opaque container subject falls within **at most five minutes of source
+time**. Each finding carries exactly those three retained historical
+references, with opaque event IDs, fixed
+`docker_event_stream`/`container_died` vocabulary, source occurrence times,
+and historical model/observation anchors. Receipt time is an event-row field,
+not temporal-finding evidence. The references are not runtime-map evidence
+and must not be used to claim a current node, state, causal explanation,
+deployment, restart, failure, recovery, health, reachability, compromise, or
+impact. The rule additionally requires Docker source and
+`collectionState=collecting`; it emits nothing while connecting, reconnecting,
+or unavailable. The Findings screen presents this only as “Docker event
+history needs review” and directs an operator to the bounded Change Center
+panel.
+
+This completed code slice does not finish #70. Copilot use of temporal data,
+resource telemetry, and an explicit persistence/continuity design decision
+remain outside it.
 
 #### Current finding policy
 

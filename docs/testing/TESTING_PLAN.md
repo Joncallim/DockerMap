@@ -23,6 +23,12 @@ containers, or services.
   a daemon-lifetime 64-row newest-first bound, source reset, mock-empty behavior,
   opaque/closed response shapes, authenticated API routing, and live-model revision
   coherence in the browser.
+- Observed Docker event-stream tests for fixed gateway traversal, closed raw
+  event parsing, raw-data exclusion, opaque IDs, 64-row retention,
+  4,096-item replay dedupe, bounded replay timestamps, reconnect backoff,
+  source-generation cancellation/reset, authenticated route/schema validation,
+  coherent browser rendering, and the exact three-`container_died`-within-five-
+  minutes temporal advisory contract.
 - Playwright smoke tests for the GUI through `npm run test:e2e`, with live-Docker
   coverage opt-in through `npm run test:live-docker`.
 
@@ -85,6 +91,9 @@ The API tests cover:
 - Authenticated `/api/history` and `/api/v1/history` routing, including schema rejection
   for malformed or incoherent daemon history responses and mock fallback that is empty
   rather than a fabricated live timeline.
+- `/api/observed-events` and `/api/v1/observed-events` bearer enforcement when
+  configured, including rejection of malformed stream-history and
+  temporal-finding evidence before it reaches the browser.
 - Hidden daemon error details by default, with opt-in detail exposure for JSON and SSE routes.
 
 These tests run against the real Express entry point with mock fallback or a stub daemon.
@@ -161,6 +170,32 @@ npm run test:live-docker
 The live-Docker harness labels its Compose resources, sets
 `DOCKERMAP_DOCKER_LABEL_FILTER`, and creates an unlabeled control container to prove
 DockerMap excludes unrelated Docker resources.
+
+## Temporal Docker Event Evidence
+
+The automated evidence is deliberately isolated: fake streams, a filtered Unix
+gateway stub, and contract/browser fixtures prove the closed policy and
+fail-closed publication behavior without reading a host's Docker history.
+
+PR #215 initially recorded live evidence for commit `db9514d`: the targeted
+opt-in temporal sequence and the full opt-in live-Docker suite both passed
+(**2/2**). Its current head, `aeb5e86`, additionally pauses only the isolated
+filtered gateway and proves the response becomes `mock`/`unavailable` with
+null revisions and an empty event list, then returns to
+`docker`/`collecting` after gateway recovery. The labelled fixture also
+restarts only its `worker` three times, restarts the filtered gateway, observes
+exactly three new opaque `container_died` rows, produces exactly one advisory,
+checks a raw/unsafe event request is denied by the filtered gateway, and
+completes cleanup. This is isolated test evidence, not a general host-history
+claim, and it remains pending PR review and merge.
+
+Daemon restart must not be accepted by asserting an empty endpoint: the
+collector may replay up to five minutes of recent Docker events and promptly
+repopulate its in-memory ring. Before using the stream as complete release
+evidence for a candidate, make and document an explicit persistence/replay
+policy decision. Any later restart test must verify that the response and UI do
+not claim pre-restart persistence or continuity; it must not require the
+endpoint to stay empty.
 
 ## Sandbox Fixture
 

@@ -77,6 +77,34 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 
 ## Follow-up evidence and product work
 
+### Temporal Docker event-stream evidence (#70)
+
+- [x] Implement a bounded, raw-data-reducing Docker event-stream publication
+  behind the common bearer boundary when configured, with a separate
+  snapshot-delta history boundary, closed gateway request policy, source-reset
+  behavior, and contract/browser tests. This is
+  completed code evidence, not a claim that the related pull requests are
+  merged or that #70 is resolved.
+- [x] Record the isolated live-Docker temporal sequence. PR #215 initially
+  recorded targeted opt-in and full live-suite **2/2** passes at `db9514d`; its
+  current head `aeb5e86` adds an isolated gateway outage/recovery: observed
+  events become `mock`/`unavailable` with null revisions and an empty list,
+  then return to `docker`/`collecting`. It also covers the live raw/unsafe
+  gateway-request denial. The labelled worker stopped three times, the filtered
+  gateway restarted, exactly three new opaque events and one advisory appeared,
+  and cleanup completed. This evidence remains pending PR review and merge; it
+  does not close #70.
+- [ ] Decide and document the daemon-restart persistence/replay policy. A
+  restarted collector may replay up to five minutes of Docker events, so an
+  empty endpoint is not a truthful acceptance condition. Any later restart
+  evidence must verify that no response or UI makes a pre-restart persistence
+  or continuity claim, rather than requiring retained rows to remain empty.
+- [ ] Keep #70 open for remaining product scope: a reviewed Copilot policy for
+  temporal observations, resource telemetry, and an explicit persistence and
+  cross-restart continuity decision. The current three-die-event rule is only
+  a bounded historical advisory, not a general failure, restart, or causality
+  detector.
+
 - [x] Add provider-specific redaction fixtures for systemd, tmux, npm/package metadata,
   native process inspection, reverse-proxy config, and DNS collectors.
   Current coverage is systemd, tmux, npm/package, native-process-shaped output,
