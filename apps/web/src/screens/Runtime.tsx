@@ -85,11 +85,14 @@ const PROVIDER_REASON_LABEL: Record<ProviderStatusReason, string> = {
 };
 
 const ASSERTION_KIND_LABEL: Record<RuntimeEvidenceAssertionKind, string> = {
-  observed: "Observed fact"
+  observed: "Observed fact",
+  declared: "Declared relationship"
 };
 
 const FRESHNESS_LABEL: Record<RuntimeEvidenceRef["freshness"], string> = {
-  fresh: "Current at collection"
+  fresh: "Current at collection",
+  stale: "Retained observation",
+  timed_out: "Collection timed out"
 };
 
 type SelectedRuntimeEdge = {

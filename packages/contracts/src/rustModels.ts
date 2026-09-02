@@ -43,24 +43,34 @@ export type RuntimeProviderKind =
   | 'other';
 export type DiagnosticSeverity = 'info' | 'warning' | 'error' | 'blocked';
 /**
- * Version-one evidence is a direct Docker observation. Derived and inferred
- * claims need a later, deliberately versioned evidence contract rather than
- * a permissive enum value in this first slice.
+ * Evidence assertion semantics are deliberately closed. A declaration says
+ * what a source configured, never that its target is healthy or was invoked.
  */
-export type RuntimeEvidenceAssertionKind = 'observed';
+export type RuntimeEvidenceAssertionKind = 'observed' | 'declared';
+export type RuntimeEvidenceFreshness = 'fresh' | 'stale' | 'timed_out';
 /**
  * Safe, provider-specific fact families supported by the first provenance
  * slice.  New sources require an explicit enum addition rather than an
  * arbitrary source string or metadata map.
  */
 export type RuntimeEvidenceKind =
-  ('docker_network_membership' | 'docker_volume_mount' | 'docker_port_publication') | 'docker_compose_depends_on';
+  | ('docker_network_membership' | 'docker_volume_mount' | 'docker_port_publication')
+  | 'docker_compose_depends_on'
+  | 'systemd_requires'
+  | 'systemd_wants'
+  | 'systemd_part_of';
 /**
- * Evidence provider for the version-one Docker-only evidence shape. New
- * providers require a new versioned evidence representation; they cannot be
- * passed off as v1 through the broad runtime-provider enum.
+ * Evidence providers are deliberately closed.  Version two adds systemd only
+ * after it received its own scheduler slot; it cannot inherit a broader host
+ * collection's freshness or revision.
  */
-export type RuntimeEvidenceProvider = 'docker';
+export type RuntimeEvidenceProvider = 'docker' | 'systemd';
+/**
+ * Fixed, schema-backed host-provider slots. This is not a plugin or policy
+ * interface: the daemon owns the complete finite list.
+ */
+export type ProviderSlot =
+  ('network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm') | 'systemd';
 export type RuntimeRelationshipKind =
   | 'connected_to'
   | 'depends_on'
@@ -118,12 +128,6 @@ export type RuntimeNodeKind =
   | 'process'
   | 'network_listener'
   | 'orchestrator_workload';
-/**
- * Fixed, schema-backed host-provider slots. This is not a plugin or policy
- * interface: the daemon owns the complete finite list.
- */
-export type ProviderSlot =
-  ('network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm') | 'systemd';
 export type ProviderStateKind = 'fresh' | 'stale' | 'collecting' | 'unavailable' | 'timed_out' | 'disabled';
 /**
  * A deliberately small, non-diagnostic explanation for a provider slot that
@@ -287,11 +291,7 @@ export interface RuntimeMapEdge {
 export interface RuntimeEvidenceRef {
   assertionKind: RuntimeEvidenceAssertionKind;
   collectedAt: number;
-  /**
-   * The Docker snapshot is observed as a single current publication. Host
-   * provider freshness remains represented by `providerStates` (#66).
-   */
-  freshness: 'fresh';
+  freshness: RuntimeEvidenceFreshness;
   id: string;
   kind: RuntimeEvidenceKind;
   provider: RuntimeEvidenceProvider;
@@ -300,6 +300,12 @@ export interface RuntimeEvidenceRef {
    * source dump.
    */
   providerRevision: string;
+  /**
+   * Version-two provider evidence is explicitly tied to the finite
+   * scheduler slot that supplied its revision and freshness. Version one
+   * Docker evidence intentionally has no host-provider slot.
+   */
+  providerSlot?: ProviderSlot | null;
   /**
    * The already-public runtime entity whose Docker fact was observed.
    */

@@ -497,15 +497,18 @@ export const RUST_RESPONSE_SCHEMAS = {
       "type": "object"
     },
     "RuntimeEvidenceAssertionKind": {
-      "description": "Version-one evidence is a direct Docker observation. Derived and inferred\nclaims need a later, deliberately versioned evidence contract rather than\na permissive enum value in this first slice.",
+      "description": "Evidence assertion semantics are deliberately closed. A declaration says\nwhat a source configured, never that its target is healthy or was invoked.",
       "enum": [
-        "observed"
+        "observed",
+        "declared"
       ],
       "type": "string"
     },
     "RuntimeEvidenceFreshness": {
       "enum": [
-        "fresh"
+        "fresh",
+        "stale",
+        "timed_out"
       ],
       "type": "string"
     },
@@ -524,13 +527,29 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "docker_compose_depends_on",
           "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
           "type": "string"
+        },
+        {
+          "const": "systemd_requires",
+          "description": "A systemd `Requires=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_wants",
+          "description": "A systemd `Wants=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_part_of",
+          "description": "A systemd `PartOf=` declaration. It is not an ordering assertion.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
-      "description": "Evidence provider for the version-one Docker-only evidence shape. New\nproviders require a new versioned evidence representation; they cannot be\npassed off as v1 through the broad runtime-provider enum.",
+      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
       "enum": [
-        "docker"
+        "docker",
+        "systemd"
       ],
       "type": "string"
     },
@@ -548,8 +567,7 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "integer"
         },
         "freshness": {
-          "$ref": "#/$defs/RuntimeEvidenceFreshness",
-          "description": "The Docker snapshot is observed as a single current publication. Host\nprovider freshness remains represented by `providerStates` (#66)."
+          "$ref": "#/$defs/RuntimeEvidenceFreshness"
         },
         "id": {
           "maxLength": 259,
@@ -568,6 +586,17 @@ export const RUST_RESPONSE_SCHEMAS = {
           "minLength": 1,
           "type": "string"
         },
+        "providerSlot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderSlot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Version-two provider evidence is explicitly tied to the finite\nscheduler slot that supplied its revision and freshness. Version one\nDocker evidence intentionally has no host-provider slot."
+        },
         "subjectRef": {
           "description": "The already-public runtime entity whose Docker fact was observed.",
           "type": "string"
@@ -581,7 +610,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 1,
+          "maximum": 2,
           "minimum": 1,
           "type": "integer"
         }
@@ -2722,15 +2751,18 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "type": "object"
     },
     "RuntimeEvidenceAssertionKind": {
-      "description": "Version-one evidence is a direct Docker observation. Derived and inferred\nclaims need a later, deliberately versioned evidence contract rather than\na permissive enum value in this first slice.",
+      "description": "Evidence assertion semantics are deliberately closed. A declaration says\nwhat a source configured, never that its target is healthy or was invoked.",
       "enum": [
-        "observed"
+        "observed",
+        "declared"
       ],
       "type": "string"
     },
     "RuntimeEvidenceFreshness": {
       "enum": [
-        "fresh"
+        "fresh",
+        "stale",
+        "timed_out"
       ],
       "type": "string"
     },
@@ -2749,13 +2781,29 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "docker_compose_depends_on",
           "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
           "type": "string"
+        },
+        {
+          "const": "systemd_requires",
+          "description": "A systemd `Requires=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_wants",
+          "description": "A systemd `Wants=` declaration. It is not a successful-start or\nhealth assertion.",
+          "type": "string"
+        },
+        {
+          "const": "systemd_part_of",
+          "description": "A systemd `PartOf=` declaration. It is not an ordering assertion.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
-      "description": "Evidence provider for the version-one Docker-only evidence shape. New\nproviders require a new versioned evidence representation; they cannot be\npassed off as v1 through the broad runtime-provider enum.",
+      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
       "enum": [
-        "docker"
+        "docker",
+        "systemd"
       ],
       "type": "string"
     },
@@ -2773,8 +2821,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "integer"
         },
         "freshness": {
-          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceFreshness",
-          "description": "The Docker snapshot is observed as a single current publication. Host\nprovider freshness remains represented by `providerStates` (#66)."
+          "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEvidenceFreshness"
         },
         "id": {
           "maxLength": 259,
@@ -2793,6 +2840,17 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "minLength": 1,
           "type": "string"
         },
+        "providerSlot": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/RuntimeMap/$defs/ProviderSlot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Version-two provider evidence is explicitly tied to the finite\nscheduler slot that supplied its revision and freshness. Version one\nDocker evidence intentionally has no host-provider slot."
+        },
         "subjectRef": {
           "description": "The already-public runtime entity whose Docker fact was observed.",
           "type": "string"
@@ -2806,7 +2864,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 1,
+          "maximum": 2,
           "minimum": 1,
           "type": "integer"
         }
