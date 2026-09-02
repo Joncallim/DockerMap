@@ -154,13 +154,23 @@ fn read_cron_file(
     jobs: &mut Vec<(String, usize, String)>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
-    if !fs::symlink_metadata(path)
-        .map(|metadata| metadata.file_type().is_file())
-        .unwrap_or(false)
-    {
+    if !cron_path_is_regular(path) {
         return;
     }
+    read_cron_file_after_precheck(path, jobs, diagnostics);
+}
 
+fn cron_path_is_regular(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false)
+}
+
+fn read_cron_file_after_precheck(
+    path: &Path,
+    jobs: &mut Vec<(String, usize, String)>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
     // O_NOFOLLOW rejects a link swapped in after symlink_metadata; O_NONBLOCK
     // prevents a FIFO swapped in at that point from stalling collection.
     let Ok(file) = fs::OpenOptions::new()
@@ -173,6 +183,24 @@ fn read_cron_file(
     read_open_cron_file(file, path, jobs, diagnostics);
 }
 
+/// Test-only seam for exercising a replacement after the path precheck and
+/// before descriptor open, without timing-dependent sleeps or host writes.
+#[cfg(test)]
+fn read_cron_file_with_pre_open_hook<F>(
+    path: &Path,
+    jobs: &mut Vec<(String, usize, String)>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+    hook: F,
+) where
+    F: FnOnce(),
+{
+    if !cron_path_is_regular(path) {
+        return;
+    }
+    hook();
+    read_cron_file_after_precheck(path, jobs, diagnostics);
+}
+
 /// Inspect and read only an already-opened descriptor. Metadata comes from the
 /// descriptor (rather than a pre-open path lookup), so a replacement or growth
 /// race cannot make us trust stale size/type information.
@@ -182,11 +210,21 @@ fn read_open_cron_file(
     jobs: &mut Vec<(String, usize, String)>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
-    let Ok(metadata) = file.metadata() else {
+    let Some(file) = checked_open_cron_file(file, diagnostics) else {
         return;
     };
+    read_checked_cron_file(file, path, jobs, diagnostics);
+}
+
+fn checked_open_cron_file(
+    file: fs::File,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) -> Option<fs::File> {
+    let Ok(metadata) = file.metadata() else {
+        return None;
+    };
     if !metadata.is_file() {
-        return;
+        return None;
     }
     if metadata.len() > MAX_CRON_FILE_BYTES {
         push_provider_diagnostic(
@@ -195,8 +233,17 @@ fn read_open_cron_file(
             DiagnosticSeverity::Info,
             format!("cron file skipped because it exceeds {MAX_CRON_FILE_BYTES} bytes"),
         );
-        return;
+        return None;
     }
+    Some(file)
+}
+
+fn read_checked_cron_file(
+    file: fs::File,
+    path: &Path,
+    jobs: &mut Vec<(String, usize, String)>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
     let mut content = String::new();
     let mut reader = file.take(MAX_CRON_FILE_BYTES.saturating_add(1));
     let Ok(_) = reader.read_to_string(&mut content) else {
@@ -216,6 +263,25 @@ fn read_open_cron_file(
             jobs.push((path.display().to_string(), index + 1, command));
         }
     }
+}
+
+/// Test-only seam for growth after descriptor metadata is checked but before
+/// the capped descriptor read begins.
+#[cfg(test)]
+fn read_open_cron_file_with_pre_read_hook<F>(
+    file: fs::File,
+    path: &Path,
+    jobs: &mut Vec<(String, usize, String)>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+    hook: F,
+) where
+    F: FnOnce(),
+{
+    let Some(file) = checked_open_cron_file(file, diagnostics) else {
+        return;
+    };
+    hook();
+    read_checked_cron_file(file, path, jobs, diagnostics);
 }
 
 fn cron_command(line: &str, user_crontab: bool) -> Option<String> {
@@ -433,7 +499,57 @@ mod tests {
     }
 
     #[test]
-    fn cron_open_descriptor_rechecks_size_after_post_open_growth() {
+    fn cron_prechecked_path_replacement_with_a_fifo_is_nonblocking_and_fails_closed() {
+        let directory = tempdir().expect("temporary cron.d directory");
+        let path = directory.path().join("replacement");
+        fs::write(&path, "* * * * * root /bin/true\n").expect("initial fixture");
+        let fifo_path = path.clone();
+
+        let mut jobs = Vec::new();
+        let mut diagnostics = Vec::new();
+        read_cron_file_with_pre_open_hook(&path, &mut jobs, &mut diagnostics, move || {
+            fs::remove_file(&fifo_path).expect("replace fixture");
+            let fifo_name =
+                CString::new(fifo_path.as_os_str().as_bytes()).expect("temporary FIFO path");
+            assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+        });
+
+        assert!(jobs.is_empty(), "replacement FIFO content must not be read");
+        assert!(
+            diagnostics.is_empty(),
+            "replacement FIFO path must not be published"
+        );
+    }
+
+    #[test]
+    fn cron_prechecked_path_replacement_with_a_symlink_fails_closed() {
+        let directory = tempdir().expect("temporary cron.d directory");
+        let outside = tempdir().expect("temporary outside directory");
+        let outside_file = outside.path().join("outside-cron");
+        fs::write(&outside_file, "* * * * * root /bin/echo outside\n").expect("outside fixture");
+        let path = directory.path().join("replacement");
+        fs::write(&path, "* * * * * root /bin/true\n").expect("initial fixture");
+        let symlink_path = path.clone();
+
+        let mut jobs = Vec::new();
+        let mut diagnostics = Vec::new();
+        read_cron_file_with_pre_open_hook(&path, &mut jobs, &mut diagnostics, move || {
+            fs::remove_file(&symlink_path).expect("replace fixture");
+            symlink(&outside_file, &symlink_path).expect("replacement symlink");
+        });
+
+        assert!(
+            jobs.is_empty(),
+            "replacement symlink content must not be read"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "replacement symlink path must not be published"
+        );
+    }
+
+    #[test]
+    fn cron_descriptor_metadata_rechecks_size_after_post_open_growth() {
         let directory = tempdir().expect("temporary cron directory");
         let path = directory.path().join("growing");
         fs::write(&path, "* * * * * root /bin/true\n").expect("initial fixture");
@@ -448,6 +564,45 @@ mod tests {
         read_open_cron_file(file, &path, &mut jobs, &mut diagnostics);
 
         assert!(jobs.is_empty());
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic.message
+            == format!("cron file skipped because it exceeds {MAX_CRON_FILE_BYTES} bytes")));
+    }
+
+    #[test]
+    fn cron_bounded_read_rejects_growth_after_descriptor_metadata() {
+        let directory = tempdir().expect("temporary cron directory");
+        let path = directory.path().join("growing");
+        fs::write(&path, "* * * * * root /bin/true\n").expect("initial fixture");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .open(&path)
+            .expect("open fixture");
+        let growth_path = path.clone();
+
+        let mut jobs = Vec::new();
+        let mut diagnostics = Vec::new();
+        read_open_cron_file_with_pre_read_hook(
+            file,
+            &path,
+            &mut jobs,
+            &mut diagnostics,
+            move || {
+                use std::io::Write;
+
+                let mut writer = fs::OpenOptions::new()
+                    .append(true)
+                    .open(&growth_path)
+                    .expect("reopen fixture for growth");
+                writer
+                    .write_all(&vec![b'x'; MAX_CRON_FILE_BYTES as usize + 1])
+                    .expect("grow fixture after metadata");
+            },
+        );
+
+        assert!(
+            jobs.is_empty(),
+            "post-metadata growth must not publish a partial cron job"
+        );
         assert!(diagnostics.iter().any(|diagnostic| diagnostic.message
             == format!("cron file skipped because it exceeds {MAX_CRON_FILE_BYTES} bytes")));
     }
