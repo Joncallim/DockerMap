@@ -24,8 +24,8 @@ use axum::{
 };
 use dockermap_core::{
     derive_graph, mock_log_entries, ContainerDetailResponse, ContainersResponse, DockerSnapshot,
-    GraphResponse, HealthResponse, ImagesResponse, LogCursor, LogsResponse, NetworksResponse,
-    RuntimeMap, VolumesResponse, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+    FindingsResponse, GraphResponse, HealthResponse, ImagesResponse, LogCursor, LogsResponse,
+    NetworksResponse, RuntimeMap, VolumesResponse, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
 };
 
 pub(crate) const MAX_LOG_QUERY_CHARS: usize = 256;
@@ -61,6 +61,7 @@ pub(crate) fn daemon_router(state: AppState, daemon_token: DaemonAuthToken) -> R
         .route("/daemon/snapshot", get(get_snapshot))
         .route("/daemon/graph", get(get_graph))
         .route("/daemon/runtime/map", get(get_runtime_map))
+        .route("/daemon/findings", get(get_findings))
         .route("/daemon/containers", get(get_containers))
         .route("/daemon/containers/{name}", get(get_container))
         .route("/daemon/images", get(get_images))
@@ -108,6 +109,13 @@ async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
     let mut runtime_map = cache.runtime_map.clone();
     runtime_map.source = Some(cache.health.mode.clone());
     Json(runtime_map)
+}
+
+async fn get_findings(State(state): State<AppState>) -> Json<FindingsResponse> {
+    // Findings are cached during refresh immediately after the runtime map is
+    // assigned its publication revision; requests never invoke providers.
+    let cache = state.cache.read().await;
+    Json(cache.findings.clone())
 }
 
 async fn get_containers(State(state): State<AppState>) -> Json<ContainersResponse> {

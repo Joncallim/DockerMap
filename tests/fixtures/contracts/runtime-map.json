@@ -28,6 +28,7 @@
   "providerStates": [
     { "slot": "network_infrastructure", "state": "fresh", "lastAttemptMs": 1710000000000, "lastSuccessMs": 1710000000001, "lastDurationMs": 1, "consecutiveFailureCount": 0, "dataRevision": "fixture-provider-1", "statusReason": null },
     { "slot": "host_scoped", "state": "fresh", "lastAttemptMs": 1710000000000, "lastSuccessMs": 1710000000001, "lastDurationMs": 1, "consecutiveFailureCount": 0, "dataRevision": "fixture-provider-2", "statusReason": null },
+    { "slot": "systemd", "state": "fresh", "lastAttemptMs": 1710000000000, "lastSuccessMs": 1710000000001, "lastDurationMs": 1, "consecutiveFailureCount": 0, "dataRevision": "fixture-provider-systemd", "statusReason": null },
     { "slot": "python_processes", "state": "fresh", "lastAttemptMs": 1710000000000, "lastSuccessMs": 1710000000001, "lastDurationMs": 1, "consecutiveFailureCount": 0, "dataRevision": "fixture-provider-3", "statusReason": null },
     { "slot": "native_processes", "state": "fresh", "lastAttemptMs": 1710000000000, "lastSuccessMs": 1710000000001, "lastDurationMs": 1, "consecutiveFailureCount": 0, "dataRevision": "fixture-provider-4", "statusReason": null },
     { "slot": "project_npm", "state": "fresh", "lastAttemptMs": 1710000000000, "lastSuccessMs": 1710000000001, "lastDurationMs": 1, "consecutiveFailureCount": 0, "dataRevision": "fixture-provider-5", "statusReason": null }

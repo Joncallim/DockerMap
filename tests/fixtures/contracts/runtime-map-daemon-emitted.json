@@ -215,103 +215,388 @@
   "edges": [
     {
       "source": "docker_container_container_api",
+      "target": "docker_container_container_db",
+      "relationship": "depends_on",
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_compose_depends_on-docker_container_container_api-docker_container_container_db",
+          "provider": "docker",
+          "kind": "docker_compose_depends_on",
+          "assertionKind": "observed",
+          "summary": "Docker recorded Compose dependency declaration",
+          "subjectRef": "docker_container_container_api",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "source": "docker_container_container_api",
       "target": "docker_network_network_app",
       "relationship": "connected_to",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_network_membership-docker_container_container_api-docker_network_network_app",
+          "provider": "docker",
+          "kind": "docker_network_membership",
+          "assertionKind": "observed",
+          "summary": "Docker reported container network membership",
+          "subjectRef": "docker_container_container_api",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_api",
       "target": "docker_network_network_data",
       "relationship": "connected_to",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_network_membership-docker_container_container_api-docker_network_network_data",
+          "provider": "docker",
+          "kind": "docker_network_membership",
+          "assertionKind": "observed",
+          "summary": "Docker reported container network membership",
+          "subjectRef": "docker_container_container_api",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_api",
       "target": "docker_volume_volume_app_cache",
       "relationship": "mounts",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_volume_mount-docker_container_container_api-docker_volume_volume_app_cache",
+          "provider": "docker",
+          "kind": "docker_volume_mount",
+          "assertionKind": "observed",
+          "summary": "Docker reported volume attachment",
+          "subjectRef": "docker_container_container_api",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_api",
       "target": "network_listener_3233_3233_tcp",
       "relationship": "exposes",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_port_publication-docker_container_container_api-network_listener_3233_3233_tcp",
+          "provider": "docker",
+          "kind": "docker_port_publication",
+          "assertionKind": "observed",
+          "summary": "Docker reported container port publication",
+          "subjectRef": "docker_container_container_api",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_cache",
       "target": "docker_network_network_data",
       "relationship": "connected_to",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_network_membership-docker_container_container_cache-docker_network_network_data",
+          "provider": "docker",
+          "kind": "docker_network_membership",
+          "assertionKind": "observed",
+          "summary": "Docker reported container network membership",
+          "subjectRef": "docker_container_container_cache",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_cache",
       "target": "network_listener_6379_6379_tcp",
       "relationship": "exposes",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_port_publication-docker_container_container_cache-network_listener_6379_6379_tcp",
+          "provider": "docker",
+          "kind": "docker_port_publication",
+          "assertionKind": "observed",
+          "summary": "Docker reported container port publication",
+          "subjectRef": "docker_container_container_cache",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_db",
       "target": "docker_network_network_data",
       "relationship": "connected_to",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_network_membership-docker_container_container_db-docker_network_network_data",
+          "provider": "docker",
+          "kind": "docker_network_membership",
+          "assertionKind": "observed",
+          "summary": "Docker reported container network membership",
+          "subjectRef": "docker_container_container_db",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_db",
       "target": "docker_volume_volume_postgres_data",
       "relationship": "mounts",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_volume_mount-docker_container_container_db-docker_volume_volume_postgres_data",
+          "provider": "docker",
+          "kind": "docker_volume_mount",
+          "assertionKind": "observed",
+          "summary": "Docker reported volume attachment",
+          "subjectRef": "docker_container_container_db",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_db",
       "target": "network_listener_5432_5432_tcp",
       "relationship": "exposes",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_port_publication-docker_container_container_db-network_listener_5432_5432_tcp",
+          "provider": "docker",
+          "kind": "docker_port_publication",
+          "assertionKind": "observed",
+          "summary": "Docker reported container port publication",
+          "subjectRef": "docker_container_container_db",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_gateway",
       "target": "docker_network_network_app",
       "relationship": "connected_to",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_network_membership-docker_container_container_gateway-docker_network_network_app",
+          "provider": "docker",
+          "kind": "docker_network_membership",
+          "assertionKind": "observed",
+          "summary": "Docker reported container network membership",
+          "subjectRef": "docker_container_container_gateway",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_gateway",
       "target": "docker_network_network_edge",
       "relationship": "connected_to",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_network_membership-docker_container_container_gateway-docker_network_network_edge",
+          "provider": "docker",
+          "kind": "docker_network_membership",
+          "assertionKind": "observed",
+          "summary": "Docker reported container network membership",
+          "subjectRef": "docker_container_container_gateway",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_gateway",
       "target": "network_listener_3233_80_tcp",
       "relationship": "exposes",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_port_publication-docker_container_container_gateway-network_listener_3233_80_tcp",
+          "provider": "docker",
+          "kind": "docker_port_publication",
+          "assertionKind": "observed",
+          "summary": "Docker reported container port publication",
+          "subjectRef": "docker_container_container_gateway",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_worker",
       "target": "docker_network_network_app",
       "relationship": "connected_to",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_network_membership-docker_container_container_worker-docker_network_network_app",
+          "provider": "docker",
+          "kind": "docker_network_membership",
+          "assertionKind": "observed",
+          "summary": "Docker reported container network membership",
+          "subjectRef": "docker_container_container_worker",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_worker",
       "target": "docker_network_network_data",
       "relationship": "connected_to",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_network_membership-docker_container_container_worker-docker_network_network_data",
+          "provider": "docker",
+          "kind": "docker_network_membership",
+          "assertionKind": "observed",
+          "summary": "Docker reported container network membership",
+          "subjectRef": "docker_container_container_worker",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     },
     {
       "source": "docker_container_container_worker",
       "target": "docker_volume_volume_app_cache",
       "relationship": "mounts",
-      "metadata": {}
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_volume_mount-docker_container_container_worker-docker_volume_volume_app_cache",
+          "provider": "docker",
+          "kind": "docker_volume_mount",
+          "assertionKind": "observed",
+          "summary": "Docker reported volume attachment",
+          "subjectRef": "docker_container_container_worker",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
     }
   ],
   "diagnostics": [],
   "lastUpdated": 1787196125766,
   "modelRevision": "fixture-boot-3",
   "providerStates": [
-    { "slot": "network_infrastructure", "state": "fresh", "lastAttemptMs": 1787196125700, "lastSuccessMs": 1787196125710, "lastDurationMs": 10, "consecutiveFailureCount": 0, "dataRevision": "fixture-provider-1", "statusReason": null },
-    { "slot": "host_scoped", "state": "fresh", "lastAttemptMs": 1787196125700, "lastSuccessMs": 1787196125710, "lastDurationMs": 10, "consecutiveFailureCount": 0, "dataRevision": "fixture-provider-2", "statusReason": null },
-    { "slot": "python_processes", "state": "fresh", "lastAttemptMs": 1787196125700, "lastSuccessMs": 1787196125710, "lastDurationMs": 10, "consecutiveFailureCount": 0, "dataRevision": "fixture-provider-3", "statusReason": null },
-    { "slot": "native_processes", "state": "fresh", "lastAttemptMs": 1787196125700, "lastSuccessMs": 1787196125710, "lastDurationMs": 10, "consecutiveFailureCount": 0, "dataRevision": "fixture-provider-4", "statusReason": null },
-    { "slot": "project_npm", "state": "fresh", "lastAttemptMs": 1787196125700, "lastSuccessMs": 1787196125710, "lastDurationMs": 10, "consecutiveFailureCount": 0, "dataRevision": "fixture-provider-5", "statusReason": null }
+    {
+      "slot": "network_infrastructure",
+      "state": "fresh",
+      "lastAttemptMs": 1787196125700,
+      "lastSuccessMs": 1787196125710,
+      "lastDurationMs": 10,
+      "consecutiveFailureCount": 0,
+      "dataRevision": "fixture-provider-1",
+      "statusReason": null
+    },
+    {
+      "slot": "host_scoped",
+      "state": "fresh",
+      "lastAttemptMs": 1787196125700,
+      "lastSuccessMs": 1787196125710,
+      "lastDurationMs": 10,
+      "consecutiveFailureCount": 0,
+      "dataRevision": "fixture-provider-2",
+      "statusReason": null
+    },
+    {
+      "slot": "systemd",
+      "state": "fresh",
+      "lastAttemptMs": 1787196125700,
+      "lastSuccessMs": 1787196125710,
+      "lastDurationMs": 10,
+      "consecutiveFailureCount": 0,
+      "dataRevision": "fixture-provider-systemd",
+      "statusReason": null
+    },
+    {
+      "slot": "python_processes",
+      "state": "fresh",
+      "lastAttemptMs": 1787196125700,
+      "lastSuccessMs": 1787196125710,
+      "lastDurationMs": 10,
+      "consecutiveFailureCount": 0,
+      "dataRevision": "fixture-provider-3",
+      "statusReason": null
+    },
+    {
+      "slot": "native_processes",
+      "state": "fresh",
+      "lastAttemptMs": 1787196125700,
+      "lastSuccessMs": 1787196125710,
+      "lastDurationMs": 10,
+      "consecutiveFailureCount": 0,
+      "dataRevision": "fixture-provider-4",
+      "statusReason": null
+    },
+    {
+      "slot": "project_npm",
+      "state": "fresh",
+      "lastAttemptMs": 1787196125700,
+      "lastSuccessMs": 1787196125710,
+      "lastDurationMs": 10,
+      "consecutiveFailureCount": 0,
+      "dataRevision": "fixture-provider-5",
+      "statusReason": null
+    }
   ]
 }
