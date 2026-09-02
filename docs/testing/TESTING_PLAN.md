@@ -12,6 +12,11 @@ containers, or services.
 - Rust formatting and linting.
 - Rust unit tests for the core Docker and Compose model plus daemon helpers.
 - Runtime-map contracts for Docker and non-Docker provider signals.
+- Runtime-evidence source boundaries: forced mock mode and a live-to-mock reset retain sample
+  topology while clearing evidence and evidence-derived findings; Docker publication evidence
+  requires a bounded nonzero host binding rather than a container-only listener; Docker
+  daemon-state evidence is path-free; and Systemd/npm declaration evidence is checked against
+  its dedicated scheduler-slot revision and `fresh`/`stale`/`timed_out` lifecycle.
 - Rust-owned JSON Schema and generated TypeScript declarations, Node-owned
   envelope/request/SSE schemas, and readable contract fixtures. The contract
   check fails on stale generated output, invalid fixtures, incomplete
@@ -123,6 +128,12 @@ npm/package metadata, native-process-shaped command output, reverse-proxy marker
 markers, provider diagnostics, and provider edge metadata. These fixtures deliberately use
 `DOCKERMAP_TEST_FAKE_*` sentinels and assert the returned runtime/provider JSON omits those
 raw values.
+
+The runtime-evidence regressions are fixture-first and do not require a Docker
+daemon, systemd, npm registry, or a real project manifest. They verify the
+closed evidence vocabulary and source/freshness behavior without treating
+topology as proof of readiness, health, traffic, causality, package
+installation, or network reachability.
 
 Python and native-process collectors are implemented (shipped via #32/#38/#39 + #33) with
 fixture-first tests for fake `/proc` trees, optional fixed `ps` output, Python manifests,

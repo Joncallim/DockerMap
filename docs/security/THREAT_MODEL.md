@@ -46,6 +46,16 @@ changes them:
   redaction and control-character publication boundary as all other daemon response text.
   A malformed evidence record is rejected at the API schema boundary rather than
   partially published.
+- Mock fallback may show representative topology, but never attests it as Docker or retained
+  host-provider evidence: every runtime edge has an empty evidence array and evidence-derived
+  findings are absent. A live/mock source change drops retained observations rather than
+  relabelling them as mock data.
+- Docker port-publication evidence is emitted only for a validated nonzero host binding.
+  A container-only listener stays visible as topology without publication evidence, and a
+  publication fact does not establish reachability, health, traffic, or exploitability.
+- Docker daemon-state bind-mount evidence is a single closed, path-free fact. It never exposes
+  a mount path, mount ID, mount options, or raw Docker configuration. npm dependency evidence
+  is likewise a bounded declaration with a curated summary, never raw `package.json` content.
 
 ## Main Risks And Protections
 
@@ -151,6 +161,10 @@ Automated tests currently cover:
   output, reverse-proxy markers, DNS markers, provider diagnostics, and provider edge metadata.
 - Runtime-edge evidence schema rejection and publication redaction, including malformed
   provenance fields and secret/control-character-bearing evidence summaries or references.
+- Evidence-source boundaries: forced mock and live-to-mock reset publish topology without
+  runtime evidence or evidence-derived findings; private container ports have no host-publication
+  evidence; daemon-state facts remain path-free; and Systemd/npm declarations retain only their
+  closed slot revision, timestamp, and freshness vocabulary.
 - GUI smoke coverage against daemon fallback mode.
 - Route and middleware completeness: every Express layer must be wrapped in
   `trackedMiddleware()` and every route registered through `registerRoute()` with
