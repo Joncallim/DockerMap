@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import type { FindingsResponse } from "@dockermap/contracts";
 import { AppContext, type AppContextValue } from "../context";
+import { expectedRepeatedContainerDiedFindingId } from "../lib/temporalFinding";
 import Findings from "./Findings";
 
 const findings: FindingsResponse = {
@@ -27,7 +28,7 @@ const findings: FindingsResponse = {
 const temporalFinding: FindingsResponse = {
   modelRevision: "findings-revision",
   findings: [{
-    id: "finding_docker_repeated_container_died_events_docker_container_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd--249bd4907c9ebee596f254dc5635c27837d2f00a6c3ed32794af0237fc0fbde0",
+    id: "finding_docker_repeated_container_died_events_docker_container_ddddddddddddddddddddddddddddddd--249bd4907c9ebee596f254dc5635c27837d2f00a6c3ed32794af0237fc0fbde0",
     ruleId: "docker.repeated_container_died_events",
     severity: "advisory",
     summary: "A Docker container had three observed die events within five minutes.",
@@ -42,6 +43,8 @@ const temporalFinding: FindingsResponse = {
     ]
   }]
 };
+
+const temporalSubject = temporalFinding.findings[0]!.subjectRef;
 
 function render(value: Partial<AppContextValue>): string {
   const context: AppContextValue = {
@@ -109,6 +112,7 @@ describe("Findings screen", () => {
   });
 
   it("renders the temporal advisory as a generic bounded history link without raw event material or lifecycle conclusions", () => {
+    expect(temporalFinding.findings[0]!.id).toBe(expectedRepeatedContainerDiedFindingId(temporalSubject));
     const html = render({ findings: temporalFinding });
     expect(html).toContain("Docker event history needs review");
     expect(html).toContain("Three retained Docker event observations fall within the five-minute review threshold.");
@@ -126,6 +130,10 @@ describe("Findings screen", () => {
     ["wrong evidence kind", (value: FindingsResponse) => { value.findings[0]!.temporalEvidenceRefs![1]!.kind = "container_died_x" as never; }],
     ["out-of-window timestamps", (value: FindingsResponse) => { value.findings[0]!.temporalEvidenceRefs![2]!.sourceOccurredAtMs += 300_001; }],
     ["opaque subject replacement", (value: FindingsResponse) => { value.findings[0]!.subjectRef = "docker_container_api"; }],
+    ["forged opaque ID digest tail", (value: FindingsResponse) => {
+      const id = value.findings[0]!.id;
+      value.findings[0]!.id = `${id.slice(0, -1)}${id.endsWith("0") ? "1" : "0"}`;
+    }],
     ["unreviewed field", (value: FindingsResponse) => { Object.assign(value.findings[0]!.temporalEvidenceRefs![0]!, { raw: "must-not-render" }); }]
   ])("fails closed for a temporal finding with %s", (_label, mutate) => {
     const malformed = structuredClone(temporalFinding);
