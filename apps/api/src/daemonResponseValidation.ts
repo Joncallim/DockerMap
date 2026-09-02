@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import {
   RUST_RESPONSE_SCHEMAS,
@@ -63,6 +64,9 @@ const INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION = "Review whether the host-po
 const DOCKER_DAEMON_STATE_FINDING_RULE = "docker.daemon_state_bind_mount";
 const DOCKER_DAEMON_STATE_FINDING_SUMMARY = "A container has Docker daemon state access that may provide Docker daemon API authority.";
 const DOCKER_DAEMON_STATE_FINDING_RECOMMENDATION = "Review whether this container requires Docker daemon API authority.";
+const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RULE = "docker.compose_declared_target_not_active";
+const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_SUMMARY = "A running Docker Compose service declares a dependency whose container is not active.";
+const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RECOMMENDATION = "Review the declared dependency and the target container state.";
 
 // Version-one evidence is intentionally a discriminated Docker observation,
 // not a generic provenance bag. JSON Schema owns each field's closed enum;
@@ -97,6 +101,30 @@ const V3_EVIDENCE_EDGE = {
 const V4_EVIDENCE_EDGE = {
   cron_schedule_declaration: { relationship: "runs_on", sourcePrefix: "scheduled_job_", targetPrefix: "host_", target: "host_local" },
 } as const;
+
+// Keep the finding identity binding byte-for-byte aligned with core's
+// `collision_resistant_id_component`: a readable slug plus SHA-256 of the
+// untouched subject/target pair.  Finding IDs are not daemon-assigned labels.
+function collisionResistantIdComponent(value: string): string {
+  let slug = "";
+  let emittedSeparator = false;
+  for (const character of value) {
+    if (/^[A-Za-z0-9_.-]$/.test(character)) {
+      slug += character;
+      emittedSeparator = false;
+    } else if (!emittedSeparator) {
+      slug += "-";
+      emittedSeparator = true;
+    }
+  }
+  slug = slug.replace(/^-+|-+$/g, "");
+  const readable = (slug || "identity").slice(0, 48);
+  return `${readable}--${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function composeDeclaredTargetFindingId(subjectRef: string, targetRef: string): string {
+  return `finding_docker_compose_declared_target_not_active_${collisionResistantIdComponent(`${subjectRef}\u001f${targetRef}`)}`;
+}
 
 function hasCompleteProviderStateVector(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
@@ -278,6 +306,32 @@ function hasCoherentFindings(payload: unknown): boolean {
           && evidence.summary === "Docker reported a bind mount exposing Docker daemon state"
           && evidence.subjectRef === finding.subjectRef
           && evidence.providerSlot === null
+          && evidence.freshness === "fresh"
+          && typeof evidence.providerRevision === "string"
+          && evidence.providerRevision !== String(evidence.collectedAt);
+      })();
+    if (finding.ruleId === COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RULE) return finding.severity === "advisory"
+      && finding.summary === COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_SUMMARY
+      && finding.recommendation === COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RECOMMENDATION
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("docker_container_")
+      && typeof finding.targetRef === "string"
+      && finding.targetRef.startsWith("docker_container_")
+      && finding.subjectRef !== finding.targetRef
+      && finding.id === composeDeclaredTargetFindingId(finding.subjectRef, finding.targetRef)
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 1
+      && (() => {
+        const candidateEvidence = finding.evidenceRefs[0];
+        if (!candidateEvidence || typeof candidateEvidence !== "object") return false;
+        const evidence = candidateEvidence as Record<string, unknown>;
+        return evidence.version === 1
+          && evidence.provider === "docker"
+          && evidence.kind === "docker_compose_depends_on"
+          && evidence.assertionKind === "observed"
+          && evidence.summary === "Docker recorded Compose dependency declaration"
+          && evidence.subjectRef === finding.subjectRef
+          && (evidence.providerSlot === undefined || evidence.providerSlot === null)
           && evidence.freshness === "fresh"
           && typeof evidence.providerRevision === "string"
           && evidence.providerRevision !== String(evidence.collectedAt);

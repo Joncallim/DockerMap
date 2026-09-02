@@ -934,6 +934,14 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
       assert.ok(validator, `missing ${schemaName} validator`);
       const body = await response.json();
       assert.equal(validator(body), true, `${path}: ${JSON.stringify(validator.errors)}`);
+      if (canonicalPath === "/api/findings") {
+        const findingList = (body as { findings?: unknown }).findings;
+        assert.ok(Array.isArray(findingList));
+        assert.ok(findingList.some((finding) => (
+          finding && typeof finding === "object"
+          && (finding as { ruleId?: unknown }).ruleId === "docker.compose_declared_target_not_active"
+        )), `${path} must preserve the canonical Compose target finding`);
+      }
     }
   }
   assert.ok(
@@ -1040,7 +1048,13 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].evidenceRefs[0].freshness = "stale"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[2].targetRef = "host_risk_untrusted"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[1].kind = "docker_volume_mount"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()]
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].summary = "DOCKERMAP_TEST_FORGED_COMPOSE_FINDING"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].id = "finding_docker_compose_declared_target_not_active_forged"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[0].kind = "docker_network_membership"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].unsafe = "DOCKERMAP_TEST_EXTRA"; return value; })()]
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
