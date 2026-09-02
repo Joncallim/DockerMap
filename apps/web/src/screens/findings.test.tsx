@@ -26,19 +26,21 @@ const findings: FindingsResponse = {
 
 function render(value: Partial<AppContextValue>): string {
   const context: AppContextValue = {
-    model: null, modelProvenance: null, loading: false, error: null, health: null,
-    findings: null, tick: 0, evidenceMode: null, openCommand: () => {}, ...value
+    model: null, loading: false, error: null, health: null,
+    findings: null, tick: 0, evidenceMode: "live", modelProvenance: "live", openCommand: () => {}, ...value
   };
   return renderToStaticMarkup(<AppContext.Provider value={context}><MemoryRouter><Findings /></MemoryRouter></AppContext.Provider>);
 }
 
 describe("Findings screen", () => {
-  it("renders only the bounded declaration conclusion and its static recommendation", () => {
+  it("renders only the static declaration presentation, not server finding text or references", () => {
     const html = render({ findings });
     expect(html).toContain("Declared dependency needs review");
-    expect(html).toContain(findings.findings[0].summary);
     expect(html).toContain(findings.findings[0].recommendation);
     expect(html).toContain("Systemd Requires");
+    expect(html).not.toContain(findings.findings[0].subjectRef);
+    expect(html).not.toContain(findings.findings[0].targetRef);
+    expect(html).not.toContain(findings.findings[0].evidenceRefs[0].id);
     expect(html).toContain("not health, readiness, traffic, Internet-reachability, or security conclusions");
   });
 
@@ -66,7 +68,7 @@ describe("Findings screen", () => {
     const html = render({ findings: internalPort });
     expect(html).toContain("Internal-network port publication needs review");
     expect(html).toContain("Observed Docker facts");
-    expect(html).toContain("2 supporting facts");
+    expect(html).not.toContain("supporting facts");
     expect(html).not.toContain("Internet exposure");
   });
 
@@ -85,7 +87,57 @@ describe("Findings screen", () => {
     const html = render({ findings: daemonState });
     expect(html).toContain("Docker daemon-state access needs review");
     expect(html).toContain("Docker daemon state");
-    expect(html).toContain("may provide Docker daemon API authority");
+    expect(html).toContain("Review whether this container requires Docker daemon API authority.");
     expect(html).not.toContain("/var/run/docker.sock");
+  });
+
+  it("renders the Compose advisory with generic copy and a generic changes inspection link", () => {
+    const compose = structuredClone(findings);
+    compose.findings[0] = {
+      id: "finding_docker_compose_declared_target_not_active_opaque",
+      ruleId: "docker.compose_declared_target_not_active",
+      severity: "advisory",
+      summary: "A running Docker Compose service declares a dependency whose container is not active.",
+      recommendation: "Review the declared dependency and the target container state.",
+      subjectRef: "docker_container_source_secret", targetRef: "docker_container_target_secret",
+      evidenceRefs: [{ version: 1, id: "opaque-evidence", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_source_secret", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }]
+    };
+    const html = render({ findings: compose });
+    expect(html).toContain("Declared Compose dependency needs review");
+    expect(html).toContain("Docker Compose");
+    expect(html).toContain("Review the declared dependency and the target container state.");
+    expect(html).toContain('href="/changes"');
+    expect(html).not.toContain("docker_container_source_secret");
+    expect(html).not.toContain("docker_container_target_secret");
+    expect(html).not.toContain("opaque-evidence");
+    expect(html).toContain("These are not health, readiness, traffic, Internet-reachability, or security conclusions.");
+  });
+
+  it("renders the Compose advisory when the V1 Docker evidence omits its null provider slot", () => {
+    const compose = structuredClone(findings);
+    compose.findings[0] = {
+      id: "finding_docker_compose_declared_target_not_active_opaque",
+      ruleId: "docker.compose_declared_target_not_active",
+      severity: "advisory",
+      summary: "A running Docker Compose service declares a dependency whose container is not active.",
+      recommendation: "Review the declared dependency and the target container state.",
+      subjectRef: "docker_container_source", targetRef: "docker_container_target",
+      evidenceRefs: [{ version: 1, id: "opaque-evidence", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_source", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }]
+    };
+    delete (compose.findings[0].evidenceRefs[0] as { providerSlot?: unknown }).providerSlot;
+    const html = render({ findings: compose });
+    expect(html).toContain("Declared Compose dependency needs review");
+    expect(html).toContain("Review the declared dependency and the target container state.");
+  });
+
+  it("suppresses findings in demo and mock contexts even if fixture data is injected", () => {
+    for (const context of [
+      { evidenceMode: "demo" as const, modelProvenance: "demo" as const },
+      { evidenceMode: "mock" as const, modelProvenance: "mock" as const }
+    ]) {
+      const html = render({ findings, ...context });
+      expect(html).toContain("Live evidence is not established");
+      expect(html).not.toContain("Declared dependency needs review");
+    }
   });
 });
