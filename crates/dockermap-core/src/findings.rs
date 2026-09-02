@@ -4,7 +4,7 @@ use crate::{
     RuntimeEvidenceProvider, RuntimeMap, RuntimeNodeKind, RuntimeProviderKind,
     RuntimeRelationshipKind,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 const SUMMARY: &str = "An active systemd service requires a target that is inactive or failed";
 const RECOMMENDATION: &str =
@@ -38,12 +38,13 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
         }
     }
 
-    let mut findings = BTreeSet::new();
+    let mut findings = Vec::new();
     for edge in &runtime_map.edges {
         let pair = (edge.source.as_str(), edge.target.as_str());
         if candidate_counts.get(&pair) != Some(&1) || !is_candidate_requires(edge) {
             continue;
         }
+        let evidence = edge.evidence_refs[0].clone();
         let (Some(source), Some(target)) = (nodes.get(pair.0), nodes.get(pair.1)) else {
             continue;
         };
@@ -56,7 +57,7 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
         {
             continue;
         }
-        findings.insert(Finding {
+        findings.push(Finding {
             id: format!(
                 "finding_systemd_requires_target_not_active_{}",
                 collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
@@ -67,13 +68,21 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             recommendation: RECOMMENDATION.into(),
             subject_ref: edge.source.clone(),
             target_ref: edge.target.clone(),
+            evidence_refs: vec![evidence],
         });
     }
-    findings.into_iter().collect()
+    findings.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.subject_ref.cmp(&right.subject_ref))
+            .then_with(|| left.target_ref.cmp(&right.target_ref))
+    });
+    findings
 }
 
 fn is_candidate_requires(edge: &crate::RuntimeMapEdge) -> bool {
-    edge.relationship == RuntimeRelationshipKind::Requires
+    edge.has_valid_evidence_refs()
+        && edge.relationship == RuntimeRelationshipKind::Requires
         && edge.source != edge.target
         && edge.evidence_refs.len() == 1
         && matches!(
@@ -153,6 +162,11 @@ mod tests {
         );
         assert_eq!(findings[0].severity, FindingSeverity::Warning);
         assert_eq!(findings[0].recommendation, RECOMMENDATION);
+        assert_eq!(findings[0].evidence_refs.len(), 1);
+        assert_eq!(
+            findings[0].evidence_refs[0].kind,
+            RuntimeEvidenceKind::SystemdRequires
+        );
         assert!(findings[0]
             .id
             .starts_with("finding_systemd_requires_target_not_active_"));
@@ -192,18 +206,21 @@ mod tests {
     }
 
     #[test]
-    fn serialized_finding_does_not_copy_raw_evidence_or_node_metadata() {
-        let encoded = serde_json::to_string(&derive_findings(&map(edge(
-            RuntimeEvidenceFreshness::Fresh,
-        ))))
-        .unwrap();
-        for forbidden in [
-            "/secret/path",
-            "opaque-safe-revision",
-            "systemd_evidence_requires_safe",
-            "fragmentPath",
-        ] {
+    fn finding_carries_only_the_canonical_evidence_ref_without_node_metadata() {
+        let input = map(edge(RuntimeEvidenceFreshness::Fresh));
+        let expected_evidence = input.edges[0].evidence_refs[0].clone();
+        let findings = derive_findings(&input);
+        assert_eq!(findings[0].evidence_refs, vec![expected_evidence]);
+        let encoded = serde_json::to_string(&findings).unwrap();
+        for forbidden in ["/secret/path", "fragmentPath"] {
             assert!(!encoded.contains(forbidden), "finding leaked {forbidden}");
         }
+    }
+
+    #[test]
+    fn finding_rejects_an_unvalidated_evidence_ref() {
+        let mut input = map(edge(RuntimeEvidenceFreshness::Fresh));
+        input.edges[0].evidence_refs[0].provider_revision.clear();
+        assert!(derive_findings(&input).is_empty());
     }
 }

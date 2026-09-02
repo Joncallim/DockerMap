@@ -1308,9 +1308,11 @@ mod scheduler_tests {
             finding.rule_id,
             dockermap_core::FindingRule::SystemdRequiresTargetNotActive
         );
+        assert_eq!(finding.evidence_refs.len(), 1);
+        assert_eq!(finding.evidence_refs[0].version, 2);
         let serialized = serde_json::to_string(finding).unwrap();
-        assert!(!serialized.contains("systemd_evidence_"));
-        assert!(!serialized.contains("providerRevision"));
+        assert!(serialized.contains("evidenceRefs"));
+        assert!(serialized.contains("systemd_requires"));
     }
 
     #[test]

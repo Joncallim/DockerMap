@@ -1197,7 +1197,7 @@ pub enum FindingRule {
     SystemdRequiresTargetNotActive,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
     #[schemars(length(min = 1, max = 259))]
@@ -1213,6 +1213,12 @@ pub struct Finding {
     pub subject_ref: String,
     #[serde(rename = "targetRef")]
     pub target_ref: String,
+    /// Canonical, already-sanitized runtime evidence that directly triggered
+    /// this finding. The rule admits exactly one fact, keeping the response
+    /// bounded and preventing a generic metadata channel.
+    #[serde(rename = "evidenceRefs")]
+    #[schemars(required, length(min = 1, max = 1))]
+    pub evidence_refs: Vec<RuntimeEvidenceRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
