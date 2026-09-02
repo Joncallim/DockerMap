@@ -74,8 +74,8 @@ describe("production typography boundary", () => {
     const rail = cssBlock(styles, ".rail");
     const brand = cssBlock(styles, ".brand-mark");
 
-    expect(declaration(rail, "background")).toBe("var(--bg-2)");
-    expect(declaration(rail, "border-right")).toBe("1px solid var(--border)");
+    expect(declaration(rail, "background")).toBe("var(--hearth-canvas-raised)");
+    expect(declaration(rail, "border-right")).toBe("1px solid var(--hearth-border)");
     expect(declaration(brand, "background")).toBe("var(--hearth-azure-strong)");
     expect(declaration(brand, "color")).toBe("var(--hearth-on-azure)");
     expect(brand).not.toContain("gradient");
