@@ -29,8 +29,19 @@ For a risk that cannot immediately be remediated, create a public tracking
 issue containing the advisory/CVE, affected release candidate, why it is not
 exploitable or not yet fixable, compensating controls, owner, and a review
 date. A maintainer must decide whether the private-alpha release is deferred.
-Only a reviewed, exact RustSec advisory ID may be placed in the audit action's
-`ignore` input; its tracking issue and expiry must appear in this document.
+There are no RustSec exceptions today: this repository intentionally has no
+`.cargo/audit.toml`. The only permitted exception mechanism is a reviewed,
+checked-in `.cargo/audit.toml` with an exact advisory ID under
+`[advisories].ignore`, for example:
+
+```toml
+[advisories]
+ignore = ["RUSTSEC-YYYY-NNNN"]
+```
+
+Never add a workflow command-line ignore. Adding that file must be in the same
+change as the tracking issue, expiry/review date, and the record in this
+document; removing the exception must remove the ID and update the record.
 
 ## Base-image pinning
 

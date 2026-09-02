@@ -42,6 +42,7 @@ test("CI enforces documented Rust and container supply-chain gates", async () =>
   assert.match(workflow, /cargo install cargo-audit --version 0\.22\.2 --locked/);
   assert.match(workflow, /cargo audit --file crates\/Cargo\.lock/);
   assert.doesNotMatch(workflow, /rustsec\/audit-check/);
+  assert.doesNotMatch(workflow, /cargo audit[^\n]*--ignore/);
   assert.match(workflow,
     /anchore\/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26/);
   assert.match(workflow,
@@ -84,4 +85,8 @@ test("tag builds retain artifacts for review and cannot publish automatically", 
   assert.match(checklist, /does not publish a prerelease\s+automatically/);
   assert.match(policy, /not a claim that the whole container build is byte-for-byte reproducible/);
   assert.match(policy, /Dockerfile frontend selector and Debian `apt` repositories remain mutable\s+inputs/);
+  assert.match(policy, /The only permitted exception mechanism is a reviewed,\s+checked-in `.cargo\/audit\.toml`/);
+  assert.match(policy, /\[advisories\]\.ignore/);
+  await assert.rejects(read(".cargo/audit.toml"), { code: "ENOENT" },
+    "no RustSec advisory-ignore configuration is checked in today");
 });
