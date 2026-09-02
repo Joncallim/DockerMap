@@ -144,6 +144,103 @@ pub enum RuntimeMode {
     Mock,
 }
 
+/// A deliberately small, daemon-lifetime observation delta. It is derived
+/// from two published Docker inventories, not from Docker's event stream.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedChangeKind {
+    ContainerAppeared,
+    ContainerDisappeared,
+    ContainerStatusChanged,
+}
+
+/// Closed status classes prevent raw Docker status text from entering the
+/// temporal-history boundary.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedContainerStatus {
+    Running,
+    Stopped,
+    Other,
+}
+
+/// One observed inventory delta. `containerId` is an opaque digest-derived
+/// history identity, never a raw Docker ID, readable ID fragment, or name.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ObservedChangeEvent {
+    #[schemars(length(min = 1, max = 64))]
+    pub id: String,
+    pub kind: ObservedChangeKind,
+    #[serde(rename = "observedAtMs")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub observed_at_ms: u64,
+    #[serde(rename = "containerId")]
+    #[serde(deserialize_with = "deserialize_observed_container_id")]
+    #[schemars(regex(pattern = "^docker_container_[0-9a-f]{64}$"))]
+    pub container_id: String,
+    #[serde(rename = "previousStatus")]
+    #[schemars(required, with = "ObservedContainerStatusOrNull")]
+    pub previous_status: Option<ObservedContainerStatus>,
+    #[serde(rename = "currentStatus")]
+    #[schemars(required, with = "ObservedContainerStatusOrNull")]
+    pub current_status: Option<ObservedContainerStatus>,
+}
+
+fn deserialize_observed_container_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let container_id = String::deserialize(deserializer)?;
+    let is_valid = container_id
+        .strip_prefix("docker_container_")
+        .is_some_and(|suffix| {
+            suffix.len() == 64
+                && suffix.bytes().all(|byte| {
+                    byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte <= b'f')
+                })
+        });
+    is_valid.then_some(container_id).ok_or_else(|| {
+        serde::de::Error::custom("observed container ID must be an opaque SHA-256 identity")
+    })
+}
+
+/// Schema-only union keeps optional status values required on the wire while
+/// accurately admitting the null state used by appearance/disappearance.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum ObservedContainerStatusOrNull {
+    Value(ObservedContainerStatus),
+    Null(()),
+}
+
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum NonEmptyStringOrNull {
+    Value(#[schemars(length(min = 1, max = 64))] String),
+    Null(()),
+}
+
+/// Bounded in-memory history for the daemon process only. `mock` never
+/// inherits a Docker baseline or events from an earlier source generation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ObservedChangeHistoryResponse {
+    pub source: RuntimeMode,
+    #[serde(rename = "baselineEstablished")]
+    pub baseline_established: bool,
+    #[serde(rename = "currentModelRevision")]
+    #[schemars(required, with = "NonEmptyStringOrNull")]
+    pub current_model_revision: Option<String>,
+    #[serde(rename = "observedRevision")]
+    #[schemars(required, with = "NonEmptyStringOrNull")]
+    pub observed_revision: Option<String>,
+    #[schemars(length(max = 64))]
+    pub events: Vec<ObservedChangeEvent>,
+}
+
 /// Fixed, schema-backed host-provider slots. This is not a plugin or policy
 /// interface: the daemon owns the complete finite list.
 #[derive(

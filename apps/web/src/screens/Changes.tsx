@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import { changeFeed, type ChangeEvent } from "../lib/stubs";
+import { observedChangeFeed } from "../lib/observedHistory";
 import { formatRelative } from "../lib/format";
 import { evidenceLabel } from "../lib/evidence";
 import {
@@ -21,11 +22,15 @@ const KINDS: { id: ChangeEvent["kind"] | "all"; label: string }[] = [
 ];
 
 export default function Changes() {
-  const { model, modelProvenance, loading, error, evidenceMode } = useApp();
+  const { model, modelProvenance, loading, error, evidenceMode, observedHistory } = useApp();
   const [kind, setKind] = useState<ChangeEvent["kind"] | "all">("all");
   const history = useMemo(
-    () => (model ? changeFeed(model, evidenceMode, modelProvenance) : CHANGE_HISTORY_CLAIM),
-    [model, evidenceMode, modelProvenance]
+    () => {
+      if (!model) return CHANGE_HISTORY_CLAIM;
+      const observed = observedChangeFeed(model, evidenceMode, modelProvenance, observedHistory);
+      return observed.kind === "observed" ? observed : changeFeed(model, evidenceMode, modelProvenance);
+    },
+    [model, evidenceMode, modelProvenance, observedHistory]
   );
   const events = history.kind === "unavailable" ? [] : history.value;
   const filtered = kind === "all" ? events : events.filter((event) => event.kind === kind);
@@ -37,10 +42,10 @@ export default function Changes() {
     <div className="screen">
       <header className="screen-head">
         <div>
-          <div className="eyebrow">Causality</div>
+          <div className="eyebrow">{history.kind === "observed" ? "Observed changes" : "Causality"}</div>
           <h1 className="screen-title">Change Center</h1>
         </div>
-        {history.kind !== "unavailable" && (
+        {history.kind === "demo" && (
           <div className="filter-row">
             {KINDS.map((filterKind) => (
               <button
@@ -112,5 +117,11 @@ function iconForKind(kind: ChangeEvent["kind"]): Parameters<typeof Icon>[0]["nam
       return "layers";
     case "deploy":
       return "up";
+    case "container_appeared":
+      return "up";
+    case "container_disappeared":
+      return "layers";
+    case "container_status_changed":
+      return "history";
   }
 }

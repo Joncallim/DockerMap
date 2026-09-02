@@ -127,6 +127,37 @@ validates the fixed vocabulary, static display text, and rule-specific evidence
 shape before publication, and the browser displays findings only when their
 nonempty model revision matches the current live model.
 
+### Observed Docker inventory history
+
+`GET /daemon/history` and its authenticated browser aliases expose a small
+daemon-lifetime record of **observed Docker inventory deltas**. This is a
+bounded comparison between two successfully published Docker snapshots, not a
+Docker event stream. The only possible rows are `container_appeared`,
+`container_disappeared`, and `container_status_changed`; they are returned
+newest first and the in-memory ring retains at most 64 rows.
+
+The first successful Docker snapshot establishes a baseline and emits nothing.
+The daemon resets both baseline and rows whenever the source changes. Mock
+fallback reports an empty, unavailable history and never inherits a Docker
+baseline or earlier Docker rows. The comparison happens only after the
+snapshot has passed the publication sanitizer, so a row contains an opaque
+public container identity, a closed status class (`running`, `stopped`, or
+`other`), an opaque event ID, and opaque model/observation revisions. It does
+not retain raw container names, Docker IDs, status text, paths, diagnostics, or
+event-stream payloads.
+
+The browser accepts these rows only with a coherent live Docker model: the
+history response must attest Docker source and the same current model revision
+as the displayed model. Otherwise it fails closed to "Not collected". Rows are
+not linked to a current service because a historical container identity is not
+proof of a safe current-service mapping. Demo samples remain separately
+labelled sample data; they are not observed history.
+
+This is the initial #70 slice, not a general telemetry system. It has no
+persistence across daemon restarts, no Docker `events` collection, no timing
+guarantee beyond the later compared snapshot, and no assertion of deployment,
+restart, failure, recovery, causality, health, reachability, or impact.
+
 #### Current finding policy
 
 `warning` is reserved for a fresh, directly recorded declaration whose current
