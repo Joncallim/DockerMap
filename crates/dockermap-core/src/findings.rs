@@ -1,3 +1,4 @@
+use crate::snapshot_runtime::is_host_published_docker_port;
 use crate::{
     collision_resistant_id_component, Finding, FindingRule, FindingSeverity,
     RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
@@ -205,39 +206,10 @@ fn is_docker_network(node: &crate::RuntimeMapNode) -> bool {
 fn is_docker_listener(node: &crate::RuntimeMapNode) -> bool {
     node.provider == RuntimeProviderKind::Network
         && node.kind == RuntimeNodeKind::NetworkListener
-        && is_host_published_port(node.metadata.get("port").map(String::as_str))
-}
-
-/// Docker's bounded collector format is either `private/protocol` for an
-/// un-published container port or `host:private/protocol` for a host
-/// publication. Accept only the latter strict grammar; the rule never emits
-/// the port or a bind address, so this is a boolean discriminant only.
-fn is_host_published_port(port: Option<&str>) -> bool {
-    let Some((host, private_and_protocol)) = port.and_then(|value| value.split_once(':')) else {
-        return false;
-    };
-    if host.is_empty()
-        || !host.bytes().all(|byte| byte.is_ascii_digit())
-        || host
-            .parse::<u16>()
-            .ok()
-            .filter(|value| *value > 0)
-            .is_none()
-        || private_and_protocol.contains(':')
-    {
-        return false;
-    }
-    let Some((private, protocol)) = private_and_protocol.split_once('/') else {
-        return false;
-    };
-    !private.is_empty()
-        && private.bytes().all(|byte| byte.is_ascii_digit())
-        && private
-            .parse::<u16>()
-            .ok()
-            .filter(|value| *value > 0)
-            .is_some()
-        && matches!(protocol, "tcp" | "udp" | "sctp")
+        && node
+            .metadata
+            .get("port")
+            .is_some_and(|port| is_host_published_docker_port(port))
 }
 
 fn is_docker_membership_shape<'a>(
@@ -672,7 +644,7 @@ mod tests {
     fn host_publication_discriminant_accepts_only_bounded_collector_port_syntax() {
         for port in ["8080:80/tcp", "53:53/udp", "443:443/sctp"] {
             assert!(
-                is_host_published_port(Some(port)),
+                is_host_published_docker_port(port),
                 "expected host port {port}"
             );
         }
@@ -684,7 +656,7 @@ mod tests {
             "8080:80/tcp:extra",
             "not-a-port",
         ] {
-            assert!(!is_host_published_port(Some(port)), "rejected port {port}");
+            assert!(!is_host_published_docker_port(port), "rejected port {port}");
         }
     }
 }
