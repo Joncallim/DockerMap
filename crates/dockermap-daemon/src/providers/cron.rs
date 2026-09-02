@@ -115,28 +115,29 @@ struct BoundedCronDPaths {
     was_capped: bool,
 }
 
-/// Stop reading after a fixed number of directory entries so a hostile cron.d
-/// cannot consume unbounded syscall/CPU work. The retained entries are then
-/// sorted, keeping the published subset stable for one observed directory
-/// ordering without materializing the rest of the directory.
+/// Read at most one entry beyond the fixed cap. A directory which exceeds the
+/// cap fails closed rather than publishing an arbitrary subset whose membership
+/// would depend on the filesystem's directory iteration order. Directories at
+/// or below the cap publish every eligible path in lexical order.
 fn bounded_cron_d_paths(entries: fs::ReadDir) -> BoundedCronDPaths {
     let mut selected = BTreeSet::new();
-    let mut was_capped = false;
     for (index, entry) in entries.enumerate() {
         if index == MAX_CRON_D_ENTRIES {
-            was_capped = true;
-            break;
+            return BoundedCronDPaths {
+                paths: Vec::new(),
+                was_capped: true,
+            };
         }
         let Ok(entry) = entry else {
             continue;
         };
         let path = entry.path();
-        // `metadata` follows links, so reject a symlink before it can be
-        // considered an in-root cron source. Open below also has O_NOFOLLOW
-        // for the replacement race between this check and file open.
-        if fs::symlink_metadata(&path)
-            .map(|metadata| metadata.file_type().is_symlink())
-            .unwrap_or(true)
+        // Reject anything but regular files before open. O_NOFOLLOW and
+        // O_NONBLOCK below preserve this fail-closed behavior if a leaf is
+        // replaced between this check and opening its descriptor.
+        if !fs::symlink_metadata(&path)
+            .map(|metadata| metadata.file_type().is_file())
+            .unwrap_or(false)
         {
             continue;
         }
@@ -144,12 +145,8 @@ fn bounded_cron_d_paths(entries: fs::ReadDir) -> BoundedCronDPaths {
     }
     BoundedCronDPaths {
         paths: selected.into_iter().collect(),
-        was_capped,
+        was_capped: false,
     }
-}
-
-fn cron_file_size_is_allowed(size: u64) -> bool {
-    size <= MAX_CRON_FILE_BYTES
 }
 
 fn read_cron_file(
@@ -157,29 +154,41 @@ fn read_cron_file(
     jobs: &mut Vec<(String, usize, String)>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
-    if fs::symlink_metadata(path)
-        .map(|metadata| metadata.file_type().is_symlink())
-        .unwrap_or(true)
+    if !fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false)
     {
         return;
     }
 
-    // O_NOFOLLOW rejects a link swapped in after symlink_metadata. Inspecting
-    // the opened handle's metadata closes the metadata-to-open size race.
+    // O_NOFOLLOW rejects a link swapped in after symlink_metadata; O_NONBLOCK
+    // prevents a FIFO swapped in at that point from stalling collection.
     let Ok(file) = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
     else {
         return;
     };
+    read_open_cron_file(file, path, jobs, diagnostics);
+}
+
+/// Inspect and read only an already-opened descriptor. Metadata comes from the
+/// descriptor (rather than a pre-open path lookup), so a replacement or growth
+/// race cannot make us trust stale size/type information.
+fn read_open_cron_file(
+    file: fs::File,
+    path: &Path,
+    jobs: &mut Vec<(String, usize, String)>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+) {
     let Ok(metadata) = file.metadata() else {
         return;
     };
     if !metadata.is_file() {
         return;
     }
-    if !cron_file_size_is_allowed(metadata.len()) {
+    if metadata.len() > MAX_CRON_FILE_BYTES {
         push_provider_diagnostic(
             diagnostics,
             RuntimeProviderKind::ScheduledJob,
@@ -252,7 +261,10 @@ fn cron_command(line: &str, user_crontab: bool) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
+    use std::{
+        ffi::CString,
+        os::unix::{ffi::OsStrExt, fs::symlink},
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -313,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn cron_d_discovery_caps_directory_work_and_sorts_the_retained_paths() {
+    fn cron_d_discovery_fails_closed_at_the_entry_cap_and_reports_a_diagnostic() {
         let directory = tempdir().expect("temporary cron.d directory");
         for index in (0..=MAX_CRON_D_ENTRIES).rev() {
             fs::write(
@@ -326,10 +338,39 @@ mod tests {
         let selected = bounded_cron_d_paths(fs::read_dir(directory.path()).expect("read cron.d"));
 
         assert!(selected.was_capped);
-        assert_eq!(selected.paths.len(), MAX_CRON_D_ENTRIES);
         assert!(
-            selected.paths.windows(2).all(|pair| pair[0] < pair[1]),
-            "only the bounded retained set is sorted before publication"
+            selected.paths.is_empty(),
+            "over-cap directory must not publish an order-dependent subset"
+        );
+
+        let mut jobs = Vec::new();
+        let mut diagnostics = Vec::new();
+        collect_cron_d_files(directory.path(), &mut jobs, &mut diagnostics);
+        assert!(jobs.is_empty());
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic.message
+                == format!("cron.d discovery capped at {MAX_CRON_D_ENTRIES} entries")),
+            "the cap must be observable without exposing source paths"
+        );
+    }
+
+    #[test]
+    fn cron_d_discovery_sorts_every_under_cap_regular_file() {
+        let directory = tempdir().expect("temporary cron.d directory");
+        for name in ["z-last", "a-first", "m-middle"] {
+            fs::write(directory.path().join(name), "* * * * * root /bin/true\n")
+                .expect("fixture cron file");
+        }
+
+        let selected = bounded_cron_d_paths(fs::read_dir(directory.path()).expect("read cron.d"));
+
+        assert!(!selected.was_capped);
+        assert_eq!(
+            selected.paths,
+            ["a-first", "m-middle", "z-last"]
+                .into_iter()
+                .map(|name| directory.path().join(name))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -350,8 +391,64 @@ mod tests {
     }
 
     #[test]
-    fn cron_files_at_or_below_the_byte_cap_are_eligible_but_larger_files_are_rejected() {
-        assert!(cron_file_size_is_allowed(MAX_CRON_FILE_BYTES));
-        assert!(!cron_file_size_is_allowed(MAX_CRON_FILE_BYTES + 1));
+    fn cron_files_at_the_byte_cap_are_collected_and_oversize_files_are_diagnosed() {
+        let directory = tempdir().expect("temporary cron directory");
+        let at_cap = directory.path().join("at-cap");
+        let prefix = "* * * * * root ";
+        fs::write(
+            &at_cap,
+            format!(
+                "{prefix}{}",
+                "x".repeat(MAX_CRON_FILE_BYTES as usize - prefix.len())
+            ),
+        )
+        .expect("at-cap fixture");
+        let oversized = directory.path().join("oversized");
+        fs::write(&oversized, "x".repeat(MAX_CRON_FILE_BYTES as usize + 1))
+            .expect("oversized fixture");
+
+        let mut jobs = Vec::new();
+        let mut diagnostics = Vec::new();
+        read_cron_file(&at_cap, &mut jobs, &mut diagnostics);
+        read_cron_file(&oversized, &mut jobs, &mut diagnostics);
+
+        assert_eq!(jobs.len(), 1, "the exact byte cap remains eligible");
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic.message
+            == format!("cron file skipped because it exceeds {MAX_CRON_FILE_BYTES} bytes")));
+    }
+
+    #[test]
+    fn cron_discovery_rejects_fifos_without_blocking() {
+        let directory = tempdir().expect("temporary cron.d directory");
+        let fifo = directory.path().join("fifo");
+        let fifo_name = CString::new(fifo.as_os_str().as_bytes()).expect("temporary FIFO path");
+        assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+
+        let mut jobs = Vec::new();
+        let mut diagnostics = Vec::new();
+        collect_cron_d_files(directory.path(), &mut jobs, &mut diagnostics);
+
+        assert!(jobs.is_empty(), "FIFO content must never be read");
+        assert!(diagnostics.is_empty(), "FIFO paths must not be published");
+    }
+
+    #[test]
+    fn cron_open_descriptor_rechecks_size_after_post_open_growth() {
+        let directory = tempdir().expect("temporary cron directory");
+        let path = directory.path().join("growing");
+        fs::write(&path, "* * * * * root /bin/true\n").expect("initial fixture");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .open(&path)
+            .expect("open fixture");
+        fs::write(&path, "x".repeat(MAX_CRON_FILE_BYTES as usize + 1)).expect("grow fixture");
+
+        let mut jobs = Vec::new();
+        let mut diagnostics = Vec::new();
+        read_open_cron_file(file, &path, &mut jobs, &mut diagnostics);
+
+        assert!(jobs.is_empty());
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic.message
+            == format!("cron file skipped because it exceeds {MAX_CRON_FILE_BYTES} bytes")));
     }
 }
