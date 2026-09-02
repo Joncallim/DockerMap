@@ -6,7 +6,7 @@
 use crate::{
     ComposeEditPlan, ComposeGraph, ComposeScan, ContainerDetailResponse, ContainersResponse,
     DockerSnapshot, FindingsResponse, GraphResponse, HealthResponse, ImagesResponse, LogsResponse,
-    NetworksResponse, RuntimeMap, VolumesResponse,
+    NetworksResponse, ObservedChangeHistoryResponse, RuntimeMap, VolumesResponse,
 };
 use schemars::{schema_for, Schema};
 use serde_json::Value;
@@ -26,6 +26,7 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 14] = [
     "ImagesResponse",
     "NetworksResponse",
     "VolumesResponse",
+    "ObservedChangeHistoryResponse",
 ];
 
 /// Largest integer that JavaScript JSON consumers can represent exactly.
@@ -50,6 +51,7 @@ pub fn daemon_schemas() -> [Schema; 14] {
         schema_for!(ImagesResponse),
         schema_for!(NetworksResponse),
         schema_for!(VolumesResponse),
+        schema_for!(ObservedChangeHistoryResponse),
     ]
 }
 
