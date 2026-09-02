@@ -23,6 +23,12 @@ containers, or services.
   a daemon-lifetime 64-row newest-first bound, source reset, mock-empty behavior,
   opaque/closed response shapes, authenticated API routing, and live-model revision
   coherence in the browser.
+- Observed Docker event-stream tests for fixed gateway traversal, closed raw
+  event parsing, raw-data exclusion, opaque IDs, 64-row retention,
+  4,096-item replay dedupe, bounded replay timestamps, reconnect backoff,
+  source-generation cancellation/reset, authenticated route/schema validation,
+  coherent browser rendering, and the exact three-`container_died`-within-five-
+  minutes temporal advisory contract.
 - Playwright smoke tests for the GUI through `npm run test:e2e`, with live-Docker
   coverage opt-in through `npm run test:live-docker`.
 
@@ -85,6 +91,9 @@ The API tests cover:
 - Authenticated `/api/history` and `/api/v1/history` routing, including schema rejection
   for malformed or incoherent daemon history responses and mock fallback that is empty
   rather than a fabricated live timeline.
+- Authenticated `/api/observed-events` and `/api/v1/observed-events` routing,
+  including rejection of malformed stream-history and temporal-finding evidence
+  before it reaches the browser.
 - Hidden daemon error details by default, with opt-in detail exposure for JSON and SSE routes.
 
 These tests run against the real Express entry point with mock fallback or a stub daemon.
@@ -161,6 +170,21 @@ npm run test:live-docker
 The live-Docker harness labels its Compose resources, sets
 `DOCKERMAP_DOCKER_LABEL_FILTER`, and creates an unlabeled control container to prove
 DockerMap excludes unrelated Docker resources.
+
+## Temporal Docker Event Evidence
+
+The automated evidence is deliberately isolated: fake streams, a filtered Unix
+gateway stub, and contract/browser fixtures prove the closed policy and
+fail-closed publication behavior without reading a host's Docker history.
+Those checks prove implementation properties, not a complete live operational
+sequence. Before treating this stream as release evidence for a candidate, run
+and record an isolated live-Docker sequence on an authorized Docker-capable
+Linux host that verifies: a filtered event is retained; an out-of-scope event
+is denied by the gateway; reconnect/replay does not duplicate the displayed
+record; Docker-to-mock and Docker recovery clear the journal; and a daemon
+restart makes the prior in-memory journal unavailable rather than implying
+persistence. That isolated live-Docker/restart sequence has **not** been
+recorded for this code track.
 
 ## Sandbox Fixture
 

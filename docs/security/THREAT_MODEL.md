@@ -50,6 +50,12 @@ changes them:
   comparison of already-sanitized Docker snapshots. It never uses Docker's event
   stream or persists rows. It exposes only opaque event/container identities and
   closed status classes, resets on source changes, and is empty for mock fallback.
+- Observed Docker event-stream history is a separate daemon-lifetime,
+  maximum-64-row publication. It uses only the gateway's fixed, bounded
+  container-event request, immediately drops raw actor metadata and text, and
+  exposes only closed kinds, opaque identities, source/receipt-time anchors, and
+  collection state. It resets across source changes, is empty/unavailable for
+  mock fallback, and has no persistence or restart continuity claim.
 
 ## Main Risks And Protections
 
@@ -74,10 +80,12 @@ Protections:
 - Only the Docker Read Gateway mounts the raw socket. Frontend/API has neither
   that mount nor the filtered socket; the collector has only the filtered Unix
   socket and no raw-socket fallback.
-- The gateway is default-deny and permits only the measured container/network/
-  volume inventory calls and fixed bounded, non-following logs. It rejects
-  mutations, inspect/archive/top/exec/events/stats/images/builds, ambiguous
-  targets, unknown queries, bodies, and upgrades before opening Docker.
+- The gateway is default-deny and permits only measured container/network/
+  volume inventory calls, fixed bounded non-following logs, and one exact
+  container-scoped `/events` request with a maximum 300-second replay window
+  and the fixed event/filter vocabulary. It rejects mutations, inspect/archive/
+  top/exec/stats/images/builds, every other event shape, ambiguous targets,
+  unknown queries, bodies, and upgrades before opening Docker.
 - A read-only socket mount is retained as a filesystem safeguard but is not
   treated as Docker API authorization.
 
@@ -102,6 +110,36 @@ Protections:
 - A row records only an inventory delta between successful publications. It is
   not evidence of a deployment, restart, failure, recovery, causal chain,
   compromise, reachability, or impact.
+
+### Observed Docker Event Stream and Temporal Advisory
+
+Risk: a long-lived Docker event stream can leak actor-controlled data, create
+an unbounded timeline, or turn a historical event into an unsupported claim
+about the present.
+
+Protections:
+
+- The collector is daemon-owned rather than caller-controlled, has one stream
+  at a time, uses only the filtered gateway, and permits only fixed container
+  actions plus the three fixed health states. It replays no more than 300
+  seconds, deduplicates within a fixed 4,096-ID horizon, bounds retained rows
+  to 64, and resets data on Docker/mock source transitions.
+- Raw Docker IDs, names, labels, actor attributes, exit text, paths,
+  diagnostics, and error text are dropped before retention. The parser rejects
+  unknown/malformed actions, identities, and timestamp shapes.
+- `/daemon/observed-events` is behind daemon bearer authentication and its
+  browser aliases `/api/observed-events` and `/api/v1/observed-events` use the
+  same authenticated read-route boundary. The API validates the closed response
+  shape before publishing it.
+- The browser renders observations only beside a coherent live Docker model;
+  mock and demo data fail closed. It does not show an opaque container subject
+  as a current service link.
+- The sole temporal finding is an advisory for a qualifying three-event window
+  of retained `container_died` observations for one opaque subject within five
+  minutes of source time, and carries exactly those three references. Its
+  references are historical anchors, not current runtime-map
+  evidence. It is not proof of a restart, deployment, failure, recovery,
+  health, causality, breach, reachability, or impact.
 
 ### Host Provider Expansion
 

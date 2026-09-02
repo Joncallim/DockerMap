@@ -77,6 +77,24 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 
 ## Follow-up evidence and product work
 
+### Temporal Docker event-stream evidence (#70)
+
+- [x] Implement a bounded, authenticated, raw-data-reducing Docker event-stream
+  publication with a separate snapshot-delta history boundary, closed gateway
+  request policy, source-reset behavior, and contract/browser tests. This is
+  completed code evidence, not a claim that the related pull requests are
+  merged or that #70 is resolved.
+- [ ] On an authorized Docker-capable Linux host, record an isolated live-Docker
+  event sequence through the filtered gateway: allowed scoped event, denied
+  unsafe event request, reconnect/replay dedupe, Docker/mock source reset and
+  recovery, and daemon-restart empty-history behavior. This evidence has not
+  yet been run for the temporal event-stream track.
+- [ ] Keep #70 open for remaining product scope: a reviewed Copilot policy for
+  temporal observations, resource telemetry, and an explicit persistence and
+  cross-restart continuity decision. The current three-die-event rule is only
+  a bounded historical advisory, not a general failure, restart, or causality
+  detector.
+
 - [x] Add provider-specific redaction fixtures for systemd, tmux, npm/package metadata,
   native process inspection, reverse-proxy config, and DNS collectors.
   Current coverage is systemd, tmux, npm/package, native-process-shaped output,

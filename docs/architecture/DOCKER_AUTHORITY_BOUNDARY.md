@@ -141,11 +141,12 @@ Both accepted request forms require canonical unsigned Unix seconds:
   gateway clock, `since <= until`, and the request must start within the same
   300-second recent window.
 
-This is a gateway policy foundation only. The gateway forwards Docker's response
-body and makes no claim that raw Docker event payloads are redacted, safe to
-publish, or retained. The daemon event parser, deduplication, reconnect
-lifecycle, publication redaction, and evidence integration remain pending #70
-work and must be reviewed before any raw event is exposed beyond the collector.
+This remains a gateway policy boundary: it forwards Docker's response body and
+does not itself redact or publish it. The daemon now has a separately reviewed
+collector that immediately reduces this one approved response form to closed
+event kinds and opaque identities before retention or publication. Raw event
+payloads remain neither safe to publish nor exposed. Any expansion beyond this
+closed form still requires an explicit policy, negative tests, and review.
 
 ## Gateway policy
 
@@ -200,10 +201,9 @@ raw-socket mount. Use the split Compose deployment for Docker-only operation.
 
 This policy intentionally excludes container archive/export, top/processes,
 inspect, exec, stats, images, builds, plugin APIs and every mutation. It permits
-only the bounded, container-scoped event selection above; the daemon collector
-is not implemented by this slice. Any later event expansion or stats support
-requires a new explicit policy, negative tests, and review; it must not be
-enabled by a broad read wildcard.
+only the bounded, container-scoped event selection above. Any later event
+expansion or stats support requires a new explicit policy, negative tests, and
+review; it must not be enabled by a broad read wildcard.
 
 ## Deployment profiles
 
