@@ -89,8 +89,9 @@ test("tag builds retain artifacts for review and cannot publish automatically", 
     /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
   assert.match(workflow, /release-candidate-\$\{\{ github\.ref_name \}\}-\$\{\{ github\.sha \}\}/);
   assert.doesNotMatch(workflow, /gh\s+release\s+create/);
-  assert.match(checklist, /RustSec advisory audit/);
-  assert.match(checklist, /does not publish a prerelease\s+automatically/);
+  assert.match(checklist, /retains candidate\s+artifacts for maintainer review/);
+  assert.match(checklist, /does not publish prerelease assets\s+automatically/);
+  assert.doesNotMatch(checklist, /publishes the\s+prerelease assets/);
   assert.match(policy, /not a claim that the whole container build is byte-for-byte reproducible/);
   assert.match(policy, /Dockerfile frontend selector and Debian `apt` repositories remain mutable\s+inputs/);
   assert.match(policy, /The only permitted exception mechanism is a reviewed,\s+checked-in `.cargo\/audit\.toml`/);
@@ -100,8 +101,8 @@ test("tag builds retain artifacts for review and cannot publish automatically", 
 
   assert.match(policy, /complete Grype SARIF report/);
   assert.match(policy, /explicitly record either \*\*DEFER\*\* or \*\*ACCEPT\*\*/);
-  assert.match(checklist, /current remediation baseline\s+is untriaged and deferred/);
-  assert.match(triage, /image-supply-chain-<candidate commit SHA>/);
+  assert.match(triage,
+    /release-candidate-<tag>-<candidate commit SHA>\/dist\/release\/dockermap-<tag>-image\.grype\.all\.sarif/);
   assert.match(triage, /Candidate image identity:/);
   assert.match(triage, /Exposure and compensating controls:/);
   assert.match(triage, /Owner:/);
@@ -115,7 +116,8 @@ test("tag builds retain artifacts for review and cannot publish automatically", 
 
   const currentBaseline = triage.split("## Current baseline — untriaged and deferred")[1];
   assert.ok(currentBaseline, "the current image baseline must have its own triage record");
-  assert.match(currentBaseline, /Complete report artifact: PENDING/);
+  assert.match(currentBaseline,
+    /Complete report artifact: PENDING — release-candidate-<tag>-5a93bbea2106f79ba7d0add891c87f43abac6a5a\/dist\/release\/dockermap-<tag>-image\.grype\.all\.sarif/);
   assert.match(currentBaseline, /Owner: UNASSIGNED/);
   assert.match(currentBaseline, /Review date: UNSET/);
   assert.match(currentBaseline, /Maintainer decision: DEFER/);

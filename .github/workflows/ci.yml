@@ -172,15 +172,33 @@ jobs:
 
       - name: Assert runtime dependency boundary
         run: |
-          set -euo pipefail
-          docker run --rm --entrypoint sh dockermap:ci -ec '
-            ! command -v npm
-            ! command -v npx
-            test ! -e /opt/dockermap/node_modules/.bin/tsx
-            test ! -e /opt/dockermap/node_modules/.bin/vite
-            test ! -d /opt/dockermap/node_modules/typescript
-            test ! -e /opt/dockermap/node_modules/@playwright/test/package.json
-            node -e "import(\"express\").then(() => import(\"@dockermap/contracts\"))"
+          docker run --rm -i --entrypoint sh dockermap:ci -eu <<'RUNTIME_BOUNDARY'
+          if command -v npm >/dev/null 2>&1; then
+            echo 'npm must not be present in the runtime image' >&2
+            exit 1
+          fi
+          if command -v npx >/dev/null 2>&1; then
+            echo 'npx must not be present in the runtime image' >&2
+            exit 1
+          fi
+          if test -e /opt/dockermap/node_modules/.bin/tsx; then
+            echo 'tsx must not be present in the runtime image' >&2
+            exit 1
+          fi
+          if test -e /opt/dockermap/node_modules/.bin/vite; then
+            echo 'vite must not be present in the runtime image' >&2
+            exit 1
+          fi
+          if test -d /opt/dockermap/node_modules/typescript; then
+            echo 'typescript must not be present in the runtime image' >&2
+            exit 1
+          fi
+          if test -e /opt/dockermap/node_modules/@playwright/test/package.json; then
+            echo '@playwright/test must not be present in the runtime image' >&2
+            exit 1
+          fi
+          node -e 'import("express").then(() => import("@dockermap/contracts"))'
+          RUNTIME_BOUNDARY
 
       - name: Prepare image supply-chain evidence directory
         run: mkdir -p artifacts

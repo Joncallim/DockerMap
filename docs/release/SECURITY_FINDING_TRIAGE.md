@@ -5,10 +5,12 @@ is a **remediable** gate, not a declaration that the image has zero high or
 critical findings. The complete Grype SARIF report can also contain unfixed or
 wont-fix findings. Those findings are release decisions, not scanner noise.
 
-For every tagged candidate, retain the complete report in the GitHub Actions
-artifact `image-supply-chain-<candidate commit SHA>` and reference the exact
-`*.grype.all.sarif` file below. Before publishing, a maintainer must complete
-every field in a candidate record and explicitly decide **DEFER** or **ACCEPT**.
+For every tagged candidate, retain the complete report in the tag workflow's
+GitHub Actions artifact
+`release-candidate-<tag>-<candidate commit SHA>` at
+`dist/release/dockermap-<tag>-image.grype.all.sarif`. Before publishing, a
+maintainer must complete every field in a candidate record and explicitly decide
+**DEFER** or **ACCEPT**.
 `ACCEPT` requires a named maintainer, a review date, and a stated rationale;
 there is no workflow ignore, severity downgrade, or scanner suppression path.
 
@@ -20,7 +22,7 @@ with this summary.
 ```text
 Candidate source commit: <40-hex SHA>
 Candidate image identity: <registry/name@sha256:... or local name@sha256:...>
-Complete report artifact: image-supply-chain-<candidate commit SHA>/<file.grype.all.sarif>
+Complete report artifact: release-candidate-<tag>-<candidate commit SHA>/dist/release/dockermap-<tag>-image.grype.all.sarif
 Scanner identity and scan date: <pinned tool/action identity; YYYY-MM-DD>
 Owner: <named maintainer>
 Review date: <YYYY-MM-DD>
@@ -41,7 +43,7 @@ has an uploaded complete report and a maintainer completes this record.
 ```text
 Candidate source commit: 5a93bbea2106f79ba7d0add891c87f43abac6a5a
 Candidate image identity: dockermap:supply-chain-remediated@sha256:0d43bb3a149408c6718d0e9726145ecb649ed7447bdba13b61ed5a27f7c76176
-Complete report artifact: PENDING — image-supply-chain-<candidate commit SHA>/<image.grype.all.sarif> must be uploaded by the candidate CI run
+Complete report artifact: PENDING — release-candidate-<tag>-5a93bbea2106f79ba7d0add891c87f43abac6a5a/dist/release/dockermap-<tag>-image.grype.all.sarif must be uploaded by the tag workflow
 Scanner identity and scan date: anchore/grype:latest@sha256:8a93fc48da96bd6ec5981279d099b69de11541dc68fdf222fb9161f8ff284af7; 2026-09-02
 Owner: UNASSIGNED — named maintainer required before ACCEPT
 Review date: UNSET — required before ACCEPT
