@@ -11,6 +11,7 @@ export const RUST_ROUTE_RESPONSE_SCHEMAS = {
   "runtime-map": "RuntimeMap",
   findings: "FindingsResponse",
   history: "ObservedChangeHistoryResponse",
+  "observed-events": "ObservedDockerEventHistoryResponse",
   containers: "ContainersResponse",
   container: "ContainerDetailResponse",
   images: "ImagesResponse",
