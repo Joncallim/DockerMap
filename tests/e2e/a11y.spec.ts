@@ -11,6 +11,7 @@ const coreRoutes = [
   ["home", "/"],
   ["map", "/map"],
   ["runtime", "/runtime"],
+  ["findings", "/findings"],
   ["changes", "/changes"],
   ["copilot", "/copilot"],
   ["networking", "/networking"],
