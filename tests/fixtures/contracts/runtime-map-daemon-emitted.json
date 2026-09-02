@@ -616,6 +616,16 @@
       "statusReason": null
     },
     {
+      "slot": "cron",
+      "state": "fresh",
+      "lastAttemptMs": 1787196125700,
+      "lastSuccessMs": 1787196125710,
+      "lastDurationMs": 10,
+      "consecutiveFailureCount": 0,
+      "dataRevision": "fixture-provider-cron",
+      "statusReason": null
+    },
+    {
       "slot": "systemd",
       "state": "fresh",
       "lastAttemptMs": 1787196125700,
