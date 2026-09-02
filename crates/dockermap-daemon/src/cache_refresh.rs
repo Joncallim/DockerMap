@@ -3070,10 +3070,11 @@ mod scheduler_tests {
 
     #[tokio::test(start_paused = true)]
     async fn docker_event_supervisor_reconnects_once_at_a_time_and_resets_on_source_change() {
-        let source_seconds = SystemTime::now()
+        let initial_not_before = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
+        let source_seconds = initial_not_before;
         let snapshot = mock_snapshot();
         let state = AppState {
             cache: Arc::new(RwLock::new(docker_cache(snapshot.clone()))),
@@ -3096,6 +3097,10 @@ mod scheduler_tests {
         ));
 
         wait_for_event_connections(&connector, 1).await;
+        let initial_not_after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         wait_for_event_streams_to_close(&connector).await;
         tokio::time::advance(Duration::from_millis(250)).await;
         wait_for_event_connections(&connector, 2).await;
@@ -3114,7 +3119,12 @@ mod scheduler_tests {
             "an immediately failed replay attempt advances backoff"
         );
         let since = connector.since_seconds();
-        assert_eq!(since[0], source_seconds - 300);
+        assert!(
+            (initial_not_before.saturating_sub(300)..=initial_not_after.saturating_sub(300))
+                .contains(&since[0]),
+            "initial stream must start at an exact fresh 300-second replay window; got {} between wall-clock bounds {initial_not_before} and {initial_not_after}",
+            since[0]
+        );
         assert_eq!(
             since[1], source_seconds,
             "inclusive reconnect cursor advances to the accepted source second"
