@@ -20,10 +20,11 @@ use crate::{
     },
 };
 use dockermap_core::{
-    collision_resistant_id_component, derive_findings, derive_images, mock_snapshot,
-    observed_container_inventory, DiagnosticSeverity, DockerSnapshot, FindingsResponse,
-    HealthResponse, HealthState, ObservedChangeEvent, ObservedChangeHistoryResponse,
-    ObservedChangeKind, ObservedContainerInventory, ObservedDockerEventCollectionState,
+    collision_resistant_id_component, derive_findings, derive_images,
+    derive_temporal_docker_findings, mock_snapshot, observed_container_inventory,
+    DiagnosticSeverity, DockerSnapshot, FindingsResponse, HealthResponse, HealthState,
+    ObservedChangeEvent, ObservedChangeHistoryResponse, ObservedChangeKind,
+    ObservedContainerInventory, ObservedDockerEventCollectionState,
     ObservedDockerEventHistoryResponse, ProviderSlot, ProviderState, ProviderStateKind,
     ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness,
     RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap,
@@ -545,10 +546,33 @@ impl DaemonCache {
         // publication. Provider state is runtime-topology evidence only.
         self.revision
             .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
-        // Findings are a pure projection of the sanitized runtime map, so
-        // calculate and cache them only after the publication revision exists.
+        self.rebuild_findings();
+    }
+
+    /// Findings share the current runtime-map revision because that is the
+    /// coherent publication they can be displayed beside. Temporal evidence
+    /// retains each event's own historical anchors rather than pretending the
+    /// current snapshot already contains the observed event. Stream receipt
+    /// and collector-state changes therefore rebuild this cached projection
+    /// without fabricating a new runtime-topology revision.
+    fn rebuild_findings(&mut self) {
+        let mut findings = derive_findings(&self.runtime_map);
+        findings.extend(derive_temporal_docker_findings(
+            self.health.mode.clone(),
+            self.observed_history.docker_events.collection_state(),
+            &self
+                .observed_history
+                .docker_events
+                .public_events_newest_first(),
+        ));
+        findings.sort_by(|left, right| {
+            left.id
+                .cmp(&right.id)
+                .then_with(|| left.subject_ref.cmp(&right.subject_ref))
+                .then_with(|| left.target_ref.cmp(&right.target_ref))
+        });
         self.findings = FindingsResponse {
-            findings: derive_findings(&self.runtime_map),
+            findings,
             model_revision: self.runtime_map.model_revision.clone(),
         };
     }
@@ -667,7 +691,7 @@ pub(crate) async fn retain_docker_event(
     }
     let model_revision = cache.snapshot.model_revision.clone();
     let observation_revision = cache.docker_observation_token();
-    match cache.observed_history.docker_events.retain(
+    let result = match cache.observed_history.docker_events.retain(
         event,
         context.source_generation,
         &model_revision,
@@ -676,7 +700,11 @@ pub(crate) async fn retain_docker_event(
         DockerEventRetention::Retained => DockerEventApply::Retained,
         DockerEventRetention::Duplicate => DockerEventApply::Duplicate,
         DockerEventRetention::Rejected => DockerEventApply::StaleSource,
+    };
+    if result == DockerEventApply::Retained {
+        cache.rebuild_findings();
     }
+    result
 }
 
 /// Advance the public collector lifecycle only for the exact live source
@@ -693,10 +721,14 @@ pub(crate) async fn set_docker_event_collection_state(
     {
         return false;
     }
+    let prior_state = cache.observed_history.docker_events.collection_state();
     cache
         .observed_history
         .docker_events
         .set_collection_state(collection_state);
+    if prior_state != collection_state {
+        cache.rebuild_findings();
+    }
     true
 }
 
@@ -3142,6 +3174,172 @@ mod scheduler_tests {
         assert!(mock.current_model_revision.is_none());
         assert!(mock.current_observation_revision.is_none());
         assert!(mock.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn repeated_died_temporal_finding_is_bounded_anchored_and_collector_state_bound() {
+        const NOW_SECONDS: u64 = 1_800_000_000;
+        const RAW_CONTAINER_ID: &str =
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let snapshot = mock_snapshot();
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(snapshot.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(snapshot.clone())).await;
+        let context = docker_event_source_context(&state, NOW_SECONDS)
+            .await
+            .expect("Docker source has event authority");
+
+        let parsed_die = |source_ms: u64| {
+            let source_seconds = NOW_SECONDS - 300 + source_ms / 1_000;
+            let source_nanos = source_seconds * 1_000_000_000 + (source_ms % 1_000) * 1_000_000;
+            parse_docker_event(
+                EventMessage {
+                    typ: Some(EventMessageTypeEnum::CONTAINER),
+                    action: Some("die".into()),
+                    actor: Some(EventActor {
+                        id: Some(RAW_CONTAINER_ID.into()),
+                        attributes: Some(std::collections::HashMap::from([(
+                            "exitCode".into(),
+                            "private exit text".into(),
+                        )])),
+                    }),
+                    time: Some(source_seconds as i64),
+                    time_nano: Some(source_nanos as i64),
+                    ..Default::default()
+                },
+                NOW_SECONDS * 1_000,
+            )
+            .expect("controlled die event parses")
+        };
+
+        let first = parsed_die(0);
+        let first_anchor = {
+            let cache = state.cache.read().await;
+            (
+                cache.snapshot.model_revision.clone(),
+                cache.docker_observation_token(),
+            )
+        };
+        assert_eq!(
+            retain_docker_event(&state, &context, first).await,
+            DockerEventApply::Retained
+        );
+        assert!(state
+            .cache
+            .read()
+            .await
+            .findings
+            .findings
+            .iter()
+            .all(|finding| {
+                finding.rule_id != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents
+            }));
+
+        let mut changed = snapshot;
+        changed.containers[0].status = "exited".into();
+        changed.last_updated = changed.last_updated.saturating_add(1);
+        publish_docker_snapshot_cache(&state, docker_cache(changed)).await;
+
+        assert_eq!(
+            retain_docker_event(&state, &context, parsed_die(150_000)).await,
+            DockerEventApply::Retained
+        );
+        assert_eq!(
+            retain_docker_event(&state, &context, parsed_die(300_000)).await,
+            DockerEventApply::Retained
+        );
+        assert!(state
+            .cache
+            .read()
+            .await
+            .findings
+            .findings
+            .iter()
+            .all(|finding| {
+                finding.rule_id != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents
+            }));
+
+        assert!(
+            set_docker_event_collection_state(
+                &state,
+                &context,
+                ObservedDockerEventCollectionState::Collecting,
+            )
+            .await
+        );
+        let cache = state.cache.read().await;
+        let temporal_findings = cache
+            .findings
+            .findings
+            .iter()
+            .filter(|finding| {
+                finding.rule_id == dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(temporal_findings.len(), 1);
+        let finding = temporal_findings[0];
+        assert_eq!(
+            finding.rule_id,
+            dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents
+        );
+        assert!(finding.evidence_refs.is_empty());
+        assert_eq!(finding.temporal_evidence_refs.len(), 3);
+        assert_eq!(
+            finding.temporal_evidence_refs[0].anchor_model_revision, first_anchor.0,
+            "the finding retains the first event's historical receipt anchor"
+        );
+        assert_eq!(
+            finding.temporal_evidence_refs[0].anchor_observation_revision,
+            first_anchor.1
+        );
+        assert_eq!(
+            cache.findings.model_revision, cache.runtime_map.model_revision,
+            "findings remain coherent with the current runtime-map publication"
+        );
+        assert!(
+            cache
+                .runtime_map
+                .nodes
+                .iter()
+                .all(|node| node.id != finding.subject_ref),
+            "opaque temporal subjects are never joined to current runtime nodes"
+        );
+        let encoded = serde_json::to_string(finding).expect("finding serializes");
+        for forbidden in [
+            RAW_CONTAINER_ID,
+            "private exit text",
+            "crash",
+            "restart",
+            "current status",
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "finding leaked or claimed {forbidden}"
+            );
+        }
+        drop(cache);
+
+        assert!(
+            set_docker_event_collection_state(
+                &state,
+                &context,
+                ObservedDockerEventCollectionState::Reconnecting,
+            )
+            .await
+        );
+        assert!(state
+            .cache
+            .read()
+            .await
+            .findings
+            .findings
+            .iter()
+            .all(|finding| {
+                finding.rule_id != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents
+            }));
     }
 
     #[tokio::test]

@@ -1498,9 +1498,111 @@ pub enum FindingRule {
     DockerInternalNetworkMemberPublishesPort,
     #[serde(rename = "docker.daemon_state_bind_mount")]
     DockerDaemonStateBindMount,
+    /// Three distinct Docker `die` observations for one opaque container in a
+    /// fixed source-time window. This remains an advisory observation, not a
+    /// claim about a crash cause, restart policy, or current container state.
+    #[serde(rename = "docker.repeated_container_died_events")]
+    DockerRepeatedContainerDiedEvents,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+/// Closed source vocabulary for temporal finding evidence. This is separate
+/// from runtime-topology evidence: a stream observation does not attest a
+/// current runtime node, edge, health state, or causal relationship.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TemporalEvidenceSource {
+    DockerEventStream,
+}
+
+/// Closed event vocabulary usable as temporal finding evidence. New temporal
+/// rules must add an explicit kind rather than accepting raw Docker actions.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TemporalEvidenceKind {
+    ContainerDied,
+}
+
+/// Fixed source-time horizon for the closed repeated-died-events finding.
+/// This belongs to the data boundary as well as the derivation so deserialized
+/// evidence cannot describe a wider interval than the daemon ever emits.
+pub const REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS: u64 = 300_000;
+
+/// One bounded reference to an already-sanitized retained stream event. It
+/// intentionally carries only the opaque event identity, fixed source/kind,
+/// source time and receipt-time anchors. In particular it carries neither a
+/// runtime-node reference nor Docker actor metadata, status text, names, or
+/// an inference about what happened after the event was observed.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TemporalEvidenceRef {
+    #[serde(rename = "eventId", deserialize_with = "deserialize_observed_event_id")]
+    #[schemars(regex(pattern = "^docker_event_[0-9a-f]{64}$"))]
+    pub event_id: String,
+    pub source: TemporalEvidenceSource,
+    pub kind: TemporalEvidenceKind,
+    #[serde(rename = "sourceOccurredAtMs")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub source_occurred_at_ms: u64,
+    #[serde(rename = "anchorModelRevision")]
+    #[schemars(length(min = 1, max = 64))]
+    pub anchor_model_revision: String,
+    #[serde(rename = "anchorObservationRevision")]
+    #[schemars(length(min = 1, max = 64))]
+    pub anchor_observation_revision: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TemporalEvidenceRefWire {
+    #[serde(rename = "eventId", deserialize_with = "deserialize_observed_event_id")]
+    event_id: String,
+    source: TemporalEvidenceSource,
+    kind: TemporalEvidenceKind,
+    #[serde(rename = "sourceOccurredAtMs")]
+    source_occurred_at_ms: u64,
+    #[serde(rename = "anchorModelRevision")]
+    anchor_model_revision: String,
+    #[serde(rename = "anchorObservationRevision")]
+    anchor_observation_revision: String,
+}
+
+impl<'de> Deserialize<'de> for TemporalEvidenceRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = TemporalEvidenceRefWire::deserialize(deserializer)?;
+        let evidence = Self {
+            event_id: wire.event_id,
+            source: wire.source,
+            kind: wire.kind,
+            source_occurred_at_ms: wire.source_occurred_at_ms,
+            anchor_model_revision: wire.anchor_model_revision,
+            anchor_observation_revision: wire.anchor_observation_revision,
+        };
+        evidence
+            .has_valid_shape()
+            .then_some(evidence)
+            .ok_or_else(|| serde::de::Error::custom("temporal evidence has an invalid shape"))
+    }
+}
+
+impl TemporalEvidenceRef {
+    pub fn has_valid_shape(&self) -> bool {
+        const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
+        const MAX_REVISION_CHARS: usize = 64;
+        self.source == TemporalEvidenceSource::DockerEventStream
+            && self.kind == TemporalEvidenceKind::ContainerDied
+            && is_opaque_sha256_identity(&self.event_id, "docker_event_")
+            && self.source_occurred_at_ms <= MAX_SAFE_JS_INTEGER
+            && !self.anchor_model_revision.is_empty()
+            && self.anchor_model_revision.chars().count() <= MAX_REVISION_CHARS
+            && !self.anchor_observation_revision.is_empty()
+            && self.anchor_observation_revision.chars().count() <= MAX_REVISION_CHARS
+    }
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
     #[schemars(length(min = 1, max = 259))]
@@ -1520,8 +1622,100 @@ pub struct Finding {
     /// this finding. Each closed rule has a fixed, small evidence budget,
     /// preventing this response from becoming a generic metadata channel.
     #[serde(rename = "evidenceRefs")]
-    #[schemars(required, length(min = 1, max = 2))]
+    #[schemars(required, length(max = 2))]
     pub evidence_refs: Vec<RuntimeEvidenceRef>,
+    /// Bounded retained stream-event evidence. This is deliberately distinct
+    /// from `evidenceRefs`: an event observation is not runtime-node or edge
+    /// evidence and must never be relabelled as such.
+    #[serde(
+        rename = "temporalEvidenceRefs",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    #[schemars(length(max = 3))]
+    pub temporal_evidence_refs: Vec<TemporalEvidenceRef>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FindingWire {
+    id: String,
+    #[serde(rename = "ruleId")]
+    rule_id: FindingRule,
+    severity: FindingSeverity,
+    summary: String,
+    recommendation: String,
+    #[serde(rename = "subjectRef")]
+    subject_ref: String,
+    #[serde(rename = "targetRef")]
+    target_ref: String,
+    #[serde(rename = "evidenceRefs", default)]
+    evidence_refs: Vec<RuntimeEvidenceRef>,
+    #[serde(rename = "temporalEvidenceRefs", default)]
+    temporal_evidence_refs: Vec<TemporalEvidenceRef>,
+}
+
+impl<'de> Deserialize<'de> for Finding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = FindingWire::deserialize(deserializer)?;
+        let finding = Self {
+            id: wire.id,
+            rule_id: wire.rule_id,
+            severity: wire.severity,
+            summary: wire.summary,
+            recommendation: wire.recommendation,
+            subject_ref: wire.subject_ref,
+            target_ref: wire.target_ref,
+            evidence_refs: wire.evidence_refs,
+            temporal_evidence_refs: wire.temporal_evidence_refs,
+        };
+        finding
+            .has_valid_evidence_shape()
+            .then_some(finding)
+            .ok_or_else(|| serde::de::Error::custom("finding has an invalid evidence shape"))
+    }
+}
+
+impl Finding {
+    fn has_valid_evidence_shape(&self) -> bool {
+        match self.rule_id {
+            FindingRule::DockerRepeatedContainerDiedEvents => {
+                self.severity == FindingSeverity::Advisory
+                    && self.evidence_refs.is_empty()
+                    && self.temporal_evidence_refs.len() == 3
+                    && self
+                        .temporal_evidence_refs
+                        .iter()
+                        .all(TemporalEvidenceRef::has_valid_shape)
+                    && self
+                        .temporal_evidence_refs
+                        .iter()
+                        .map(|evidence| evidence.event_id.as_str())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        == 3
+                    && self.temporal_evidence_refs.windows(2).all(|pair| {
+                        pair[0].source_occurred_at_ms < pair[1].source_occurred_at_ms
+                            || (pair[0].source_occurred_at_ms == pair[1].source_occurred_at_ms
+                                && pair[0].event_id < pair[1].event_id)
+                    })
+                    && self.temporal_evidence_refs[2]
+                        .source_occurred_at_ms
+                        .saturating_sub(self.temporal_evidence_refs[0].source_occurred_at_ms)
+                        <= REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS
+                    && is_opaque_sha256_identity(&self.subject_ref, "docker_container_")
+                    && self.target_ref == "docker_event_stream"
+            }
+            _ => {
+                !self.evidence_refs.is_empty()
+                    && self.evidence_refs.len() <= 2
+                    && self.temporal_evidence_refs.is_empty()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]

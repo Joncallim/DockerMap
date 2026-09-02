@@ -1,8 +1,10 @@
 use crate::{
-    collision_resistant_id_component, Finding, FindingRule, FindingSeverity,
+    collision_resistant_id_component, Finding, FindingRule, FindingSeverity, ObservedDockerEvent,
+    ObservedDockerEventCollectionState, ObservedDockerEventEvidenceSource, ObservedDockerEventKind,
     RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
-    RuntimeEvidenceProvider, RuntimeMap, RuntimeNodeKind, RuntimeProviderKind,
-    RuntimeRelationshipKind,
+    RuntimeEvidenceProvider, RuntimeMap, RuntimeMode, RuntimeNodeKind, RuntimeProviderKind,
+    RuntimeRelationshipKind, TemporalEvidenceKind, TemporalEvidenceRef, TemporalEvidenceSource,
+    REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS,
 };
 use std::collections::BTreeMap;
 
@@ -20,6 +22,11 @@ const DOCKER_DAEMON_STATE_RECOMMENDATION: &str =
 const DOCKER_DAEMON_STATE_RISK_ID: &str = "host_risk_docker_daemon_state";
 const DOCKER_DAEMON_STATE_EVIDENCE_SUMMARY: &str =
     "Docker reported a bind mount exposing Docker daemon state";
+const REPEATED_CONTAINER_DIED_EVENTS_SUMMARY: &str =
+    "A Docker container had three observed die events within five minutes.";
+const REPEATED_CONTAINER_DIED_EVENTS_RECOMMENDATION: &str =
+    "Review the container's recent configuration and logs to determine whether the repeated exits are expected.";
+const TEMPORAL_EVENT_STREAM_TARGET: &str = "docker_event_stream";
 
 /// Derive bounded, deterministic advisory findings from the already-public
 /// runtime topology. The rule intentionally fails closed: it acts only on one
@@ -102,6 +109,7 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             subject_ref: edge.source.clone(),
             target_ref: edge.target.clone(),
             evidence_refs: vec![evidence],
+            temporal_evidence_refs: Vec::new(),
         });
     }
     for edge in &runtime_map.edges {
@@ -123,6 +131,7 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             subject_ref: edge.source.clone(),
             target_ref: edge.target.clone(),
             evidence_refs: vec![edge.evidence_refs[0].clone()],
+            temporal_evidence_refs: Vec::new(),
         });
     }
     for edge in &runtime_map.edges {
@@ -152,6 +161,7 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             subject_ref: edge.source.clone(),
             target_ref: edge.target.clone(),
             evidence_refs: vec![network_evidence, port_evidence],
+            temporal_evidence_refs: Vec::new(),
         });
     }
     findings.sort_by(|left, right| {
@@ -161,6 +171,125 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             .then_with(|| left.target_ref.cmp(&right.target_ref))
     });
     findings
+}
+
+/// Derive the first bounded temporal finding from previously retained,
+/// sanitized Docker event observations. This intentionally does not receive a
+/// runtime map: the opaque event subject is never joined to a current runtime
+/// node, and the result makes no claim about crash cause, restart behavior,
+/// log contents, or current container status.
+pub fn derive_temporal_docker_findings(
+    source: RuntimeMode,
+    collection_state: ObservedDockerEventCollectionState,
+    events: &[ObservedDockerEvent],
+) -> Vec<Finding> {
+    if source != RuntimeMode::Docker
+        || collection_state != ObservedDockerEventCollectionState::Collecting
+    {
+        return Vec::new();
+    }
+
+    let mut candidates = BTreeMap::<String, Vec<&ObservedDockerEvent>>::new();
+    for event in events {
+        if event.evidence_source != ObservedDockerEventEvidenceSource::DockerEventStream
+            || event.kind != ObservedDockerEventKind::ContainerDied
+            || !is_valid_temporal_input(event)
+        {
+            continue;
+        }
+        candidates
+            .entry(event.container_id.clone())
+            .or_default()
+            .push(event);
+    }
+
+    let mut findings = Vec::new();
+    for (container_id, mut candidate_events) in candidates {
+        candidate_events.sort_by(|left, right| {
+            left.source_occurred_at_ms
+                .cmp(&right.source_occurred_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        // Any duplicate retained ID is ambiguous hostile input. The daemon
+        // journal already deduplicates it, but this core boundary also fails
+        // closed rather than allowing one event to count twice.
+        if candidate_events
+            .windows(2)
+            .any(|pair| pair[0].id == pair[1].id)
+        {
+            continue;
+        }
+
+        let Some(window) = candidate_events.windows(3).find(|window| {
+            window[2]
+                .source_occurred_at_ms
+                .saturating_sub(window[0].source_occurred_at_ms)
+                <= REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS
+        }) else {
+            continue;
+        };
+
+        let temporal_evidence_refs = window
+            .iter()
+            .map(|event| TemporalEvidenceRef {
+                event_id: event.id.clone(),
+                source: TemporalEvidenceSource::DockerEventStream,
+                kind: TemporalEvidenceKind::ContainerDied,
+                source_occurred_at_ms: event.source_occurred_at_ms,
+                anchor_model_revision: event.anchor_model_revision.clone(),
+                anchor_observation_revision: event.anchor_observation_revision.clone(),
+            })
+            .collect();
+        findings.push(Finding {
+            id: format!(
+                "finding_docker_repeated_container_died_events_{}",
+                collision_resistant_id_component(&container_id)
+            ),
+            rule_id: FindingRule::DockerRepeatedContainerDiedEvents,
+            severity: FindingSeverity::Advisory,
+            summary: REPEATED_CONTAINER_DIED_EVENTS_SUMMARY.into(),
+            recommendation: REPEATED_CONTAINER_DIED_EVENTS_RECOMMENDATION.into(),
+            subject_ref: container_id,
+            target_ref: TEMPORAL_EVENT_STREAM_TARGET.into(),
+            evidence_refs: Vec::new(),
+            temporal_evidence_refs,
+        });
+    }
+    findings.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.subject_ref.cmp(&right.subject_ref))
+    });
+    findings
+}
+
+fn is_valid_temporal_input(event: &ObservedDockerEvent) -> bool {
+    const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
+    const MAX_REVISION_CHARS: usize = 64;
+    event
+        .id
+        .strip_prefix("docker_event_")
+        .is_some_and(|suffix| {
+            suffix.len() == 64
+                && suffix.bytes().all(|byte| {
+                    byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte <= b'f')
+                })
+        })
+        && event
+            .container_id
+            .strip_prefix("docker_container_")
+            .is_some_and(|suffix| {
+                suffix.len() == 64
+                    && suffix.bytes().all(|byte| {
+                        byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte <= b'f')
+                    })
+            })
+        && event.source_occurred_at_ms <= MAX_SAFE_JS_INTEGER
+        && !event.anchor_model_revision.is_empty()
+        && event.anchor_model_revision.chars().count() <= MAX_REVISION_CHARS
+        && !event.anchor_observation_revision.is_empty()
+        && event.anchor_observation_revision.chars().count() <= MAX_REVISION_CHARS
 }
 
 fn is_docker_container(node: &crate::RuntimeMapNode) -> bool {
@@ -686,5 +815,194 @@ mod tests {
         ] {
             assert!(!is_host_published_port(Some(port)), "rejected port {port}");
         }
+    }
+
+    fn temporal_event(
+        container_marker: char,
+        event_marker: char,
+        source_at_ms: u64,
+    ) -> ObservedDockerEvent {
+        ObservedDockerEvent {
+            id: format!("docker_event_{}", event_marker.to_string().repeat(64)),
+            kind: ObservedDockerEventKind::ContainerDied,
+            evidence_source: ObservedDockerEventEvidenceSource::DockerEventStream,
+            observed_at_ms: source_at_ms.saturating_add(1),
+            source_occurred_at_ms: source_at_ms,
+            container_id: format!(
+                "docker_container_{}",
+                container_marker.to_string().repeat(64)
+            ),
+            anchor_model_revision: format!("model-{event_marker}"),
+            anchor_observation_revision: format!("observation-{event_marker}"),
+        }
+    }
+
+    #[test]
+    fn repeated_died_events_emit_one_advisory_with_the_first_chronological_window() {
+        let mut events = vec![
+            temporal_event('a', 'c', 400_000),
+            temporal_event('a', 'a', 100_000),
+            temporal_event('a', 'd', 900_001),
+            temporal_event('a', 'b', 250_000),
+        ];
+        events.reverse();
+        let findings = derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            &events,
+        );
+        assert_eq!(findings.len(), 1);
+        let finding = &findings[0];
+        assert_eq!(
+            finding.rule_id,
+            FindingRule::DockerRepeatedContainerDiedEvents
+        );
+        assert_eq!(finding.severity, FindingSeverity::Advisory);
+        assert_eq!(finding.summary, REPEATED_CONTAINER_DIED_EVENTS_SUMMARY);
+        assert_eq!(
+            finding.recommendation,
+            REPEATED_CONTAINER_DIED_EVENTS_RECOMMENDATION
+        );
+        assert_eq!(finding.target_ref, TEMPORAL_EVENT_STREAM_TARGET);
+        assert!(finding.subject_ref.starts_with("docker_container_"));
+        assert!(finding.evidence_refs.is_empty());
+        assert_eq!(finding.temporal_evidence_refs.len(), 3);
+        assert_eq!(
+            finding
+                .temporal_evidence_refs
+                .iter()
+                .map(|evidence| evidence.source_occurred_at_ms)
+                .collect::<Vec<_>>(),
+            vec![100_000, 250_000, 400_000]
+        );
+        assert_eq!(
+            finding.temporal_evidence_refs[0].anchor_model_revision,
+            "model-a"
+        );
+        assert_eq!(
+            finding.temporal_evidence_refs[2].anchor_observation_revision,
+            "observation-c"
+        );
+    }
+
+    #[test]
+    fn repeated_died_events_are_strictly_source_and_state_bound() {
+        let events = vec![
+            temporal_event('a', 'a', 0),
+            temporal_event('a', 'b', 150_000),
+            temporal_event('a', 'c', 300_000),
+        ];
+        for state in [
+            ObservedDockerEventCollectionState::Connecting,
+            ObservedDockerEventCollectionState::Reconnecting,
+            ObservedDockerEventCollectionState::Unavailable,
+        ] {
+            assert!(
+                derive_temporal_docker_findings(RuntimeMode::Docker, state, &events).is_empty()
+            );
+        }
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Mock,
+            ObservedDockerEventCollectionState::Collecting,
+            &events,
+        )
+        .is_empty());
+        assert_eq!(
+            derive_temporal_docker_findings(
+                RuntimeMode::Docker,
+                ObservedDockerEventCollectionState::Collecting,
+                &events,
+            )
+            .len(),
+            1,
+            "the fixed 300,000ms boundary is inclusive"
+        );
+    }
+
+    #[test]
+    fn repeated_died_events_fail_closed_for_wrong_or_ambiguous_input() {
+        let valid = vec![
+            temporal_event('a', 'a', 0),
+            temporal_event('a', 'b', 100_000),
+            temporal_event('a', 'c', 300_001),
+        ];
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            &valid,
+        )
+        .is_empty());
+
+        let mut wrong_kind = valid.clone();
+        wrong_kind[2].source_occurred_at_ms = 200_000;
+        wrong_kind[0].kind = ObservedDockerEventKind::ContainerRestarted;
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            &wrong_kind,
+        )
+        .is_empty());
+
+        let mut wrong_source = valid.clone();
+        wrong_source[2].source_occurred_at_ms = 200_000;
+        wrong_source[0].evidence_source = ObservedDockerEventEvidenceSource::DockerEventStream;
+        wrong_source[0].id = "docker_event_not-a-digest".into();
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            &wrong_source,
+        )
+        .is_empty());
+
+        let mut duplicate = valid.clone();
+        duplicate[2].source_occurred_at_ms = 200_000;
+        duplicate[2].id = duplicate[1].id.clone();
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            &duplicate,
+        )
+        .is_empty());
+
+        let mut invalid_anchor = valid;
+        invalid_anchor[2].source_occurred_at_ms = 200_000;
+        invalid_anchor[2].anchor_model_revision.clear();
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            &invalid_anchor,
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn repeated_died_events_group_by_opaque_subject_and_sort_stably() {
+        let events = vec![
+            temporal_event('b', 'd', 1),
+            temporal_event('a', 'c', 10),
+            temporal_event('b', 'e', 2),
+            temporal_event('a', 'a', 10),
+            temporal_event('b', 'f', 3),
+            temporal_event('a', 'b', 10),
+        ];
+        let findings = derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            &events,
+        );
+        assert_eq!(findings.len(), 2);
+        assert!(findings[0].subject_ref < findings[1].subject_ref);
+        assert_eq!(
+            findings[0]
+                .temporal_evidence_refs
+                .iter()
+                .map(|evidence| evidence.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                format!("docker_event_{}", "a".repeat(64)),
+                format!("docker_event_{}", "b".repeat(64)),
+                format!("docker_event_{}", "c".repeat(64)),
+            ]
+        );
     }
 }
