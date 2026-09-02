@@ -109,7 +109,9 @@ mod tests {
     fn schema_root_inventory_includes_each_declared_response_once() {
         assert_eq!(DAEMON_SCHEMA_NAMES.len(), 15);
         assert_eq!(daemon_schema_documents().len(), DAEMON_SCHEMA_NAMES.len());
-        let unique = DAEMON_SCHEMA_NAMES.iter().collect::<std::collections::BTreeSet<_>>();
+        let unique = DAEMON_SCHEMA_NAMES
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(unique.len(), DAEMON_SCHEMA_NAMES.len());
         assert!(unique.contains(&"ObservedChangeHistoryResponse"));
     }
@@ -138,7 +140,10 @@ mod tests {
         assert!(!validator.is_valid(&unknown_status));
 
         let mut missing_status = response;
-        missing_status["events"][0].as_object_mut().expect("event object").remove("previousStatus");
+        missing_status["events"][0]
+            .as_object_mut()
+            .expect("event object")
+            .remove("previousStatus");
         assert!(!validator.is_valid(&missing_status));
     }
 
