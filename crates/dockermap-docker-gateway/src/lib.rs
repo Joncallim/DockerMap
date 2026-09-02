@@ -26,7 +26,7 @@ use tokio::net::{UnixListener, UnixStream};
 pub const LOG_TAIL: &str = "4096";
 /// Exact bounded one-shot request emitted by Bollard 0.19.4 for a container
 /// stats sample. Streaming stats remain outside the gateway authority.
-pub const STATS_QUERY: &str = "stream=false&one-shot=false";
+pub const STATS_QUERY: &str = "stream=false&one-shot=true";
 /// Event replay and live-tail starts may inspect at most this recent window.
 pub const EVENT_MAX_LOOKBACK_SECONDS: u64 = 300;
 
@@ -563,29 +563,29 @@ mod tests {
     #[test]
     fn only_measured_unfiltered_requests_pass() {
         let policy = Policy::new(None);
-        for target in ["/containers/json?all=true&size=false", "/networks?", "/volumes?", "/containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096", "/containers/api/stats?stream=false&one-shot=false"] { assert!(policy.allow(&req(target)).is_ok(), "{target}"); }
+        for target in ["/containers/json?all=true&size=false", "/networks?", "/volumes?", "/containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096", "/containers/api/stats?stream=false&one-shot=true"] { assert!(policy.allow(&req(target)).is_ok(), "{target}"); }
         for target in ["/containers/json?all=true", "/events", "/v1.44/containers/json?all=true&size=false", "/containers/api/json", "/containers/api/logs?follow=true&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096", "/containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4097"] { assert!(policy.allow(&req(target)).is_err(), "{target}"); }
     }
 
     #[test]
     fn stats_allow_only_the_measured_finite_request() {
         let policy = Policy::new(None);
-        let valid = "/containers/api/stats?stream=false&one-shot=false";
+        let valid = "/containers/api/stats?stream=false&one-shot=true";
         assert_eq!(policy.allow(&req(valid)), Ok(valid.into()));
         for target in [
-            "/containers/stats?stream=false&one-shot=false",
-            "/containers//stats?stream=false&one-shot=false",
+            "/containers/stats?stream=false&one-shot=true",
+            "/containers//stats?stream=false&one-shot=true",
             "/containers/api/stats",
             "/containers/api/stats?",
-            "/containers/api/stats?stream=true&one-shot=false",
-            "/containers/api/stats?stream=false&one-shot=true",
-            "/containers/api/stats?one-shot=false&stream=false",
+            "/containers/api/stats?stream=true&one-shot=true",
+            "/containers/api/stats?stream=false&one-shot=false",
+            "/containers/api/stats?one-shot=true&stream=false",
             "/containers/api/stats?stream=false",
-            "/containers/api/stats?stream=false&one-shot=false&one-shot=false",
-            "/containers/api/stats?stream=false&one-shot=false&x=1",
-            "/containers/%61pi/stats?stream=false&one-shot=false",
-            "/containers/api%2fstats?stream=false&one-shot=false",
-            "/v1.44/containers/api/stats?stream=false&one-shot=false",
+            "/containers/api/stats?stream=false&one-shot=true&one-shot=true",
+            "/containers/api/stats?stream=false&one-shot=true&x=1",
+            "/containers/%61pi/stats?stream=false&one-shot=true",
+            "/containers/api%2fstats?stream=false&one-shot=true",
+            "/v1.44/containers/api/stats?stream=false&one-shot=true",
         ] {
             assert!(policy.allow(&req(target)).is_err(), "{target}");
         }
@@ -602,7 +602,7 @@ mod tests {
     fn stats_fail_closed_when_a_gateway_label_scope_is_configured() {
         let policy = Policy::new(Some("com.dockermap.fixture=trace-123".into()));
         assert_eq!(
-            policy.allow(&req("/containers/api/stats?stream=false&one-shot=false")),
+            policy.allow(&req("/containers/api/stats?stream=false&one-shot=true")),
             Err(Deny::Query)
         );
     }
@@ -1047,7 +1047,7 @@ mod tests {
                 .unwrap();
         let options = StatsOptionsBuilder::new()
             .stream(false)
-            .one_shot(false)
+            .one_shot(true)
             .build();
         let mut stream = Box::pin(docker.stats("api", Some(options)));
         let received = tokio::time::timeout(Duration::from_secs(2), stream.next())
@@ -1062,7 +1062,7 @@ mod tests {
         let mut lines = head.lines();
         assert_eq!(
             lines.next(),
-            Some("GET /containers/api/stats?stream=false&one-shot=false HTTP/1.1")
+            Some("GET /containers/api/stats?stream=false&one-shot=true HTTP/1.1")
         );
         let headers = lines.collect::<Vec<_>>();
         assert!(headers
@@ -1112,7 +1112,7 @@ mod tests {
         }
         let response = request(
             &gateway_socket,
-            "GET /containers/api/stats?stream=false&one-shot=false HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api/stats?stream=false&one-shot=true HTTP/1.1\r\nHost: docker\r\n\r\n",
         )
         .await;
         assert!(!response.starts_with("HTTP/1.1 200"), "{response}");
@@ -1177,13 +1177,13 @@ mod tests {
             "GET /containers/json?all=true&size=%GG HTTP/1.1\r\nHost: docker\r\n\r\n",
             "GET /containers/api/logs?follow=true&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096 HTTP/1.1\r\nHost: docker\r\n\r\n",
             "GET /containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096&tail=4096 HTTP/1.1\r\nHost: docker\r\n\r\n",
-            "GET /containers/api/stats?stream=true&one-shot=false HTTP/1.1\r\nHost: docker\r\n\r\n",
-            "GET /containers/api/stats?stream=false&one-shot=true HTTP/1.1\r\nHost: docker\r\n\r\n",
-            "GET /containers/api/stats?one-shot=false&stream=false HTTP/1.1\r\nHost: docker\r\n\r\n",
-            "GET /containers/api/stats?stream=false&one-shot=false&x=1 HTTP/1.1\r\nHost: docker\r\n\r\n",
-            "GET /containers/api%2fstats?stream=false&one-shot=false HTTP/1.1\r\nHost: docker\r\n\r\n",
-            "GET /containers/api/stats?stream=false&one-shot=false HTTP/1.1\r\nHost: docker\r\nContent-Length: 1\r\n\r\nx",
-            "GET /containers/api/stats?stream=false&one-shot=false HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+            "GET /containers/api/stats?stream=true&one-shot=true HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api/stats?stream=false&one-shot=false HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api/stats?one-shot=true&stream=false HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api/stats?stream=false&one-shot=true&x=1 HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api%2fstats?stream=false&one-shot=true HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api/stats?stream=false&one-shot=true HTTP/1.1\r\nHost: docker\r\nContent-Length: 1\r\n\r\nx",
+            "GET /containers/api/stats?stream=false&one-shot=true HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
             "GET /networks? HTTP/1.1\r\nHost: docker\r\nContent-Length: 0\r\n\r\n",
             "GET /networks? HTTP/1.1\r\nHost: docker\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
             "GET /networks? HTTP/1.1\r\nHost: docker\r\nUpgrade: h2c\r\n\r\n",

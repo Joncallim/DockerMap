@@ -77,7 +77,7 @@ Protections:
 - The gateway is default-deny and permits only the measured container/network/
   volume inventory calls, fixed bounded non-following logs, bounded Docker
   events, and—only when no Docker label scope is configured—the exact finite
-  per-container stats request `stream=false&one-shot=false`. It rejects
+  per-container stats request `stream=false&one-shot=true`. It rejects
   mutations, inspect/archive/top/exec, streaming or malformed stats, every
   stats request under a configured label scope, images/builds, ambiguous
   targets, unknown queries, bodies, and upgrades before opening Docker.

@@ -141,7 +141,7 @@ impl DockerCollector {
         }
         let options = StatsOptionsBuilder::new()
             .stream(false)
-            .one_shot(false)
+            .one_shot(true)
             .build();
         let mut stream = self.client.stats(container_id, Some(options));
         stream.next().await.transpose().map_err(|_| ())?.ok_or(())

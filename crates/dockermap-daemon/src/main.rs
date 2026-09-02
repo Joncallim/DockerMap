@@ -398,7 +398,7 @@ mod tests {
 
         let trace = tokio::spawn(async move {
             let mut requests = Vec::new();
-            for _ in 0..5 {
+            for _ in 0..6 {
                 let (mut stream, _) = listener
                     .accept()
                     .await
@@ -427,6 +427,8 @@ mod tests {
                     r#"{"Volumes":[],"Warnings":null}"#
                 } else if target.contains("/containers/api/logs") {
                     ""
+                } else if target.contains("/containers/api/stats") {
+                    "{}"
                 } else {
                     panic!("unexpected Bollard target: {target}");
                 };
@@ -478,6 +480,10 @@ mod tests {
             )
             .await
             .expect("bounded historical log read should succeed");
+        collector
+            .collect_one_shot_stats("api")
+            .await
+            .expect("finite stats read should succeed");
 
         let requests = trace.await.expect("wire trace should finish");
         assert_eq!(requests, vec![
@@ -486,6 +492,7 @@ mod tests {
             "GET /volumes? HTTP/1.1",
             "GET /containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096 HTTP/1.1",
             "GET /containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=1706000124&timestamps=true&tail=4096 HTTP/1.1",
+            "GET /containers/api/stats?stream=false&one-shot=true HTTP/1.1",
         ], "Bollard wire contract changed; update the gateway ADR and policy review before permitting a new request shape");
     }
 
