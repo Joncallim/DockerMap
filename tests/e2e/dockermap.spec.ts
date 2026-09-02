@@ -221,6 +221,53 @@ test.describe("DockerMap GUI", () => {
   test("runtime relation navigation widens filters, keeps the destination selected and focused", async ({ page }) => {
     stack = await startMockStack();
 
+    // This inspector exercise needs a coherent Docker-attested publication.
+    // Keep the default mock-stack tests (including the explicit no-evidence
+    // assertions) as the mock safety coverage; this narrowly upgrades only
+    // the fixture used to prove the live evidence renderer.
+    const revision = "e2e-runtime-evidence-docker-v1";
+    await page.route("**/api/events/stream*", async (route) => {
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: `event: snapshot\ndata: {"status":"ok","mode":"docker","dockerReachable":true,"message":"Docker fixture","lastUpdated":1,"snapshotVersion":"${revision}","modelRevision":"${revision}"}\n\n`
+      });
+    });
+    await page.route("**/api/snapshot", async (route) => {
+      const response = await route.fetch();
+      const snapshot = (await response.json()) as Record<string, unknown>;
+      snapshot.source = "docker";
+      snapshot.modelRevision = revision;
+      await route.fulfill({ response, json: snapshot });
+    });
+    await page.route("**/api/runtime/map", async (route) => {
+      const response = await route.fetch();
+      const runtimeMap = (await response.json()) as {
+        source?: unknown;
+        modelRevision?: unknown;
+        nodes?: Array<{ id: string; label: string; provider: string; type: string }>;
+        edges?: Array<{ source: string; target: string; evidenceRefs?: unknown[] }>;
+      };
+      runtimeMap.source = "docker";
+      runtimeMap.modelRevision = revision;
+      const api = runtimeMap.nodes?.find((node) => node.provider === "docker" && node.type === "container" && node.label === "api");
+      const application = runtimeMap.nodes?.find((node) => node.provider === "docker" && node.type === "docker_network" && node.label === "application");
+      const edge = runtimeMap.edges?.find((candidate) => candidate.source === api?.id && candidate.target === application?.id);
+      if (!edge) throw new Error("runtime evidence fixture is missing the api-to-application relation");
+      edge.evidenceRefs = [{
+        version: 1,
+        id: "e2e-docker-network-membership-api-application",
+        provider: "docker",
+        kind: "docker_network_membership",
+        assertionKind: "observed",
+        summary: "Docker reported container network membership",
+        subjectRef: edge.source,
+        collectedAt: 1,
+        providerRevision: "e2e-docker-observation",
+        freshness: "fresh"
+      }];
+      await route.fulfill({ response, json: runtimeMap });
+    });
+
     await page.goto(stack.webUrl, { waitUntil: "domcontentloaded" });
     await openSpace(page, "Runtime", "/runtime");
 
