@@ -487,6 +487,7 @@ pub enum RuntimeNodeKind {
     DockerNetwork,
     DockerVolume,
     Host,
+    HostRisk,
     Service,
     SystemdService,
     ScheduledJob,
@@ -526,6 +527,7 @@ pub enum RuntimeRelationshipKind {
     Mounts,
     Manages,
     Exposes,
+    ExposesDaemonState,
     RunsOn,
     Uses,
     Calls,
@@ -849,6 +851,9 @@ pub enum RuntimeEvidenceKind {
     /// Docker's recorded Compose dependency declaration. This is deliberately
     /// not a health, readiness, or traffic-causality claim.
     DockerComposeDependsOn,
+    /// A bind mount that matches the closed Docker socket/data-root predicate.
+    /// The public evidence and target intentionally omit the mount path.
+    DockerDaemonStateBindMount,
     /// A systemd `Requires=` declaration. It is not a successful-start or
     /// health assertion.
     SystemdRequires,
@@ -922,7 +927,8 @@ impl RuntimeEvidenceRef {
                 RuntimeEvidenceKind::DockerNetworkMembership
                     | RuntimeEvidenceKind::DockerVolumeMount
                     | RuntimeEvidenceKind::DockerPortPublication
-                    | RuntimeEvidenceKind::DockerComposeDependsOn,
+                    | RuntimeEvidenceKind::DockerComposeDependsOn
+                    | RuntimeEvidenceKind::DockerDaemonStateBindMount,
                 RuntimeEvidenceAssertionKind::Observed,
                 RuntimeEvidenceFreshness::Fresh,
                 None,
@@ -1051,6 +1057,18 @@ impl RuntimeMapEdge {
                 self.relationship == RuntimeRelationshipKind::ConnectedTo
                     && self.source.starts_with("docker_container_")
                     && self.target.starts_with("docker_network_")
+            }
+            (
+                1,
+                RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerDaemonStateBindMount,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) => {
+                self.relationship == RuntimeRelationshipKind::ExposesDaemonState
+                    && self.source.starts_with("docker_container_")
+                    && self.target == "host_risk_docker_daemon_state"
             }
             (
                 1,

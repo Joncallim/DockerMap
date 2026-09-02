@@ -661,6 +661,96 @@ mod tests {
     }
 
     #[test]
+    fn daemon_state_bind_mount_evidence_is_path_free_and_unique_per_container() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers[0].mounts = vec![
+            ContainerMount {
+                id: "private-one".into(),
+                kind: ComposeMountKind::Bind,
+                source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+                target: "/inside/socket".into(),
+                read_only: true,
+            },
+            ContainerMount {
+                id: "private-two".into(),
+                kind: ComposeMountKind::Bind,
+                source: Some("/var/lib/docker/DOCKERMAP_TEST_DAEMON_STATE".into()),
+                target: "/inside/data".into(),
+                read_only: false,
+            },
+        ];
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        let risk = runtime_map
+            .nodes
+            .iter()
+            .find(|node| node.id == "host_risk_docker_daemon_state")
+            .expect("matching bind mount derives the synthetic risk target");
+        assert_eq!(risk.kind, RuntimeNodeKind::HostRisk);
+        assert!(risk.metadata.is_empty());
+        let edges = runtime_map
+            .edges
+            .iter()
+            .filter(|edge| edge.target == "host_risk_docker_daemon_state")
+            .collect::<Vec<_>>();
+        assert_eq!(edges.len(), 1, "two qualifying mounts retain one safe edge");
+        assert_eq!(
+            edges[0].relationship,
+            RuntimeRelationshipKind::ExposesDaemonState
+        );
+        assert_eq!(edges[0].evidence_refs.len(), 1);
+        assert_eq!(
+            edges[0].evidence_refs[0].kind,
+            RuntimeEvidenceKind::DockerDaemonStateBindMount
+        );
+        let serialized = serde_json::to_string(&runtime_map).unwrap();
+        for forbidden in [
+            "DOCKERMAP_TEST_DAEMON_STATE",
+            "/inside/socket",
+            "/inside/data",
+            "readOnly",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "runtime evidence leaked {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn irrelevant_or_collided_daemon_state_mounts_fail_closed() {
+        let mut irrelevant = mock_snapshot();
+        irrelevant.containers[0].mounts = vec![ContainerMount {
+            id: "not-bind".into(),
+            kind: ComposeMountKind::NamedVolume,
+            source: Some("/var/lib/docker".into()),
+            target: "/inside".into(),
+            read_only: false,
+        }];
+        assert!(
+            derive_runtime_map(&irrelevant, Vec::new(), Vec::new(), Vec::new(), "test")
+                .edges
+                .iter()
+                .all(|edge| edge.target != "host_risk_docker_daemon_state")
+        );
+
+        let mut collided = mock_snapshot();
+        collided.containers[0].mounts = vec![ContainerMount {
+            id: "daemon-bind".into(),
+            kind: ComposeMountKind::Bind,
+            source: Some("/var/run/docker.sock".into()),
+            target: "/inside".into(),
+            read_only: false,
+        }];
+        collided.containers.push(collided.containers[0].clone());
+        assert!(
+            derive_runtime_map(&collided, Vec::new(), Vec::new(), Vec::new(), "test")
+                .edges
+                .iter()
+                .all(|edge| edge.target != "host_risk_docker_daemon_state")
+        );
+    }
+
+    #[test]
     fn docker_runtime_edges_carry_bounded_observed_evidence_without_confidence() {
         let snapshot = mock_snapshot();
         let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");

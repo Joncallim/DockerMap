@@ -6,9 +6,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    collision_resistant_id_component, service_entity_kind_name, ContainerRecord,
-    DiagnosticSeverity, DockerSnapshot, GraphEdge, GraphNode, GraphResponse, ImageRecord, NodeKind,
-    RelationshipKind, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
+    collision_resistant_id_component, compose::is_docker_daemon_state_bind_source,
+    service_entity_kind_name, ContainerRecord, DiagnosticSeverity, DockerSnapshot, GraphEdge,
+    GraphNode, GraphResponse, ImageRecord, NodeKind, RelationshipKind,
+    RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
     RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
     RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
     RuntimeRelationshipKind, RuntimeServiceEntity, RuntimeServiceStatus,
@@ -355,6 +356,7 @@ fn docker_runtime_evidence(
         RuntimeEvidenceKind::DockerVolumeMount => "volume-mount",
         RuntimeEvidenceKind::DockerPortPublication => "port-publication",
         RuntimeEvidenceKind::DockerComposeDependsOn => "compose-depends-on",
+        RuntimeEvidenceKind::DockerDaemonStateBindMount => "daemon-state-bind-mount",
         RuntimeEvidenceKind::SystemdRequires
         | RuntimeEvidenceKind::SystemdWants
         | RuntimeEvidenceKind::SystemdPartOf => {
@@ -369,6 +371,9 @@ fn docker_runtime_evidence(
         RuntimeEvidenceKind::DockerPortPublication => "Docker reported container port publication",
         RuntimeEvidenceKind::DockerComposeDependsOn => {
             "Docker recorded Compose dependency declaration"
+        }
+        RuntimeEvidenceKind::DockerDaemonStateBindMount => {
+            "Docker reported a bind mount exposing Docker daemon state"
         }
         RuntimeEvidenceKind::SystemdRequires
         | RuntimeEvidenceKind::SystemdWants
@@ -602,6 +607,58 @@ pub fn derive_runtime_map(
                     metadata: BTreeMap::new(),
                 });
             }
+        }
+    }
+
+    const DOCKER_DAEMON_STATE_RISK_ID: &str = "host_risk_docker_daemon_state";
+    let daemon_state_sources = snapshot
+        .containers
+        .iter()
+        .filter(|container| {
+            runtime_container_ids.has_unique_id(container)
+                && container.mounts.iter().any(|mount| {
+                    mount.kind == crate::ComposeMountKind::Bind
+                        && mount
+                            .source
+                            .as_deref()
+                            .is_some_and(is_docker_daemon_state_bind_source)
+                })
+        })
+        .map(runtime_container_id)
+        .collect::<BTreeSet<_>>();
+    if !daemon_state_sources.is_empty()
+        && !nodes
+            .iter()
+            .any(|node| node.id == DOCKER_DAEMON_STATE_RISK_ID)
+    {
+        nodes.push(RuntimeMapNode {
+            id: DOCKER_DAEMON_STATE_RISK_ID.into(),
+            provider: RuntimeProviderKind::Docker,
+            kind: RuntimeNodeKind::HostRisk,
+            label: "Docker daemon state exposure".into(),
+            status: None,
+            layer: Some(RuntimeNodeLayer::Host),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        });
+        for source in daemon_state_sources {
+            if nodes.iter().filter(|node| node.id == source).count() != 1 {
+                continue;
+            }
+            edges.push(RuntimeMapEdge {
+                evidence_refs: vec![docker_runtime_evidence(
+                    snapshot,
+                    &source,
+                    DOCKER_DAEMON_STATE_RISK_ID,
+                    RuntimeEvidenceKind::DockerDaemonStateBindMount,
+                    evidence_provider_revision,
+                )],
+                source,
+                target: DOCKER_DAEMON_STATE_RISK_ID.into(),
+                relationship: RuntimeRelationshipKind::ExposesDaemonState,
+                metadata: BTreeMap::new(),
+            });
         }
     }
 
