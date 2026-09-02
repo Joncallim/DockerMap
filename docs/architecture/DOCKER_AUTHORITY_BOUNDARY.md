@@ -96,9 +96,13 @@ configured value.
 ### Bounded Docker events foundation (#70)
 
 The gateway's
-`bollard_0_19_event_request_shape_is_accepted_without_json_key_order_assumptions`
-regression drives Bollard 0.19.4 against an isolated Unix Docker stub. Bollard
-emits an HTTP/1.1 `GET` with an empty body and this origin-form target:
+`bollard_0_19_event_request_traverses_the_real_gateway_and_only_safe_form_reaches_docker`
+regression points Bollard 0.19.4 at the real filtered Unix gateway with an
+isolated raw-Docker Unix stub behind it. An approved request reaches the raw
+stub exactly once; a second Bollard request with an incomplete action filter is
+denied without reaching the stub. This exercises Bollard's actual headers,
+empty body, and HTTP framing through the production policy path. Its approved
+origin-form target is:
 
 ```text
 /events?since=<unix-seconds>&until=<unix-seconds>&filters=<form-encoded JSON>
@@ -122,6 +126,12 @@ configured, a `label` event filter is rejected. Map and event-set order are
 semantically irrelevant only after the parser proves that all keys and values
 match this closed structure exactly; missing, duplicate, malformed, unrelated,
 or scope-widening filters fail closed.
+
+Form percent-decoding is byte-accurate and must produce strict UTF-8 before JSON
+or configured-label comparison. Malformed escapes, invalid bytes, overlong UTF-8
+and truncated sequences are rejected; they are never converted to replacement
+characters that could accidentally match a configured label. The approved raw
+target is forwarded verbatim only after these checks.
 
 Both accepted request forms require canonical unsigned Unix seconds:
 
