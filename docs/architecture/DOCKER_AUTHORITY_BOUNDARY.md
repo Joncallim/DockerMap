@@ -155,13 +155,15 @@ regression measures Bollard 0.19.4 against the real filtered Unix gateway and
 an isolated raw-Docker Unix stub. The one approved origin-form target is:
 
 ```text
-/containers/<single-unescaped-name-or-id>/stats?stream=false&one-shot=false
+/containers/<single-unescaped-name-or-id>/stats?stream=false&one-shot=true
 ```
 
 The test proves the exact query order, empty request body, normal HTTP/1.1
-framing, and verbatim forwarding. The policy rejects every other stats form:
-the streaming form, one-shot variation, reordered/duplicate/unknown or missing
-query keys, root/versioned/encoded paths, request bodies, and upgrade framing.
+framing, and verbatim forwarding. `one-shot=true` asks Docker for one finite
+sample; the gateway never permits a live stats stream. The policy rejects every
+other stats form: `stream=true`, `one-shot=false`, reordered/duplicate/unknown
+or missing query keys, root/versioned/encoded paths, request bodies, and upgrade
+framing.
 It provides no general Docker read or path wildcard, but an unfiltered gateway
 does permit that single finite stats shape for any valid container name or ID
 segment. It does not itself implement a stats collector or publish Docker's
