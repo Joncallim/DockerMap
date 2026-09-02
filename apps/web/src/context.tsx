@@ -1,5 +1,10 @@
 import { createContext, useContext } from "react";
-import type { FindingsResponse, HealthResponse, ObservedChangeHistoryResponse } from "@dockermap/contracts";
+import type {
+  FindingsResponse,
+  HealthResponse,
+  ObservedChangeHistoryResponse,
+  ObservedDockerEventHistoryResponse
+} from "@dockermap/contracts";
 import type { SystemModel } from "./lib/model";
 import type { EvidenceMode, ModelProvenance } from "./lib/evidence";
 
@@ -14,6 +19,8 @@ export interface AppContextValue {
   findings?: FindingsResponse | null;
   /** Raw bounded inventory observations; screens must still prove source/revision coherence. */
   observedHistory?: ObservedChangeHistoryResponse | null;
+  /** Raw bounded Docker stream observations; screens must still prove strict coherence. */
+  observedDockerEvents?: ObservedDockerEventHistoryResponse | null;
   tick: number;
   evidenceMode: EvidenceMode | null;
   openCommand: () => void;
