@@ -215,6 +215,26 @@
   "edges": [
     {
       "source": "docker_container_container_api",
+      "target": "docker_container_container_db",
+      "relationship": "depends_on",
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker_compose_depends_on-docker_container_container_api-docker_container_container_db",
+          "provider": "docker",
+          "kind": "docker_compose_depends_on",
+          "assertionKind": "observed",
+          "summary": "Docker recorded Compose dependency declaration",
+          "subjectRef": "docker_container_container_api",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "source": "docker_container_container_api",
       "target": "docker_network_network_app",
       "relationship": "connected_to",
       "metadata": {},
