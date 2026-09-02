@@ -101,7 +101,8 @@ test("tag builds retain artifacts for review and cannot publish automatically", 
   assert.match(policy, /complete Grype SARIF report/);
   assert.match(policy, /explicitly record either \*\*DEFER\*\* or \*\*ACCEPT\*\*/);
   assert.match(checklist, /current remediation baseline\s+is untriaged and deferred/);
-  assert.match(triage, /image-supply-chain-<candidate commit SHA>/);
+  assert.match(triage,
+    /release-candidate-<tag>-<candidate commit SHA>\/dist\/release\/dockermap-<tag>-image\.grype\.all\.sarif/);
   assert.match(triage, /Candidate image identity:/);
   assert.match(triage, /Exposure and compensating controls:/);
   assert.match(triage, /Owner:/);
@@ -115,7 +116,8 @@ test("tag builds retain artifacts for review and cannot publish automatically", 
 
   const currentBaseline = triage.split("## Current baseline — untriaged and deferred")[1];
   assert.ok(currentBaseline, "the current image baseline must have its own triage record");
-  assert.match(currentBaseline, /Complete report artifact: PENDING/);
+  assert.match(currentBaseline,
+    /Complete report artifact: PENDING — release-candidate-<tag>-5a93bbea2106f79ba7d0add891c87f43abac6a5a\/dist\/release\/dockermap-<tag>-image\.grype\.all\.sarif/);
   assert.match(currentBaseline, /Owner: UNASSIGNED/);
   assert.match(currentBaseline, /Review date: UNSET/);
   assert.match(currentBaseline, /Maintainer decision: DEFER/);
