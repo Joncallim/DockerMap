@@ -113,6 +113,15 @@ Container-only ports, malformed or bind-address-like forms, stale evidence,
 duplicate facts, and identity collisions produce no finding. This is not an
 Internet-reachability, vulnerability, or security conclusion.
 
+`docker.daemon_state_bind_mount` emits a warning only when one uniquely
+identified Docker container has exactly one fresh, path-free Docker fact bound
+to the fixed Docker-daemon-state risk target. It means the recorded access may
+provide Docker daemon API authority and should be reviewed; it does not prove a
+breach, compromise, reachability, or impact. Mount paths, mount IDs, read-only
+flags, and raw configuration never enter the runtime edge, finding, or browser
+response. Missing, stale, duplicate, malformed, or collided facts produce no
+finding.
+
 Each rule carries only its exact triggering evidence references. The API
 validates the fixed vocabulary, static display text, and rule-specific evidence
 shape before publication, and the browser displays findings only when their
@@ -121,13 +130,15 @@ nonempty model revision matches the current live model.
 #### Current finding policy
 
 `warning` is reserved for a fresh, directly recorded declaration whose current
-service-state endpoints satisfy a closed, fail-closed condition. It does not
-mean a service failed to start. `advisory` is reserved for a fresh combination
-of directly observed Docker facts that merits a configuration review but does
-not establish exposure, reachability, vulnerability, or impact. There is no
-critical severity in the current pack. New rules require an explicit contract,
-fixed evidence budget, deterministic positive and benign-negative fixtures,
-and a review of their exact conclusion language.
+service-state endpoints satisfy a closed, fail-closed condition, or for the
+single path-free Docker-daemon-state fact whose recorded access may provide
+Docker daemon API authority. Neither meaning proves a failed start, breach,
+reachability, compromise, or impact. `advisory` is reserved for a fresh
+combination of directly observed Docker facts that merits a configuration
+review but does not establish exposure, reachability, vulnerability, or
+impact. There is no critical severity in the current pack. New rules require
+an explicit contract, fixed evidence budget, deterministic positive and
+benign-negative fixtures, and a review of their exact conclusion language.
 
 The map is organized around a unified service concept. Docker containers, systemd
 services, tmux sessions, npm applications, Python applications, and native processes

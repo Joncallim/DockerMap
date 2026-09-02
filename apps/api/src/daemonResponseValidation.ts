@@ -59,6 +59,9 @@ const SYSTEMD_REQUIRES_FINDING_RECOMMENDATION = "Inspect the target service stat
 const INTERNAL_NETWORK_PORT_FINDING_RULE = "docker.internal_network_member_publishes_port";
 const INTERNAL_NETWORK_PORT_FINDING_SUMMARY = "A container on an internal Docker network also has a published host port.";
 const INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION = "Review whether the host-port publication is intended for this internal-network service.";
+const DOCKER_DAEMON_STATE_FINDING_RULE = "docker.daemon_state_bind_mount";
+const DOCKER_DAEMON_STATE_FINDING_SUMMARY = "A container has Docker daemon state access that may provide Docker daemon API authority.";
+const DOCKER_DAEMON_STATE_FINDING_RECOMMENDATION = "Review whether this container requires Docker daemon API authority.";
 
 // Version-one evidence is intentionally a discriminated Docker observation,
 // not a generic provenance bag. JSON Schema owns each field's closed enum;
@@ -224,6 +227,31 @@ function hasCoherentFindings(payload: unknown): boolean {
           && evidence.providerSlot === "systemd"
           && evidence.freshness === "fresh"
           && evidence.subjectRef === finding.subjectRef;
+      })();
+    if (finding.ruleId === DOCKER_DAEMON_STATE_FINDING_RULE) return finding.severity === "warning"
+      && finding.summary === DOCKER_DAEMON_STATE_FINDING_SUMMARY
+      && finding.recommendation === DOCKER_DAEMON_STATE_FINDING_RECOMMENDATION
+      && typeof finding.id === "string"
+      && finding.id.startsWith("finding_docker_daemon_state_bind_mount_")
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("docker_container_")
+      && finding.targetRef === "host_risk_docker_daemon_state"
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 1
+      && (() => {
+        const candidateEvidence = finding.evidenceRefs[0];
+        if (!candidateEvidence || typeof candidateEvidence !== "object") return false;
+        const evidence = candidateEvidence as Record<string, unknown>;
+        return evidence.version === 1
+          && evidence.provider === "docker"
+          && evidence.kind === "docker_daemon_state_bind_mount"
+          && evidence.assertionKind === "observed"
+          && evidence.summary === "Docker reported a bind mount exposing Docker daemon state"
+          && evidence.subjectRef === finding.subjectRef
+          && evidence.providerSlot === null
+          && evidence.freshness === "fresh"
+          && typeof evidence.providerRevision === "string"
+          && evidence.providerRevision !== String(evidence.collectedAt);
       })();
     if (finding.ruleId !== INTERNAL_NETWORK_PORT_FINDING_RULE) return false;
     return finding.severity === "advisory"

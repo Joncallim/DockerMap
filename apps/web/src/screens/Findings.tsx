@@ -8,6 +8,12 @@ export default function Findings() {
 
   if (loading && !findings) return <Loading label="Checking bounded findings…" />;
 
+  const presentationFor = (ruleId: string) => {
+    if (ruleId === "systemd.requires_target_not_active") return ["Declared dependency needs review", "Observed declaration"] as const;
+    if (ruleId === "docker.daemon_state_bind_mount") return ["Docker daemon-state access needs review", "Observed Docker fact"] as const;
+    return ["Internal-network port publication needs review", "Observed Docker facts"] as const;
+  };
+
   return (
     <div className="screen">
       <header className="screen-head">
@@ -29,17 +35,19 @@ export default function Findings() {
         </Panel>
       ) : (
         <div className="stack">
-          {findings.findings.map((finding) => (
-            <Panel key={finding.id} title={finding.ruleId === "systemd.requires_target_not_active" ? "Declared dependency needs review" : "Internal-network port publication needs review"} icon="alert" hint={finding.ruleId === "systemd.requires_target_not_active" ? "Observed declaration" : "Observed Docker facts"}>
-              <div className="tag-wrap"><Tag tone={finding.severity === "warning" ? "warn" : "muted"}>{finding.severity === "warning" ? "Warning" : "Advisory"}</Tag><Tag tone="muted">{finding.ruleId === "systemd.requires_target_not_active" ? "Systemd Requires" : "Internal network + host port"}</Tag><Tag tone="muted">{finding.evidenceRefs.length} supporting fact{finding.evidenceRefs.length === 1 ? "" : "s"}</Tag></div>
+          {findings.findings.map((finding) => {
+            const [title, hint] = presentationFor(finding.ruleId);
+            const category = finding.ruleId === "systemd.requires_target_not_active" ? "Systemd Requires" : finding.ruleId === "docker.daemon_state_bind_mount" ? "Docker daemon state" : "Internal network + host port";
+            return <Panel key={finding.id} title={title} icon="alert" hint={hint}>
+              <div className="tag-wrap"><Tag tone={finding.severity === "warning" ? "warn" : "muted"}>{finding.severity === "warning" ? "Warning" : "Advisory"}</Tag><Tag tone="muted">{category}</Tag><Tag tone="muted">{finding.evidenceRefs.length} supporting fact{finding.evidenceRefs.length === 1 ? "" : "s"}</Tag></div>
               <p>{finding.summary}</p>
               <p className="muted-copy">{finding.recommendation}</p>
               <dl className="detail-grid">
                 <div><dt>Declaring service</dt><dd>{finding.subjectRef}</dd></div>
                 <div><dt>Target service</dt><dd>{finding.targetRef}</dd></div>
               </dl>
-            </Panel>
-          ))}
+            </Panel>;
+          })}
         </div>
       )}
     </div>
