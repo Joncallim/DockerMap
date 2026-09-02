@@ -17,6 +17,9 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
   is [the supply-chain baseline](SUPPLY_CHAIN.md).
 - [x] Pin every Dockerfile base image to a reviewed manifest digest and retain
   an SPDX SBOM with each tagged release candidate.
+- [ ] Complete [security finding triage](SECURITY_FINDING_TRIAGE.md) for the
+  exact tagged candidate's full image report. The current remediation baseline
+  is untriaged and deferred; it is not release acceptance.
 - [x] Add API security tests for bearer auth, CORS, query limits, startup config, and error detail exposure.
 - [x] Add fixture-driven Compose validation tests for malformed files and blocked edit plans.
 - [x] Add non-live Playwright smoke coverage for the primary GUI pages.

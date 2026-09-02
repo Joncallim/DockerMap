@@ -70,6 +70,7 @@ test("tag builds retain artifacts for review and cannot publish automatically", 
   const workflow = await read(".github/workflows/release.yml");
   const checklist = await read("docs/release/RELEASE_CHECKLIST.md");
   const policy = await read("docs/release/SUPPLY_CHAIN.md");
+  const triage = await read("docs/release/SECURITY_FINDING_TRIAGE.md");
 
   assertImmutableActionsAndReadOnlyPermissions(workflow, "release");
   assert.match(workflow,
@@ -96,4 +97,29 @@ test("tag builds retain artifacts for review and cannot publish automatically", 
   assert.match(policy, /\[advisories\]\.ignore/);
   await assert.rejects(read(".cargo/audit.toml"), { code: "ENOENT" },
     "no RustSec advisory-ignore configuration is checked in today");
+
+  assert.match(policy, /complete Grype SARIF report/);
+  assert.match(policy, /explicitly record either \*\*DEFER\*\* or \*\*ACCEPT\*\*/);
+  assert.match(checklist, /current remediation baseline\s+is untriaged and deferred/);
+  assert.match(triage, /image-supply-chain-<candidate commit SHA>/);
+  assert.match(triage, /Candidate image identity:/);
+  assert.match(triage, /Exposure and compensating controls:/);
+  assert.match(triage, /Owner:/);
+  assert.match(triage, /Review date:/);
+  assert.match(triage, /Maintainer decision: DEFER \| ACCEPT/);
+  assert.match(triage, /UNTRIAGED \/\s*DEFERRED/);
+  assert.match(triage, /zero remediable high\/critical findings/);
+  assert.match(triage, /CVE-2026-42533/,
+    "the current deferred record must retain exact unfixed high/critical CVEs");
+  assert.match(triage, /#63 remains open/);
+
+  const currentBaseline = triage.split("## Current baseline — untriaged and deferred")[1];
+  assert.ok(currentBaseline, "the current image baseline must have its own triage record");
+  assert.match(currentBaseline, /Complete report artifact: PENDING/);
+  assert.match(currentBaseline, /Owner: UNASSIGNED/);
+  assert.match(currentBaseline, /Review date: UNSET/);
+  assert.match(currentBaseline, /Maintainer decision: DEFER/);
+  assert.match(currentBaseline, /not a maintainer acceptance/);
+  assert.doesNotMatch(currentBaseline, /Maintainer decision: ACCEPT/,
+    "the untriaged current baseline must not be represented as accepted");
 });
