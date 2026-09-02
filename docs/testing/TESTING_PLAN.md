@@ -184,8 +184,8 @@ current telemetry capped at 16 rows, 8-second metric expiry, Docker-to-mock
 reset, and fixture cleanup. Deterministic daemon tests remain the evidence for
 the two-request and 750-ms bounds. At #247's integration head, this focused
 proof passed; the separate normal label-scoped live suite still has an
-unrelated Service Detail browser failure, so that broad suite is not recorded
-as green.
+Service Detail browser failure outside this focused proof. Its cause has not
+been established, so that broad suite is not recorded as green.
 
 ## Sandbox Fixture
 

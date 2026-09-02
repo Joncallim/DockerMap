@@ -86,7 +86,12 @@ test("collects bounded opaque Docker telemetry through the unfiltered fixture ga
       ).toBe(true);
     }
   } finally {
-    await stack?.stop();
+    if (stack) {
+      await stack.stop();
+      // Cleanup inspection is limited to the fixture's generated control name
+      // and exact fixture label; it never enumerates unrelated resources.
+      expect(stack.ownedFixtureResourcesAbsent?.()).toBe(true);
+    }
   }
 });
 
