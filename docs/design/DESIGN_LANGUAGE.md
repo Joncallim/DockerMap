@@ -123,8 +123,9 @@ Resource samples render only under exact `(demo,demo)` and are labelled "Sample 
 unresolved, and mismatched mode/provenance states do not collect resource usage. In a coherent
 live Docker model, the Resources panel may instead render current observed CPU, memory, and
 aggregate network-rate values only when the resource-telemetry response has matching current
-model evidence and every metric is unexpired. Expired telemetry is visibly stale; missing or
-partial telemetry is "Not collected" rather than synthesized, zero-filled, or carried forward.
+model evidence and every metric is unexpired. An explicitly stale telemetry response is visibly
+stale. An expired, missing, or partial per-metric value is "Not collected" rather than
+synthesized, zero-filled, or carried forward.
 The UI does not render raw Docker IDs, interface names, counters, timestamps, history, or an
 explanation of why a value changed. Change history has its separate demo/mock sample rule; its
 mock policy does not authorize resource samples. Edge health is derived from observed container
