@@ -38,6 +38,7 @@ export default function Findings() {
             if (!presentation) return null;
             return <Panel key={`${finding.ruleId}-${index}`} title={presentation.title} icon="alert" hint={presentation.hint}>
               <div className="tag-wrap"><Tag tone={presentation.tone}>{presentation.severityLabel}</Tag><Tag tone="muted">{presentation.category}</Tag></div>
+              <p className="muted-copy">{presentation.summary}</p>
               <p className="muted-copy">{presentation.recommendation}</p>
               {presentation.inspectChanges && <Link className="ghost-link" to="/changes">Inspect recent changes <Icon name="arrow" size={14} /></Link>}
             </Panel>;
