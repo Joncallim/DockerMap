@@ -120,11 +120,15 @@ with honest copy. Errors use the alert glyph and say what failed.
 ## Sample Data
 
 Resource samples render only under exact `(demo,demo)` and are labelled "Sample data". Mock,
-live, unresolved, and mismatched mode/provenance states do not collect resource usage: Home
-shows `CPU not collected`, while Service Detail shows "Not collected" with the reason that
-DockerMap does not measure container CPU, memory, or network. Change history has its separate
-demo/mock sample rule; its mock policy does not authorize resource samples. Edge health is
-derived from observed container state, not sample data; its evidence tagging belongs to #75/#76.
+unresolved, and mismatched mode/provenance states do not collect resource usage. In a coherent
+live Docker model, the Resources panel may instead render current observed CPU, memory, and
+aggregate network-rate values only when the resource-telemetry response has matching current
+model evidence and every metric is unexpired. Expired telemetry is visibly stale; missing or
+partial telemetry is "Not collected" rather than synthesized, zero-filled, or carried forward.
+The UI does not render raw Docker IDs, interface names, counters, timestamps, history, or an
+explanation of why a value changed. Change history has its separate demo/mock sample rule; its
+mock policy does not authorize resource samples. Edge health is derived from observed container
+state, not sample data; its evidence tagging belongs to #75/#76.
 
 ## Regenerating Screenshots
 
