@@ -1058,6 +1058,10 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/history", (() => { const value = structuredClone(history); delete value.observedRevision; return value; })()],
     ["/daemon/history", { ...history, source: "untrusted" }],
     ["/daemon/history", { ...history, source: "mock" }],
+    ["/daemon/history", (() => { const value = structuredClone(history); value.events[0].containerId = "docker_container_/srv/private/name"; return value; })()],
+    ["/daemon/history", (() => { const value = structuredClone(history); value.events[0].containerId = "docker_container_0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"; return value; })()],
+    ["/daemon/history", (() => { const value = structuredClone(history); value.events[0].containerId = "docker_container_0123456789abcdef"; return value; })()],
+    ["/daemon/history", (() => { const value = structuredClone(history); value.events[0].containerId = "docker_container_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef-extra"; return value; })()],
     ["/daemon/history", (() => { const value = structuredClone(history); value.events[0].currentStatus = "raw Docker status"; return value; })()],
     ["/daemon/history", (() => { const value = structuredClone(history); value.events[0].previousStatus = null; return value; })()]
   ] as const;

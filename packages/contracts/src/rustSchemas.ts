@@ -2552,8 +2552,7 @@ export const RUST_RESPONSE_SCHEMAS = {
       "description": "One observed inventory delta. `containerId` is an opaque digest-derived\nhistory identity, never a raw Docker ID, readable ID fragment, or name.",
       "properties": {
         "containerId": {
-          "maxLength": 192,
-          "minLength": 1,
+          "pattern": "^docker_container_[0-9a-f]{64}$",
           "type": "string"
         },
         "currentStatus": {
@@ -5234,8 +5233,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "description": "One observed inventory delta. `containerId` is an opaque digest-derived\nhistory identity, never a raw Docker ID, readable ID fragment, or name.",
       "properties": {
         "containerId": {
-          "maxLength": 192,
-          "minLength": 1,
+          "pattern": "^docker_container_[0-9a-f]{64}$",
           "type": "string"
         },
         "currentStatus": {

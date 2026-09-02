@@ -91,6 +91,7 @@ fn deny_unknown_object_properties(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::{daemon_schema_documents, DAEMON_SCHEMA_NAMES, JSON_SAFE_INTEGER_MAX};
+    use crate::ObservedChangeHistoryResponse;
     use serde_json::Value;
 
     #[test]
@@ -126,7 +127,7 @@ mod tests {
         let validator = jsonschema::validator_for(&schema).expect("valid schema");
         let event = serde_json::json!({
             "id": "history-1", "kind": "container_appeared", "observedAtMs": 1,
-            "containerId": "docker_container_safe", "previousStatus": null, "currentStatus": "running"
+            "containerId": "docker_container_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "previousStatus": null, "currentStatus": "running"
         });
         let response = serde_json::json!({
             "source": "docker", "baselineEstablished": true,
@@ -134,6 +135,22 @@ mod tests {
             "events": [event]
         });
         assert!(validator.is_valid(&response));
+        assert!(serde_json::from_value::<ObservedChangeHistoryResponse>(response.clone()).is_ok());
+
+        for invalid_container_id in [
+            "docker_container_/srv/private/name",
+            "docker_container_0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef",
+            "docker_container_0123456789abcdef",
+            "docker_container_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef-extra",
+        ] {
+            let mut invalid = response.clone();
+            invalid["events"][0]["containerId"] = serde_json::json!(invalid_container_id);
+            assert!(!validator.is_valid(&invalid), "{invalid_container_id}");
+            assert!(
+                serde_json::from_value::<ObservedChangeHistoryResponse>(invalid).is_err(),
+                "{invalid_container_id}"
+            );
+        }
 
         let mut unknown_status = response.clone();
         unknown_status["events"][0]["currentStatus"] = serde_json::json!("raw Docker status");
