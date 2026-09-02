@@ -1280,6 +1280,8 @@ pub enum FindingRule {
     DockerDaemonStateBindMountPublishesPort,
     #[serde(rename = "docker.compose_declared_target_not_active")]
     DockerComposeDeclaredTargetNotActive,
+    #[serde(rename = "docker.compose_mutual_dependency")]
+    DockerComposeMutualDependency,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

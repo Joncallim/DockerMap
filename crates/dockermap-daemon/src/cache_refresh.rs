@@ -1947,6 +1947,48 @@ mod scheduler_tests {
         assert!(cache.findings.findings.is_empty());
     }
 
+    #[tokio::test]
+    async fn compose_mutual_dependency_advisory_is_cached_only_for_docker_source_and_cleared_on_reset(
+    ) {
+        let mut snapshot = mock_snapshot();
+        snapshot
+            .containers
+            .iter_mut()
+            .find(|container| container.id == "container_db")
+            .expect("fixture supplies reciprocal Compose dependency container")
+            .depends_on
+            .push("container_api".into());
+        let mut initial = docker_cache(snapshot);
+        initial.rebuild_runtime_map();
+        initial.assign_revision();
+        assert!(initial.findings.findings.iter().any(|finding| {
+            finding.rule_id == dockermap_core::FindingRule::DockerComposeMutualDependency
+                && finding.evidence_refs.len() == 2
+                && finding.evidence_refs.iter().all(|evidence| {
+                    evidence.kind == RuntimeEvidenceKind::DockerComposeDependsOn
+                        && evidence.provider_revision == finding.evidence_refs[0].provider_revision
+                        && evidence.collected_at == finding.evidence_refs[0].collected_at
+                })
+        }));
+        let state = AppState {
+            cache: Arc::new(RwLock::new(initial)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let cache = state.cache.read().await;
+        assert_eq!(cache.health.mode, RuntimeMode::Mock);
+        assert!(cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(cache.findings.findings.iter().all(|finding| {
+            finding.rule_id != dockermap_core::FindingRule::DockerComposeMutualDependency
+        }));
+    }
+
     #[test]
     fn revisionless_or_disabled_systemd_collection_cannot_publish_evidence() {
         let mut slots = slots();
