@@ -234,9 +234,10 @@ const demoRuntimeMap: RuntimeMap = {
   providerStates: [
     { slot: "network_infrastructure", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
     { slot: "host_scoped", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+    { slot: "cron", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+    { slot: "systemd", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
     { slot: "python_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
     { slot: "native_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
-    { slot: "systemd", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
     { slot: "project_npm", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" }
   ],
   nodes: [

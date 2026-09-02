@@ -65,10 +65,11 @@ describe("runtime collection evidence", () => {
     const providerStates: RuntimeMap["providerStates"] = [
       { ...testProviderStates[0], state: "fresh", lastAttemptMs: 1, lastSuccessMs: 2, lastDurationMs: 1, dataRevision: "test-provider-1", statusReason: null },
       { ...testProviderStates[1], state: "stale", lastAttemptMs: 1, lastSuccessMs: 2, lastDurationMs: 1, consecutiveFailureCount: 1, dataRevision: "test-provider-2", statusReason: "collection_failed" },
-      { ...testProviderStates[2], state: "collecting", lastAttemptMs: 3, statusReason: "refreshing" },
-      { ...testProviderStates[3], state: "timed_out", lastAttemptMs: 3, lastSuccessMs: 2, lastDurationMs: 1, consecutiveFailureCount: 1, dataRevision: "test-provider-4", statusReason: "collection_timed_out" },
-      { ...testProviderStates[4], state: "disabled", statusReason: "disabled" },
-      { ...testProviderStates[5], state: "disabled", statusReason: "disabled" }
+      { ...testProviderStates[2], state: "fresh", lastAttemptMs: 1, lastSuccessMs: 2, lastDurationMs: 1, dataRevision: "test-provider-3", statusReason: null },
+      { ...testProviderStates[3], state: "collecting", lastAttemptMs: 3, statusReason: "refreshing" },
+      { ...testProviderStates[4], state: "timed_out", lastAttemptMs: 3, lastSuccessMs: 2, lastDurationMs: 1, consecutiveFailureCount: 1, dataRevision: "test-provider-5", statusReason: "collection_timed_out" },
+      { ...testProviderStates[5], state: "disabled", statusReason: "disabled" },
+      { ...testProviderStates[6], state: "disabled", statusReason: "disabled" }
     ];
     const model = buildModel(snapshot([]), { ...emptyRuntime, providerStates });
 
