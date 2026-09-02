@@ -19,11 +19,12 @@ use crate::{
     },
 };
 use dockermap_core::{
-    collision_resistant_id_component, derive_images, mock_snapshot, DiagnosticSeverity,
-    DockerSnapshot, HealthResponse, HealthState, ProviderSlot, ProviderState, ProviderStateKind,
-    ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness,
-    RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap,
-    RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMode, RuntimeProviderKind,
+    collision_resistant_id_component, derive_findings, derive_images, mock_snapshot,
+    DiagnosticSeverity, DockerSnapshot, FindingsResponse, HealthResponse, HealthState,
+    ProviderSlot, ProviderState, ProviderStateKind, ProviderStatusReason,
+    RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
+    RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
+    RuntimeMode, RuntimeProviderKind,
 };
 use std::{
     collections::BTreeMap,
@@ -64,6 +65,7 @@ pub(crate) struct DaemonCache {
     pub(crate) snapshot: DockerSnapshot,
     pub(crate) health: HealthResponse,
     pub(crate) runtime_map: RuntimeMap,
+    pub(crate) findings: FindingsResponse,
     runtime_providers: RuntimeProviderSlots,
     /// Increments on every Docker/mock source transition. A late worker must
     /// match this generation as well as evidence, so Docker→mock→Docker can
@@ -383,6 +385,7 @@ impl DaemonCache {
                 provider_states: unavailable_provider_states(),
                 ..Default::default()
             },
+            findings: FindingsResponse::default(),
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
@@ -398,6 +401,12 @@ impl DaemonCache {
         // publication. Provider state is runtime-topology evidence only.
         self.revision
             .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
+        // Findings are a pure projection of the sanitized runtime map, so
+        // calculate and cache them only after the publication revision exists.
+        self.findings = FindingsResponse {
+            findings: derive_findings(&self.runtime_map),
+            model_revision: self.runtime_map.model_revision.clone(),
+        };
     }
 
     fn assign_docker_observation_revision(&mut self) {
@@ -558,6 +567,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     snapshot,
                     health,
                     runtime_map: empty_runtime_map(0),
+                    findings: FindingsResponse::default(),
                     runtime_providers: unavailable_provider_slots(),
                     source_generation: 0,
                     docker_observation_revision: DockerObservationRevision::new(),
@@ -1198,7 +1208,14 @@ mod scheduler_tests {
                 provider: RuntimeProviderKind::Systemd,
                 kind: RuntimeNodeKind::SystemdService,
                 label: label.into(),
-                status: None,
+                status: Some(
+                    if id == "systemd_service_application" {
+                        "active"
+                    } else {
+                        "failed"
+                    }
+                    .into(),
+                ),
                 layer: Some(RuntimeNodeLayer::Service),
                 metadata: BTreeMap::new(),
                 service: None,
@@ -1267,6 +1284,36 @@ mod scheduler_tests {
     }
 
     #[test]
+    fn findings_are_cached_only_after_the_runtime_map_revision_is_published() {
+        let mut cache = docker_cache(mock_snapshot());
+        let mut provider_slots = slots();
+        let state = provider_slots.get_mut(&ProviderSlot::Systemd).unwrap();
+        state.observation = RuntimeProviderState::Fresh(marked_systemd_dependency());
+        state.freshness.data_revision = Some(SlotDataRevision::first());
+        state.freshness.last_success_ms = Some(42);
+        cache.runtime_providers = provider_slots;
+        cache.rebuild_runtime_map();
+        assert!(cache.runtime_map.model_revision.is_empty());
+        assert!(cache.findings.model_revision.is_empty());
+
+        cache.assign_revision();
+
+        assert_eq!(
+            cache.findings.model_revision,
+            cache.runtime_map.model_revision
+        );
+        assert_eq!(cache.findings.findings.len(), 1);
+        let finding = &cache.findings.findings[0];
+        assert_eq!(
+            finding.rule_id,
+            dockermap_core::FindingRule::SystemdRequiresTargetNotActive
+        );
+        let serialized = serde_json::to_string(finding).unwrap();
+        assert!(!serialized.contains("systemd_evidence_"));
+        assert!(!serialized.contains("providerRevision"));
+    }
+
+    #[test]
     fn revisionless_or_disabled_systemd_collection_cannot_publish_evidence() {
         let mut slots = slots();
         slots.get_mut(&ProviderSlot::Systemd).unwrap().observation =
@@ -1310,6 +1357,7 @@ mod scheduler_tests {
                 message: Some("controlled Docker cache".into()),
             },
             runtime_map: empty_runtime_map(last_updated),
+            findings: FindingsResponse::default(),
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),

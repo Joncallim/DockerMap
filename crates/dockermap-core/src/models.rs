@@ -1175,6 +1175,55 @@ pub struct RuntimeMapDiagnostic {
     pub message: String,
 }
 
+/// Findings are intentionally a small, closed advisory vocabulary. They do
+/// not expose provider output or prescribe an automated remediation.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingSeverity {
+    Warning,
+    Advisory,
+}
+
+/// Closed rule identifiers keep clients from treating findings as arbitrary
+/// provider messages. New rules require an explicit contract addition.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingRule {
+    #[serde(rename = "systemd.requires_target_not_active")]
+    SystemdRequiresTargetNotActive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(deny_unknown_fields)]
+pub struct Finding {
+    #[schemars(length(min = 1, max = 259))]
+    pub id: String,
+    #[serde(rename = "ruleId")]
+    pub rule_id: FindingRule,
+    pub severity: FindingSeverity,
+    #[schemars(length(min = 1, max = 259))]
+    pub summary: String,
+    #[schemars(length(min = 1, max = 259))]
+    pub recommendation: String,
+    #[serde(rename = "subjectRef")]
+    pub subject_ref: String,
+    #[serde(rename = "targetRef")]
+    pub target_ref: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FindingsResponse {
+    pub findings: Vec<Finding>,
+    #[serde(rename = "modelRevision")]
+    #[schemars(length(min = 1))]
+    pub model_revision: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 pub struct RuntimeMap {
     pub nodes: Vec<RuntimeMapNode>,
