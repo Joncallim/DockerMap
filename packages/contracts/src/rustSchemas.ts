@@ -339,14 +339,23 @@ export const RUST_RESPONSE_SCHEMAS = {
     },
     "ProviderSlot": {
       "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
-      "enum": [
-        "network_infrastructure",
-        "host_scoped",
-        "python_processes",
-        "native_processes",
-        "project_npm"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "network_infrastructure",
+            "host_scoped",
+            "python_processes",
+            "native_processes",
+            "project_npm"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "systemd",
+          "description": "systemd has an independent collector lifecycle.  It must not inherit\nfreshness from the broader host-scoped observation slot.",
+          "type": "string"
+        }
+      ]
     },
     "ProviderState": {
       "additionalProperties": false,
@@ -1243,8 +1252,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/$defs/ProviderState"
       },
-      "maxItems": 5,
-      "minItems": 5,
+      "maxItems": 6,
+      "minItems": 6,
       "type": "array"
     },
     "source": {
@@ -2555,14 +2564,23 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     },
     "ProviderSlot": {
       "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
-      "enum": [
-        "network_infrastructure",
-        "host_scoped",
-        "python_processes",
-        "native_processes",
-        "project_npm"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "network_infrastructure",
+            "host_scoped",
+            "python_processes",
+            "native_processes",
+            "project_npm"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "systemd",
+          "description": "systemd has an independent collector lifecycle.  It must not inherit\nfreshness from the broader host-scoped observation slot.",
+          "type": "string"
+        }
+      ]
     },
     "ProviderState": {
       "additionalProperties": false,
@@ -3459,8 +3477,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/components/schemas/RuntimeMap/$defs/ProviderState"
       },
-      "maxItems": 5,
-      "minItems": 5,
+      "maxItems": 6,
+      "minItems": 6,
       "type": "array"
     },
     "source": {

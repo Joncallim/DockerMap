@@ -9,8 +9,8 @@ proposal for a generic job framework.
 DockerMap keeps the two-second Docker-inventory refresh loop. Each cycle
 publishes the Docker snapshot immediately, then claims due fixed provider
 slots in the background. The private completion-relative policy is: network
-infrastructure 10 seconds, host-scoped 15 seconds, Python processes 10
-seconds, native processes 10 seconds, and project npm 60 seconds. At most two
+infrastructure 10 seconds, host-scoped 15 seconds, systemd 15 seconds, Python
+processes 10 seconds, native processes 10 seconds, and project npm 60 seconds. At most two
 slots run at once. There are no user-configurable timers, persisted telemetry,
 conditional browser fetch policy, provider plugin, or policy DSL.
 
@@ -19,10 +19,11 @@ The fixed runtime collection stages, in order, are:
 1. Docker projection from the snapshot.
 2. Network infrastructure (including its fixed opt-in and restricted-PID
    handling).
-3. Host-scoped collectors (listeners, systemd, scheduled jobs, PM2, tmux).
-4. Python process projection.
-5. Native-process projection.
-6. Bounded project-root npm discovery.
+3. Host-scoped collectors (listeners, scheduled jobs, PM2, tmux).
+4. systemd service declarations.
+5. Python process projection.
+6. Native-process projection.
+7. Bounded project-root npm discovery.
 
 `STATIC_PROVIDER_SLOTS`, its fixed cadence table, and `STATIC_REFRESH_INTERVAL`
 are code-level implementation policy. They are not a scheduling API. Changing
@@ -32,15 +33,15 @@ and cache coherence.
 
 ## Provider state vocabulary
 
-`RuntimeMap.providerStates` is a schema-backed five-item evidence vector for
-the fixed slots: `network_infrastructure`, `host_scoped`,
+`RuntimeMap.providerStates` is a schema-backed six-item evidence vector for
+the fixed slots: `network_infrastructure`, `host_scoped`, `systemd`,
 `python_processes`, `native_processes`, and `project_npm`. Each entry contains
 only its slot and one of `fresh`, `stale`, `collecting`, `unavailable`,
 `timed_out`, or `disabled`. It contains no provider command, path, raw error,
 diagnostic, secret, timestamp, or configurable policy. Diagnostics remain the
 human-readable, publication-sanitized explanation.
 
-The schema enforces item shape and a five-item bound; the Node daemon-response
+The schema enforces item shape and a six-item bound; the Node daemon-response
 boundary additionally rejects a vector unless every fixed slot appears exactly
 once. This is a closed, typed contract invariant rather than a configurable
 policy.
@@ -144,22 +145,25 @@ per-slot runtime budget and fixed process/filesystem bounds remain unchanged.
 
 For a 60-second healthy interval, the old static pass invoked every slot 31
 times. The fixed policy has deterministic maximum attempts of 7 network, 5
-host-scoped, 7 Python, 7 native, and 2 npm attempts (initial attempt included).
+host-scoped, 5 systemd, 7 Python, 7 native, and 2 npm attempts (initial attempt included).
 This is a timing/cost comparison only: completed observations still retain
 their existing source, redaction, profile, and stale-state semantics.
 
 ## Deterministic large-host evidence
 
 The daemon unit suite drives the fixed policy through a 0–60 second virtual
-healthy trace with synthetic immediate completions. It records 7, 5, 7, 7,
-and 2 provider execution opportunities respectively (28 total), never more
-than two concurrently admitted slots. Its explicit former-policy baseline is
-31 two-second passes multiplied by five slots: 155 opportunities. This is an
-execution-opportunity comparison, not a claim about CPU consumption,
+healthy trace with synthetic immediate completions. It records 7 network, 5
+host-scoped, 5 systemd, 7 Python, 7 native, and 2 provider execution
+opportunities (33 actual slot claims), never more than two concurrently
+admitted slots. Its explicit former-policy baseline is 31 two-second aggregate
+passes multiplied by the five bundles that existed before Systemd became
+independent: 155 opportunities. The split makes claim count a different unit
+from the former aggregate pass; fixed command churn is the more meaningful
+comparison. This is not a claim about CPU consumption,
 subprocess creation, or wall-clock work on a particular host.
 
 The same deterministic suite publishes generated 500-container Docker
-snapshots at all 31 two-second positions, verifies the five-slot runtime
+snapshots at all 31 two-second positions, verifies the six-slot runtime
 vector remains coherent and renderable, and proves that this larger inventory
 does not increase host-provider opportunities. A separate occupied-guard
 trace retains both timeout and stale evidence while later Docker snapshots
@@ -181,7 +185,7 @@ so a Cargo/shell/CI parent cannot forge entry by supplying a token-shaped file
 and environment values.
 The child drives the actual fixed slot collectors through the production
 scheduler's virtual 0–60 second claims, using immediate test completions.
-The full-host trace proves 28 scheduler starts and 48 actual child commands
+The full-host trace proves 33 scheduler starts and 48 actual child commands
 (versus the former 155 starts and 248 commands for 31 whole passes). The
 restricted profile proves zero host command stubs execute and that the
 host-scoped, Python, and native slots become terminal `disabled` states after
@@ -202,12 +206,12 @@ revision monotonicity/stability and sanitized evidence comparison,
 restricted-PID omission behavior, no-overlap guard, fresh Docker publication
 with retained stale provider observations, timeout degradation, and
 source-transition isolation. Generated schema/API tests require non-empty
-revisions and a five-item `providerStates` vector; web hook regressions retain
+revisions and a six-item `providerStates` vector; web hook regressions retain
 the current fetch cadence while refusing generation-, provenance-, or
 revision-mismatched model pairs.
 
 The scheduler evidence additionally exercises the full 60-second fixed-policy
-opportunity trace, the explicit 155-opportunity legacy baseline, 31
+claim trace, the explicit 155-aggregate-pass legacy baseline, 31
 publications of a generated 500-container snapshot, inventory-independent
 provider starts, and occupied timeout/stale slots while Docker publication
 continues.

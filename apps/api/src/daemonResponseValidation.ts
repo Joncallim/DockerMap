@@ -45,6 +45,7 @@ const validators = new Map<RustResponseSchemaId, ValidateFunction>(
 const PROVIDER_STATE_SLOT_SET = {
   network_infrastructure: true,
   host_scoped: true,
+  systemd: true,
   python_processes: true,
   native_processes: true,
   project_npm: true,

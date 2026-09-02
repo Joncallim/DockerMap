@@ -49,6 +49,7 @@ const LAYER_LABEL: Record<RuntimeLayerId, string> = {
 const PROVIDER_SLOT_LABEL: Record<ProviderSlot, string> = {
   network_infrastructure: "Network infrastructure",
   host_scoped: "Host-scoped services",
+  systemd: "systemd services",
   python_processes: "Python processes",
   native_processes: "Native processes",
   project_npm: "Project npm"
