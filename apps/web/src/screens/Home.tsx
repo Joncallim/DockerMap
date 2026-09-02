@@ -18,9 +18,10 @@ import ServiceMap from "../components/ServiceMap";
 import { Bar, EmptyState, ErrorState, Loading, Metric, Panel, StatePill, Tag } from "../components/primitives";
 import { resourceFor } from "../lib/stubs";
 import { UPDATE_STATUS_CLAIM, UPDATE_STATUS_LABEL } from "../lib/updates";
+import { isStaleResourceTelemetry } from "../lib/resourceTelemetry";
 
 export default function Home() {
-  const { model, modelProvenance, loading, error, evidenceMode, findings, observedHistory } = useApp();
+  const { model, modelProvenance, loading, error, evidenceMode, findings, observedHistory, resourceTelemetry } = useApp();
   const history = useMemo(
     () => {
       if (!model) return CHANGE_HISTORY_CLAIM;
@@ -77,7 +78,7 @@ export default function Home() {
             ) : (
               <ul className="svc-list">
                 {attention.map((service, index) => (
-                  <ServiceRow key={`${service.id}-${index}`} model={model} service={service} evidenceMode={evidenceMode} modelProvenance={modelProvenance} />
+                  <ServiceRow key={`${service.id}-${index}`} model={model} service={service} evidenceMode={evidenceMode} modelProvenance={modelProvenance} resourceTelemetry={resourceTelemetry} />
                 ))}
               </ul>
             )}
@@ -162,9 +163,9 @@ export default function Home() {
   );
 }
 
-function ServiceRow({ model, service, evidenceMode, modelProvenance }: { model: ReturnType<typeof useApp>["model"]; service: Service; evidenceMode: ReturnType<typeof useApp>["evidenceMode"]; modelProvenance: ReturnType<typeof useApp>["modelProvenance"] }) {
+function ServiceRow({ model, service, evidenceMode, modelProvenance, resourceTelemetry }: { model: ReturnType<typeof useApp>["model"]; service: Service; evidenceMode: ReturnType<typeof useApp>["evidenceMode"]; modelProvenance: ReturnType<typeof useApp>["modelProvenance"]; resourceTelemetry: ReturnType<typeof useApp>["resourceTelemetry"] }) {
   if (!model) return null;
-  const resources = resourceFor(service, evidenceMode, modelProvenance);
+  const resources = resourceFor(service, evidenceMode, modelProvenance, model, resourceTelemetry);
   const resourceLabel = evidenceLabel(resources.kind).label;
   const dependents = service.dependents.length;
   return (
@@ -181,10 +182,10 @@ function ServiceRow({ model, service, evidenceMode, modelProvenance }: { model: 
       <span className="svc-meta">{dependents > 0 ? `${dependents} downstream declaration${dependents === 1 ? "" : "s"}` : "no downstream declarations"}</span>
       <span className="svc-res">
         {resources.kind === "unavailable" ? (
-          <span className="svc-res-claim">{`CPU ${resourceLabel.toLowerCase()}`}</span>
+          <span className="svc-res-claim">{isStaleResourceTelemetry(resources.detail) ? "CPU telemetry stale" : `CPU ${resourceLabel.toLowerCase()}`}</span>
         ) : (
           <>
-            <Bar value={resources.value.cpuPercent} state={service.state} label={`CPU ${formatPercent(resources.value.cpuPercent)} — ${resourceLabel}`} />
+            <Bar value={resources.value.cpuPercent} state={service.state} label={`CPU ${formatPercent(resources.value.cpuPercent)} — ${resourceLabel}${resources.kind === "observed" ? ", current" : ""}`} />
             <span className="svc-res-claim">{resourceLabel}</span>
           </>
         )}
