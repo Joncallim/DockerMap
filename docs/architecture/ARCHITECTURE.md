@@ -96,16 +96,27 @@ Current relationship-source matrix:
 ### Bounded findings
 
 `GET /daemon/findings` and its authenticated browser aliases expose only a
-cached projection of the same published runtime-map revision. The initial
-closed rule, `systemd.requires_target_not_active`, emits one warning only when
+cached projection of the same published runtime-map revision. The closed
+`systemd.requires_target_not_active` rule emits one warning only when
 there is exactly one fresh, declared Systemd `Requires` edge from a uniquely
 identified active service to a uniquely identified inactive or failed service.
 It is a dependency configuration condition—not proof of a failed start,
 readiness, traffic, service health, or security impact. Stale, timed-out,
 ambiguous, duplicate, non-Systemd, `Wants`, and `PartOf` evidence produces no
-finding. The API validates the fixed vocabulary and static display text before
-publication, and the browser displays findings only when their nonempty model
-revision matches the current live model.
+finding.
+
+`docker.internal_network_member_publishes_port` emits an advisory only when
+one uniquely identified Docker container has both one fresh, validated Docker
+internal-network membership fact and one fresh Docker listener fact whose
+already-sanitized port form proves a nonzero host-to-container publication.
+Container-only ports, malformed or bind-address-like forms, stale evidence,
+duplicate facts, and identity collisions produce no finding. This is not an
+Internet-reachability, vulnerability, or security conclusion.
+
+Each rule carries only its exact triggering evidence references. The API
+validates the fixed vocabulary, static display text, and rule-specific evidence
+shape before publication, and the browser displays findings only when their
+nonempty model revision matches the current live model.
 
 The map is organized around a unified service concept. Docker containers, systemd
 services, tmux sessions, npm applications, Python applications, and native processes
