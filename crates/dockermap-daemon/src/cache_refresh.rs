@@ -423,6 +423,7 @@ impl DaemonCache {
         let docker_observation_token = self.docker_observation_token();
         self.runtime_map = runtime_map_for_snapshot(
             &self.snapshot,
+            &self.health.mode,
             &self.runtime_providers,
             &docker_observation_token,
         );
@@ -864,6 +865,7 @@ fn same_collection_evidence(left: &DockerSnapshot, right: &DockerSnapshot) -> bo
 
 fn runtime_map_for_snapshot(
     snapshot: &DockerSnapshot,
+    mode: &RuntimeMode,
     slots: &RuntimeProviderSlots,
     docker_observation_revision: &str,
 ) -> RuntimeMap {
@@ -891,7 +893,7 @@ fn runtime_map_for_snapshot(
         }
     }
     let mut runtime_map =
-        runtime_map_from_collection(snapshot, &combined, docker_observation_revision);
+        runtime_map_from_collection(snapshot, &combined, docker_observation_revision, mode);
     runtime_map.provider_states = provider_states_for(slots);
     runtime_map.diagnostics.extend(extra_diagnostics);
     runtime_map
@@ -1256,7 +1258,12 @@ mod scheduler_tests {
             state.observation = observation;
             state.freshness.data_revision = Some(SlotDataRevision::first());
             state.freshness.last_success_ms = Some(42);
-            let map = runtime_map_for_snapshot(&mock_snapshot(), &slots, "docker-observation");
+            let map = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &slots,
+                "docker-observation",
+            );
             let edge = map
                 .edges
                 .iter()
@@ -1324,7 +1331,7 @@ mod scheduler_tests {
                 finding.rule_id
                     == dockermap_core::FindingRule::DockerInternalNetworkMemberPublishesPort
             })
-            .expect("mock Docker topology produces the bounded internal-network advisory");
+            .expect("a Docker-mode representative topology produces the bounded internal-network advisory");
         assert_eq!(docker_finding.evidence_refs.len(), 2);
         assert_eq!(
             docker_finding.evidence_refs[0].kind,
@@ -1381,7 +1388,12 @@ mod scheduler_tests {
         let mut slots = slots();
         slots.get_mut(&ProviderSlot::Systemd).unwrap().observation =
             RuntimeProviderState::Fresh(marked_systemd_dependency());
-        let map = runtime_map_for_snapshot(&mock_snapshot(), &slots, "docker-observation");
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &slots,
+            "docker-observation",
+        );
         let edge = map
             .edges
             .iter()
@@ -1396,7 +1408,12 @@ mod scheduler_tests {
         state.observation = RuntimeProviderState::Fresh(disabled);
         state.freshness.data_revision = Some(SlotDataRevision::first());
         state.freshness.last_success_ms = Some(42);
-        let map = runtime_map_for_snapshot(&mock_snapshot(), &slots, "docker-observation");
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &slots,
+            "docker-observation",
+        );
         assert!(map
             .edges
             .iter()
@@ -2014,7 +2031,8 @@ mod scheduler_tests {
         collection.set_state(slot, ProviderStateKind::Fresh);
         slots.get_mut(&slot).unwrap().observation =
             RuntimeProviderState::TimedOut(Some(collection));
-        let map = runtime_map_for_snapshot(&snapshot, &slots, "test-observation");
+        let map =
+            runtime_map_for_snapshot(&snapshot, &RuntimeMode::Docker, &slots, "test-observation");
         assert!(map
             .provider_states
             .iter()
@@ -2140,7 +2158,8 @@ mod scheduler_tests {
         collection.set_state(slot, ProviderStateKind::Fresh);
         slots.get_mut(&slot).unwrap().observation =
             RuntimeProviderState::Degraded(Some(collection));
-        let map = runtime_map_for_snapshot(&snapshot, &slots, "test-observation");
+        let map =
+            runtime_map_for_snapshot(&snapshot, &RuntimeMode::Docker, &slots, "test-observation");
         assert!(map
             .nodes
             .iter()
@@ -2222,11 +2241,12 @@ mod scheduler_tests {
             entry.freshness.status_reason = Some(ProviderStatusReason::Refreshing);
             retained
         };
-        let refreshing = runtime_map_for_snapshot(&snapshot, &slots, "test-observation")
-            .provider_states
-            .into_iter()
-            .find(|state| state.slot == slot)
-            .unwrap();
+        let refreshing =
+            runtime_map_for_snapshot(&snapshot, &RuntimeMode::Docker, &slots, "test-observation")
+                .provider_states
+                .into_iter()
+                .find(|state| state.slot == slot)
+                .unwrap();
         assert_eq!(refreshing.state, ProviderStateKind::Stale);
         assert_eq!(refreshing.last_attempt_ms, Some(120));
         assert_eq!(refreshing.last_success_ms, Some(110));
@@ -2240,11 +2260,12 @@ mod scheduler_tests {
         entry.observation = RuntimeProviderState::TimedOut(retained);
         entry.freshness.consecutive_failure_count = 1;
         entry.freshness.status_reason = Some(ProviderStatusReason::CollectionTimedOut);
-        let timed_out = runtime_map_for_snapshot(&snapshot, &slots, "test-observation")
-            .provider_states
-            .into_iter()
-            .find(|state| state.slot == slot)
-            .unwrap();
+        let timed_out =
+            runtime_map_for_snapshot(&snapshot, &RuntimeMode::Docker, &slots, "test-observation")
+                .provider_states
+                .into_iter()
+                .find(|state| state.slot == slot)
+                .unwrap();
         assert_eq!(timed_out.state, ProviderStateKind::TimedOut);
         assert_eq!(timed_out.last_attempt_ms, Some(120));
         assert_eq!(timed_out.last_success_ms, Some(110));
@@ -2351,6 +2372,47 @@ mod scheduler_tests {
             .any(|diagnostic| diagnostic
                 .message
                 .contains("controlled live slot observation")));
+        assert!(cache.runtime_map.nodes.iter().any(|node| {
+            node.provider == RuntimeProviderKind::Docker && node.kind == RuntimeNodeKind::Container
+        }));
+        assert!(
+            !cache.runtime_map.edges.is_empty(),
+            "mock topology remains useful"
+        );
+        assert!(cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(cache.findings.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn forced_mock_mode_preserves_sample_topology_without_runtime_evidence() {
+        // The collector checks this flag before it can connect to the Docker
+        // gateway. This regression therefore proves the explicit forced-mock
+        // path, rather than merely constructing a sample cache by hand.
+        std::env::set_var("DOCKERMAP_FORCE_MOCK", "true");
+        let collected = collect_snapshot(&AppState::new()).await;
+        std::env::remove_var("DOCKERMAP_FORCE_MOCK");
+        assert_eq!(collected.health.mode, RuntimeMode::Mock);
+
+        let state = AppState::new();
+        publish_docker_snapshot_cache(&state, collected).await;
+        let cache = state.cache.read().await;
+        assert!(cache.runtime_map.nodes.iter().any(|node| {
+            node.provider == RuntimeProviderKind::Docker && node.kind == RuntimeNodeKind::Container
+        }));
+        assert!(
+            !cache.runtime_map.edges.is_empty(),
+            "sample edges remain visible"
+        );
+        assert!(cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(cache.findings.findings.is_empty());
     }
 
     #[tokio::test]
@@ -2461,6 +2523,11 @@ mod scheduler_tests {
         // bounded inventory happens to have the same visible entities.
         publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
         let mock_cache = state.cache.read().await;
-        assert_ne!(first_docker_evidence_revision(&mock_cache), changed_token);
+        assert!(mock_cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(mock_cache.findings.findings.is_empty());
     }
 }
