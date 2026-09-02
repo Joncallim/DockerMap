@@ -69,6 +69,7 @@ const V1_EVIDENCE_EDGE = {
   docker_volume_mount: { relationship: "mounts", sourcePrefix: "docker_container_", targetPrefix: "docker_volume_" },
   docker_port_publication: { relationship: "exposes", sourcePrefix: "docker_container_", targetPrefix: "network_listener_" },
   docker_compose_depends_on: { relationship: "depends_on", sourcePrefix: "docker_container_", targetPrefix: "docker_container_" },
+  docker_daemon_state_bind_mount: { relationship: "exposes_daemon_state", sourcePrefix: "docker_container_", targetPrefix: "host_risk_docker_daemon_state" },
 } as const;
 
 // Version two is the intentionally narrow systemd declaration vocabulary.
@@ -180,6 +181,7 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
         : undefined;
       if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return false;
       if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix)) return false;
+      if (value.kind === "docker_daemon_state_bind_mount" && candidate.target !== "host_risk_docker_daemon_state") return false;
       if (candidate.source === candidate.target) return false;
       // An opaque observation token must never be the collection timestamp
       // re-labelled as a revision. The daemon produces it independently.

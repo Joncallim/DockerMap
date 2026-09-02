@@ -121,6 +121,11 @@
           "type": "string"
         },
         {
+          "const": "docker_daemon_state_bind_mount",
+          "description": "A bind mount that matches the closed Docker socket/data-root predicate.\nThe public evidence and target intentionally omit the mount path.",
+          "type": "string"
+        },
+        {
           "const": "systemd_requires",
           "description": "A systemd `Requires=` declaration. It is not a successful-start or\nhealth assertion.",
           "type": "string"

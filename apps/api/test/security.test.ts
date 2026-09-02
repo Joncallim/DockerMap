@@ -1231,6 +1231,30 @@ test("runtime evidence is required and fails closed before browser publication",
   const wrongSlot = structuredClone(systemd);
   wrongSlot.edges[0].evidenceRefs[0].providerSlot = "host_scoped";
   assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongSlot));
+
+  const daemonState = structuredClone(fixture);
+  Object.assign(daemonState.edges[0], {
+    source: "docker_container_api",
+    target: "host_risk_docker_daemon_state",
+    relationship: "exposes_daemon_state"
+  });
+  Object.assign(daemonState.edges[0].evidenceRefs[0], {
+    version: 1,
+    provider: "docker",
+    kind: "docker_daemon_state_bind_mount",
+    assertionKind: "observed",
+    summary: "Docker reported a bind mount exposing Docker daemon state",
+    subjectRef: "docker_container_api",
+    providerSlot: null,
+    freshness: "fresh"
+  });
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", daemonState));
+  const daemonStateWrongTarget = structuredClone(daemonState);
+  daemonStateWrongTarget.edges[0].target = "host_risk_docker_daemon_state_untrusted";
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", daemonStateWrongTarget),
+    "Docker daemon-state evidence has one canonical synthetic target"
+  );
 });
 
 test("fabricated runtime evidence is rejected over the authenticated API boundary", async () => {
