@@ -1165,6 +1165,12 @@ test("runtime evidence is required and fails closed before browser publication",
     if (field === "source") wrongEndpoint.edges[0].evidenceRefs[0].subjectRef = wrongEndpoint.edges[0].source;
     assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongEndpoint));
   }
+  const selfDeclaredDependency = structuredClone(fixture);
+  selfDeclaredDependency.edges[0].target = selfDeclaredDependency.edges[0].source;
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", selfDeclaredDependency),
+    "a Compose declaration cannot attest a self dependency"
+  );
 
   for (const [kind, relationship] of [
     ["docker_network_membership", "mounts"],
