@@ -52,19 +52,25 @@ acceptance work are recorded in [`CONTRACT_AUTHORITY.md`](CONTRACT_AUTHORITY.md)
 
 ### Relationship evidence lifecycle
 
-Each runtime edge has a required `evidenceRefs` array. The current Docker and
-Systemd slices emit bounded, versioned records alongside the edge during
+Each runtime edge has a required `evidenceRefs` array. The current Docker,
+Systemd, and npm slices emit bounded, versioned records alongside the edge during
 derivation; they are not reconstructed from labels in React:
 
 ```text
 collector -> bounded RuntimeEvidenceRef -> RuntimeMapEdge -> daemon publication/redaction -> API contract validation -> Runtime inspector
 ```
 
-Version one facts are Docker network membership, volume attachment, port
-publication, and Docker-recorded Compose start-order declarations. They are
+Version one facts are Docker network membership, volume attachment, actual
+nonzero host-port publication, Docker-recorded Compose start-order declarations,
+and a fixed Docker-daemon-state bind-mount predicate. They are
 `observed`, carry the Docker collection timestamp and an opaque Docker
 observation revision token (deliberately neither a timestamp nor the cache
 model revision), and declare `fresh` only for that Docker observation.
+Container-only listeners remain useful topology, but do not receive port
+publication evidence. A host binding fact is not an Internet-reachability,
+health, traffic, or exploitability claim. The Docker-daemon-state fact is
+path-free: it says only that a container matched the closed risk predicate, not
+which mount path, mount ID, or mount options produced that result.
 
 Version two adds only Systemd `Requires`, `Wants`, and `PartOf` declarations.
 Each fact is `declared`, is tied to the independently scheduled `systemd`
@@ -74,6 +80,20 @@ readiness, health, traffic, inverse dependency, or symmetric membership.
 Restricted PID mode emits no Systemd edge evidence. An empty array is explicit
 migration state for a relationship family that has not yet gained provenance;
 it must not be silently presented as an observed fact.
+
+Version three adds npm `package.json` dependency declarations. Each fact is
+`declared`, is tied to the bounded `project_npm` slot's opaque data revision and
+last successful collection timestamp, and can be `fresh`, retained `stale`, or
+`timed_out`. It attests only that the bounded manifest scan declared the
+project-to-package dependency: it is not proof that a package was installed,
+resolved, executed, healthy, safe, or used at runtime. The evidence contains a
+curated summary rather than raw manifest content.
+
+Mock mode keeps representative topology available for UI and transport testing,
+but it is not a Docker observation. In that mode every runtime edge has an
+empty `evidenceRefs` array and no evidence-derived finding is published. A
+Docker/mock source transition discards retained provider observations instead
+of relabelling live evidence as sample data.
 
 The evidence representation is closed: provider, kind, assertion kind and
 freshness are enums, and there is no free-form metadata/config/command-line
@@ -88,10 +108,12 @@ Current relationship-source matrix:
 | --- | --- | --- | --- |
 | Docker container -> network | Docker inventory membership | observed | emitted |
 | Docker container -> volume | Docker volume attachment | observed | emitted |
-| Docker container -> listener | Docker published port | observed | emitted |
+| Docker container -> listener | Docker inventory port with a validated nonzero host binding | observed host publication, not reachability, health, or traffic evidence | emitted only for that host binding; container-only listeners remain topology without publication evidence |
 | Docker container -> Docker container (`depends_on`) | Docker-recorded Compose start-order label | observed declaration, not health or traffic causality | emitted when both identities resolve uniquely |
+| Docker container -> Docker daemon state risk target | Docker inventory bind mount matching the closed daemon-state predicate | observed path-free risk condition, not breach, compromise, reachability, or impact evidence | emitted only for a uniquely resolved matching container; no mount path, ID, or options are published |
 | systemd service -> systemd service (`requires`, `wants`, `part_of`) | Systemd `Requires=`, `Wants=`, `PartOf=` declaration | declared relationship, not start/health/traffic evidence | emitted only with a valid dedicated Systemd-slot observation; retained facts state freshness explicitly |
-| npm, tmux, proxy, DNS, process and cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
+| npm project -> npm package dependency | bounded `package.json` manifest discovery under the configured project root | declared dependency, not installation, resolution, execution, health, safety, or runtime-use evidence | emitted only with a valid `project_npm` slot observation; retained facts state `fresh`, `stale`, or `timed_out` explicitly; raw manifest content is not evidence |
+| tmux, proxy, DNS, process and cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
 
 ### Bounded findings
 
