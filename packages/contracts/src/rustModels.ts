@@ -296,8 +296,8 @@ export interface RuntimeEvidenceRef {
   kind: RuntimeEvidenceKind;
   provider: RuntimeEvidenceProvider;
   /**
-   * Opaque Docker observation token, not a cache-publication revision or
-   * source dump.
+   * Opaque provider observation token, not a cache-publication revision,
+   * command output, or source dump.
    */
   providerRevision: string;
   /**
