@@ -83,6 +83,10 @@ keeps operational state colours local. Highlights:
   interface text; `--mono` is reserved for paths, IDs, ports, log lines, and clocks.
 - **Shape and spacing** — Hearth's `--hearth-radius-*` and `--hearth-space-*` roles drive
   common actions and forms. Pills are fully rounded only for compact metadata.
+- **Shell roles** — the rail uses Hearth's raised canvas; the topbar and navigation hover
+  state use its surfaces; the selected navigation item and brand mark use Azure. On narrow
+  screens the horizontal rail remains scrollable and its overflow affordance returns to the
+  raised canvas, so routes are never clipped.
 - **Operational exceptions** — `--s-*` service state, map network, edge-health, and log
   severity colours remain DockerMap-owned because they encode observed topology and health,
   not a decorative theme. Map nodes, edge geometry, and the 30px map-view controls likewise
@@ -109,6 +113,10 @@ Navigation is spatial, organised into **spaces** rather than a deep menu tree:
 
 The **⌘K command palette** is a primary interface: navigate, jump to any service, or ask
 Copilot. Everything reachable by search.
+
+Azure belongs to shared shell selection and navigation affordances. Copilot is the sole
+consumer of the Hearth AI purple roles; topology and operational state colours remain
+DockerMap-local and never borrow either decorative treatment.
 
 ## AI Doctrine
 

@@ -23,7 +23,6 @@
   --on-accent: var(--hearth-on-azure);
   --focus-ring: var(--hearth-azure);
   --accent-soft: var(--hearth-azure-soft);
-  --chrome: rgb(11 15 26 / 78%);
 
   /* State system — the single source of meaning for color. */
   --s-healthy: #50df95;
@@ -215,8 +214,8 @@ code,
   flex-direction: column;
   gap: var(--s5);
   padding: var(--s5) var(--s4);
-  background: var(--bg-2);
-  border-right: 1px solid var(--border);
+  background: var(--hearth-canvas-raised);
+  border-right: 1px solid var(--hearth-border);
 }
 
 .brand {
@@ -280,18 +279,18 @@ code,
 }
 
 .nav-item:hover {
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.04);
+  color: var(--hearth-text);
+  background: var(--hearth-surface-raised);
 }
 
 .nav-item.active {
-  color: var(--ink);
-  background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--hearth-text);
+  background: var(--hearth-azure-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hearth-azure) 35%, transparent);
 }
 
 .nav-item.active svg {
-  color: var(--accent);
+  color: var(--hearth-azure);
 }
 
 .rail-foot {
@@ -330,8 +329,8 @@ code,
   align-items: center;
   gap: var(--s4);
   padding: var(--s3) var(--s5);
-  border-bottom: 1px solid var(--border);
-  background: var(--chrome);
+  border-bottom: 1px solid var(--hearth-border);
+  background: var(--hearth-surface);
   backdrop-filter: blur(8px);
 }
 
@@ -2280,6 +2279,8 @@ kbd {
     gap: var(--s2);
     overflow-x: auto;
     overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
     scroll-padding-inline: var(--s3);
     padding-bottom: 2px;
   }
@@ -2291,7 +2292,7 @@ kbd {
     place-items: center;
     min-width: 24px;
     color: var(--muted);
-    background: linear-gradient(90deg, transparent, var(--bg-2) 42%);
+    background: linear-gradient(90deg, transparent, var(--hearth-canvas-raised) 42%);
     pointer-events: none;
   }
   .nav-group { flex-direction: row; gap: 2px; min-width: max-content; }
