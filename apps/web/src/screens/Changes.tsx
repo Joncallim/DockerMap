@@ -42,7 +42,7 @@ export default function Changes() {
     <div className="screen">
       <header className="screen-head">
         <div>
-          <div className="eyebrow">Causality</div>
+          <div className="eyebrow">{history.kind === "observed" ? "Observed changes" : "Causality"}</div>
           <h1 className="screen-title">Change Center</h1>
         </div>
         {history.kind === "demo" && (

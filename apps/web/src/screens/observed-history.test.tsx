@@ -76,6 +76,8 @@ describe("observed inventory history", () => {
     expect(visibleText(changes)).toContain("docker_container_a1b2c3d4");
     expect(visibleText(changes)).toContain("Status: running to stopped.");
     expect(changes).toContain("timeline-row");
+    expect(visibleText(changes)).toContain("Observed changes");
+    expect(visibleText(changes)).not.toContain("Causality");
     expect(home).toContain("feed-row");
     expect(changes).not.toContain("filter-chip");
     expect(visibleText(home)).toContain("status changed");
