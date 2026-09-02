@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # ---- Rust daemon ----------------------------------------------------------
-# These manifest-list digests make the release build reproducible while
-# retaining the upstream images' supported platforms. Update them only in a
-# reviewed dependency-maintenance change; see docs/release/SUPPLY_CHAIN.md.
+# These manifest-list digests fix the selected base-image identity while
+# retaining the upstream images' supported platforms. They do not make the
+# whole build byte-for-byte reproducible; see docs/release/SUPPLY_CHAIN.md.
 FROM rust:1.88-slim-bookworm@sha256:38bc5a86d998772d4aec2348656ed21438d20fcdce2795b56ca434cf21430d89 AS rust-builder
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
