@@ -206,7 +206,21 @@ function hasCoherentFindings(payload: unknown): boolean {
       && finding.subjectRef.startsWith("systemd_service_")
       && typeof finding.targetRef === "string"
       && finding.targetRef.startsWith("systemd_service_")
-      && finding.subjectRef !== finding.targetRef;
+      && finding.subjectRef !== finding.targetRef
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 1
+      && (() => {
+        const candidateEvidence = finding.evidenceRefs[0];
+        if (!candidateEvidence || typeof candidateEvidence !== "object") return false;
+        const evidence = candidateEvidence as Record<string, unknown>;
+        return evidence.version === 2
+          && evidence.provider === "systemd"
+          && evidence.kind === "systemd_requires"
+          && evidence.assertionKind === "declared"
+          && evidence.providerSlot === "systemd"
+          && evidence.freshness === "fresh"
+          && evidence.subjectRef === finding.subjectRef;
+      })();
   });
 }
 
