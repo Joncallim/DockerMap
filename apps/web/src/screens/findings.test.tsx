@@ -39,12 +39,34 @@ describe("Findings screen", () => {
     expect(html).toContain(findings.findings[0].summary);
     expect(html).toContain(findings.findings[0].recommendation);
     expect(html).toContain("Systemd Requires");
-    expect(html).toContain("not health, readiness, traffic, or security conclusions");
+    expect(html).toContain("not health, readiness, traffic, Internet-reachability, or security conclusions");
   });
 
   it("fails closed when a coherent live finding response is unavailable", () => {
     const html = render({ findings: null });
     expect(html).toContain("Live evidence is not established");
     expect(html).toContain("model revision matches the current live Docker model");
+  });
+
+  it("describes the Docker internal-network condition without claiming Internet exposure", () => {
+    const internalPort = structuredClone(findings);
+    internalPort.findings[0] = {
+      id: "finding_docker_internal_network_member_publishes_port_test",
+      ruleId: "docker.internal_network_member_publishes_port",
+      severity: "advisory",
+      summary: "A container on an internal Docker network also has a published host port.",
+      recommendation: "Review whether the host-port publication is intended for this internal-network service.",
+      subjectRef: "docker_container_api",
+      targetRef: "docker_network_internal",
+      evidenceRefs: [
+        { version: 1, id: "network", provider: "docker", kind: "docker_network_membership", assertionKind: "observed", summary: "Docker reported container network membership", subjectRef: "docker_container_api", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "port", provider: "docker", kind: "docker_port_publication", assertionKind: "observed", summary: "Docker reported a published container port", subjectRef: "docker_container_api", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    const html = render({ findings: internalPort });
+    expect(html).toContain("Internal-network port publication needs review");
+    expect(html).toContain("Observed Docker facts");
+    expect(html).toContain("2 supporting facts");
+    expect(html).not.toContain("Internet exposure");
   });
 });

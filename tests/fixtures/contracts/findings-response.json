@@ -24,6 +24,43 @@
           "freshness": "fresh"
         }
       ]
+    },
+    {
+      "id": "finding_docker_internal_network_member_publishes_port_fixture",
+      "ruleId": "docker.internal_network_member_publishes_port",
+      "severity": "advisory",
+      "summary": "A container on an internal Docker network also has a published host port.",
+      "recommendation": "Review whether the host-port publication is intended for this internal-network service.",
+      "subjectRef": "docker_container_api",
+      "targetRef": "docker_network_internal",
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "docker_network_membership:docker_container_api:docker_network_internal",
+          "provider": "docker",
+          "kind": "docker_network_membership",
+          "assertionKind": "observed",
+          "summary": "Docker reported container network membership",
+          "subjectRef": "docker_container_api",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-docker-observation",
+          "providerSlot": null,
+          "freshness": "fresh"
+        },
+        {
+          "version": 1,
+          "id": "docker_port_publication:docker_container_api:network_listener_api_8080",
+          "provider": "docker",
+          "kind": "docker_port_publication",
+          "assertionKind": "observed",
+          "summary": "Docker reported a published container port",
+          "subjectRef": "docker_container_api",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-docker-observation",
+          "providerSlot": null,
+          "freshness": "fresh"
+        }
+      ]
     }
   ]
 }

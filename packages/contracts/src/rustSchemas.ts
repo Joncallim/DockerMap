@@ -1314,11 +1314,11 @@ export const RUST_RESPONSE_SCHEMAS = {
       "additionalProperties": false,
       "properties": {
         "evidenceRefs": {
-          "description": "Canonical, already-sanitized runtime evidence that directly triggered\nthis finding. The rule admits exactly one fact, keeping the response\nbounded and preventing a generic metadata channel.",
+          "description": "Canonical, already-sanitized runtime evidence that directly triggered\nthis finding. Each closed rule has a fixed, small evidence budget,\npreventing this response from becoming a generic metadata channel.",
           "items": {
             "$ref": "#/$defs/RuntimeEvidenceRef"
           },
-          "maxItems": 1,
+          "maxItems": 2,
           "minItems": 1,
           "type": "array"
         },
@@ -1365,7 +1365,8 @@ export const RUST_RESPONSE_SCHEMAS = {
     "FindingRule": {
       "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
       "enum": [
-        "systemd.requires_target_not_active"
+        "systemd.requires_target_not_active",
+        "docker.internal_network_member_publishes_port"
       ],
       "type": "string"
     },
@@ -3812,11 +3813,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "additionalProperties": false,
       "properties": {
         "evidenceRefs": {
-          "description": "Canonical, already-sanitized runtime evidence that directly triggered\nthis finding. The rule admits exactly one fact, keeping the response\nbounded and preventing a generic metadata channel.",
+          "description": "Canonical, already-sanitized runtime evidence that directly triggered\nthis finding. Each closed rule has a fixed, small evidence budget,\npreventing this response from becoming a generic metadata channel.",
           "items": {
             "$ref": "#/components/schemas/FindingsResponse/$defs/RuntimeEvidenceRef"
           },
-          "maxItems": 1,
+          "maxItems": 2,
           "minItems": 1,
           "type": "array"
         },
@@ -3863,7 +3864,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "FindingRule": {
       "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
       "enum": [
-        "systemd.requires_target_not_active"
+        "systemd.requires_target_not_active",
+        "docker.internal_network_member_publishes_port"
       ],
       "type": "string"
     },
