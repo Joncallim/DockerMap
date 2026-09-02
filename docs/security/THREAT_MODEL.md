@@ -56,6 +56,13 @@ changes them:
 - Docker daemon-state bind-mount evidence is a single closed, path-free fact. It never exposes
   a mount path, mount ID, mount options, or raw Docker configuration. npm dependency evidence
   is likewise a bounded declaration with a curated summary, never raw `package.json` content.
+- The Compose target-state advisory is a cached read-only derivation, not a collector. It accepts
+  only one fresh version-1 Docker `docker_compose_depends_on` observed-declaration reference for
+  a unique running Docker-container source and unique stopped/failed Docker-container target.
+  Its static recommendation is to review that declaration and target state. Stale, malformed,
+  duplicate, collided, or non-Docker inputs are suppressed. It exposes no raw Compose content or
+  identifiers beyond the existing opaque runtime references, and it does not claim dependency
+  requiredness, readiness, health, traffic, start-order execution, root cause, or drift.
 
 ## Main Risks And Protections
 
