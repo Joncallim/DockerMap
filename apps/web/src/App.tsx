@@ -16,6 +16,7 @@ import Logs from "./screens/Logs";
 import Compose from "./screens/Compose";
 import Diagnostics from "./screens/Diagnostics";
 import Settings from "./screens/Settings";
+import Findings from "./screens/Findings";
 import NotFound from "./screens/NotFound";
 import { useSettings } from "./hooks/useSettings";
 import { useEffect, useState } from "react";
@@ -43,6 +44,7 @@ export function App() {
         <Route index element={<Landing />} />
         <Route path="map" element={<MapScreen />} />
         <Route path="runtime" element={<RuntimeScreen />} />
+        <Route path="findings" element={<Findings />} />
         <Route path="services/:name" element={<ServiceDetail />} />
         <Route path="networks/:name" element={<NetworkDetail />} />
         <Route path="volumes/:name" element={<VolumeDetail />} />

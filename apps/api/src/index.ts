@@ -431,6 +431,13 @@ function getMockResponse<T>(path: string): T {
     return runtimeMap as T;
   }
 
+  if (path === "/daemon/findings") {
+    return {
+      findings: [],
+      modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1"
+    } as T;
+  }
+
   if (path === "/daemon/containers") {
     return { containers: mockContainers } as T;
   }
@@ -577,6 +584,7 @@ registerRoute("auth-whoami", (req, res) => {
 registerRoute("snapshot", readHandlers.snapshot);
 registerRoute("graph", readHandlers.graph);
 registerRoute("runtime-map", readHandlers.runtimeMap);
+registerRoute("findings", readHandlers.findings);
 registerRoute("diagnostics", readHandlers.diagnostics);
 registerRoute("containers", readHandlers.containers);
 registerRoute("container", readHandlers.container);

@@ -3,6 +3,7 @@ import type {
   ContainerRecord,
   DiagnosticsReport,
   DockerSnapshot,
+  FindingsResponse,
   GraphResponse,
   HealthResponse,
   ImageRecord,
@@ -443,6 +444,7 @@ export function getDemoResponse<T>(path: string): T {
   if (pathname === "/api/snapshot") return demoSnapshot as T;
   if (pathname === "/api/graph") return demoGraph as T;
   if (pathname === "/api/runtime/map") return demoRuntimeMap as T;
+  if (pathname === "/api/findings") return { findings: [], modelRevision: demoSnapshot.modelRevision } as FindingsResponse as T;
   if (pathname === "/api/health") {
     return {
       node: { status: "ok", port: 4000 },

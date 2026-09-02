@@ -36,6 +36,7 @@ export const ROUTE_MANIFEST = [
   { id: "snapshot", method: "GET", paths: apiPaths("/api/snapshot"), auth: "authenticated", rateLimit: null },
   { id: "graph", method: "GET", paths: apiPaths("/api/graph"), auth: "authenticated", rateLimit: null },
   { id: "runtime-map", method: "GET", paths: apiPaths("/api/runtime/map"), auth: "authenticated", rateLimit: null },
+  { id: "findings", method: "GET", paths: apiPaths("/api/findings"), auth: "authenticated", rateLimit: null },
   { id: "diagnostics", method: "GET", paths: apiPaths("/api/diagnostics"), auth: "authenticated", rateLimit: null },
   { id: "containers", method: "GET", paths: apiPaths("/api/containers"), auth: "authenticated", rateLimit: null },
   { id: "container", method: "GET", paths: apiPaths("/api/containers/:name"), auth: "authenticated", rateLimit: null },

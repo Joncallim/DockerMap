@@ -869,7 +869,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
   const fixture = async (name: string) => JSON.parse(
     await readFile(new URL(`../../../tests/fixtures/contracts/${name}`, import.meta.url), "utf8")
   ) as Record<string, unknown>;
-  const [snapshot, graph, runtimeMap, logs, composeScan, composeGraph, composeEditPlan, health] = await Promise.all([
+  const [snapshot, graph, runtimeMap, logs, composeScan, composeGraph, composeEditPlan, health, findings] = await Promise.all([
     fixture("mock-snapshot.json"),
     fixture("graph-response.json"),
     fixture("runtime-map-daemon-emitted.json"),
@@ -877,7 +877,8 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     fixture("compose-scan.json"),
     fixture("compose-graph.json"),
     fixture("compose-edit-plan.json"),
-    fixture("health-response.json")
+    fixture("health-response.json"),
+    fixture("findings-response.json")
   ]);
   const containers = snapshot.containers as unknown[];
   const container = containers.find((entry) => (entry as { name?: unknown }).name === "api");
@@ -887,6 +888,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     if (req.url === "/daemon/snapshot") return sendJson(res, 200, snapshot);
     if (req.url === "/daemon/graph") return sendJson(res, 200, graph);
     if (req.url === "/daemon/runtime/map") return sendJson(res, 200, runtimeMap);
+    if (req.url === "/daemon/findings") return sendJson(res, 200, findings);
     if (req.url === "/daemon/containers") return sendJson(res, 200, { containers });
     if (req.url === "/daemon/containers/api") return sendJson(res, 200, container);
     if (req.url === "/daemon/images") return sendJson(res, 200, { images: snapshot.images });
@@ -912,6 +914,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     ["/api/snapshot", "DockerSnapshot"],
     ["/api/graph", "GraphResponse"],
     ["/api/runtime/map", "RuntimeMap"],
+    ["/api/findings", "FindingsResponse"],
     ["/api/containers", "ContainersResponse"],
     ["/api/containers/api", "ContainerDetailResponse"],
     ["/api/images", "ImagesResponse"],
@@ -984,6 +987,7 @@ test("daemon model responses require non-empty revision and complete provider st
   ) as Record<string, unknown>;
   const snapshot = await fixture("mock-snapshot.json");
   const runtime = await fixture("runtime-map.json");
+  const findings = await fixture("findings-response.json");
   const invalidResponses = [
     ["/daemon/snapshot", { ...snapshot, modelRevision: "" }],
     ["/daemon/snapshot", (() => { const value = structuredClone(snapshot); delete value.modelRevision; return value; })()],
@@ -1029,7 +1033,9 @@ test("daemon model responses require non-empty revision and complete provider st
         lastSuccessMs: null, lastDurationMs: null, dataRevision: null, consecutiveFailureCount: 0
       });
       return value;
-    })()]
+    })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].summary = "DOCKERMAP_TEST_FORGED_FINDING"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].subjectRef = value.findings[0].targetRef; return value; })()]
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {

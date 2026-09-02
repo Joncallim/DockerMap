@@ -93,6 +93,20 @@ Current relationship-source matrix:
 | systemd service -> systemd service (`requires`, `wants`, `part_of`) | Systemd `Requires=`, `Wants=`, `PartOf=` declaration | declared relationship, not start/health/traffic evidence | emitted only with a valid dedicated Systemd-slot observation; retained facts state freshness explicitly |
 | npm, tmux, proxy, DNS, process and cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
 
+### Bounded findings
+
+`GET /daemon/findings` and its authenticated browser aliases expose only a
+cached projection of the same published runtime-map revision. The initial
+closed rule, `systemd.requires_target_not_active`, emits one warning only when
+there is exactly one fresh, declared Systemd `Requires` edge from a uniquely
+identified active service to a uniquely identified inactive or failed service.
+It is a dependency configuration condition—not proof of a failed start,
+readiness, traffic, service health, or security impact. Stale, timed-out,
+ambiguous, duplicate, non-Systemd, `Wants`, and `PartOf` evidence produces no
+finding. The API validates the fixed vocabulary and static display text before
+publication, and the browser displays findings only when their nonempty model
+revision matches the current live model.
+
 The map is organized around a unified service concept. Docker containers, systemd
 services, tmux sessions, npm applications, Python applications, and native processes
 should all expose the same operational shape wherever the provider can safely populate

@@ -21,6 +21,7 @@ export const DAEMON_RESPONSE_SCHEMA_PATHS = [
   { path: "/daemon/snapshot", routeId: "snapshot", schema: RUST_ROUTE_RESPONSE_SCHEMAS.snapshot },
   { path: "/daemon/graph", routeId: "graph", schema: RUST_ROUTE_RESPONSE_SCHEMAS.graph },
   { path: "/daemon/runtime/map", routeId: "runtime-map", schema: RUST_ROUTE_RESPONSE_SCHEMAS["runtime-map"] },
+  { path: "/daemon/findings", routeId: "findings", schema: RUST_ROUTE_RESPONSE_SCHEMAS.findings },
   { path: "/daemon/containers", routeId: "containers", schema: RUST_ROUTE_RESPONSE_SCHEMAS.containers },
   { path: "/daemon/containers/:name", routeId: "container", schema: RUST_ROUTE_RESPONSE_SCHEMAS.container },
   { path: "/daemon/images", routeId: "images", schema: RUST_ROUTE_RESPONSE_SCHEMAS.images },
@@ -52,6 +53,9 @@ const PROVIDER_STATE_SLOT_SET = {
 } as const satisfies Record<ProviderSlot, true>;
 const PROVIDER_STATE_SLOTS = Object.keys(PROVIDER_STATE_SLOT_SET) as ProviderSlot[];
 const U32_MAX = 4_294_967_295;
+const SYSTEMD_REQUIRES_FINDING_RULE = "systemd.requires_target_not_active";
+const SYSTEMD_REQUIRES_FINDING_SUMMARY = "An active systemd service requires a target that is inactive or failed";
+const SYSTEMD_REQUIRES_FINDING_RECOMMENDATION = "Inspect the target service state and its declared dependency configuration.";
 
 // Version-one evidence is intentionally a discriminated Docker observation,
 // not a generic provenance bag. JSON Schema owns each field's closed enum;
@@ -181,6 +185,31 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
   });
 }
 
+// Findings are a deliberately tiny conclusion vocabulary, not a daemon-supplied
+// diagnostics channel. The generated schema owns field shape; this exact rule
+// table prevents a compromised daemon from inventing mutable claims or copying
+// arbitrary strings through the new endpoint.
+function hasCoherentFindings(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const findings = (payload as { findings?: unknown }).findings;
+  if (!Array.isArray(findings)) return false;
+  return findings.every((candidate) => {
+    if (!candidate || typeof candidate !== "object") return false;
+    const finding = candidate as Record<string, unknown>;
+    return finding.ruleId === SYSTEMD_REQUIRES_FINDING_RULE
+      && finding.severity === "warning"
+      && finding.summary === SYSTEMD_REQUIRES_FINDING_SUMMARY
+      && finding.recommendation === SYSTEMD_REQUIRES_FINDING_RECOMMENDATION
+      && typeof finding.id === "string"
+      && finding.id.startsWith("finding_systemd_requires_target_not_active_")
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("systemd_service_")
+      && typeof finding.targetRef === "string"
+      && finding.targetRef.startsWith("systemd_service_")
+      && finding.subjectRef !== finding.targetRef;
+  });
+}
+
 export function daemonResponseSchemaId(path: string): RustResponseSchemaId | undefined {
   const pathname = path.split("?", 1)[0];
   if (pathname === "/daemon/containers") return "ContainersResponse";
@@ -212,7 +241,9 @@ export class DaemonResponseValidationError extends Error {
 export function validateDaemonResponse(path: string, payload: unknown) {
   const schema = daemonResponseSchemaId(path);
   const validator = schema && validators.get(schema);
-  if (!validator || !validator(payload) || (schema === "RuntimeMap" && (!hasCompleteProviderStateVector(payload) || !hasCoherentProviderFreshness(payload) || !hasCoherentRuntimeEvidence(payload)))) {
+  if (!validator || !validator(payload)
+    || (schema === "RuntimeMap" && (!hasCompleteProviderStateVector(payload) || !hasCoherentProviderFreshness(payload) || !hasCoherentRuntimeEvidence(payload)))
+    || (schema === "FindingsResponse" && !hasCoherentFindings(payload))) {
     throw new DaemonResponseValidationError();
   }
   return payload;

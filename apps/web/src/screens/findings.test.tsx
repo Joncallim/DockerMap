@@ -1,0 +1,44 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
+import { describe, expect, it } from "vitest";
+import type { FindingsResponse } from "@dockermap/contracts";
+import { AppContext, type AppContextValue } from "../context";
+import Findings from "./Findings";
+
+const findings: FindingsResponse = {
+  modelRevision: "findings-revision",
+  findings: [{
+    id: "finding_systemd_requires_target_not_active_test",
+    ruleId: "systemd.requires_target_not_active",
+    severity: "warning",
+    summary: "An active systemd service requires a target that is inactive or failed",
+    recommendation: "Inspect the target service state and its declared dependency configuration.",
+    subjectRef: "systemd_service_application",
+    targetRef: "systemd_service_database"
+  }]
+};
+
+function render(value: Partial<AppContextValue>): string {
+  const context: AppContextValue = {
+    model: null, modelProvenance: null, loading: false, error: null, health: null,
+    findings: null, tick: 0, evidenceMode: null, openCommand: () => {}, ...value
+  };
+  return renderToStaticMarkup(<AppContext.Provider value={context}><MemoryRouter><Findings /></MemoryRouter></AppContext.Provider>);
+}
+
+describe("Findings screen", () => {
+  it("renders only the bounded declaration conclusion and its static recommendation", () => {
+    const html = render({ findings });
+    expect(html).toContain("Declared dependency needs review");
+    expect(html).toContain(findings.findings[0].summary);
+    expect(html).toContain(findings.findings[0].recommendation);
+    expect(html).toContain("Systemd Requires");
+    expect(html).toContain("not health, readiness, traffic, or security conclusions");
+  });
+
+  it("fails closed when a coherent live finding response is unavailable", () => {
+    const html = render({ findings: null });
+    expect(html).toContain("Live evidence is not established");
+    expect(html).toContain("model revision matches the current live Docker model");
+  });
+});

@@ -1,0 +1,14 @@
+{
+  "modelRevision": "fixture-findings-revision",
+  "findings": [
+    {
+      "id": "finding_systemd_requires_target_not_active_fixture",
+      "ruleId": "systemd.requires_target_not_active",
+      "severity": "warning",
+      "summary": "An active systemd service requires a target that is inactive or failed",
+      "recommendation": "Inspect the target service state and its declared dependency configuration.",
+      "subjectRef": "systemd_service_application",
+      "targetRef": "systemd_service_database"
+    }
+  ]
+}
