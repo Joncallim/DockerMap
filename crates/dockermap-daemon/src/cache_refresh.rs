@@ -1344,7 +1344,10 @@ mod scheduler_tests {
         DockerEventEvidenceSource, DockerEventStream,
     };
     use crate::provider_contract::ProviderDiagnostic;
-    use bollard::models::{EventActor, EventMessage, EventMessageTypeEnum};
+    use bollard::{
+        models::{EventActor, EventMessage, EventMessageTypeEnum},
+        Docker, API_DEFAULT_VERSION,
+    };
     use dockermap_core::{
         mock_snapshot, ComposeMountKind, ContainerMount, HealthState, RuntimeMapNode,
         RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
@@ -1354,6 +1357,7 @@ mod scheduler_tests {
         collections::{BTreeMap as TestBTreeMap, VecDeque as TestVecDeque},
         fs,
         os::unix::fs::PermissionsExt,
+        path::PathBuf,
         pin::Pin,
         process::Command,
         sync::{
@@ -1361,6 +1365,11 @@ mod scheduler_tests {
             Mutex as StdMutex,
         },
         task::{Context, Poll},
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::UnixListener,
+        sync::mpsc,
     };
 
     enum TestEventStreamScript {
@@ -1446,6 +1455,20 @@ mod scheduler_tests {
     struct TrackedEventStream {
         inner: DockerEventStream,
         active: Arc<AtomicUsize>,
+    }
+
+    #[derive(Clone)]
+    struct UnixTestEventConnector {
+        socket: PathBuf,
+    }
+
+    impl DockerEventConnector for UnixTestEventConnector {
+        fn connect(&self, since_seconds: u64) -> Result<DockerEventStream, ()> {
+            let socket = self.socket.to_str().ok_or(())?;
+            let docker =
+                Docker::connect_with_unix(socket, 5, API_DEFAULT_VERSION).map_err(|_| ())?;
+            Ok(DockerCollector::with_client(docker, None).event_stream_since(since_seconds))
+        }
     }
 
     impl Stream for TrackedEventStream {
@@ -3127,9 +3150,17 @@ mod scheduler_tests {
         }
         assert_eq!(connector.connection_count(), connections_during_mock);
 
+        let recovery_not_before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         publish_docker_snapshot_cache(&state, docker_cache(snapshot)).await;
         tokio::time::advance(Duration::from_millis(250)).await;
         wait_for_event_connections(&connector, connections_during_mock + 1).await;
+        let recovery_not_after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let recovered_context = docker_event_source_context(&state, source_seconds)
             .await
             .expect("recovered Docker source");
@@ -3138,10 +3169,12 @@ mod scheduler_tests {
             old_context.source_generation
         );
         let recovered_since = connector.since_seconds();
-        assert_eq!(
-            recovered_since[connections_during_mock],
-            source_seconds - 300,
-            "source reset discards the prior generation's replay cursor"
+        let recovered_since = recovered_since[connections_during_mock];
+        assert!(
+            (recovery_not_before.saturating_sub(300)
+                ..=recovery_not_after.saturating_sub(300))
+                .contains(&recovered_since),
+            "source reset must restart at an exact fresh 300-second replay window; got {recovered_since} between wall-clock bounds {recovery_not_before} and {recovery_not_after}"
         );
         assert_eq!(connector.max_active(), 1);
 
@@ -3185,6 +3218,130 @@ mod scheduler_tests {
 
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unix_event_stream_closes_before_reconnect_and_on_supervisor_abort() {
+        #[derive(Debug, PartialEq, Eq)]
+        enum SocketActivity {
+            Accepted(usize),
+            FirstResponseClosed,
+            SecondResponseReady,
+            ClientEof(usize),
+        }
+
+        let source_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("event-gateway.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (activity_tx, mut activity_rx) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            for index in 0..2 {
+                let (mut connection, _) = listener.accept().await.unwrap();
+                activity_tx.send(SocketActivity::Accepted(index)).unwrap();
+                let mut request = Vec::new();
+                let mut bytes = [0_u8; 1_024];
+                loop {
+                    let read = connection.read(&mut bytes).await.unwrap();
+                    assert!(read > 0, "client closed before request head completed");
+                    request.extend_from_slice(&bytes[..read]);
+                    assert!(request.len() <= 16_384);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+
+                if index == 0 {
+                    let payload = format!(
+                        "{{\"Type\":\"container\",\"Action\":\"start\",\"Actor\":{{\"ID\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}},\"time\":{source_seconds},\"timeNano\":{}}}\n",
+                        source_seconds * 1_000_000_000 + 42
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+                        payload.len(),
+                        payload
+                    );
+                    connection.write_all(response.as_bytes()).await.unwrap();
+                    activity_tx
+                        .send(SocketActivity::FirstResponseClosed)
+                        .unwrap();
+                    drop(connection);
+                } else {
+                    connection
+                        .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n")
+                        .await
+                        .unwrap();
+                    activity_tx
+                        .send(SocketActivity::SecondResponseReady)
+                        .unwrap();
+                    loop {
+                        let read = connection.read(&mut bytes).await.unwrap();
+                        if read == 0 {
+                            activity_tx.send(SocketActivity::ClientEof(index)).unwrap();
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        let snapshot = mock_snapshot();
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(snapshot.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(snapshot)).await;
+        let supervisor = tokio::spawn(docker_event_loop_with_connector(
+            state,
+            UnixTestEventConnector { socket },
+        ));
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), activity_rx.recv())
+                .await
+                .unwrap(),
+            Some(SocketActivity::Accepted(0))
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), activity_rx.recv())
+                .await
+                .unwrap(),
+            Some(SocketActivity::FirstResponseClosed)
+        );
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(Duration::from_millis(250)).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), activity_rx.recv())
+                .await
+                .unwrap(),
+            Some(SocketActivity::Accepted(1))
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), activity_rx.recv())
+                .await
+                .unwrap(),
+            Some(SocketActivity::SecondResponseReady)
+        );
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+
+        supervisor.abort();
+        assert!(supervisor.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), activity_rx.recv())
+                .await
+                .unwrap(),
+            Some(SocketActivity::ClientEof(1)),
+            "aborting the supervisor must close its real Unix response stream"
+        );
+        server.await.unwrap();
     }
 
     #[tokio::test]
