@@ -118,6 +118,17 @@ validates the fixed vocabulary, static display text, and rule-specific evidence
 shape before publication, and the browser displays findings only when their
 nonempty model revision matches the current live model.
 
+#### Current finding policy
+
+`warning` is reserved for a fresh, directly recorded declaration whose current
+service-state endpoints satisfy a closed, fail-closed condition. It does not
+mean a service failed to start. `advisory` is reserved for a fresh combination
+of directly observed Docker facts that merits a configuration review but does
+not establish exposure, reachability, vulnerability, or impact. There is no
+critical severity in the current pack. New rules require an explicit contract,
+fixed evidence budget, deterministic positive and benign-negative fixtures,
+and a review of their exact conclusion language.
+
 The map is organized around a unified service concept. Docker containers, systemd
 services, tmux sessions, npm applications, Python applications, and native processes
 should all expose the same operational shape wherever the provider can safely populate
