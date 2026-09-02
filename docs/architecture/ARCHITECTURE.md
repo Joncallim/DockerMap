@@ -60,8 +60,8 @@ they are not reconstructed from labels in React:
 collector -> bounded RuntimeEvidenceRef -> RuntimeMapEdge -> daemon publication/redaction -> API contract validation -> Runtime inspector
 ```
 
-The first facts are Docker network membership, volume attachment, and port
-publication. They are `observed`, carry the Docker collection timestamp and
+The first facts are Docker network membership, volume attachment, port
+publication, and Docker-recorded Compose start-order declarations. They are `observed`, carry the Docker collection timestamp and
 an opaque Docker observation revision token (deliberately neither a timestamp
 nor the cache model revision), and declare `fresh` only for that Docker
 observation. Provider-slot freshness continues to describe optional host
@@ -83,6 +83,7 @@ Current relationship-source matrix:
 | Docker container -> network | Docker inventory membership | observed | emitted |
 | Docker container -> volume | Docker volume attachment | observed | emitted |
 | Docker container -> listener | Docker published port | observed | emitted |
+| Docker container -> Docker container (`depends_on`) | Docker-recorded Compose start-order label | observed declaration, not health or traffic causality | emitted when both identities resolve uniquely |
 | systemd, npm, tmux, proxy, DNS, process and cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
 
 The map is organized around a unified service concept. Docker containers, systemd
