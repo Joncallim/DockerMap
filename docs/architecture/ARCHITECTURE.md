@@ -160,9 +160,11 @@ causality, health, reachability, or impact.
 
 ### Observed Docker event-stream history
 
-`GET /daemon/observed-events` and its authenticated browser aliases expose a
-second, explicitly separate history: safe observations retained from the
-read-only Docker event stream. It must never be merged with the
+`GET /daemon/observed-events` and its browser aliases expose a second,
+explicitly separate history: safe observations retained from the read-only
+Docker event stream. Like other daemon/API read routes, they use the common
+bearer-token boundary when its daemon or API token is configured. This history
+must never be merged with the
 snapshot-derived `/daemon/history` deltas above. The stream root has its own
 source, collection state, current model/observation revisions, and at most 64
 newest-first rows. Each retained row has only opaque event and container
@@ -207,12 +209,16 @@ when a qualifying three-event window of retained `container_died` observations
 for one opaque container subject falls within **at most five minutes of source
 time**. Each finding carries exactly those three retained historical
 references, with opaque event IDs, fixed
-`docker_event_stream`/`container_died` vocabulary, source and receipt times,
-and historical model/observation anchors. They are not runtime-map evidence
+`docker_event_stream`/`container_died` vocabulary, source occurrence times,
+and historical model/observation anchors. Receipt time is an event-row field,
+not temporal-finding evidence. The references are not runtime-map evidence
 and must not be used to claim a current node, state, causal explanation,
 deployment, restart, failure, recovery, health, reachability, compromise, or
-impact. The Findings screen presents this only as “Docker event history needs
-review” and directs an operator to the bounded Change Center record.
+impact. The rule additionally requires Docker source and
+`collectionState=collecting`; it emits nothing while connecting, reconnecting,
+or unavailable. The Findings screen presents this only as “Docker event
+history needs review” and directs an operator to the bounded Change Center
+panel.
 
 This completed code slice does not finish #70. Copilot use of temporal data,
 resource telemetry, and an explicit persistence/continuity design decision

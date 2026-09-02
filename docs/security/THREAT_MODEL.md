@@ -53,9 +53,10 @@ changes them:
 - Observed Docker event-stream history is a separate daemon-lifetime,
   maximum-64-row publication. It uses only the gateway's fixed, bounded
   container-event request, immediately drops raw actor metadata and text, and
-  exposes only closed kinds, opaque identities, source/receipt-time anchors, and
-  collection state. It resets across source changes, is empty/unavailable for
-  mock fallback, and has no persistence or restart continuity claim.
+  exposes only closed kinds, opaque identities, source occurrence and receipt
+  times, historical model/observation anchors, and collection state. It resets
+  across source changes, is empty/unavailable for mock fallback, and has no
+  persistence or restart continuity claim.
 
 ## Main Risks And Protections
 
@@ -127,17 +128,19 @@ Protections:
 - Raw Docker IDs, names, labels, actor attributes, exit text, paths,
   diagnostics, and error text are dropped before retention. The parser rejects
   unknown/malformed actions, identities, and timestamp shapes.
-- `/daemon/observed-events` is behind daemon bearer authentication and its
-  browser aliases `/api/observed-events` and `/api/v1/observed-events` use the
-  same authenticated read-route boundary. The API validates the closed response
+- `/daemon/observed-events` and browser aliases `/api/observed-events` and
+  `/api/v1/observed-events` use the common daemon/API bearer boundary whenever
+  the corresponding token is configured. The API validates the closed response
   shape before publishing it.
 - The browser renders observations only beside a coherent live Docker model;
   mock and demo data fail closed. It does not show an opaque container subject
   as a current service link.
-- The sole temporal finding is an advisory for a qualifying three-event window
-  of retained `container_died` observations for one opaque subject within five
+- The sole temporal finding is an advisory only for Docker-source stream data
+  whose collection state is `collecting`, and for a qualifying three-event
+  window of retained `container_died` observations for one opaque subject within five
   minutes of source time, and carries exactly those three references. Its
-  references are historical anchors, not current runtime-map
+  references contain source occurrence time and historical anchors only, not
+  receipt time or current runtime-map
   evidence. It is not proof of a restart, deployment, failure, recovery,
   health, causality, breach, reachability, or impact.
 

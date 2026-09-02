@@ -79,9 +79,10 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 
 ### Temporal Docker event-stream evidence (#70)
 
-- [x] Implement a bounded, authenticated, raw-data-reducing Docker event-stream
-  publication with a separate snapshot-delta history boundary, closed gateway
-  request policy, source-reset behavior, and contract/browser tests. This is
+- [x] Implement a bounded, raw-data-reducing Docker event-stream publication
+  behind the common bearer boundary when configured, with a separate
+  snapshot-delta history boundary, closed gateway request policy, source-reset
+  behavior, and contract/browser tests. This is
   completed code evidence, not a claim that the related pull requests are
   merged or that #70 is resolved.
 - [ ] On an authorized Docker-capable Linux host, record an isolated live-Docker

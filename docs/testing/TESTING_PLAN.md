@@ -91,9 +91,9 @@ The API tests cover:
 - Authenticated `/api/history` and `/api/v1/history` routing, including schema rejection
   for malformed or incoherent daemon history responses and mock fallback that is empty
   rather than a fabricated live timeline.
-- Authenticated `/api/observed-events` and `/api/v1/observed-events` routing,
-  including rejection of malformed stream-history and temporal-finding evidence
-  before it reaches the browser.
+- `/api/observed-events` and `/api/v1/observed-events` bearer enforcement when
+  configured, including rejection of malformed stream-history and
+  temporal-finding evidence before it reaches the browser.
 - Hidden daemon error details by default, with opt-in detail exposure for JSON and SSE routes.
 
 These tests run against the real Express entry point with mock fallback or a stub daemon.

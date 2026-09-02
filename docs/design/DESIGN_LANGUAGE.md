@@ -62,11 +62,16 @@ Screenshot status — stale Resources panel: captured before #73. Any CPU, memor
 
 ## Change Center
 
-Change is a first-class story: a filterable timeline of deploys, restarts,
-failures, and recoveries only in explicit Demo Mode, visibly marked as sample data. In mock
-and live mode, the Change Center reports that history is not collected: DockerMap does not
-record deploy, restart, or failure events. Update status is not collected — no image-update entries exist on
-the timeline (#72).
+Change is a bounded observation surface, not a record of deployments or service
+outcomes. Explicit Demo Mode retains its visibly labelled sample timeline of
+deploy, restart, failure, and recovery stories. With a coherent live Docker
+model, the Change Center can separately show bounded snapshot-derived changes
+and bounded Docker event-stream observations. The latter is available only for
+live Docker source data and labels reconnecting collection as potentially
+incomplete; mock and demo never become stream evidence. Neither live panel
+claims a deployment, restart, failure, recovery, causality, health,
+reachability, or current-service mapping. Update status is not collected — no
+image-update entries exist on the timeline (#72).
 
 ![Change Center](../screenshots/change-center.png)
 
