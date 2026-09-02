@@ -14,6 +14,19 @@ export type Stack = {
   projectName: string | null;
   controlContainerName: string | null;
   productionSocketReadOnly?: boolean;
+  /** Test-only bearer token when the live fixture enables the API boundary. */
+  apiToken?: string;
+  /**
+   * Closed lifecycle control for this fixture's read gateway. It exists only
+   * to prove source-reset handling; callers never receive Docker access.
+   */
+  stopDockerGateway?: () => Promise<void>;
+  /**
+   * Sends the one fixed finite stats shape to this fixture's private gateway
+   * for an owned container and returns only its HTTP status. It never exposes
+   * the raw Docker response, target, or socket to a test.
+   */
+  requestOwnedFixtureStats?: () => Promise<number>;
   postProductionSessionBurst?: (client: "a" | "b", spoofedXForwardedForPrefix: string) => {
     elapsedMs: number;
     responses: Array<{ status: number; body: string }>;
@@ -227,46 +240,64 @@ export async function startAuthenticatedMockDaemon(
   };
 }
 
-export async function startLiveDockerStack(): Promise<Stack> {
+export async function startLiveDockerStack(options: {
+  apiToken?: string;
+  /**
+   * The normal live suite remains label-scoped. This explicit, closed profile
+   * is solely for telemetry evidence because Docker stats cannot carry a
+   * label filter.
+   */
+  fixtureProfile?: "label-scoped" | "unfiltered-telemetry";
+} = {}): Promise<Stack> {
   const docker = detectDockerCommand();
   if (!docker) {
     throw new SkipLiveDockerError("Docker is not reachable by the current user or sudo -n docker.");
   }
 
   const fixture = createLiveDockerFixture(docker);
+  const apiToken = options.apiToken?.trim();
+  if (options.apiToken !== undefined && !apiToken) {
+    cleanupLiveDocker(docker, fixture);
+    throw new Error("Live Docker API token must not be empty when configured.");
+  }
+  const fixtureProfile = options.fixtureProfile ?? "label-scoped";
+  if (fixtureProfile !== "label-scoped" && fixtureProfile !== "unfiltered-telemetry") {
+    cleanupLiveDocker(docker, fixture);
+    throw new Error("Live Docker fixture profile must be label-scoped or unfiltered-telemetry.");
+  }
+  const labelFilter = fixtureProfile === "label-scoped" ? fixture.labelFilter : undefined;
+  const processes: ProcessHandle[] = [];
   try {
     runDocker(docker, ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "up", "-d"], fixture.dir);
     runDocker(docker, ["run", "-d", "--name", fixture.controlContainerName, "busybox:1.36.1", "sh", "-c", "while true; do sleep 60; done"], fixture.dir);
-  } catch (error) {
-    cleanupLiveDocker(docker, fixture);
-    throw error;
-  }
 
-  const ports = await allocatePorts();
-  const processes: ProcessHandle[] = [];
+    const ports = await allocatePorts();
 
   await ensureDaemonBinary();
   ensureContractsRuntimePackage();
   const gatewaySocket = join(fixture.dir, "docker-read.sock");
-  processes.push(startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter }));
+  let gateway: ProcessHandle | null = startGateway({ socket: gatewaySocket, labelFilter });
+  processes.push(gateway);
   await waitForSocket(gatewaySocket);
   processes.push(startDaemon({
     port: ports.daemon,
     cwd: fixture.dir,
     useDockerAccess: true,
     docker,
-    dockerLabelFilter: fixture.labelFilter,
+    dockerLabelFilter: labelFilter,
     gatewaySocket,
     pathPrefix: fixture.stubBinDir,
+    daemonToken: apiToken,
     // Match the recommended Docker-only deployment: it must never use the
     // daemon process's partial PID namespace as host evidence.
     pidNamespace: "restricted"
   }));
-  await waitForDockerHealth(`http://127.0.0.1:${ports.daemon}/daemon/health`);
-  await waitForFixtureSnapshot(`http://127.0.0.1:${ports.daemon}/daemon/snapshot`, fixture.projectName);
+  const authenticated = apiToken ? { headers: { Authorization: `Bearer ${apiToken}` } } : undefined;
+  await waitForDockerHealth(`http://127.0.0.1:${ports.daemon}/daemon/health`, authenticated);
+  await waitForFixtureSnapshot(`http://127.0.0.1:${ports.daemon}/daemon/snapshot`, fixture.projectName, authenticated);
 
-  processes.push(startApi({ port: ports.api, daemonPort: ports.daemon, webPort: ports.web }));
-  await waitForJson(`http://127.0.0.1:${ports.api}/api/health`);
+  processes.push(startApi({ port: ports.api, daemonPort: ports.daemon, webPort: ports.web, apiToken, daemonToken: apiToken }));
+  await waitForJson(`http://127.0.0.1:${ports.api}/api/health`, authenticated);
 
   processes.push(startWeb({ port: ports.web, apiPort: ports.api }));
   await waitForHttp(`http://127.0.0.1:${ports.web}`);
@@ -278,11 +309,38 @@ export async function startLiveDockerStack(): Promise<Stack> {
     fixtureDir: fixture.dir,
     projectName: fixture.projectName,
     controlContainerName: fixture.controlContainerName,
+    apiToken,
+    stopDockerGateway: async () => {
+      if (!gateway) return;
+      await stopProcess(gateway);
+      gateway = null;
+    },
+    requestOwnedFixtureStats: async () => {
+      const containerId = dockerOutput(
+        docker,
+        ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "ps", "--quiet", "api"],
+        fixture.dir,
+      ).trim();
+      if (!/^[0-9a-f]{64}$/i.test(containerId)) {
+        throw new Error("Owned live fixture API container identity was unavailable.");
+      }
+      return requestFixedGatewayStatus(
+        gatewaySocket,
+        `/containers/${containerId}/stats?stream=false&one-shot=false`,
+      );
+    },
     stop: async () => {
       await stopProcesses(processes);
       cleanupLiveDocker(docker, fixture);
     }
   };
+  } catch (error) {
+    // A failed readiness/build step may have started the gateway or daemon.
+    // Stop those owned processes before deleting the fixture socket directory.
+    await stopProcesses(processes);
+    cleanupLiveDocker(docker, fixture);
+    throw error;
+  }
 }
 
 export async function startTokenConfiguredCompose(overrides: NodeJS.ProcessEnv = {}): Promise<{ health: string; stop: () => Promise<void> }> {
@@ -403,7 +461,12 @@ function startDaemon(options: {
   daemonToken?: string;
   apiToken?: string;
 }): ProcessHandle {
-  const { DOCKERMAP_API_TOKEN: _apiToken, DOCKERMAP_DAEMON_TOKEN: _daemonToken, ...baseEnv } = process.env;
+  const {
+    DOCKERMAP_API_TOKEN: _apiToken,
+    DOCKERMAP_DAEMON_TOKEN: _daemonToken,
+    DOCKERMAP_DOCKER_LABEL_FILTER: _dockerLabelFilter,
+    ...baseEnv
+  } = process.env;
   const env = {
     ...baseEnv,
     DOCKERMAP_DAEMON_HOST: "127.0.0.1",
@@ -418,7 +481,23 @@ function startDaemon(options: {
   };
 
   if (options.useDockerAccess && options.docker?.[0] === "sudo") {
-    return startProcess("daemon", "sudo", ["-n", "env", ...envPairs(env), daemonBinary], {
+    // `sudo env` arguments are observable on the host. Do not forward the
+    // ambient runner environment (which can contain credentials); this is the
+    // closed minimum needed by the fixture daemon.
+    const sudoEnv = Object.fromEntries(
+      Object.entries({
+        PATH: env.PATH,
+        DOCKERMAP_DAEMON_HOST: env.DOCKERMAP_DAEMON_HOST,
+        DOCKERMAP_DAEMON_PORT: env.DOCKERMAP_DAEMON_PORT,
+        DOCKERMAP_DAEMON_TOKEN: env.DOCKERMAP_DAEMON_TOKEN,
+        DOCKERMAP_API_TOKEN: env.DOCKERMAP_API_TOKEN,
+        DOCKERMAP_DOCKER_LABEL_FILTER: env.DOCKERMAP_DOCKER_LABEL_FILTER,
+        DOCKERMAP_DOCKER_GATEWAY_SOCKET: env.DOCKERMAP_DOCKER_GATEWAY_SOCKET,
+        DOCKERMAP_PID_NAMESPACE: env.DOCKERMAP_PID_NAMESPACE,
+        DOCKERMAP_FORCE_MOCK: env.DOCKERMAP_FORCE_MOCK
+      }).filter(([, value]) => value !== undefined),
+    ) as NodeJS.ProcessEnv;
+    return startProcess("daemon", "sudo", ["-n", "env", ...envPairs(sudoEnv), daemonBinary], {
       cwd: options.cwd,
       env: process.env
     });
@@ -428,10 +507,11 @@ function startDaemon(options: {
 }
 
 function startGateway(options: { socket: string; labelFilter?: string }): ProcessHandle {
+  const { DOCKERMAP_DOCKER_LABEL_FILTER: _dockerLabelFilter, ...baseEnv } = process.env;
   return startProcess("docker-read-gateway", gatewayBinary, [], {
     cwd: repoRoot,
     env: {
-      ...process.env,
+      ...baseEnv,
       DOCKERMAP_DOCKER_GATEWAY_SOCKET: options.socket,
       DOCKERMAP_RAW_DOCKER_SOCKET: "/var/run/docker.sock",
       ...(options.labelFilter ? { DOCKERMAP_DOCKER_LABEL_FILTER: options.labelFilter } : {})
@@ -439,14 +519,17 @@ function startGateway(options: { socket: string; labelFilter?: string }): Proces
   });
 }
 
-function startApi(options: { port: number; daemonPort: number; webPort: number }) {
+function startApi(options: { port: number; daemonPort: number; webPort: number; apiToken?: string; daemonToken?: string }) {
+  const { DOCKERMAP_API_TOKEN: _apiToken, DOCKERMAP_DAEMON_TOKEN: _daemonToken, ...baseEnv } = process.env;
   return startProcess("api", join(repoRoot, "node_modules/.bin/tsx"), ["apps/api/src/index.ts"], {
     cwd: repoRoot,
     env: {
-      ...process.env,
+      ...baseEnv,
       PORT: String(options.port),
       DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${options.daemonPort}`,
-      DOCKERMAP_ALLOWED_ORIGINS: `http://127.0.0.1:${options.webPort}`
+      DOCKERMAP_ALLOWED_ORIGINS: `http://127.0.0.1:${options.webPort}`,
+      ...(options.apiToken ? { DOCKERMAP_API_TOKEN: options.apiToken } : {}),
+      ...(options.daemonToken ? { DOCKERMAP_DAEMON_TOKEN: options.daemonToken } : {})
     }
   });
 }
@@ -526,16 +609,16 @@ function signalProcess(handle: ProcessHandle, signal: NodeJS.Signals) {
   handle.process.kill(signal);
 }
 
-async function waitForDockerHealth(url: string) {
+async function waitForDockerHealth(url: string, init?: RequestInit) {
   await waitForCondition(async () => {
-    const health = await fetchJson<{ mode: string; dockerReachable: boolean }>(url);
+    const health = await fetchJson<{ mode: string; dockerReachable: boolean }>(url, init);
     return health.mode === "docker" && health.dockerReachable;
   }, `Docker health at ${url}`);
 }
 
-async function waitForFixtureSnapshot(url: string, projectName: string) {
+async function waitForFixtureSnapshot(url: string, projectName: string, init?: RequestInit) {
   await waitForCondition(async () => {
-    const snapshot = await fetchJson<{ containers: Array<{ name: string }> }>(url);
+    const snapshot = await fetchJson<{ containers: Array<{ name: string }> }>(url, init);
     return snapshot.containers.some((container) => container.name.includes(projectName));
   }, `fixture containers in ${url}`);
 }
@@ -551,9 +634,9 @@ async function waitForFixtureSnapshotThroughNginx(url: string, token: string, pr
   }, `fixture containers through production nginx at ${url}`);
 }
 
-async function waitForJson(url: string) {
+async function waitForJson(url: string, init?: RequestInit) {
   await waitForCondition(async () => {
-    await fetchJson(url);
+    await fetchJson(url, init);
     return true;
   }, url);
 }
@@ -575,6 +658,37 @@ async function waitForSocket(path: string) {
   }, `Docker read gateway socket at ${path}`);
 }
 
+/**
+ * The request target is assembled only by closed harness helpers. The caller
+ * receives the status line alone; the Docker body is deliberately discarded.
+ */
+async function requestFixedGatewayStatus(socketPath: string, target: string): Promise<number> {
+  return await new Promise<number>((resolveStatus, reject) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    let response = "";
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      callback();
+    };
+    const timer = setTimeout(() => finish(() => reject(new Error("Timed out waiting for the fixed Docker gateway request."))), 5_000);
+    socket.once("error", (error) => finish(() => reject(error)));
+    socket.on("data", (chunk: Buffer) => {
+      response += chunk.toString("ascii");
+      const lineEnd = response.indexOf("\r\n");
+      if (lineEnd < 0) return;
+      const match = /^HTTP\/1\.1 (\d{3})\b/.exec(response.slice(0, lineEnd));
+      clearTimeout(timer);
+      finish(() => match ? resolveStatus(Number(match[1])) : reject(new Error("Docker gateway returned an invalid status line.")));
+    });
+    socket.once("connect", () => {
+      socket.write(`GET ${target} HTTP/1.1\r\nHost: docker\r\n\r\n`);
+    });
+  });
+}
+
 async function waitForCondition(check: () => Promise<boolean>, label: string) {
   const started = Date.now();
   let lastError: unknown;
@@ -592,8 +706,8 @@ async function waitForCondition(check: () => Promise<boolean>, label: string) {
   throw new Error(`Timed out waiting for ${label}${lastError instanceof Error ? `: ${lastError.message}` : ""}`);
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
   if (!response.ok) {
     throw new Error(`${url} returned ${response.status}`);
   }
