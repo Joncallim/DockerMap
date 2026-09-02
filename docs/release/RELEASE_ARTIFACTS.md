@@ -22,7 +22,8 @@ permits an operator to verify the downloaded archive:
 sha256sum --check dockermap-vX.Y.Z-linux-x86_64.sha256
 ```
 
-See [the supply-chain baseline](SUPPLY_CHAIN.md) for advisory handling,
-base-image digest updates, SBOM retention, and the non-automatic publication
-rule. Only create a tag after the release checklist's remaining gates have been
-fulfilled against that exact commit.
+See [the supply-chain baseline](SUPPLY_CHAIN.md) and
+[security finding triage](SECURITY_FINDING_TRIAGE.md) for advisory handling,
+base-image digest updates, SBOM retention, full image-report triage, and the
+non-automatic publication rule. Only create a tag after the release checklist's
+remaining gates have been fulfilled against that exact commit.
