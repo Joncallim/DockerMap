@@ -57,6 +57,7 @@ export type RuntimeEvidenceFreshness = 'fresh' | 'stale' | 'timed_out';
 export type RuntimeEvidenceKind =
   | ('docker_network_membership' | 'docker_volume_mount' | 'docker_port_publication')
   | 'docker_compose_depends_on'
+  | 'docker_daemon_state_bind_mount'
   | 'systemd_requires'
   | 'systemd_wants'
   | 'systemd_part_of';
@@ -86,6 +87,7 @@ export type RuntimeRelationshipKind =
   | 'mounts'
   | 'manages'
   | 'exposes'
+  | 'exposes_daemon_state'
   | 'runs_on'
   | 'uses'
   | 'calls'
@@ -108,6 +110,7 @@ export type RuntimeNodeKind =
   | 'docker_network'
   | 'docker_volume'
   | 'host'
+  | 'host_risk'
   | 'service'
   | 'systemd_service'
   | 'scheduled_job'

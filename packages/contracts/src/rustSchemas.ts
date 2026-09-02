@@ -529,6 +529,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "docker_daemon_state_bind_mount",
+          "description": "A bind mount that matches the closed Docker socket/data-root predicate.\nThe public evidence and target intentionally omit the mount path.",
+          "type": "string"
+        },
+        {
           "const": "systemd_requires",
           "description": "A systemd `Requires=` declaration. It is not a successful-start or\nhealth assertion.",
           "type": "string"
@@ -876,6 +881,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "docker_network",
         "docker_volume",
         "host",
+        "host_risk",
         "service",
         "systemd_service",
         "scheduled_job",
@@ -1143,6 +1149,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "mounts",
         "manages",
         "exposes",
+        "exposes_daemon_state",
         "runs_on",
         "uses",
         "calls",
@@ -1428,6 +1435,11 @@ export const RUST_RESPONSE_SCHEMAS = {
         {
           "const": "docker_compose_depends_on",
           "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
+          "type": "string"
+        },
+        {
+          "const": "docker_daemon_state_bind_mount",
+          "description": "A bind mount that matches the closed Docker socket/data-root predicate.\nThe public evidence and target intentionally omit the mount path.",
           "type": "string"
         },
         {
@@ -3028,6 +3040,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "docker_daemon_state_bind_mount",
+          "description": "A bind mount that matches the closed Docker socket/data-root predicate.\nThe public evidence and target intentionally omit the mount path.",
+          "type": "string"
+        },
+        {
           "const": "systemd_requires",
           "description": "A systemd `Requires=` declaration. It is not a successful-start or\nhealth assertion.",
           "type": "string"
@@ -3375,6 +3392,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "docker_network",
         "docker_volume",
         "host",
+        "host_risk",
         "service",
         "systemd_service",
         "scheduled_job",
@@ -3642,6 +3660,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "mounts",
         "manages",
         "exposes",
+        "exposes_daemon_state",
         "runs_on",
         "uses",
         "calls",
@@ -3927,6 +3946,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         {
           "const": "docker_compose_depends_on",
           "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
+          "type": "string"
+        },
+        {
+          "const": "docker_daemon_state_bind_mount",
+          "description": "A bind mount that matches the closed Docker socket/data-root predicate.\nThe public evidence and target intentionally omit the mount path.",
           "type": "string"
         },
         {
