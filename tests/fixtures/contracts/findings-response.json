@@ -108,6 +108,42 @@
           "freshness": "fresh"
         }
       ]
+    },
+    {
+      "id": "finding_docker_compose_mutual_dependency_docker_container_compose_alpha-docker_container_--755a232568a267513e30b0d0a7472d12e01553187169230a1b71755b284790db",
+      "ruleId": "docker.compose_mutual_dependency",
+      "severity": "advisory",
+      "summary": "Docker recorded mutually declared Compose dependencies between two containers.",
+      "recommendation": "Review the declared dependencies and remove any unintended mutual dependency.",
+      "subjectRef": "docker_container_compose_alpha",
+      "targetRef": "docker_container_compose_beta",
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "docker_compose_depends_on:docker_container_compose_alpha:docker_container_compose_beta",
+          "provider": "docker",
+          "kind": "docker_compose_depends_on",
+          "assertionKind": "observed",
+          "summary": "Docker recorded Compose dependency declaration",
+          "subjectRef": "docker_container_compose_alpha",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-docker-observation",
+          "providerSlot": null,
+          "freshness": "fresh"
+        },
+        {
+          "version": 1,
+          "id": "docker_compose_depends_on:docker_container_compose_beta:docker_container_compose_alpha",
+          "provider": "docker",
+          "kind": "docker_compose_depends_on",
+          "assertionKind": "observed",
+          "summary": "Docker recorded Compose dependency declaration",
+          "subjectRef": "docker_container_compose_beta",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-docker-observation",
+          "freshness": "fresh"
+        }
+      ]
     }
   ]
 }

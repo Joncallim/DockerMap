@@ -67,6 +67,9 @@ const DOCKER_DAEMON_STATE_FINDING_RECOMMENDATION = "Review whether this containe
 const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RULE = "docker.compose_declared_target_not_active";
 const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_SUMMARY = "A running Docker Compose service declares a dependency whose container is not active.";
 const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RECOMMENDATION = "Review the declared dependency and the target container state.";
+const COMPOSE_MUTUAL_DEPENDENCY_FINDING_RULE = "docker.compose_mutual_dependency";
+const COMPOSE_MUTUAL_DEPENDENCY_FINDING_SUMMARY = "Docker recorded mutually declared Compose dependencies between two containers.";
+const COMPOSE_MUTUAL_DEPENDENCY_FINDING_RECOMMENDATION = "Review the declared dependencies and remove any unintended mutual dependency.";
 
 // Version-one evidence is intentionally a discriminated Docker observation,
 // not a generic provenance bag. JSON Schema owns each field's closed enum;
@@ -124,6 +127,10 @@ function collisionResistantIdComponent(value: string): string {
 
 function composeDeclaredTargetFindingId(subjectRef: string, targetRef: string): string {
   return `finding_docker_compose_declared_target_not_active_${collisionResistantIdComponent(`${subjectRef}\u001f${targetRef}`)}`;
+}
+
+function composeMutualDependencyFindingId(subjectRef: string, targetRef: string): string {
+  return `finding_docker_compose_mutual_dependency_${collisionResistantIdComponent(`${subjectRef}\u001f${targetRef}`)}`;
 }
 
 function hasCompleteProviderStateVector(payload: unknown): boolean {
@@ -335,6 +342,40 @@ function hasCoherentFindings(payload: unknown): boolean {
           && evidence.freshness === "fresh"
           && typeof evidence.providerRevision === "string"
           && evidence.providerRevision !== String(evidence.collectedAt);
+      })();
+    if (finding.ruleId === COMPOSE_MUTUAL_DEPENDENCY_FINDING_RULE) return finding.severity === "advisory"
+      && finding.summary === COMPOSE_MUTUAL_DEPENDENCY_FINDING_SUMMARY
+      && finding.recommendation === COMPOSE_MUTUAL_DEPENDENCY_FINDING_RECOMMENDATION
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("docker_container_")
+      && typeof finding.targetRef === "string"
+      && finding.targetRef.startsWith("docker_container_")
+      && finding.subjectRef < finding.targetRef
+      && finding.id === composeMutualDependencyFindingId(finding.subjectRef, finding.targetRef)
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 2
+      && (() => {
+        const [forwardCandidate, reverseCandidate] = finding.evidenceRefs;
+        if (!forwardCandidate || typeof forwardCandidate !== "object" || !reverseCandidate || typeof reverseCandidate !== "object") return false;
+        const forward = forwardCandidate as Record<string, unknown>;
+        const reverse = reverseCandidate as Record<string, unknown>;
+        const isCanonicalComposeEvidence = (evidence: Record<string, unknown>, sourceRef: string) => (
+          evidence.version === 1
+          && evidence.provider === "docker"
+          && evidence.kind === "docker_compose_depends_on"
+          && evidence.assertionKind === "observed"
+          && evidence.summary === "Docker recorded Compose dependency declaration"
+          && evidence.subjectRef === sourceRef
+          && (evidence.providerSlot === undefined || evidence.providerSlot === null)
+          && evidence.freshness === "fresh"
+          && typeof evidence.collectedAt === "number"
+          && typeof evidence.providerRevision === "string"
+          && evidence.providerRevision !== String(evidence.collectedAt)
+        );
+        return isCanonicalComposeEvidence(forward, finding.subjectRef)
+          && isCanonicalComposeEvidence(reverse, finding.targetRef)
+          && forward.collectedAt === reverse.collectedAt
+          && forward.providerRevision === reverse.providerRevision;
       })();
     if (finding.ruleId !== INTERNAL_NETWORK_PORT_FINDING_RULE) return false;
     return finding.severity === "advisory"
