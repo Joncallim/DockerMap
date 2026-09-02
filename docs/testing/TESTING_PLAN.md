@@ -162,6 +162,33 @@ The live-Docker harness labels its Compose resources, sets
 `DOCKERMAP_DOCKER_LABEL_FILTER`, and creates an unlabeled control container to prove
 DockerMap excludes unrelated Docker resources.
 
+## Temporal Docker Event Evidence
+
+The automated evidence is deliberately isolated: fake streams, a filtered Unix
+gateway stub, and contract/browser fixtures prove the closed policy and
+fail-closed publication behavior without reading a host's Docker history.
+Those checks prove implementation properties, not a complete live operational
+sequence. Before treating this stream as release evidence for a candidate, run
+and record an isolated live-Docker sequence on an authorized Docker-capable
+Linux host that verifies: a filtered event is retained; an out-of-scope event
+is denied by the gateway; reconnect/replay does not duplicate the displayed
+record; Docker-to-mock and Docker recovery clear the journal; and a daemon
+restart makes the prior in-memory journal unavailable rather than implying
+persistence. That isolated live-Docker/restart sequence has **not** been
+recorded for this code track.
+
+`tests/e2e/temporal-live-docker.spec.ts` is the focused opt-in portion of that
+sequence. It configures the browser API bearer boundary, restarts only the
+harness's own labelled worker three times, restarts only that fixture's
+label-filtered gateway, and then requires exactly three distinct opaque
+`container_died` observations and one matching temporal advisory through the
+authenticated public API. It uses bounded polling rather than fixed timing
+sleeps and cleans up its compose project, control container, gateway, and
+temporary files. It does **not** substitute for the remaining source-reset,
+daemon-restart, or denied-raw-request release evidence above; record a passing
+`npm run test:live-docker` result before claiming even this focused path as
+release evidence.
+
 ## Sandbox Fixture
 
 Use the one-command sandbox when you want to manually inspect a realistic isolated
