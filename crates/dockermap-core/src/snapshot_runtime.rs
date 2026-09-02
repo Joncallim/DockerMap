@@ -300,6 +300,38 @@ fn duplicate_runtime_node_ids(nodes: &[RuntimeMapNode]) -> BTreeSet<String> {
         .collect()
 }
 
+/// Runtime dependency edges may only use a container identity when that
+/// generated public identity names exactly one non-empty Docker record. This
+/// is intentionally narrower than a best-effort Compose join: duplicate,
+/// empty, and self references remain visible in inventory but cannot create a
+/// misleading topology relationship.
+struct RuntimeContainerIdentityIndex {
+    counts: BTreeMap<String, usize>,
+}
+
+impl RuntimeContainerIdentityIndex {
+    fn from_containers(containers: &[ContainerRecord]) -> Self {
+        let mut counts = BTreeMap::new();
+        for container in containers {
+            if !container.id.is_empty() {
+                *counts.entry(runtime_container_id(container)).or_default() += 1;
+            }
+        }
+        Self { counts }
+    }
+
+    fn has_unique_id(&self, container: &ContainerRecord) -> bool {
+        !container.id.is_empty() && self.counts.get(&runtime_container_id(container)) == Some(&1)
+    }
+}
+
+fn runtime_container_id(container: &ContainerRecord) -> String {
+    format!(
+        "docker_container_{}",
+        collision_resistant_id_component(&container.id)
+    )
+}
+
 fn runtime_node_sort_key(node: &RuntimeMapNode) -> String {
     serde_json::to_string(node).expect("runtime nodes must serialize")
 }
@@ -322,6 +354,7 @@ fn docker_runtime_evidence(
         RuntimeEvidenceKind::DockerNetworkMembership => "network-membership",
         RuntimeEvidenceKind::DockerVolumeMount => "volume-mount",
         RuntimeEvidenceKind::DockerPortPublication => "port-publication",
+        RuntimeEvidenceKind::DockerComposeDependsOn => "compose-depends-on",
     };
     let summary = match kind {
         RuntimeEvidenceKind::DockerNetworkMembership => {
@@ -329,6 +362,9 @@ fn docker_runtime_evidence(
         }
         RuntimeEvidenceKind::DockerVolumeMount => "Docker reported volume attachment",
         RuntimeEvidenceKind::DockerPortPublication => "Docker reported container port publication",
+        RuntimeEvidenceKind::DockerComposeDependsOn => {
+            "Docker recorded Compose dependency declaration"
+        }
     };
     RuntimeEvidenceRef {
         version: 1,
@@ -363,6 +399,9 @@ pub fn derive_runtime_map(
         !evidence_provider_revision.is_empty(),
         "runtime evidence requires a nonempty opaque Docker observation token"
     );
+    let container_aliases = ContainerAliases::from_containers(&snapshot.containers);
+    let runtime_container_ids =
+        RuntimeContainerIdentityIndex::from_containers(&snapshot.containers);
     for container in &snapshot.containers {
         let mut metadata = BTreeMap::new();
         metadata.insert("image".into(), container.image.clone());
@@ -376,10 +415,7 @@ pub fn derive_runtime_map(
         }
 
         nodes.push(RuntimeMapNode {
-            id: format!(
-                "docker_container_{}",
-                collision_resistant_id_component(&container.id)
-            ),
+            id: runtime_container_id(container),
             provider: RuntimeProviderKind::Docker,
             kind: RuntimeNodeKind::Container,
             label: container.name.clone(),
@@ -394,10 +430,7 @@ pub fn derive_runtime_map(
         });
 
         for network_id in &container.networks {
-            let source = format!(
-                "docker_container_{}",
-                collision_resistant_id_component(&container.id)
-            );
+            let source = runtime_container_id(container);
             let target = format!(
                 "docker_network_{}",
                 collision_resistant_id_component(network_id)
@@ -440,10 +473,7 @@ pub fn derive_runtime_map(
                 service: None,
                 package: None,
             });
-            let source = format!(
-                "docker_container_{}",
-                collision_resistant_id_component(&container.id)
-            );
+            let source = runtime_container_id(container);
             edges.push(RuntimeMapEdge {
                 evidence_refs: vec![docker_runtime_evidence(
                     snapshot,
@@ -455,6 +485,41 @@ pub fn derive_runtime_map(
                 source,
                 target: listener_id,
                 relationship: RuntimeRelationshipKind::Exposes,
+                metadata: BTreeMap::new(),
+            });
+        }
+
+        for dependency in &container.depends_on {
+            // A Docker Compose label is a direct declaration, but it is not a
+            // sufficient basis for a relationship unless both container
+            // endpoints resolve uniquely. In particular, never select an
+            // arbitrary duplicate role/name or turn a self/empty reference
+            // into topology.
+            let Some(target) = container_aliases.resolve_dependency(dependency) else {
+                continue;
+            };
+            if !runtime_container_ids.has_unique_id(container)
+                || !runtime_container_ids.has_unique_id(target)
+                || std::ptr::eq(container, target)
+            {
+                continue;
+            }
+            let source = runtime_container_id(container);
+            let target = runtime_container_id(target);
+            if source == target {
+                continue;
+            }
+            edges.push(RuntimeMapEdge {
+                evidence_refs: vec![docker_runtime_evidence(
+                    snapshot,
+                    &source,
+                    &target,
+                    RuntimeEvidenceKind::DockerComposeDependsOn,
+                    evidence_provider_revision,
+                )],
+                source,
+                target,
+                relationship: RuntimeRelationshipKind::DependsOn,
                 metadata: BTreeMap::new(),
             });
         }
@@ -507,10 +572,7 @@ pub fn derive_runtime_map(
                 .iter()
                 .find(|container| container.name == *attached)
             {
-                let source = format!(
-                    "docker_container_{}",
-                    collision_resistant_id_component(&container.id)
-                );
+                let source = runtime_container_id(container);
                 let target = format!(
                     "docker_volume_{}",
                     collision_resistant_id_component(&volume.id)

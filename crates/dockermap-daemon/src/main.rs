@@ -1658,6 +1658,16 @@ mod tests {
             expected,
             "publication must retain correctly bound Docker evidence"
         );
+        assert!(map.edges.iter().any(|edge| {
+            edge.evidence_refs.iter().any(|evidence| {
+                evidence.kind == RuntimeEvidenceKind::DockerComposeDependsOn
+                    && evidence.summary == "Docker recorded Compose dependency declaration"
+                    && evidence.subject_ref == edge.source
+                    && edge.source.starts_with("docker_container_")
+                    && edge.target.starts_with("docker_container_")
+                    && edge.source != edge.target
+            })
+        }));
     }
 
     #[test]

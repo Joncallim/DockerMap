@@ -842,6 +842,9 @@ pub enum RuntimeEvidenceKind {
     DockerNetworkMembership,
     DockerVolumeMount,
     DockerPortPublication,
+    /// Docker's recorded Compose dependency declaration. This is deliberately
+    /// not a health, readiness, or traffic-causality claim.
+    DockerComposeDependsOn,
 }
 
 /// A compact, versioned reference to the bounded fact supporting a runtime
@@ -937,6 +940,12 @@ impl RuntimeMapEdge {
                 self.relationship == RuntimeRelationshipKind::Exposes
                     && self.source.starts_with("docker_container_")
                     && self.target.starts_with("network_listener_")
+            }
+            RuntimeEvidenceKind::DockerComposeDependsOn => {
+                self.relationship == RuntimeRelationshipKind::DependsOn
+                    && self.source.starts_with("docker_container_")
+                    && self.target.starts_with("docker_container_")
+                    && self.source != self.target
             }
         }
     }
