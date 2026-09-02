@@ -94,7 +94,9 @@ fn deny_unknown_object_properties(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::{daemon_schema_documents, DAEMON_SCHEMA_NAMES, JSON_SAFE_INTEGER_MAX};
-    use crate::{ObservedChangeHistoryResponse, ObservedDockerEventHistoryResponse};
+    use crate::{
+        FindingsResponse, ObservedChangeHistoryResponse, ObservedDockerEventHistoryResponse,
+    };
     use serde_json::Value;
 
     #[test]
@@ -257,6 +259,97 @@ mod tests {
         over_bound["events"] = serde_json::Value::Array(std::iter::repeat_n(event, 65).collect());
         assert!(!validator.is_valid(&over_bound));
         assert!(serde_json::from_value::<ObservedDockerEventHistoryResponse>(over_bound).is_err());
+    }
+
+    #[test]
+    fn temporal_findings_use_exactly_three_closed_event_refs_not_runtime_evidence() {
+        let schema = DAEMON_SCHEMA_NAMES
+            .iter()
+            .zip(daemon_schema_documents())
+            .find_map(|(name, schema)| (*name == "FindingsResponse").then_some(schema))
+            .expect("findings schema exists");
+        let validator = jsonschema::validator_for(&schema).expect("valid schema");
+        let temporal_ref = |event_marker: char, at_ms: u64| {
+            serde_json::json!({
+                "eventId": format!("docker_event_{}", event_marker.to_string().repeat(64)),
+                "source": "docker_event_stream",
+                "kind": "container_died",
+                "sourceOccurredAtMs": at_ms,
+                "anchorModelRevision": format!("model-{event_marker}"),
+                "anchorObservationRevision": format!("observation-{event_marker}"),
+            })
+        };
+        let response = serde_json::json!({
+            "modelRevision": "current-runtime-publication",
+            "findings": [{
+                "id": "finding_docker_repeated_container_died_events_fixture",
+                "ruleId": "docker.repeated_container_died_events",
+                "severity": "advisory",
+                "summary": "A Docker container had three observed die events within five minutes.",
+                "recommendation": "Review the container's recent configuration and logs to determine whether the repeated exits are expected.",
+                "subjectRef": format!("docker_container_{}", "a".repeat(64)),
+                "targetRef": "docker_event_stream",
+                "evidenceRefs": [],
+                "temporalEvidenceRefs": [
+                    temporal_ref('a', 1), temporal_ref('b', 2), temporal_ref('c', 3)
+                ]
+            }]
+        });
+        assert!(validator.is_valid(&response));
+        assert!(serde_json::from_value::<FindingsResponse>(response.clone()).is_ok());
+
+        let mut too_few = response.clone();
+        too_few["findings"][0]["temporalEvidenceRefs"] =
+            serde_json::Value::Array(vec![temporal_ref('a', 1), temporal_ref('b', 2)]);
+        assert!(
+            validator.is_valid(&too_few),
+            "schema admits the portable maximum"
+        );
+        assert!(serde_json::from_value::<FindingsResponse>(too_few).is_err());
+
+        let mut fabricated_runtime_evidence = response.clone();
+        fabricated_runtime_evidence["findings"][0]["evidenceRefs"] = serde_json::json!([{
+            "version": 1,
+            "id": "fabricated-runtime-evidence",
+            "provider": "docker",
+            "kind": "docker_network_membership",
+            "assertionKind": "observed",
+            "summary": "fabricated",
+            "subjectRef": "docker_container_fake",
+            "collectedAt": 1,
+            "providerRevision": "fake",
+            "providerSlot": null,
+            "freshness": "fresh"
+        }]);
+        assert!(serde_json::from_value::<FindingsResponse>(fabricated_runtime_evidence).is_err());
+
+        let mut duplicate_event = response;
+        duplicate_event["findings"][0]["temporalEvidenceRefs"][2]["eventId"] =
+            temporal_ref('b', 2)["eventId"].clone();
+        assert!(serde_json::from_value::<FindingsResponse>(duplicate_event).is_err());
+
+        let mut out_of_window = serde_json::json!({
+            "modelRevision": "current-runtime-publication",
+            "findings": [{
+                "id": "finding_docker_repeated_container_died_events_fixture",
+                "ruleId": "docker.repeated_container_died_events",
+                "severity": "advisory",
+                "summary": "A Docker container had three observed die events within five minutes.",
+                "recommendation": "Review the container's recent configuration and logs to determine whether the repeated exits are expected.",
+                "subjectRef": format!("docker_container_{}", "a".repeat(64)),
+                "targetRef": "docker_event_stream",
+                "evidenceRefs": [],
+                "temporalEvidenceRefs": [
+                    temporal_ref('a', 1), temporal_ref('b', 2), temporal_ref('c', 300_002)
+                ]
+            }]
+        });
+        assert!(serde_json::from_value::<FindingsResponse>(out_of_window.clone()).is_err());
+        out_of_window["findings"][0]["temporalEvidenceRefs"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        assert!(serde_json::from_value::<FindingsResponse>(out_of_window).is_err());
     }
 
     #[test]

@@ -153,14 +153,28 @@ export type HealthState = 'ok' | 'degraded';
  * provider messages. New rules require an explicit contract addition.
  */
 export type FindingRule =
-  | 'systemd.requires_target_not_active'
-  | 'docker.internal_network_member_publishes_port'
-  | 'docker.daemon_state_bind_mount';
+  | (
+      | 'systemd.requires_target_not_active'
+      | 'docker.internal_network_member_publishes_port'
+      | 'docker.daemon_state_bind_mount'
+    )
+  | 'docker.repeated_container_died_events';
 /**
  * Findings are intentionally a small, closed advisory vocabulary. They do
  * not expose provider output or prescribe an automated remediation.
  */
 export type FindingSeverity = 'warning' | 'advisory';
+/**
+ * Closed event vocabulary usable as temporal finding evidence. New temporal
+ * rules must add an explicit kind rather than accepting raw Docker actions.
+ */
+export type TemporalEvidenceKind = 'container_died';
+/**
+ * Closed source vocabulary for temporal finding evidence. This is separate
+ * from runtime-topology evidence: a stream observation does not attest a
+ * current runtime node, edge, health state, or causal relationship.
+ */
+export type TemporalEvidenceSource = 'docker_event_stream';
 /**
  * Closed status classes prevent raw Docker status text from entering the
  * temporal-history boundary.
@@ -626,10 +640,9 @@ export interface Finding {
    * this finding. Each closed rule has a fixed, small evidence budget,
    * preventing this response from becoming a generic metadata channel.
    *
-   * @minItems 1
    * @maxItems 2
    */
-  evidenceRefs: [RuntimeEvidenceRef] | [RuntimeEvidenceRef, RuntimeEvidenceRef];
+  evidenceRefs: [] | [RuntimeEvidenceRef] | [RuntimeEvidenceRef, RuntimeEvidenceRef];
   id: string;
   recommendation: string;
   ruleId: FindingRule;
@@ -637,6 +650,33 @@ export interface Finding {
   subjectRef: string;
   summary: string;
   targetRef: string;
+  /**
+   * Bounded retained stream-event evidence. This is deliberately distinct
+   * from `evidenceRefs`: an event observation is not runtime-node or edge
+   * evidence and must never be relabelled as such.
+   *
+   * @maxItems 3
+   */
+  temporalEvidenceRefs?:
+    | []
+    | [TemporalEvidenceRef]
+    | [TemporalEvidenceRef, TemporalEvidenceRef]
+    | [TemporalEvidenceRef, TemporalEvidenceRef, TemporalEvidenceRef];
+}
+/**
+ * One bounded reference to an already-sanitized retained stream event. It
+ * intentionally carries only the opaque event identity, fixed source/kind,
+ * source time and receipt-time anchors. In particular it carries neither a
+ * runtime-node reference nor Docker actor metadata, status text, names, or
+ * an inference about what happened after the event was observed.
+ */
+export interface TemporalEvidenceRef {
+  anchorModelRevision: string;
+  anchorObservationRevision: string;
+  eventId: string;
+  kind: TemporalEvidenceKind;
+  source: TemporalEvidenceSource;
+  sourceOccurredAtMs: number;
 }
 /**
  * Bounded in-memory history for the daemon process only. `mock` never

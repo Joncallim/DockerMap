@@ -1326,7 +1326,6 @@ export const RUST_RESPONSE_SCHEMAS = {
             "$ref": "#/$defs/RuntimeEvidenceRef"
           },
           "maxItems": 2,
-          "minItems": 1,
           "type": "array"
         },
         "id": {
@@ -1355,6 +1354,14 @@ export const RUST_RESPONSE_SCHEMAS = {
         },
         "targetRef": {
           "type": "string"
+        },
+        "temporalEvidenceRefs": {
+          "description": "Bounded retained stream-event evidence. This is deliberately distinct\nfrom `evidenceRefs`: an event observation is not runtime-node or edge\nevidence and must never be relabelled as such.",
+          "items": {
+            "$ref": "#/$defs/TemporalEvidenceRef"
+          },
+          "maxItems": 3,
+          "type": "array"
         }
       },
       "required": [
@@ -1371,12 +1378,21 @@ export const RUST_RESPONSE_SCHEMAS = {
     },
     "FindingRule": {
       "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
-      "enum": [
-        "systemd.requires_target_not_active",
-        "docker.internal_network_member_publishes_port",
-        "docker.daemon_state_bind_mount"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "systemd.requires_target_not_active",
+            "docker.internal_network_member_publishes_port",
+            "docker.daemon_state_bind_mount"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "docker.repeated_container_died_events",
+          "description": "Three distinct Docker `die` observations for one opaque container in a\nfixed source-time window. This remains an advisory observation, not a\nclaim about a crash cause, restart policy, or current container state.",
+          "type": "string"
+        }
+      ]
     },
     "FindingSeverity": {
       "description": "Findings are intentionally a small, closed advisory vocabulary. They do\nnot expose provider output or prescribe an automated remediation.",
@@ -1543,6 +1559,61 @@ export const RUST_RESPONSE_SCHEMAS = {
         "freshness"
       ],
       "type": "object"
+    },
+    "TemporalEvidenceKind": {
+      "description": "Closed event vocabulary usable as temporal finding evidence. New temporal\nrules must add an explicit kind rather than accepting raw Docker actions.",
+      "enum": [
+        "container_died"
+      ],
+      "type": "string"
+    },
+    "TemporalEvidenceRef": {
+      "additionalProperties": false,
+      "description": "One bounded reference to an already-sanitized retained stream event. It\nintentionally carries only the opaque event identity, fixed source/kind,\nsource time and receipt-time anchors. In particular it carries neither a\nruntime-node reference nor Docker actor metadata, status text, names, or\nan inference about what happened after the event was observed.",
+      "properties": {
+        "anchorModelRevision": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "anchorObservationRevision": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "eventId": {
+          "pattern": "^docker_event_[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TemporalEvidenceKind"
+        },
+        "source": {
+          "$ref": "#/$defs/TemporalEvidenceSource"
+        },
+        "sourceOccurredAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "eventId",
+        "source",
+        "kind",
+        "sourceOccurredAtMs",
+        "anchorModelRevision",
+        "anchorObservationRevision"
+      ],
+      "type": "object"
+    },
+    "TemporalEvidenceSource": {
+      "description": "Closed source vocabulary for temporal finding evidence. This is separate\nfrom runtime-topology evidence: a stream observation does not attest a\ncurrent runtime node, edge, health state, or causal relationship.",
+      "enum": [
+        "docker_event_stream"
+      ],
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4120,7 +4191,6 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
             "$ref": "#/components/schemas/FindingsResponse/$defs/RuntimeEvidenceRef"
           },
           "maxItems": 2,
-          "minItems": 1,
           "type": "array"
         },
         "id": {
@@ -4149,6 +4219,14 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         },
         "targetRef": {
           "type": "string"
+        },
+        "temporalEvidenceRefs": {
+          "description": "Bounded retained stream-event evidence. This is deliberately distinct\nfrom `evidenceRefs`: an event observation is not runtime-node or edge\nevidence and must never be relabelled as such.",
+          "items": {
+            "$ref": "#/components/schemas/FindingsResponse/$defs/TemporalEvidenceRef"
+          },
+          "maxItems": 3,
+          "type": "array"
         }
       },
       "required": [
@@ -4165,12 +4243,21 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     },
     "FindingRule": {
       "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
-      "enum": [
-        "systemd.requires_target_not_active",
-        "docker.internal_network_member_publishes_port",
-        "docker.daemon_state_bind_mount"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "systemd.requires_target_not_active",
+            "docker.internal_network_member_publishes_port",
+            "docker.daemon_state_bind_mount"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "docker.repeated_container_died_events",
+          "description": "Three distinct Docker `die` observations for one opaque container in a\nfixed source-time window. This remains an advisory observation, not a\nclaim about a crash cause, restart policy, or current container state.",
+          "type": "string"
+        }
+      ]
     },
     "FindingSeverity": {
       "description": "Findings are intentionally a small, closed advisory vocabulary. They do\nnot expose provider output or prescribe an automated remediation.",
@@ -4337,6 +4424,61 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "freshness"
       ],
       "type": "object"
+    },
+    "TemporalEvidenceKind": {
+      "description": "Closed event vocabulary usable as temporal finding evidence. New temporal\nrules must add an explicit kind rather than accepting raw Docker actions.",
+      "enum": [
+        "container_died"
+      ],
+      "type": "string"
+    },
+    "TemporalEvidenceRef": {
+      "additionalProperties": false,
+      "description": "One bounded reference to an already-sanitized retained stream event. It\nintentionally carries only the opaque event identity, fixed source/kind,\nsource time and receipt-time anchors. In particular it carries neither a\nruntime-node reference nor Docker actor metadata, status text, names, or\nan inference about what happened after the event was observed.",
+      "properties": {
+        "anchorModelRevision": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "anchorObservationRevision": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "eventId": {
+          "pattern": "^docker_event_[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/TemporalEvidenceKind"
+        },
+        "source": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/TemporalEvidenceSource"
+        },
+        "sourceOccurredAtMs": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "eventId",
+        "source",
+        "kind",
+        "sourceOccurredAtMs",
+        "anchorModelRevision",
+        "anchorObservationRevision"
+      ],
+      "type": "object"
+    },
+    "TemporalEvidenceSource": {
+      "description": "Closed source vocabulary for temporal finding evidence. This is separate\nfrom runtime-topology evidence: a stream observation does not attest a\ncurrent runtime node, edge, health state, or causal relationship.",
+      "enum": [
+        "docker_event_stream"
+      ],
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
