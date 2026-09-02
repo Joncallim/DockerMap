@@ -44,7 +44,11 @@ port on the interface of your choice, e.g. `-p 3233:3233`.
 ## Authority and mounts
 
 - Gateway only: `/var/run/docker.sock` read-only. The gateway independently
-  permits only the reviewed inventory and bounded non-following log reads.
+  permits only reviewed inventory, bounded non-following logs, bounded Docker
+  events, and the exact finite per-container stats request
+  `stream=false&one-shot=false` on an unfiltered profile. It denies all stats
+  requests when `DOCKERMAP_DOCKER_LABEL_FILTER` is set because that Docker
+  endpoint cannot express the inventory label scope.
 - Collector only: `/opt/dockermap/project` read-only plus the filtered gateway
   socket. It cannot mount or fall back to the raw socket.
 - Frontend: neither mount. It is the only DockerMap service that has a
@@ -59,6 +63,10 @@ that carry one label expression:
 environment:
   DOCKERMAP_DOCKER_LABEL_FILTER: "com.dockermap.fixture=abc123"
 ```
+
+With a label filter, inventory and Docker events remain gateway-scoped, but
+per-container stats are deliberately unavailable. Do not rely on collector-side
+inventory selection to authorize a stats request: the gateway fails it closed.
 
 When unset, DockerMap inspects all visible Docker containers, networks, and volumes.
 When set, the filter is applied directly to Docker Engine list calls before DockerMap

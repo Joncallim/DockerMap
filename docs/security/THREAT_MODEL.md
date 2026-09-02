@@ -75,9 +75,15 @@ Protections:
   that mount nor the filtered socket; the collector has only the filtered Unix
   socket and no raw-socket fallback.
 - The gateway is default-deny and permits only the measured container/network/
-  volume inventory calls and fixed bounded, non-following logs. It rejects
-  mutations, inspect/archive/top/exec/events/stats/images/builds, ambiguous
+  volume inventory calls, fixed bounded non-following logs, bounded Docker
+  events, and—only when no Docker label scope is configured—the exact finite
+  per-container stats request `stream=false&one-shot=false`. It rejects
+  mutations, inspect/archive/top/exec, streaming or malformed stats, every
+  stats request under a configured label scope, images/builds, ambiguous
   targets, unknown queries, bodies, and upgrades before opening Docker.
+  Gateway permission does not publish raw stats or relax collector cadence or
+  redaction obligations; a collector-side inventory filter is not stats-route
+  authorization.
 - A read-only socket mount is retained as a filesystem safeguard but is not
   treated as Docker API authorization.
 
