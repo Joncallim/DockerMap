@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: ["**"]
 
+# CI builds, tests, and retains evidence; it does not need repository write
+# access or a package/container publication token.
+permissions:
+  contents: read
+
 jobs:
   web-and-api:
     name: TypeScript
@@ -37,6 +42,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Test deployment and supply-chain policies
+        run: npm run test:deployment
 
       # Round-11 (F7): the deploy artifact build (VITE_API_BASE_URL="") is the
       # exact path where the R7 base-URL bug lived; verify it on every PR.
@@ -72,6 +80,14 @@ jobs:
 
       - name: Lint
         run: cargo clippy --manifest-path crates/Cargo.toml --all-targets -- -D warnings
+
+      # RustSec advisories are a release gate. A future exception must name a
+      # specific advisory and be documented in docs/release/SUPPLY_CHAIN.md.
+      - name: Audit Rust dependencies
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: crates
 
       - name: Test
         run: cargo test --manifest-path crates/Cargo.toml
@@ -152,6 +168,38 @@ jobs:
       # express. Build the image on every PR so regressions ship nowhere.
       - name: Build image
         run: docker build -t dockermap:ci .
+
+      # Keep a reviewable inventory of the exact locally built image. The
+      # artifact is intentionally not uploaded to a registry.
+      - name: Generate image SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: dockermap:ci
+          format: spdx-json
+          output-file: artifacts/dockermap-ci.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      # High and critical vulnerabilities with an available fix fail CI. All
+      # findings remain in the SARIF artifact; see the documented triage rule.
+      - name: Scan image vulnerabilities
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: dockermap:ci
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: sarif
+          output-file: artifacts/dockermap-ci.grype.sarif
+
+      - name: Upload image supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-supply-chain-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Smoke-test runtime image
         run: |

@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   package:
@@ -29,6 +29,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit production Node dependencies
+        run: npm audit --omit=dev
+
+      # This gate is repeated on the tag so a candidate cannot rely on a PR
+      # scan from a different commit.
+      - name: Audit Rust dependencies
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: crates
+
       - name: Validate product version and release tag
         run: scripts/package-release.sh "${GITHUB_REF_NAME}" --check
 
@@ -38,12 +49,42 @@ jobs:
       - name: Package checksummed Linux artifacts
         run: scripts/package-release.sh "${GITHUB_REF_NAME}"
 
-      - name: Create GitHub release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --generate-notes \
-            --prerelease \
-            --title "DockerMap ${GITHUB_REF_NAME}" \
-            dist/release/*.tar.gz dist/release/*.sha256
+      - name: Build release-candidate image
+        run: docker build -t dockermap:release-candidate .
+
+      - name: Generate release image SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: dockermap:release-candidate
+          format: spdx-json
+          output-file: dist/release/dockermap-${{ github.ref_name }}-image.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Scan release-candidate image vulnerabilities
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: dockermap:release-candidate
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+          output-format: sarif
+          output-file: dist/release/dockermap-${{ github.ref_name }}-image.grype.sarif
+
+      - name: Generate release artifact SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: dist/release/dockermap-${{ github.ref_name }}-linux-x86_64
+          format: spdx-json
+          output-file: dist/release/dockermap-${{ github.ref_name }}-linux-x86_64.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload release-candidate artifacts for maintainer review
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-candidate-${{ github.ref_name }}-${{ github.sha }}
+          path: dist/release/
+          if-no-files-found: error
+          retention-days: 30

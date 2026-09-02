@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1
 
 # ---- Rust daemon ----------------------------------------------------------
-FROM rust:1.88-slim-bookworm AS rust-builder
+# These manifest-list digests make the release build reproducible while
+# retaining the upstream images' supported platforms. Update them only in a
+# reviewed dependency-maintenance change; see docs/release/SUPPLY_CHAIN.md.
+FROM rust:1.88-slim-bookworm@sha256:38bc5a86d998772d4aec2348656ed21438d20fcdce2795b56ca434cf21430d89 AS rust-builder
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -14,7 +17,7 @@ RUN cargo build --release --manifest-path crates/Cargo.toml \
     -p dockermap-core --bin generate-contract-schemas
 
 # ---- Node API + React web app ---------------------------------------------
-FROM node:22-bookworm-slim AS js-builder
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS js-builder
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
@@ -46,7 +49,7 @@ RUN npm run check:version && npm run check:contracts && npm run build
 RUN test -f packages/contracts/dist/index.js && test -f packages/contracts/dist/nodeSchemas.js
 
 # ---- Runtime image ----------------------------------------------------------
-FROM node:22-bookworm-slim AS runtime
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends nginx procps curl \
     && rm -rf /var/lib/apt/lists/*
 
