@@ -15,6 +15,7 @@ import type {
   LogsResponse,
   NetworkRecord,
   ObservedChangeHistoryResponse,
+  ObservedDockerEventHistoryResponse,
   RuntimeMap,
   StatusResponse,
   VolumeRecord,
@@ -175,6 +176,7 @@ export function createReadHandlers({ fetchDaemon, sendError, port }: ReadHandler
     runtimeMap: respond<RuntimeMap>("/daemon/runtime/map"),
     findings: respond<FindingsResponse>("/daemon/findings"),
     history: respond<ObservedChangeHistoryResponse>("/daemon/history"),
+    observedEvents: respond<ObservedDockerEventHistoryResponse>("/daemon/observed-events"),
     diagnostics: async (_req, res) => {
       try {
         const entries: DiagnosticsEntry[] = [];
