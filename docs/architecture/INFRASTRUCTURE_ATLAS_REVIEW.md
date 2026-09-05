@@ -195,7 +195,7 @@ A deterministic, unclipped, accessible Atlas can still be a poor flagship if use
 
 Status: absorbed by #260.
 
-## Pass 17 — final orthogonal sweep
+## Pass 17 — first convergence sweep
 
 Re-ran the architecture against:
 
@@ -215,17 +215,138 @@ Re-ran the architecture against:
 - third-party renderer upgrades;
 - screenshot/golden migrations.
 
-No new independent P1/P2 architecture class emerged. Remaining decisions are intentionally delegated to the frozen gates: source authority (#259), exact taxonomy (#262), fixture-derived thresholds/budgets (#252/#253/#257/#268), and implementation evidence.
+No new independent P1/P2 architecture class emerged at that stage. A subsequent deeper repo-grounded sweep deliberately reopened convergence rather than treating this result as permanent.
+
+## Pass 18 — exposure semantics are weaker than the mock-up assumed
+
+### Finding
+The generated canonical `ContainerRecord` exposes `ports: string[]`, not a structured `hostIp/hostPort/containerPort/protocol/exposureScope` contract. A visually attractive host-boundary port marker could therefore upgrade opaque display text into a stronger claim such as “externally exposed”.
+
+### Refinement
+#259 now requires an exposure authority audit. Atlas may render stronger host-published/bind-scope semantics only from a structured canonical source or a separately approved closed parser/adapter over an authoritative format. Otherwise ports remain observed text/context and the Atlas omits the stronger boundary claim.
+
+Status: absorbed by #259; acceptance fixtures must include opaque/ambiguous port strings.
+
+## Pass 19 — visual containment can fabricate ownership
+
+### Finding
+The architecture distinguished evidence-backed groups from no grouping, but it still allowed “lanes/regions” without explicitly protecting against a renderer making those regions look like semantic containment. A box around nodes is itself a claim to most users.
+
+### Refinement
+Create two distinct model/presentation concepts:
+- semantic group/containment: evidence-backed and attributable;
+- presentation lane/region: deterministic organisational scaffolding only.
+
+They require different types and visibly different grammar. Presentation lanes cannot acquire group labels/counts/ownership language that imply membership.
+
+Status: absorbed into #259; #257 must encode the non-semantic lane treatment.
+
+## Pass 20 — inspection scope is not automatically host containment
+
+### Finding
+`RuntimeMap` can contain external APIs, DNS/provider context, tailnet/network entities and other subjects that are discoverable while inspecting a host but are not necessarily located on that host. A giant “host” rectangle around all runtime subjects would be false containment.
+
+### Refinement
+Use an inspection-scope concept separately from host containment. Place a subject inside a host only when location/containment/runs-on evidence establishes it. Off-host/context/unresolved subjects remain outside or in an explicitly non-containment context region. Discovery source does not establish physical/logical location.
+
+Status: absorbed by #259/#262.
+
+## Pass 21 — duplicate truth across Docker and runtime surfaces
+
+### Finding
+`SystemModel` contains both service/Docker records and a runtime model. Multiple surfaces/providers can describe the same underlying container/service/listener. Atlas could either double-render the same thing or incorrectly merge records by label similarity.
+
+### Refinement
+#259 now requires a source-correlation matrix. Unification is allowed only through canonical collision-safe identity or explicit backend correlation that proves equivalence. Otherwise keep source-scoped subjects/context distinct. Relation/membership dedupe also requires proven semantic equivalence, not merely matching endpoints. Conflicting correlated facts use explicit source ownership/precedence or a diagnostic; no last-write-wins reconciliation.
+
+Status: absorbed by #259/#262/#252.
+
+## Pass 22 — split-revision fetching could be accidentally reintroduced
+
+### Finding
+The current `useSystemModel` is already careful: snapshot and runtime responses publish together only when generation, provenance and non-empty `modelRevision` match. A new Atlas hook that independently fetches runtime/network/graph APIs would bypass that protection and visually combine different publications.
+
+### Refinement
+Atlas consumes the coherent model/envelope path and does not independently fetch topology authorities from presentation code. If the authority audit requires data absent from that coherent path, architecture must extend the coherent publication/adaptation boundary first rather than fetch piecemeal in a screen.
+
+Status: absorbed by #259/#269/#266.
+
+## Pass 23 — camera stability is separate from coordinate stability
+
+### Finding
+A layout can satisfy every logical-coordinate invariant and still appear to reshuffle if the renderer runs `fitToContent` on every refresh. One unrelated node changes content bounds, changing scale/translation for every visible subject.
+
+### Refinement
+#269 now freezes camera state independently:
+- deterministic fit only on initial entry or explicit reset;
+- routine model revisions preserve camera exactly where context survives;
+- focus uses bounded ensure-visible/local-centre behavior;
+- lenses preserve camera where meaningful;
+- resize may clamp but never mutate logical coordinates;
+- Home preview framing is noninteractive and separate from durable Atlas camera.
+
+Tests assert both logical displacement and screen-space/camera displacement.
+
+Status: absorbed by #269/#252.
+
+## Pass 24 — global density settings can undermine spatial continuity
+
+### Finding
+DockerMap has a global density setting. If Atlas node dimensions/order/layout are recomputed from compact/cozy CSS measurements, changing density can reshuffle topology even though the infrastructure did not change.
+
+### Refinement
+Atlas uses fixed documented spatial geometry or otherwise preserves subject anchor centres/order across density changes. Theme and density never become semantic/layout inputs. Density may affect surrounding directories/inspectors and bounded internal text/padding, but must not cause whole-map re-layout.
+
+Status: absorbed by #269/#257.
+
+## Pass 25 — camera, focus and semantic alternative must share one selection authority
+
+### Finding
+The spatial canvas, directory/text alternative and detail inspector could each maintain their own selected subject. This creates split-brain UI state, especially with keyboard navigation, browser back/forward and model revisions.
+
+### Refinement
+`useAtlasState` (or equivalent) owns the single semantic selection/lens/expansion/focus target. Canvas, directory, text alternative and inspector are projections of that state. Visual hover may remain ephemeral and local, but selected identity cannot diverge between representations. Route state and model-revision reconciliation flow through the same authority.
+
+Status: add to #261/#266 implementation contract.
+
+## Pass 26 — hidden relations cannot silently disappear from aggregate claims
+
+### Finding
+Overview intentionally suppresses most relations. Aggregate cards such as “3 dependencies” can become misleading if the count mixes resolved, unresolved, filtered, stale or unsupported evidence without exposing coverage.
+
+### Refinement
+Every aggregate/count must define its population and evidence state. Prefer explicit labels such as `3 resolved declarations · 1 unresolved` over a generic `4 dependencies`. Filtering/lens suppression changes presentation, not the underlying count authority. Ambiguous/unresolved evidence remains separately countable and inspectable.
+
+Status: add to #251/#257/#260/#252.
+
+## Pass 27 — second convergence sweep
+
+Re-ran the hardened architecture against additional failure scenarios:
+
+- opaque port strings that look published but lack structured bind scope;
+- the same container represented by Docker and runtime providers;
+- two different subjects with identical human labels;
+- provider disagreement over correlated subject metadata;
+- external API/tailnet/DNS nodes discovered from a host;
+- presentation lanes mistaken for evidence-backed groups;
+- unchanged Atlas coordinates with auto-fit camera churn;
+- density/theme changes during an active inspection;
+- selected subject present in canvas but absent from current text filter;
+- unresolved relation counts hidden by Overview suppression;
+- rapid coherent revisions while selection and camera are active;
+- narrow-screen switch between spatial and directory-first representation.
+
+No further independent P1/P2 architecture class emerged after Passes 18–26. Remaining open choices are now explicitly empirical or authority-driven rather than left to implementation taste: source/correlation authority (#259), provider taxonomy (#262), deterministic fixtures/budgets (#252/#253/#268), visual grammar (#257), interaction/camera policy (#261/#269), and acceptance rubric (#260).
 
 ## Coding-agent handoff rule
 
 A coding orchestrator should not reason from this ledger ad hoc. It should execute the issue spine in #250 and treat the review-derived children as acceptance gates:
 
-1. close authority/semantics architecture;
-2. build fixtures/properties/rubrics;
-3. freeze visual grammar and renderer decision;
-4. implement Overview behind parallel route;
+1. close authority/correlation/semantics architecture;
+2. build fixtures/properties/rubrics including second-sweep cases;
+3. freeze visual grammar, camera behavior and renderer decision;
+4. implement Overview behind parallel route using one selection authority;
 5. implement bounded attachments/lenses/continuity;
 6. certify heterogeneous hosts and cut over.
 
-If implementation requires inventing a new semantic rule not present in `INFRASTRUCTURE_ATLAS.md` or the child issues, stop and reopen architecture rather than improvising in code.
+If implementation requires inventing a new semantic rule not present in `INFRASTRUCTURE_ATLAS.md`, this ledger, or the child issues, stop and reopen architecture rather than improvising in code.
