@@ -22,6 +22,7 @@ const runtime: RuntimeMap = {
     collectionState("network_infrastructure", "fresh"),
     collectionState("host_scoped", "stale", { consecutiveFailureCount: 1, statusReason: "collection_failed" }),
     collectionState("cron", "fresh"),
+    collectionState("tmux", "fresh"),
     collectionState("systemd", "collecting", { lastSuccessMs: null, lastDurationMs: null, dataRevision: null, statusReason: "refreshing" }),
     collectionState("python_processes", "timed_out", { consecutiveFailureCount: 1, statusReason: "collection_timed_out" }),
     collectionState("native_processes", "disabled", { lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, dataRevision: null, statusReason: "disabled" }),
@@ -46,11 +47,12 @@ describe("Runtime collection evidence", () => {
     const html = render();
 
     expect(html).toContain("Collection evidence");
-    expect(html).toContain("Collection state only — it does not describe service health or cron execution");
-    expect(html.match(/class="provider-state-row /g)).toHaveLength(7);
+    expect(html).toContain("Collection state only — it does not describe service health, session attachment, activity, or process ownership");
+    expect(html.match(/class="provider-state-row /g)).toHaveLength(8);
     expect(html).toContain("Network infrastructure");
     expect(html).toContain("Host-scoped services");
     expect(html).toContain("Cron schedule declarations");
+    expect(html).toContain("tmux session listings");
     expect(html).toContain("systemd services");
     expect(html).toContain("Python processes");
     expect(html).toContain("Native processes");
@@ -65,6 +67,8 @@ describe("Runtime collection evidence", () => {
     expect(html).toContain("Refresh in progress");
     expect(html).toContain("Last collection timed out");
     expect(html).toContain("Collection disabled");
+    expect(html).not.toContain("tmux session name");
+    expect(html).not.toContain("attached tmux session");
   });
 
   it("uses a labelled semantic list and does not present sample-mode collection state as host evidence", () => {
