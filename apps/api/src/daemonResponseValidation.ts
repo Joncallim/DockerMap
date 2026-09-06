@@ -164,6 +164,13 @@ const V4_EVIDENCE_EDGE = {
   cron_schedule_declaration: { relationship: "runs_on", sourcePrefix: "scheduled_job_", targetPrefix: "host_", target: "host_local" },
 } as const;
 
+// Version five is a bounded observation from tmux's separately scheduled
+// slot. It conveys only that tmux listed a local session: it is not an
+// attachment, activity, reachability, or process-execution claim.
+const V5_EVIDENCE_EDGE = {
+  tmux_session_listing: { relationship: "runs_on", sourcePrefix: "tmux_session_", targetPrefix: "host_", target: "host_local" },
+} as const;
+
 // Keep the finding identity binding byte-for-byte aligned with core's
 // `collision_resistant_id_component`: a readable slug plus SHA-256 of the
 // untouched subject/target pair.  Finding IDs are not daemon-assigned labels.
@@ -206,6 +213,25 @@ function isHostPublishedDockerPort(value: unknown): boolean {
   const [privatePort, protocol] = privateParts;
   const isNonZeroPort = (port: string) => /^\d+$/.test(port) && Number(port) > 0 && Number(port) <= 65_535;
   return isNonZeroPort(host) && isNonZeroPort(privatePort) && (protocol === "tcp" || protocol === "udp" || protocol === "sctp");
+}
+
+// Tmux may never turn a daemon-owned session name or title into browser data.
+// The public node shape is deliberately one fixed label, no status claim, and
+// the one service taxonomy tag needed by the shared runtime contract.
+function isCoherentTmuxSessionNode(value: Record<string, unknown>): boolean {
+  const metadata = value.metadata;
+  return value.provider === "tmux"
+    && value.type === "tmux_session"
+    && value.label === "tmux session"
+    && (value.status === null || value.status === undefined)
+    && value.layer === "session"
+    && (value.service === null || value.service === undefined)
+    && (value.package === null || value.package === undefined)
+    && metadata !== null
+    && typeof metadata === "object"
+    && !Array.isArray(metadata)
+    && Object.keys(metadata).length === 1
+    && (metadata as Record<string, unknown>).serviceEntityKind === "session";
 }
 
 function composeMutualDependencyFindingId(subjectRef: string, targetRef: string): string {
@@ -341,7 +367,12 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
         && value.assertionKind === "declared"
         && value.providerSlot === "cron"
         && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
-      if (!isV1 && !isV2 && !isV3 && !isV4) return "runtime_evidence_base_tuple";
+      const isV5 = value.version === 5
+        && value.provider === "tmux"
+        && value.assertionKind === "observed"
+        && value.providerSlot === "tmux"
+        && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
+      if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5) return "runtime_evidence_base_tuple";
       const expected = typeof value.kind === "string"
         ? (isV1
           ? V1_EVIDENCE_EDGE[value.kind as keyof typeof V1_EVIDENCE_EDGE]
@@ -349,11 +380,13 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
             ? V2_EVIDENCE_EDGE[value.kind as keyof typeof V2_EVIDENCE_EDGE]
             : isV3
               ? V3_EVIDENCE_EDGE[value.kind as keyof typeof V3_EVIDENCE_EDGE]
-              : V4_EVIDENCE_EDGE[value.kind as keyof typeof V4_EVIDENCE_EDGE])
+              : isV4
+                ? V4_EVIDENCE_EDGE[value.kind as keyof typeof V4_EVIDENCE_EDGE]
+                : V5_EVIDENCE_EDGE[value.kind as keyof typeof V5_EVIDENCE_EDGE])
         : undefined;
       if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return "runtime_evidence_edge_binding";
       if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix) || candidate.source === candidate.target) return "runtime_evidence_source_binding";
-      if (isV4 && candidate.target !== "host_local") return "runtime_evidence_edge_binding";
+      if ((isV4 || isV5) && candidate.target !== "host_local") return "runtime_evidence_edge_binding";
       if (value.kind === "docker_daemon_state_bind_mount" && candidate.target !== "host_risk_docker_daemon_state") return "runtime_evidence_daemon_state_target";
       if (value.kind === "docker_port_publication") {
         const listeners = nodesById.get(candidate.target);
@@ -381,6 +414,12 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
             && (candidateMetadata as Record<string, unknown>).port === port
             && isHostPublishedDockerPort((candidateMetadata as Record<string, unknown>).port);
         })) return "runtime_evidence_port_listener_ambiguous";
+      }
+      if (isV5) {
+        const sessions = nodesById.get(candidate.source);
+        if (!sessions || sessions.length !== 1 || !isCoherentTmuxSessionNode(sessions[0])) {
+          return "runtime_evidence_tmux_session_shape";
+        }
       }
       // An opaque observation token must never be the collection timestamp
       // re-labelled as a revision. The daemon produces it independently.

@@ -254,6 +254,15 @@
       "metadata": {}
     },
     {
+      "id": "tmux_session_fixture_worker",
+      "provider": "tmux",
+      "type": "tmux_session",
+      "label": "worker",
+      "status": null,
+      "layer": "session",
+      "metadata": {}
+    },
+    {
       "id": "scheduled_job_fixture_daily_backup",
       "provider": "scheduled_job",
       "type": "scheduled_job",
@@ -608,6 +617,27 @@
           "collectedAt": 1787196125766,
           "providerRevision": "fixture-project-npm-observation-1",
           "providerSlot": "project_npm",
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "source": "tmux_session_fixture_worker",
+      "target": "host_local",
+      "relationship": "runs_on",
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 5,
+          "id": "fixture-tmux-session-listing-worker",
+          "provider": "tmux",
+          "kind": "tmux_session_listing",
+          "assertionKind": "observed",
+          "summary": "tmux listed a local session",
+          "subjectRef": "tmux_session_fixture_worker",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-tmux-observation-1",
+          "providerSlot": "tmux",
           "freshness": "fresh"
         }
       ]
