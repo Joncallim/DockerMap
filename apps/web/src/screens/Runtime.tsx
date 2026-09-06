@@ -50,6 +50,7 @@ const PROVIDER_SLOT_LABEL: Record<ProviderSlot, string> = {
   network_infrastructure: "Network infrastructure",
   host_scoped: "Host-scoped services",
   cron: "Cron schedule declarations",
+  tmux: "tmux session listings",
   systemd: "systemd services",
   python_processes: "Python processes",
   native_processes: "Native processes",
@@ -299,7 +300,7 @@ export default function RuntimeScreen() {
       <Panel
         title="Collection evidence"
         icon="history"
-        hint="Collection state only — it does not describe service health or cron execution"
+        hint="Collection state only — it does not describe service health, session attachment, activity, or process ownership"
         className="provider-state-panel"
       >
         <ul className="provider-state-list" aria-label="Provider collection evidence">
