@@ -50,6 +50,12 @@ use tokio::{
 /// this interval is not a provider scheduler or policy API.
 pub(crate) const STATIC_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Maximum wall time for one complete Docker inventory pass. The bound wraps
+/// all three fixed gateway reads as one operation, so a stalled response can
+/// never inherit Bollard's much longer transport timeout and pin the refresh
+/// loop. This is deliberately daemon-owned rather than gateway-configurable.
+const DOCKER_SNAPSHOT_COLLECTION_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) cache: Arc<RwLock<DaemonCache>>,
@@ -915,8 +921,11 @@ pub(crate) async fn refresh_loop(state: AppState) {
 }
 
 pub(crate) async fn refresh_cache(state: &AppState) {
-    let (snapshot, mode, source_generation) =
-        publish_docker_snapshot_cache(state, collect_snapshot(state).await).await;
+    let (snapshot, mode, source_generation) = publish_docker_snapshot_cache(
+        state,
+        collect_snapshot(state, DOCKER_SNAPSHOT_COLLECTION_TIMEOUT).await,
+    )
+    .await;
 
     // Publish Docker evidence before running any optional host command. The
     // Spawned slot workers use fixed per-slot guards; they have no route,
@@ -1418,7 +1427,7 @@ async fn invalidate_docker_collector(state: &AppState) {
     *state.docker.write().await = None;
 }
 
-async fn collect_snapshot(state: &AppState) -> DaemonCache {
+async fn collect_snapshot(state: &AppState, snapshot_timeout: Duration) -> DaemonCache {
     if std::env::var("DOCKERMAP_FORCE_MOCK").ok().as_deref() == Some("true") {
         let mut cache = DaemonCache::mock();
         cache.health.message = Some("Mock mode forced by DOCKERMAP_FORCE_MOCK".into());
@@ -1427,43 +1436,56 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     }
 
     let mut cache = match docker_collector(state).await {
-        Ok(collector) => match collector.collect_snapshot().await {
-            Ok(mut snapshot) => {
-                snapshot.images = derive_images(&snapshot);
-                let health = HealthResponse {
-                    status: HealthState::Ok,
-                    mode: RuntimeMode::Docker,
-                    docker_reachable: true,
-                    last_updated: snapshot.last_updated,
-                    snapshot_version: snapshot_observation_token(snapshot.last_updated),
-                    model_revision: String::new(),
-                    message: Some("Docker engine connected".into()),
-                };
-                DaemonCache {
-                    snapshot,
-                    health,
-                    runtime_map: empty_runtime_map(0),
-                    findings: FindingsResponse::default(),
-                    runtime_providers: unavailable_provider_slots(),
-                    source_generation: 0,
-                    docker_observation_revision: DockerObservationRevision::new(),
-                    revision: PublicationRevision::new(),
-                    observed_history: ObservedHistoryCache::new(),
-                    resource_telemetry: ResourceTelemetryCache::default(),
-                    temporal_findings_clock_watermark_ms: None,
-                    temporal_findings_expiry_ms: None,
-                    temporal_findings_projection_valid: false,
-                    findings_projection_generation: 0,
+        Ok(collector) => {
+            match tokio::time::timeout(snapshot_timeout, collector.collect_snapshot()).await {
+                Ok(Ok(mut snapshot)) => {
+                    snapshot.images = derive_images(&snapshot);
+                    let health = HealthResponse {
+                        status: HealthState::Ok,
+                        mode: RuntimeMode::Docker,
+                        docker_reachable: true,
+                        last_updated: snapshot.last_updated,
+                        snapshot_version: snapshot_observation_token(snapshot.last_updated),
+                        model_revision: String::new(),
+                        message: Some("Docker engine connected".into()),
+                    };
+                    DaemonCache {
+                        snapshot,
+                        health,
+                        runtime_map: empty_runtime_map(0),
+                        findings: FindingsResponse::default(),
+                        runtime_providers: unavailable_provider_slots(),
+                        source_generation: 0,
+                        docker_observation_revision: DockerObservationRevision::new(),
+                        revision: PublicationRevision::new(),
+                        observed_history: ObservedHistoryCache::new(),
+                        resource_telemetry: ResourceTelemetryCache::default(),
+                        temporal_findings_clock_watermark_ms: None,
+                        temporal_findings_expiry_ms: None,
+                        temporal_findings_projection_valid: false,
+                        findings_projection_generation: 0,
+                    }
+                }
+                Ok(Err(error)) => {
+                    invalidate_docker_collector(state).await;
+                    let mut cache = DaemonCache::mock();
+                    cache.health.message =
+                        Some(format!("Docker read failed, serving mock data: {error}"));
+                    cache
+                }
+                Err(_) => {
+                    // Cancellation drops the in-flight request future. Discard the
+                    // cached Bollard client as well: a gateway restart must be
+                    // observed through a newly constructed client on the next
+                    // refresh, never through the timed-out connection pool.
+                    invalidate_docker_collector(state).await;
+                    let mut cache = DaemonCache::mock();
+                    cache.health.message =
+                        Some("Docker snapshot read timed out, serving mock data".into());
+                    cache
                 }
             }
-            Err(error) => {
-                invalidate_docker_collector(state).await;
-                let mut cache = DaemonCache::mock();
-                cache.health.message =
-                    Some(format!("Docker read failed, serving mock data: {error}"));
-                cache
-            }
-        },
+        }
         Err(error) => {
             let mut cache = DaemonCache::mock();
             cache.health.message = Some(format!("Docker unavailable, serving mock data: {error}"));
@@ -2989,6 +3011,159 @@ mod scheduler_tests {
         };
         cache.assign_docker_observation_revision();
         cache
+    }
+
+    #[tokio::test]
+    async fn snapshot_timeout_invalidates_stalled_client_and_fresh_client_recovers() {
+        async fn read_request_head(connection: &mut tokio::net::UnixStream) -> String {
+            let mut request = Vec::new();
+            let mut bytes = [0_u8; 1_024];
+            loop {
+                let read = connection
+                    .read(&mut bytes)
+                    .await
+                    .expect("snapshot request should be readable");
+                assert!(read > 0, "client closed before request head completed");
+                request.extend_from_slice(&bytes[..read]);
+                assert!(request.len() <= 16_384, "request head must stay bounded");
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            String::from_utf8(request)
+                .expect("Bollard request should be UTF-8 HTTP")
+                .lines()
+                .next()
+                .expect("request line should be present")
+                .to_owned()
+        }
+
+        let directory = tempfile::tempdir().expect("temporary gateway directory");
+        let socket = directory.path().join("snapshot-timeout.sock");
+        let listener = UnixListener::bind(&socket).expect("gateway stub should bind");
+        let (stalled_tx, mut stalled_rx) = mpsc::unbounded_channel();
+        let gateway = tokio::spawn(async move {
+            let (mut stalled, _) = listener
+                .accept()
+                .await
+                .expect("stalled snapshot request should arrive");
+            let first_target = read_request_head(&mut stalled).await;
+            stalled
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n",
+                )
+                .await
+                .expect("gateway should start the stalled response");
+            stalled_tx
+                .send(first_target.clone())
+                .expect("test should observe the stalled request");
+
+            // Keep the accepted response incomplete while a replacement
+            // client uses independent connections for the next full pass.
+            let mut targets = vec![first_target];
+            for _ in 0..3 {
+                let (mut connection, _) = listener
+                    .accept()
+                    .await
+                    .expect("fresh snapshot request should arrive");
+                let target = read_request_head(&mut connection).await;
+                let body = if target.contains("/containers/json") || target.contains("/networks") {
+                    "[]"
+                } else if target.contains("/volumes") {
+                    r#"{"Volumes":[],"Warnings":null}"#
+                } else {
+                    panic!("unexpected snapshot target: {target}");
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                connection
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("fresh snapshot response should be written");
+                targets.push(target);
+            }
+            // `stalled` remains owned until all replacement requests finish,
+            // proving recovery does not reuse the incomplete connection.
+            drop(stalled);
+            targets
+        });
+
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(Some(DockerCollector::with_client(
+                Docker::connect_with_unix(socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
+                    .expect("Bollard should construct the stalled client"),
+                None,
+            )))),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        let test_timeout = Duration::from_millis(75);
+        let started = tokio::time::Instant::now();
+        let fallback = collect_snapshot(&state, test_timeout).await;
+        assert!(
+            started.elapsed() >= test_timeout,
+            "the gateway request, rather than an immediate error, reaches the deadline"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the daemon deadline must beat Bollard's transport timeout"
+        );
+        assert_eq!(
+            stalled_rx.try_recv().expect("gateway accepted the request"),
+            "GET /containers/json?all=true&size=false HTTP/1.1"
+        );
+        assert!(
+            state.docker.read().await.is_none(),
+            "the timed-out client pool must be invalidated"
+        );
+
+        publish_docker_snapshot_cache(&state, fallback).await;
+        {
+            let cache = state.cache.read().await;
+            assert_eq!(cache.health.mode, RuntimeMode::Mock);
+            assert!(!cache.health.docker_reachable);
+            assert_eq!(
+                cache.health.message.as_deref(),
+                Some("Docker snapshot read timed out, serving mock data")
+            );
+            assert_eq!(cache.source_generation, 1);
+        }
+
+        *state.docker.write().await = Some(DockerCollector::with_client(
+            Docker::connect_with_unix(socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
+                .expect("Bollard should construct a fresh client"),
+            None,
+        ));
+        let recovered = tokio::time::timeout(
+            Duration::from_secs(2),
+            collect_snapshot(&state, Duration::from_secs(1)),
+        )
+        .await
+        .expect("fresh client collection should stay bounded");
+        publish_docker_snapshot_cache(&state, recovered).await;
+
+        let cache = state.cache.read().await;
+        assert_eq!(cache.health.mode, RuntimeMode::Docker);
+        assert!(cache.health.docker_reachable);
+        assert!(cache.snapshot.containers.is_empty());
+        assert!(cache.snapshot.networks.is_empty());
+        assert!(cache.snapshot.volumes.is_empty());
+        assert_eq!(cache.source_generation, 2);
+        drop(cache);
+
+        assert_eq!(
+            gateway.await.expect("gateway stub should finish"),
+            vec![
+                "GET /containers/json?all=true&size=false HTTP/1.1",
+                "GET /containers/json?all=true&size=false HTTP/1.1",
+                "GET /networks? HTTP/1.1",
+                "GET /volumes? HTTP/1.1",
+            ]
+        );
     }
 
     fn first_docker_evidence_revision(cache: &DaemonCache) -> String {
