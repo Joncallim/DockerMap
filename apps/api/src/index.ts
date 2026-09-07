@@ -434,7 +434,11 @@ function getMockResponse<T>(path: string): T {
   if (path === "/daemon/findings") {
     return {
       findings: [],
-      modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1"
+      modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1",
+      // This response is fabricated by the Node fallback, rather than read
+      // from a daemon publication. Keep the source attestation explicit;
+      // never derive it from the Docker-shaped mock fixture.
+      source: "mock"
     } as T;
   }
 

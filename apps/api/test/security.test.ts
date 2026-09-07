@@ -934,6 +934,9 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
       assert.ok(validator, `missing ${schemaName} validator`);
       const body = await response.json();
       assert.equal(validator(body), true, `${path}: ${JSON.stringify(validator.errors)}`);
+      if (schemaName === "FindingsResponse") {
+        assert.equal(body.source, findings.source, `${path}: findings source must be forwarded without inference`);
+      }
     }
   }
   assert.ok(
@@ -1040,7 +1043,10 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].evidenceRefs[0].freshness = "stale"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[2].targetRef = "host_risk_untrusted"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[1].kind = "docker_volume_mount"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()]
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.source = "untrusted"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.source = null; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.source = 1; return value; })()]
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
@@ -1056,6 +1062,43 @@ test("daemon model responses require non-empty revision and complete provider st
       message: "Daemon response did not match its declared contract"
     });
   }
+});
+
+test("mock findings fallback truthfully attests mock source on canonical and v1 aliases", async () => {
+  const api = await startApi({
+    DOCKERMAP_ALLOW_MOCK: "true",
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${await freePort()}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  for (const path of ["/api/findings", "/api/v1/findings"]) {
+    const response = await request(api, path, { headers: { Authorization: "Bearer test-token" } });
+    assert.equal(response.status, 200, path);
+    const body = await response.json();
+    assert.equal(body.source, "mock", path);
+    assert.equal(body.modelRevision, "node-mock-v1", path);
+    assert.deepEqual(body.findings, [], path);
+  }
+});
+
+test("findings source remains optional without browser-side source inference", async () => {
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/findings-response.json", import.meta.url), "utf8"
+  )) as Record<string, unknown>;
+  delete fixture.source;
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/findings") return sendJson(res, 200, fixture);
+    return sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({
+    DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+    DOCKERMAP_API_TOKEN: "test-token"
+  });
+
+  const response = await request(api, "/api/findings", { headers: { Authorization: "Bearer test-token" } });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(Object.hasOwn(body, "source"), false);
 });
 
 test("daemon runtime provider metadata retains successful evidence across retries", async () => {
