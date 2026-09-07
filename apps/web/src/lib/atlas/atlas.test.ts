@@ -24,7 +24,7 @@ import {
   semanticAlternative,
   semanticJson
 } from "./project";
-import type { AtlasRuntimeMapInput, AtlasSubject } from "./types";
+import { ATLAS_CAPS, type AtlasRuntimeMapInput, type AtlasSubject } from "./types";
 
 function modelFor(count: number, topology: Parameters<typeof runtimeFixture>[1] = "none", evidence: Parameters<typeof runtimeFixture>[2] = "none") {
   return projectRuntimeMap(runtimeFixture(count, topology, evidence)).model;
@@ -276,6 +276,55 @@ describe("Atlas truth and collision properties", () => {
     const evidence = edge.evidenceRefs[0] as RuntimeEvidenceRef;
     input.edges = [{ ...edge, evidenceRefs: [{ ...evidence, summary: "x".repeat(100_000) }] as [RuntimeEvidenceRef] }];
     expect(projectRuntimeMap(input).model.relations).toEqual([]);
+  });
+
+  it("rejects oversized edge evidence before inspecting members and keeps valid-edge ordering deterministic", () => {
+    const input = runtimeFixture(2, "chain", "dependency");
+    const valid = input.edges[0]!;
+    let inspected = 0;
+    const hostileEvidence = new Array(ATLAS_CAPS.edgeEvidence + 1);
+    for (let index = 0; index < hostileEvidence.length; index += 1) {
+      Object.defineProperty(hostileEvidence, index, {
+        enumerable: true,
+        get: () => {
+          inspected += 1;
+          throw new Error("oversized evidence must not be inspected");
+        }
+      });
+    }
+    const malformed: RuntimeMapEdge = {
+      ...valid,
+      evidenceRefs: hostileEvidence as unknown as RuntimeMapEdge["evidenceRefs"]
+    };
+    const first = projectRuntimeMap({ ...input, edges: [malformed, valid] }).model;
+    const second = projectRuntimeMap({ ...input, edges: [valid, malformed] }).model;
+    expect(inspected).toBe(0);
+    expect(first.relations).toHaveLength(1);
+    expect(semanticJson(second)).toBe(semanticJson(first));
+  });
+
+  it("rejects oversized provider-state arrays before inspecting members while retaining safe unknown freshness", () => {
+    const input = crossSourceLookalikeFixture();
+    let inspected = 0;
+    const hostileStates = new Array(8);
+    for (let index = 0; index < hostileStates.length; index += 1) {
+      Object.defineProperty(hostileStates, index, {
+        enumerable: true,
+        get: () => {
+          inspected += 1;
+          throw new Error("oversized provider states must not be inspected");
+        }
+      });
+    }
+    const malformed = {
+      ...input,
+      providerStates: hostileStates as unknown as typeof input.providerStates
+    };
+    const first = projectRuntimeMap(malformed).model;
+    const second = projectRuntimeMap({ ...malformed, nodes: permutation(malformed.nodes) }).model;
+    expect(inspected).toBe(0);
+    expect(first.subjects.find((subject) => subject.key === "systemd_service_same_entity")).toMatchObject({ freshness: "unknown" });
+    expect(semanticJson(second)).toBe(semanticJson(first));
   });
 
   it("fails closed for a giant raw ID and bounds status parsing/sorting across the 250-subject cap", () => {
