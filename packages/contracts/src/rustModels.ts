@@ -597,6 +597,7 @@ export interface VolumesResponse {
 export interface FindingsResponse {
   findings: Finding[];
   modelRevision: string;
+  summary: FindingSummary;
 }
 export interface Finding {
   /**
@@ -615,6 +616,17 @@ export interface Finding {
   subjectRef: string;
   summary: string;
   targetRef: string;
+}
+/**
+ * A fixed, response-level count projection. It is calculated from the
+ * closed rule and severity of each finding, never from provider output.
+ */
+export interface FindingSummary {
+  advisoryCount: number;
+  declaredDependencyCount: number;
+  dockerDaemonAuthorityCount: number;
+  hostPortPublicationCount: number;
+  warningCount: number;
 }
 
 // Rust's transparent route wrapper serializes as the record itself.

@@ -1284,6 +1284,72 @@ pub enum FindingRule {
     DockerComposeMutualDependency,
 }
 
+/// The one mutually-exclusive family assigned to every closed finding rule.
+/// It is intentionally not a free-form tag channel.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingCategory {
+    DeclaredDependency,
+    DockerDaemonAuthority,
+    HostPortPublication,
+}
+
+impl FindingRule {
+    pub const fn category(self) -> FindingCategory {
+        match self {
+            Self::SystemdRequiresTargetNotActive
+            | Self::DockerComposeDeclaredTargetNotActive
+            | Self::DockerComposeMutualDependency => FindingCategory::DeclaredDependency,
+            Self::DockerDaemonStateBindMount => FindingCategory::DockerDaemonAuthority,
+            Self::DockerInternalNetworkMemberPublishesPort
+            | Self::DockerDaemonStateBindMountPublishesPort => FindingCategory::HostPortPublication,
+        }
+    }
+}
+
+/// A fixed, response-level count projection. It is calculated from the
+/// closed rule and severity of each finding, never from provider output.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FindingSummary {
+    pub warning_count: u32,
+    pub advisory_count: u32,
+    pub declared_dependency_count: u32,
+    pub docker_daemon_authority_count: u32,
+    pub host_port_publication_count: u32,
+}
+
+impl FindingSummary {
+    pub fn from_findings(findings: &[Finding]) -> Self {
+        let mut summary = Self::default();
+        for finding in findings {
+            match finding.severity {
+                FindingSeverity::Warning => {
+                    summary.warning_count = summary.warning_count.saturating_add(1)
+                }
+                FindingSeverity::Advisory => {
+                    summary.advisory_count = summary.advisory_count.saturating_add(1)
+                }
+            }
+            match finding.rule_id.category() {
+                FindingCategory::DeclaredDependency => {
+                    summary.declared_dependency_count =
+                        summary.declared_dependency_count.saturating_add(1)
+                }
+                FindingCategory::DockerDaemonAuthority => {
+                    summary.docker_daemon_authority_count =
+                        summary.docker_daemon_authority_count.saturating_add(1)
+                }
+                FindingCategory::HostPortPublication => {
+                    summary.host_port_publication_count =
+                        summary.host_port_publication_count.saturating_add(1)
+                }
+            }
+        }
+        summary
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
@@ -1312,6 +1378,7 @@ pub struct Finding {
 #[serde(deny_unknown_fields)]
 pub struct FindingsResponse {
     pub findings: Vec<Finding>,
+    pub summary: FindingSummary,
     #[serde(rename = "modelRevision")]
     #[schemars(length(min = 1))]
     pub model_revision: String,

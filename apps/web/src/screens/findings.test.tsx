@@ -7,6 +7,10 @@ import Findings from "./Findings";
 
 const findings: FindingsResponse = {
   modelRevision: "findings-revision",
+  summary: {
+    warningCount: 1, advisoryCount: 0, declaredDependencyCount: 1,
+    dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0,
+  },
   findings: [{
     id: "finding_systemd_requires_target_not_active_test",
     ruleId: "systemd.requires_target_not_active",
@@ -38,6 +42,11 @@ describe("Findings screen", () => {
     expect(html).toContain("Declared dependency needs review");
     expect(html).toContain(findings.findings[0].recommendation);
     expect(html).toContain("Systemd Requires");
+    expect(html).toContain("Finding summary");
+    expect(html).toContain("Inspect rule basis");
+    expect(html).toContain("systemd.requires_target_not_active");
+    expect(html).toContain("Requires one fresh declared systemd fact.");
+    expect(html).toContain("Does not establish service readiness, causality, traffic, or remediation.");
     expect(html).not.toContain(findings.findings[0].subjectRef);
     expect(html).not.toContain(findings.findings[0].targetRef);
     expect(html).not.toContain(findings.findings[0].evidenceRefs[0].id);

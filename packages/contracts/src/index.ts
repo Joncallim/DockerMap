@@ -21,6 +21,7 @@ export type {
   Finding,
   FindingRule,
   FindingSeverity,
+  FindingSummary,
   FindingsResponse,
   GraphEdge,
   GraphNode,

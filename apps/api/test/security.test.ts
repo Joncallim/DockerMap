@@ -1073,6 +1073,10 @@ test("daemon model responses require non-empty revision and complete provider st
       return value;
     })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].summary = "DOCKERMAP_TEST_FORGED_FINDING"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.summary.warningCount = 2; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.summary.declaredDependencyCount = 2; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.summary.untrustedCategory = 1; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); delete value.summary.hostPortPublicationCount; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].subjectRef = value.findings[0].targetRef; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); delete value.findings[0].evidenceRefs; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].evidenceRefs[0].freshness = "stale"; return value; })()],

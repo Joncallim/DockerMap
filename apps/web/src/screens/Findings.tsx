@@ -29,10 +29,14 @@ export default function Findings() {
         </Panel>
       ) : liveFindings.findings.length === 0 ? (
         <Panel title="Findings" icon="check" hint="Live evidence">
+          <FindingSummary summary={liveFindings.summary} />
           <EmptyState icon="check" title="No current findings" body="No supported declared-dependency condition is currently detected." />
         </Panel>
       ) : (
         <div className="stack">
+          <Panel title="Finding summary" icon="alert" hint="Closed counts">
+            <FindingSummary summary={liveFindings.summary} />
+          </Panel>
           {liveFindings.findings.map((finding, index) => {
             const presentation = presentationForFinding(finding);
             if (!presentation) return null;
@@ -40,6 +44,13 @@ export default function Findings() {
               <div className="tag-wrap"><Tag tone={presentation.tone}>{presentation.severityLabel}</Tag><Tag tone="muted">{presentation.category}</Tag></div>
               <p className="muted-copy">{presentation.summary}</p>
               <p className="muted-copy">{presentation.recommendation}</p>
+              <details>
+                <summary>Inspect rule basis</summary>
+                <p className="muted-copy">{presentation.inspection.ruleLabel} ({presentation.inspection.ruleId})</p>
+                <p className="muted-copy">{presentation.inspection.freshEvidenceRequirement}</p>
+                <p className="muted-copy">{presentation.inspection.factDescription}</p>
+                <p className="muted-copy">{presentation.inspection.limits}</p>
+              </details>
               {presentation.inspectChanges && <Link className="ghost-link" to="/changes">Inspect recent changes <Icon name="arrow" size={14} /></Link>}
             </Panel>;
           })}
@@ -47,4 +58,11 @@ export default function Findings() {
       )}
     </div>
   );
+}
+
+function FindingSummary({ summary }: { summary: { warningCount: number; advisoryCount: number; declaredDependencyCount: number; dockerDaemonAuthorityCount: number; hostPortPublicationCount: number } }) {
+  return <div className="stack">
+    <p className="muted-copy">{summary.warningCount} warning{summary.warningCount === 1 ? "" : "s"} · {summary.advisoryCount} advisor{summary.advisoryCount === 1 ? "y" : "ies"}</p>
+    <p className="muted-copy">Declared dependencies: {summary.declaredDependencyCount} · Docker daemon authority: {summary.dockerDaemonAuthorityCount} · Host-port publication: {summary.hostPortPublicationCount}</p>
+  </div>;
 }

@@ -1,5 +1,12 @@
 {
   "modelRevision": "fixture-findings-revision",
+  "summary": {
+    "warningCount": 3,
+    "advisoryCount": 3,
+    "declaredDependencyCount": 3,
+    "dockerDaemonAuthorityCount": 1,
+    "hostPortPublicationCount": 2
+  },
   "findings": [
     {
       "id": "finding_systemd_requires_target_not_active_fixture",

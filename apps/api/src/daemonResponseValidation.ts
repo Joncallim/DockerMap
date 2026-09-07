@@ -74,6 +74,62 @@ const COMPOSE_MUTUAL_DEPENDENCY_FINDING_RULE = "docker.compose_mutual_dependency
 const COMPOSE_MUTUAL_DEPENDENCY_FINDING_SUMMARY = "Docker recorded mutually declared Compose dependencies between two containers.";
 const COMPOSE_MUTUAL_DEPENDENCY_FINDING_RECOMMENDATION = "Review the declared dependencies and remove any unintended mutual dependency.";
 
+type FindingSummaryWire = {
+  warningCount: number;
+  advisoryCount: number;
+  declaredDependencyCount: number;
+  dockerDaemonAuthorityCount: number;
+  hostPortPublicationCount: number;
+};
+
+const FINDING_SUMMARY_KEYS = [
+  "warningCount",
+  "advisoryCount",
+  "declaredDependencyCount",
+  "dockerDaemonAuthorityCount",
+  "hostPortPublicationCount",
+] as const;
+
+// This is deliberately a finite duplicate of core's FindingRule::category.
+// A new rule has no browser path until both sides explicitly classify it.
+const FINDING_RULE_CATEGORY = {
+  [SYSTEMD_REQUIRES_FINDING_RULE]: "declaredDependencyCount",
+  [INTERNAL_NETWORK_PORT_FINDING_RULE]: "hostPortPublicationCount",
+  [DOCKER_DAEMON_STATE_FINDING_RULE]: "dockerDaemonAuthorityCount",
+  [DOCKER_DAEMON_STATE_PUBLISHED_PORT_FINDING_RULE]: "hostPortPublicationCount",
+  [COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RULE]: "declaredDependencyCount",
+  [COMPOSE_MUTUAL_DEPENDENCY_FINDING_RULE]: "declaredDependencyCount",
+} as const;
+
+function coherentFindingSummary(value: unknown, findings: unknown[]): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const summary = value as Record<string, unknown>;
+  if (Object.keys(summary).length !== FINDING_SUMMARY_KEYS.length
+    || !FINDING_SUMMARY_KEYS.every((key) => Object.hasOwn(summary, key))) return false;
+  const expected: FindingSummaryWire = {
+    warningCount: 0, advisoryCount: 0, declaredDependencyCount: 0,
+    dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0,
+  };
+  for (const candidate of findings) {
+    if (!candidate || typeof candidate !== "object") return false;
+    const finding = candidate as Record<string, unknown>;
+    if (finding.severity === "warning") expected.warningCount += 1;
+    else if (finding.severity === "advisory") expected.advisoryCount += 1;
+    else return false;
+    const category = typeof finding.ruleId === "string"
+      ? FINDING_RULE_CATEGORY[finding.ruleId as keyof typeof FINDING_RULE_CATEGORY]
+      : undefined;
+    if (!category) return false;
+    expected[category] += 1;
+  }
+  return FINDING_SUMMARY_KEYS.every((key) => (
+    typeof summary[key] === "number"
+    && Number.isSafeInteger(summary[key])
+    && summary[key] >= 0
+    && summary[key] === expected[key]
+  ));
+}
+
 // Version-one evidence is intentionally a discriminated Docker observation,
 // not a generic provenance bag. JSON Schema owns each field's closed enum;
 // this small cross-field table binds an emitted fact to the relationship it
@@ -342,6 +398,7 @@ function hasCoherentFindings(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
   const findings = (payload as { findings?: unknown }).findings;
   if (!Array.isArray(findings)) return false;
+  if (!coherentFindingSummary((payload as { summary?: unknown }).summary, findings)) return false;
   return findings.every((candidate) => {
     if (!candidate || typeof candidate !== "object") return false;
     const finding = candidate as Record<string, unknown>;

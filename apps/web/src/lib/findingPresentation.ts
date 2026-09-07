@@ -16,6 +16,13 @@ export interface FindingPresentation {
   tone: "warn" | "muted";
   severityLabel: "Warning" | "Advisory";
   inspectChanges?: boolean;
+  inspection: {
+    ruleLabel: string;
+    ruleId: Finding["ruleId"];
+    freshEvidenceRequirement: string;
+    factDescription: string;
+    limits: string;
+  };
 }
 
 type FindingSpec = FindingPresentation & {
@@ -43,7 +50,8 @@ const SPECS: readonly FindingSpec[] = [
     recommendation: "Inspect the target service state and its declared dependency configuration.",
     idPrefix: "finding_systemd_requires_target_not_active_", subjectPrefix: "systemd_service_", targetPrefix: "systemd_service_",
     evidenceCount: 1, evidence: { version: 2, provider: "systemd", kind: "systemd_requires", assertionKind: "declared", providerSlot: "systemd" },
-    title: "Declared dependency needs review", category: "Systemd Requires", hint: "Observed declaration", tone: "warn", severityLabel: "Warning"
+    title: "Declared dependency needs review", category: "Systemd Requires", hint: "Observed declaration", tone: "warn", severityLabel: "Warning",
+    inspection: { ruleLabel: "Systemd declared dependency", ruleId: "systemd.requires_target_not_active", freshEvidenceRequirement: "Requires one fresh declared systemd fact.", factDescription: "One declared dependency fact.", limits: "Does not establish service readiness, causality, traffic, or remediation." }
   },
   {
     ruleId: "docker.internal_network_member_publishes_port", severity: "advisory",
@@ -51,7 +59,8 @@ const SPECS: readonly FindingSpec[] = [
     recommendation: "Review whether the host-port publication is intended for this internal-network service.",
     idPrefix: "finding_docker_internal_network_member_publishes_port_", subjectPrefix: "docker_container_", targetPrefix: "docker_network_",
     evidenceCount: 2, evidence: { version: 1, provider: "docker", kind: "docker_network_membership", assertionKind: "observed", providerSlot: null },
-    title: "Internal-network port publication needs review", category: "Internal network + host port", hint: "Observed Docker facts", tone: "muted", severityLabel: "Advisory"
+    title: "Internal-network port publication needs review", category: "Internal network + host port", hint: "Observed Docker facts", tone: "muted", severityLabel: "Advisory",
+    inspection: { ruleLabel: "Internal network and host port", ruleId: "docker.internal_network_member_publishes_port", freshEvidenceRequirement: "Requires two fresh observed Docker facts.", factDescription: "One network-membership fact and one host-port-publication fact.", limits: "Does not establish Internet reachability, traffic, causality, or remediation." }
   },
   {
     ruleId: "docker.daemon_state_bind_mount", severity: "warning",
@@ -59,7 +68,8 @@ const SPECS: readonly FindingSpec[] = [
     recommendation: "Review whether this container requires Docker daemon API authority.",
     idPrefix: "finding_docker_daemon_state_bind_mount_", subjectPrefix: "docker_container_", targetRef: "host_risk_docker_daemon_state",
     evidenceCount: 1, evidence: { version: 1, provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", providerSlot: null },
-    title: "Docker daemon-state access needs review", category: "Docker daemon state", hint: "Observed Docker fact", tone: "warn", severityLabel: "Warning"
+    title: "Docker daemon-state access needs review", category: "Docker daemon state", hint: "Observed Docker fact", tone: "warn", severityLabel: "Warning",
+    inspection: { ruleLabel: "Docker daemon-state access", ruleId: "docker.daemon_state_bind_mount", freshEvidenceRequirement: "Requires one fresh observed Docker fact.", factDescription: "One Docker daemon-state fact.", limits: "Does not establish effective authority, exploitation, causality, or remediation." }
   },
   {
     ruleId: "docker.daemon_state_bind_mount_publishes_port", severity: "warning",
@@ -67,7 +77,8 @@ const SPECS: readonly FindingSpec[] = [
     recommendation: "Review whether the daemon-state access and host-port publication are both intended.",
     idPrefix: "finding_docker_daemon_state_bind_mount_publishes_port_", subjectPrefix: "docker_container_", targetRef: "host_risk_docker_daemon_state",
     evidenceCount: 2, evidence: { version: 1, provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", providerSlot: null },
-    title: "Docker daemon-state and host-port publication need review", category: "Docker daemon state + host port", hint: "Observed Docker facts", tone: "warn", severityLabel: "Warning", inspectChanges: true
+    title: "Docker daemon-state and host-port publication need review", category: "Docker daemon state + host port", hint: "Observed Docker facts", tone: "warn", severityLabel: "Warning", inspectChanges: true,
+    inspection: { ruleLabel: "Docker daemon-state access and host port", ruleId: "docker.daemon_state_bind_mount_publishes_port", freshEvidenceRequirement: "Requires two fresh observed Docker facts from one collection.", factDescription: "One Docker daemon-state fact and one host-port-publication fact.", limits: "Does not establish effective authority, exploitation, Internet reachability, causality, or remediation." }
   },
   {
     ruleId: "docker.compose_declared_target_not_active", severity: "advisory",
@@ -75,7 +86,8 @@ const SPECS: readonly FindingSpec[] = [
     recommendation: "Review the declared dependency and the target container state.",
     idPrefix: "finding_docker_compose_declared_target_not_active_", subjectPrefix: "docker_container_", targetPrefix: "docker_container_",
     evidenceCount: 1, evidence: { version: 1, provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", providerSlot: null },
-    title: "Declared Compose dependency needs review", category: "Docker Compose", hint: "Observed Compose declaration", tone: "muted", severityLabel: "Advisory", inspectChanges: true
+    title: "Declared Compose dependency needs review", category: "Docker Compose", hint: "Observed Compose declaration", tone: "muted", severityLabel: "Advisory", inspectChanges: true,
+    inspection: { ruleLabel: "Compose declared dependency", ruleId: "docker.compose_declared_target_not_active", freshEvidenceRequirement: "Requires one fresh observed Compose declaration.", factDescription: "One declared dependency fact.", limits: "Does not establish startup order, causality, readiness, or remediation." }
   },
   {
     ruleId: "docker.compose_mutual_dependency", severity: "advisory",
@@ -83,7 +95,8 @@ const SPECS: readonly FindingSpec[] = [
     recommendation: "Review the declared dependencies and remove any unintended mutual dependency.",
     idPrefix: "finding_docker_compose_mutual_dependency_", subjectPrefix: "docker_container_", targetPrefix: "docker_container_",
     evidenceCount: 2, evidence: { version: 1, provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", providerSlot: null },
-    title: "Mutual Compose declarations need review", category: "Docker Compose", hint: "Observed Compose declarations", tone: "muted", severityLabel: "Advisory", inspectChanges: true
+    title: "Mutual Compose declarations need review", category: "Docker Compose", hint: "Observed Compose declarations", tone: "muted", severityLabel: "Advisory", inspectChanges: true,
+    inspection: { ruleLabel: "Mutual Compose declarations", ruleId: "docker.compose_mutual_dependency", freshEvidenceRequirement: "Requires two fresh observed Compose declarations from one collection.", factDescription: "Two declared dependency facts in opposite directions.", limits: "Does not establish startup order, causality, readiness, or remediation." }
   }
 ];
 
