@@ -115,11 +115,21 @@ const SPECS: readonly FindingSpec[] = [
     evidenceCount: 2, evidence: { version: 6, provider: "compose", kind: "compose_declared_mount", assertionKind: "declared", providerSlot: null },
     title: "Declared Compose mount needs review", category: "Compose runtime drift", hint: "Bounded structural facts", tone: "warn", severityLabel: "Warning", inspectChanges: true,
     inspection: { ruleLabel: "Compose declaration and runtime binding", ruleId: "compose.declared_mount_missing_at_bound_container", freshEvidenceRequirement: "Requires two fresh, paired structural facts from one collection.", factDescription: "One Compose mount declaration and one exact Docker Compose/runtime binding fact.", limits: "Does not expose mount paths, names, labels, or container identity, and does not establish causality or remediation." }
+  },
+  {
+    ruleId: "runtime.identity_collision_detected", severity: "advisory",
+    summary: "DockerMap detected duplicate runtime identities after publication normalization.",
+    recommendation: "Review the duplicate identity condition before relying on topology relationships.",
+    idPrefix: "finding_runtime_identity_collision_detected", subjectPrefix: "runtime_integrity_scope", targetRef: "runtime_integrity_risk_identity_collision",
+    evidenceCount: 1, evidence: { version: 7, provider: "dockermap", kind: "runtime_identity_collision", assertionKind: "observed", providerSlot: null },
+    title: "Runtime identity integrity needs review", category: "Evidence integrity", hint: "Aggregate structural fact", tone: "muted", severityLabel: "Advisory",
+    inspection: { ruleLabel: "Published runtime identity integrity", ruleId: "runtime.identity_collision_detected", freshEvidenceRequirement: "Requires one fresh aggregate DockerMap integrity fact.", factDescription: "One aggregate fact that duplicate identities were detected after publication normalization.", limits: "Does not expose or identify any collided runtime identity, count, provider data, health, causality, or remediation." }
   }
 ];
 
 const COMPOSE_DECLARATION_EVIDENCE_SUMMARY = "Docker recorded Compose dependency declaration";
 const UNSPECIFIED_ADDRESS_PUBLICATION_EVIDENCE_SUMMARY = "Docker reported a container port published on an unspecified host address";
+const RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY = "DockerMap detected duplicate runtime identities after publication normalization";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -150,6 +160,7 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     || (spec.targetPrefix !== undefined && !finding.targetRef.startsWith(spec.targetPrefix))
     || (spec.targetRef !== undefined && finding.targetRef !== spec.targetRef)
     || (spec.ruleId !== "compose.declared_mount_missing_at_bound_container" && finding.subjectRef === finding.targetRef)
+    || (spec.ruleId === "runtime.identity_collision_detected" && (finding.id !== "finding_runtime_identity_collision_detected" || finding.subjectRef !== "runtime_integrity_scope"))
     // Mutual findings are emitted in one canonical direction. This preserves
     // the API's ordered forward/reverse evidence meaning without displaying
     // either opaque reference.
@@ -165,7 +176,7 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     // The API permits the Compose observation's legacy absent slot as well as
     // null. Both mean the Docker-wide collector, never a provider-supplied
     // slot name; all other supported shapes require their exact slot value.
-    || ((spec.ruleId === "docker.compose_declared_target_not_active" || spec.ruleId === "docker.daemon_state_bind_mount_publishes_port" || spec.ruleId === "docker.compose_mutual_dependency" || spec.ruleId === "compose.declared_mount_missing_at_bound_container" || spec.ruleId === "docker.port_published_on_unspecified_address")
+    || ((spec.ruleId === "docker.compose_declared_target_not_active" || spec.ruleId === "docker.daemon_state_bind_mount_publishes_port" || spec.ruleId === "docker.compose_mutual_dependency" || spec.ruleId === "compose.declared_mount_missing_at_bound_container" || spec.ruleId === "docker.port_published_on_unspecified_address" || spec.ruleId === "runtime.identity_collision_detected")
       ? evidence.providerSlot !== undefined && evidence.providerSlot !== null
       : evidence.providerSlot !== spec.evidence.providerSlot)
     || evidence.freshness !== "fresh"
@@ -187,6 +198,13 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     && (evidence.summary !== UNSPECIFIED_ADDRESS_PUBLICATION_EVIDENCE_SUMMARY
       || typeof evidence.collectedAt !== "number" || !Number.isSafeInteger(evidence.collectedAt) || evidence.collectedAt < 0
       || typeof evidence.providerRevision !== "string" || evidence.providerRevision.length === 0
+      || evidence.providerRevision === String(evidence.collectedAt))) return null;
+
+  if (spec.ruleId === "runtime.identity_collision_detected"
+    && (evidence.id !== "dockermap_evidence_runtime_identity_collision"
+      || evidence.summary !== RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY
+      || typeof evidence.collectedAt !== "number" || !Number.isSafeInteger(evidence.collectedAt) || evidence.collectedAt < 0
+      || typeof evidence.providerRevision !== "string" || !/^[a-f0-9]{32}-[1-9][0-9]*$/.test(evidence.providerRevision)
       || evidence.providerRevision === String(evidence.collectedAt))) return null;
 
   // The daemon-state + host-port advisory is a paired observation from one

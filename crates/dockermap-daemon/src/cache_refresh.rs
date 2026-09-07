@@ -17,8 +17,8 @@ use crate::{
     },
     providers::tmux::TMUX_EVIDENCE_SESSION_LISTING_MARKER,
     publication::{
-        append_runtime_identity_collision_fact, publish_docker_snapshot,
-        redact_health_response, redact_runtime_map, runtime_map_has_identity_collision,
+        append_runtime_identity_collision_fact, publish_docker_snapshot, redact_health_response,
+        redact_runtime_map, runtime_map_has_identity_collision,
     },
     runtime_collection::{
         collect_provider_slot_bounded, runtime_map_from_collection, slot_interval,
@@ -2544,6 +2544,7 @@ mod scheduler_tests {
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
+            integrity_observation_revision: IntegrityObservationRevision::new(),
             revision: PublicationRevision::new(),
         };
         cache.assign_docker_observation_revision();

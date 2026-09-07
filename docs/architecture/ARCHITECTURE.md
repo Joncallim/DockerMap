@@ -168,6 +168,14 @@ collided inputs produce no finding. The advisory asks only whether publishing
 beyond loopback is intended; it does not establish Internet reachability,
 traffic, health, exploitability, compromise, impact, or causality.
 
+`runtime.identity_collision_detected` is one aggregate advisory from the
+post-publication duplicate-identity detector. It is emitted only for one fresh
+fixed DockerMap integrity fact and never identifies a collided node, reports a
+collision count, or copies diagnostic/provider material. It asks for review of
+topology reliability only; it is not a configuration, health, causality,
+reachability, or security conclusion. Mock, stale, malformed, duplicated, or
+reserved-identifier-conflicted facts are suppressed.
+
 `docker.daemon_state_bind_mount` emits a warning only when one uniquely
 identified Docker container has exactly one fresh, path-free Docker fact bound
 to the fixed Docker-daemon-state risk target. It means the recorded access may

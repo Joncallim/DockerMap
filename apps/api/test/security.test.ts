@@ -1136,6 +1136,10 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].freshness = "stale"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs.push(structuredClone(value.findings[7].evidenceRefs[0])); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].targetRef = "runtime_integrity_risk_other"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].summary = "collision: secret-provider-value"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].providerRevision = "fixture-revision"; return value; })()],
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {

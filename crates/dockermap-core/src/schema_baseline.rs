@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_evidence_schema_admits_the_closed_version_six_compose_shape() {
+    fn runtime_evidence_schema_admits_the_newest_closed_evidence_shape() {
         let schema = DAEMON_SCHEMA_NAMES
             .iter()
             .zip(daemon_schema_documents())
@@ -184,7 +184,7 @@ mod tests {
             evidence
                 .pointer("/properties/version/maximum")
                 .and_then(|value| value.as_u64()),
-            Some(6),
+            Some(7),
             "generated schema must not reject the newest closed evidence version"
         );
         assert!(

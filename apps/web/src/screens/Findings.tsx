@@ -60,9 +60,9 @@ export default function Findings() {
   );
 }
 
-function FindingSummary({ summary }: { summary: { warningCount: number; advisoryCount: number; declaredDependencyCount: number; dockerDaemonAuthorityCount: number; hostPortPublicationCount: number } }) {
+function FindingSummary({ summary }: { summary: { warningCount: number; advisoryCount: number; declaredDependencyCount: number; dockerDaemonAuthorityCount: number; hostPortPublicationCount: number; evidenceIntegrityCount: number } }) {
   return <div className="stack">
     <p className="muted-copy">{summary.warningCount} warning{summary.warningCount === 1 ? "" : "s"} · {summary.advisoryCount} advisor{summary.advisoryCount === 1 ? "y" : "ies"}</p>
-    <p className="muted-copy">Declared dependencies: {summary.declaredDependencyCount} · Docker daemon authority: {summary.dockerDaemonAuthorityCount} · Host-port publication: {summary.hostPortPublicationCount}</p>
+    <p className="muted-copy">Declared dependencies: {summary.declaredDependencyCount} · Docker daemon authority: {summary.dockerDaemonAuthorityCount} · Host-port publication: {summary.hostPortPublicationCount} · Evidence integrity: {summary.evidenceIntegrityCount}</p>
   </div>;
 }

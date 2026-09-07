@@ -2,10 +2,11 @@
   "modelRevision": "fixture-findings-revision",
   "summary": {
     "warningCount": 4,
-    "advisoryCount": 4,
+    "advisoryCount": 5,
     "declaredDependencyCount": 4,
     "dockerDaemonAuthorityCount": 1,
-    "hostPortPublicationCount": 3
+    "hostPortPublicationCount": 3,
+    "evidenceIntegrityCount": 1
   },
   "findings": [
     {
@@ -243,6 +244,29 @@
           "subjectRef": "docker_container_container_api",
           "collectedAt": 1787196125766,
           "providerRevision": "fixture-boot-3",
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "id": "finding_runtime_identity_collision_detected",
+      "ruleId": "runtime.identity_collision_detected",
+      "severity": "advisory",
+      "summary": "DockerMap detected duplicate runtime identities after publication normalization.",
+      "recommendation": "Review the duplicate identity condition before relying on topology relationships.",
+      "subjectRef": "runtime_integrity_scope",
+      "targetRef": "runtime_integrity_risk_identity_collision",
+      "evidenceRefs": [
+        {
+          "version": 7,
+          "id": "dockermap_evidence_runtime_identity_collision",
+          "provider": "dockermap",
+          "kind": "runtime_identity_collision",
+          "assertionKind": "observed",
+          "summary": "DockerMap detected duplicate runtime identities after publication normalization",
+          "subjectRef": "runtime_integrity_scope",
+          "collectedAt": 1710000000000,
+          "providerRevision": "0123456789abcdef0123456789abcdef-1",
           "freshness": "fresh"
         }
       ]
