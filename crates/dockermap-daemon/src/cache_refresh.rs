@@ -655,11 +655,20 @@ impl DaemonCache {
     /// context; receipt/state transitions call this again without fabricating
     /// a new topology revision.
     fn rebuild_findings(&mut self) {
+        self.findings = self.findings_response_at(self.snapshot.last_updated);
+    }
+
+    /// Re-evaluate temporal eligibility against a trusted current Unix time.
+    /// Snapshot publication remains a convenient cache refresh, but never the
+    /// sole expiry mechanism: `/daemon/findings` calls this projection on its
+    /// read path so a quiet Docker host cannot retain a stale time-bound
+    /// advisory forever.
+    pub(crate) fn findings_response_at(&self, now_ms: u64) -> FindingsResponse {
         let mut findings = derive_findings(&self.runtime_map);
         findings.extend(derive_temporal_docker_findings(
             self.health.mode.clone(),
             self.observed_history.docker_events.collection_state(),
-            self.snapshot.last_updated,
+            now_ms,
             &self
                 .observed_history
                 .docker_events
@@ -671,10 +680,17 @@ impl DaemonCache {
                 .then_with(|| left.subject_ref.cmp(&right.subject_ref))
                 .then_with(|| left.target_ref.cmp(&right.target_ref))
         });
-        self.findings = FindingsResponse {
+        FindingsResponse {
             findings,
             model_revision: self.runtime_map.model_revision.clone(),
-        };
+        }
+    }
+
+    /// The OS wall clock is the only current-time authority available to the
+    /// daemon. A pre-epoch/unsafe clock fails closed for temporal advice while
+    /// preserving all timeless findings already held in the cache.
+    pub(crate) fn current_findings_response(&self) -> FindingsResponse {
+        self.findings_response_at(wall_clock_millis().unwrap_or(0))
     }
 
     fn assign_docker_observation_revision(&mut self) {
@@ -4238,8 +4254,20 @@ mod scheduler_tests {
         }
         drop(cache);
 
-        // Snapshot refresh reprojects the finding and drops an otherwise valid
-        // three-event window once its newest source time is too old.
+        // The Findings read projection expires this without a new snapshot,
+        // event, reconnect, or provider completion.
+        assert!(state
+            .cache
+            .read()
+            .await
+            .findings_response_at(NOW_MS + 600_001)
+            .findings
+            .iter()
+            .all(|finding| finding.rule_id
+                != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+
+        // Snapshot publication retains the same expiry result as a cache
+        // projection, but is no longer required for correctness.
         let mut stale = snapshot.clone();
         stale.last_updated = NOW_MS + 600_001;
         publish_docker_snapshot_cache(&state, docker_cache(stale)).await;

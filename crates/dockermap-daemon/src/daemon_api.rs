@@ -116,10 +116,11 @@ async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
 }
 
 async fn get_findings(State(state): State<AppState>) -> Json<FindingsResponse> {
-    // Findings are cached during refresh immediately after the runtime map is
-    // assigned its publication revision; requests never invoke providers.
+    // This is still cache-only: it invokes neither providers nor Docker. The
+    // private bounded journal is reprojected against a trusted current clock
+    // so a quiet host cannot retain a time-bound advisory past its expiry.
     let cache = state.cache.read().await;
-    Json(cache.findings.clone())
+    Json(cache.current_findings_response())
 }
 
 async fn get_observed_history(
