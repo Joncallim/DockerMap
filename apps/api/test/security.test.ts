@@ -40,6 +40,7 @@ type StubDaemon = {
 
 const apiEntry = "apps/api/src/index.ts";
 const repoRoot = new URL("../../..", import.meta.url);
+const tmuxFixtureSource = "tmux_session_session--49e907719fa53f1b00e43d8721620f42979c31117ed46daa3fadf320aef94b4e";
 const processes: ApiProcess[] = [];
 const servers: Server[] = [];
 
@@ -883,6 +884,21 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
   const containers = snapshot.containers as unknown[];
   const container = containers.find((entry) => (entry as { name?: unknown }).name === "api");
   assert.ok(container, "serialized Rust snapshot fixture must include the api detail fixture");
+  const tmuxEvidence = (runtimeMap.edges as Array<Record<string, unknown>>)
+    .find((edge) => edge.source === tmuxFixtureSource)?.evidenceRefs;
+  assert.deepEqual(tmuxEvidence, [{
+    version: 5,
+    id: "fixture-tmux-session-listing-worker",
+    provider: "tmux",
+    kind: "tmux_session_listing",
+    assertionKind: "observed",
+    summary: "tmux listed a local session",
+    subjectRef: tmuxFixtureSource,
+    collectedAt: 1787196125766,
+    providerRevision: "fixture-tmux-observation-1",
+    providerSlot: "tmux",
+    freshness: "fresh"
+  }], "canonical daemon fixture must exercise the V5 tmux browser boundary");
   const daemon = await startStubDaemon((req, res) => {
     if (req.url === "/daemon/health") return sendJson(res, 200, health);
     if (req.url === "/daemon/snapshot") return sendJson(res, 200, snapshot);
@@ -1469,6 +1485,62 @@ test("runtime evidence is required and fails closed before browser publication",
       `v4 cron evidence must reject a noncanonical ${field}`
     );
   }
+
+  const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === tmuxFixtureSource);
+  assert.ok(tmuxEdge, "canonical daemon fixture carries a V5 tmux session listing");
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
+  for (const freshness of ["stale", "timed_out"] as const) {
+    const retainedTmux = structuredClone(fixture);
+    const edge = retainedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
+    assert.ok(edge);
+    edge.evidenceRefs[0].freshness = freshness;
+    assert.doesNotThrow(
+      () => validateDaemonResponse("/daemon/runtime/map", retainedTmux),
+      `v5 tmux evidence may retain ${freshness} data from its own scheduler slot`
+    );
+  }
+  for (const [field, value] of [
+    ["provider", "cron"],
+    ["kind", "cron_schedule_declaration"],
+    ["assertionKind", "declared"],
+    ["providerSlot", "host_scoped"],
+    ["freshness", "unavailable"],
+    ["version", 4]
+  ] as const) {
+    const malformedTmux = structuredClone(fixture);
+    const edge = malformedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
+    assert.ok(edge);
+    edge.evidenceRefs[0][field] = value;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", malformedTmux),
+      `v5 tmux evidence must reject fabricated ${field}`
+    );
+  }
+  for (const [field, value] of [
+    ["source", "scheduled_job_fixture_not_tmux"],
+    ["target", "host_other"],
+    ["relationship", "depends_on"]
+  ] as const) {
+    const malformedTmux = structuredClone(fixture);
+    const edge = malformedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
+    assert.ok(edge);
+    edge[field] = value;
+    if (field === "source") edge.evidenceRefs[0].subjectRef = value;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", malformedTmux),
+      `v5 tmux evidence must reject a noncanonical ${field}`
+    );
+  }
+  const selfReferentialTmux = structuredClone(fixture);
+  const selfReferentialTmuxEdge = selfReferentialTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
+  assert.ok(selfReferentialTmuxEdge);
+  selfReferentialTmuxEdge.target = selfReferentialTmuxEdge.source;
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", selfReferentialTmux));
+  const timestampAliasedTmux = structuredClone(fixture);
+  const timestampAliasedTmuxEdge = timestampAliasedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
+  assert.ok(timestampAliasedTmuxEdge);
+  timestampAliasedTmuxEdge.evidenceRefs[0].providerRevision = String(timestampAliasedTmuxEdge.evidenceRefs[0].collectedAt);
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", timestampAliasedTmux));
 });
 
 test("fabricated runtime evidence is rejected over the authenticated API boundary", async () => {
@@ -1545,6 +1617,34 @@ test("fabricated V4 Cron evidence is rejected neutrally over the authenticated A
     message: "Daemon response did not match its declared contract"
   });
   assert.doesNotMatch(JSON.stringify(body), new RegExp(sentinel));
+});
+
+test("fabricated V5 tmux evidence is rejected neutrally over canonical and v1 API boundaries", async () => {
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json", import.meta.url),
+    "utf8"
+  ));
+  const sentinel = "DOCKERMAP_TEST_FAKE_TMUX_EVIDENCE_SECRET";
+  const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === tmuxFixtureSource);
+  assert.ok(tmuxEdge, "canonical fixture must exercise the V5 browser boundary");
+  tmuxEdge.target = `host_${sentinel}`;
+  tmuxEdge.evidenceRefs[0].subjectRef = tmuxEdge.source;
+  tmuxEdge.evidenceRefs[0].providerSlot = "host_scoped";
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/runtime/map") return sendJson(res, 200, fixture);
+    return sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+  for (const path of ["/api/runtime/map", "/api/v1/runtime/map"]) {
+    const response = await request(api, path, { headers: { Authorization: "Bearer test-token" } });
+    assert.equal(response.status, 502, path);
+    const body = await response.json();
+    assert.deepEqual(body, {
+      code: "daemon_invalid_response",
+      message: "Daemon response did not match its declared contract"
+    }, path);
+    assert.doesNotMatch(JSON.stringify(body), new RegExp(sentinel), path);
+  }
 });
 
 test("actual canonical and v1 SSE snapshot/error frames use their declared payload schemas", async () => {
