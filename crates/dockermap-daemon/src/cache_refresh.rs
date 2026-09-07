@@ -208,9 +208,9 @@ struct ObservedHistoryCache {
     next_sequence: u64,
     baseline: Option<ObservedContainerInventory>,
     events: VecDeque<ObservedChangeEvent>,
-    /// Docker stream observations remain a distinct internal evidence source
-    /// until their public contract is reviewed. Replacing this entire cache on
-    /// a source transition also clears its replay cursor and dedupe horizon.
+    /// Docker stream observations remain a distinct evidence source. Source
+    /// transitions clear their public rows and continuity while retaining only
+    /// the bounded private replay fence needed to reject already-seen events.
     docker_events: DockerEventJournal,
 }
 
@@ -223,6 +223,12 @@ impl ObservedHistoryCache {
             events: VecDeque::new(),
             docker_events: DockerEventJournal::default(),
         }
+    }
+
+    fn source_reset(previous: &Self) -> Self {
+        let mut reset = Self::new();
+        reset.docker_events = previous.docker_events.source_reset();
+        reset
     }
 
     /// Advance only after a successful Docker inventory has been cloned
@@ -1361,7 +1367,7 @@ async fn publish_docker_snapshot_cache(
     updated.observed_history = if same_source {
         cache.observed_history.clone()
     } else {
-        ObservedHistoryCache::new()
+        ObservedHistoryCache::source_reset(&cache.observed_history)
     };
     // Stats are source-bound observations just like event history. A source
     // transition always discards retained values and their numeric baselines.
@@ -4670,11 +4676,32 @@ mod scheduler_tests {
     }
 
     #[tokio::test]
-    async fn docker_event_retention_is_generation_bound_reset_and_not_snapshot_relabelled() {
+    async fn docker_event_replay_fence_survives_source_reset_without_temporal_continuity() {
         const NOW_SECONDS: u64 = 1_800_000_000;
         const RAW_CONTAINER_ID: &str =
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let snapshot = mock_snapshot();
+        let mut snapshot = mock_snapshot();
+        snapshot.last_updated = NOW_SECONDS * 1_000;
+        let event_at = |nanos_offset: u64| {
+            parse_docker_event(
+                EventMessage {
+                    typ: Some(EventMessageTypeEnum::CONTAINER),
+                    action: Some("die".into()),
+                    actor: Some(EventActor {
+                        id: Some(RAW_CONTAINER_ID.into()),
+                        attributes: Some(std::collections::HashMap::from([
+                            ("name".into(), "/private/restart-name".into()),
+                            ("exitCode".into(), "private-exit-text".into()),
+                        ])),
+                    }),
+                    time: Some(NOW_SECONDS as i64),
+                    time_nano: Some((NOW_SECONDS * 1_000_000_000 + nanos_offset) as i64),
+                    ..Default::default()
+                },
+                NOW_SECONDS * 1_000,
+            )
+            .expect("controlled event parses")
+        };
         let state = AppState {
             cache: Arc::new(RwLock::new(docker_cache(snapshot.clone()))),
             docker: Arc::new(RwLock::new(None)),
@@ -4684,24 +4711,15 @@ mod scheduler_tests {
         let context = docker_event_source_context(&state, NOW_SECONDS)
             .await
             .expect("Docker source has event authority");
-        let event = parse_docker_event(
-            EventMessage {
-                typ: Some(EventMessageTypeEnum::CONTAINER),
-                action: Some("restart".into()),
-                actor: Some(EventActor {
-                    id: Some(RAW_CONTAINER_ID.into()),
-                    attributes: Some(std::collections::HashMap::from([
-                        ("name".into(), "/private/restart-name".into()),
-                        ("exitCode".into(), "private-exit-text".into()),
-                    ])),
-                }),
-                time: Some(NOW_SECONDS as i64),
-                time_nano: Some((NOW_SECONDS * 1_000_000_000 + 42) as i64),
-                ..Default::default()
-            },
-            NOW_SECONDS * 1_000,
-        )
-        .expect("controlled event parses");
+        assert!(
+            set_docker_event_collection_state(
+                &state,
+                &context,
+                ObservedDockerEventCollectionState::Collecting,
+            )
+            .await
+        );
+        let event = event_at(42);
 
         assert_eq!(
             retain_docker_event(&state, &context, event.clone()).await,
@@ -4760,10 +4778,45 @@ mod scheduler_tests {
             .expect("recovered Docker source has a new event generation");
         assert_ne!(next_context.source_generation, context.source_generation);
         assert_eq!(
-            retain_docker_event(&state, &next_context, event).await,
-            DockerEventApply::Retained,
-            "a source reset clears the prior generation's dedupe state"
+            next_context.since_seconds, NOW_SECONDS,
+            "source recovery retains the bounded private replay cursor"
         );
+        assert!(
+            set_docker_event_collection_state(
+                &state,
+                &next_context,
+                ObservedDockerEventCollectionState::Collecting,
+            )
+            .await
+        );
+        assert_eq!(
+            retain_docker_event(&state, &next_context, event).await,
+            DockerEventApply::Duplicate,
+            "a replayed pre-reset event remains fenced from the new epoch"
+        );
+        assert_eq!(
+            retain_docker_event(&state, &next_context, event_at(41)).await,
+            DockerEventApply::Duplicate,
+            "the timestamp floor rejects old replay even when its ID was not retained"
+        );
+        for nanos_offset in [43, 44] {
+            assert_eq!(
+                retain_docker_event(&state, &next_context, event_at(nanos_offset)).await,
+                DockerEventApply::Retained
+            );
+        }
+        let cache = state.cache.read().await;
+        assert_eq!(
+            cache
+                .observed_history
+                .docker_events
+                .public_events_newest_first()
+                .len(),
+            2,
+            "the pre-reset replay is not published in the new epoch"
+        );
+        assert!(cache.findings.findings.iter().all(|finding| finding.rule_id
+            != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
     }
 
     #[tokio::test(start_paused = true)]
@@ -4858,17 +4911,9 @@ mod scheduler_tests {
         }
         assert_eq!(connector.connection_count(), connections_during_mock);
 
-        let recovery_not_before = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
         publish_docker_snapshot_cache(&state, docker_cache(snapshot)).await;
         tokio::time::advance(Duration::from_millis(250)).await;
         wait_for_event_connections(&connector, connections_during_mock + 1).await;
-        let recovery_not_after = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
         let recovered_context = docker_event_source_context(&state, source_seconds)
             .await
             .expect("recovered Docker source");
@@ -4878,11 +4923,9 @@ mod scheduler_tests {
         );
         let recovered_since = connector.since_seconds();
         let recovered_since = recovered_since[connections_during_mock];
-        assert!(
-            (recovery_not_before.saturating_sub(300)
-                ..=recovery_not_after.saturating_sub(300))
-                .contains(&recovered_since),
-            "source reset must restart at an exact fresh 300-second replay window; got {recovered_since} between wall-clock bounds {recovery_not_before} and {recovery_not_after}"
+        assert_eq!(
+            recovered_since, source_seconds,
+            "source reset retains the latest private replay cursor"
         );
         assert_eq!(connector.max_active(), 1);
 
