@@ -172,7 +172,13 @@ function canonicalEvidenceKey(evidence: AtlasPublishedEvidenceRef): string {
 }
 
 function edgeEvidenceKey(edge: RuntimeMapEdge): string {
-  if (!Array.isArray(edge.evidenceRefs)) return "invalid";
+  // The canonical edge comparator runs before structural validation. Reject
+  // malformed arrays by shape here so sorting never walks or allocates from a
+  // hostile evidence collection that structuralEvidence will reject anyway.
+  if (
+    !Array.isArray(edge.evidenceRefs) || edge.evidenceRefs.length === 0 ||
+    edge.evidenceRefs.length > ATLAS_CAPS.edgeEvidence
+  ) return "invalid";
   return edge.evidenceRefs.map(evidenceRef).filter((value): value is AtlasPublishedEvidenceRef => value !== null)
     .map(canonicalEvidenceKey).sort(compareText).join("\u0002");
 }
@@ -249,19 +255,34 @@ function freshnessForEvidence(evidence: AtlasEvidenceSources): AtlasFreshness {
   return "fresh";
 }
 
-function freshnessForNode(node: RuntimeMapNode, input: AtlasRuntimeMapInput): AtlasFreshness {
+function providerFreshnessBySlot(input: AtlasRuntimeMapInput): ReadonlyMap<string, AtlasFreshness> {
+  const values: unknown = input.providerStates;
+  // RuntimeMap publishes one state for each closed provider-slot table. Read
+  // only the array length before rejecting malformed oversized input, then
+  // scan the bounded table once rather than calling .find for every node.
+  if (!Array.isArray(values) || values.length > PROVIDER_SLOTS.length) return new Map();
+  const freshness = new Map<string, AtlasFreshness>();
+  for (const value of values) {
+    if (!value || typeof value !== "object") continue;
+    const record = value as Record<string, unknown>;
+    if (!includes(PROVIDER_SLOTS, record.slot) || freshness.has(record.slot)) continue;
+    switch (record.state) {
+      case "fresh": freshness.set(record.slot, "fresh"); break;
+      case "stale": freshness.set(record.slot, "stale"); break;
+      case "timed_out": freshness.set(record.slot, "timed_out"); break;
+      case "unavailable": freshness.set(record.slot, "unavailable"); break;
+      case "disabled": freshness.set(record.slot, "disabled"); break;
+      default: freshness.set(record.slot, "unknown"); break;
+    }
+  }
+  return freshness;
+}
+
+function freshnessForNode(node: RuntimeMapNode, providerFreshness: ReadonlyMap<string, AtlasFreshness>): AtlasFreshness {
   const slot = node.provider === "systemd" ? "systemd" : node.provider === "npm" ? "project_npm" :
     node.provider === "scheduled_job" ? "cron" : null;
   if (!slot) return "unknown";
-  const state = input.providerStates.find((entry) => entry.slot === slot)?.state;
-  switch (state) {
-    case "fresh": return "fresh";
-    case "stale": return "stale";
-    case "timed_out": return "timed_out";
-    case "unavailable": return "unavailable";
-    case "disabled": return "disabled";
-    default: return "unknown";
-  }
+  return providerFreshness.get(slot) ?? "unknown";
 }
 
 function attentionBySubject(
@@ -317,6 +338,7 @@ export function projectRuntimeMap(input: AtlasRuntimeMapInput, options?: AtlasPr
   const rejectedNodes = input.nodes.length > ATLAS_CAPS.inputNodes;
   const rejectedEdges = input.edges.length > ATLAS_CAPS.inputEdges;
   const nodes = rejectedNodes ? [] : sorted(input.nodes, canonicalNodeSort);
+  const freshnessBySlot = providerFreshnessBySlot(input);
   if (rejectedNodes) addDiagnostic("bounded_omission");
   const findingOverlay = attentionBySubject(input, options);
   if (findingOverlay.omitted > 0) addDiagnostic("bounded_omission");
@@ -365,7 +387,7 @@ export function projectRuntimeMap(input: AtlasRuntimeMapInput, options?: AtlasPr
       key, routability: "routable", source: { kind: "runtime_node", provider: node.provider, nodeId: key, runtimeKind: node.type },
       runtimeKind: node.type, role: roleForKind(node.type), display: boundedDisplay(node.label, "Runtime subject"),
       operationalState: stateForRuntimeStatus(node.status ?? node.service?.status),
-      freshness: freshnessForNode(node, input), attention: findingOverlay.attention.get(key) ?? "none", ambiguity: "none", rule: SUBJECT_RULE
+      freshness: freshnessForNode(node, freshnessBySlot), attention: findingOverlay.attention.get(key) ?? "none", ambiguity: "none", rule: SUBJECT_RULE
     };
     subjects.push(subject);
     routable.set(key, subject);
