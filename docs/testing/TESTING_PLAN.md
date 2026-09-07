@@ -31,7 +31,7 @@ containers, or services.
   admit at most one fixed aggregate advisory from one fresh V7 DockerMap fact, are invariant to
   input ordering, and suppress mock, stale, malformed, duplicate, and reserved-ID-conflicted
   facts. The assertions prove that collided identities, collision counts, diagnostics, and
-  provider material never enter the runtime edge, finding, or browser presentation.
+  provider material never enter the aggregate edge, finding, or browser presentation.
 - The daemon-state-and-host-port warning accepts only an ordered pair of fresh version-1 Docker
   observations for one unique container: a path-free daemon-state risk fact followed by a port
   publication with a validated nonzero host binding. Tests require matching observation timestamp

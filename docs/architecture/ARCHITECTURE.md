@@ -119,8 +119,8 @@ The evidence representation is closed: provider, kind, assertion kind and
 freshness are enums, and there is no free-form metadata/config/command-line
 field. The daemon and browser publication boundaries redact display-hostile
 or secret-like strings before response bytes reach the UI. Identity collisions
-remain visible but non-routable; an edge inspector can still explain the
-selected relationship without joining a collided target.
+remain non-routable and are never emitted as per-collision diagnostics; the
+closed aggregate finding is the only public collision signal.
 
 Current relationship-source matrix:
 

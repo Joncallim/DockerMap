@@ -2603,10 +2603,8 @@ mod tests {
             .collect::<HashSet<_>>();
         assert_eq!(map.nodes.len(), 3, "normalized node IDs remain visible");
         assert!(
-            map.diagnostics.iter().any(|diagnostic| diagnostic
-                .message
-                .contains("records remain visible and non-routable")),
-            "a publication-time collision must be surfaced without discarding either node"
+            map.diagnostics.is_empty(),
+            "per-collision diagnostics would disclose collision cardinality; the cache owns the one aggregate finding"
         );
         assert_eq!(
             map.edges.len(),

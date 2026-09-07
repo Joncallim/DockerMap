@@ -376,14 +376,14 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
   }
   for (const edge of edges) {
     if (!edge || typeof edge !== "object") return "runtime_evidence_edge_shape";
-    const candidate = edge as { source?: unknown; target?: unknown; relationship?: unknown; evidenceRefs?: unknown };
+    const candidate = edge as { source?: unknown; target?: unknown; relationship?: unknown; metadata?: unknown; evidenceRefs?: unknown };
     if (!Array.isArray(candidate.evidenceRefs)) return "runtime_evidence_edge_shape";
     for (const evidence of candidate.evidenceRefs) {
       if (!evidence || typeof evidence !== "object") return "runtime_evidence_edge_shape";
       const value = evidence as {
         version?: unknown; provider?: unknown; kind?: unknown; assertionKind?: unknown;
         freshness?: unknown; providerRevision?: unknown; collectedAt?: unknown; subjectRef?: unknown;
-        providerSlot?: unknown; summary?: unknown;
+        providerSlot?: unknown; summary?: unknown; id?: unknown;
       };
       const isV1 = value.version === 1
         && value.provider === "docker"
@@ -435,6 +435,10 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
       if (isV7 && (candidate.target !== "runtime_integrity_risk_identity_collision"
         || value.summary !== RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY)) return "runtime_evidence_edge_binding";
       if (isV7) {
+        if (candidate.evidenceRefs.length !== 1
+          || !candidate.metadata || typeof candidate.metadata !== "object" || Array.isArray(candidate.metadata)
+          || Object.keys(candidate.metadata as Record<string, unknown>).length !== 0
+          || value.id !== "dockermap_evidence_runtime_identity_collision") return "runtime_evidence_edge_binding";
         const scope = nodesById.get("runtime_integrity_scope");
         const risk = nodesById.get("runtime_integrity_risk_identity_collision");
         const isFixedNode = (node: Record<string, unknown>, type: string, label: string) => (
