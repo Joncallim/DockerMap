@@ -24,6 +24,20 @@ const mutualComposeFinding = {
   ]
 };
 
+const composeMountFinding = {
+  id: "finding_compose_declared_mount_missing_at_bound_container_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  ruleId: "compose.declared_mount_missing_at_bound_container",
+  severity: "warning",
+  summary: "A Compose-declared mount is absent from its exactly bound runtime container",
+  recommendation: "Inspect the Compose mount declaration and the bound container's current mount configuration.",
+  subjectRef: "compose_runtime_binding_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  targetRef: "compose_runtime_binding_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  evidenceRefs: [
+    { version: 6, id: "compose_declared_mount_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", provider: "compose", kind: "compose_declared_mount", assertionKind: "declared", summary: "Compose declared a mount for the bound service", subjectRef: "compose_runtime_binding_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", collectedAt: 1, providerRevision: "opaque-observation", freshness: "fresh" },
+    { version: 6, id: "docker_compose_runtime_binding_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", provider: "docker", kind: "docker_compose_runtime_binding", assertionKind: "observed", summary: "Docker confirmed an exact Compose project, service, and config binding", subjectRef: "compose_runtime_binding_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", collectedAt: 1, providerRevision: "opaque-observation", freshness: "fresh" }
+  ]
+};
+
 describe("finding presentation boundary", () => {
   it("admits only the static closed Compose advisory shape", () => {
     expect(presentationForFinding(composeFinding)).toMatchObject({
@@ -55,5 +69,19 @@ describe("finding presentation boundary", () => {
     expect(presentationForFinding({ ...mutualComposeFinding, evidenceRefs: [{ ...mutualComposeFinding.evidenceRefs[0], providerRevision: "different" }, mutualComposeFinding.evidenceRefs[1]] })).toBeNull();
     expect(presentationForFinding({ ...mutualComposeFinding, evidenceRefs: [{ ...mutualComposeFinding.evidenceRefs[0], freshness: "stale" }, mutualComposeFinding.evidenceRefs[1]] })).toBeNull();
     expect(presentationForFinding({ ...mutualComposeFinding, evidenceRefs: [mutualComposeFinding.evidenceRefs[0]] })).toBeNull();
+  });
+
+  it("admits only one opaque, paired v6 Compose/runtime mount condition", () => {
+    expect(presentationForFinding(composeMountFinding)).toMatchObject({
+      title: "Declared Compose mount needs review", category: "Compose runtime drift", inspectChanges: true
+    });
+  });
+
+  it("suppresses malformed, path-shaped, or stitched v6 Compose/runtime mount evidence", () => {
+    expect(presentationForFinding({ ...composeMountFinding, targetRef: "compose_runtime_binding_" + "c".repeat(64) })).toBeNull();
+    expect(presentationForFinding({ ...composeMountFinding, evidenceRefs: [...composeMountFinding.evidenceRefs].reverse() })).toBeNull();
+    expect(presentationForFinding({ ...composeMountFinding, evidenceRefs: [{ ...composeMountFinding.evidenceRefs[0], id: "/private/compose.yaml" }, composeMountFinding.evidenceRefs[1]] })).toBeNull();
+    expect(presentationForFinding({ ...composeMountFinding, evidenceRefs: [composeMountFinding.evidenceRefs[0], { ...composeMountFinding.evidenceRefs[1], providerRevision: "other-observation" }] })).toBeNull();
+    expect(presentationForFinding({ ...composeMountFinding, evidenceRefs: [{ ...composeMountFinding.evidenceRefs[0], freshness: "stale" }, composeMountFinding.evidenceRefs[1]] })).toBeNull();
   });
 });

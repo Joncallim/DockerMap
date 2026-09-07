@@ -97,6 +97,15 @@ const SPECS: readonly FindingSpec[] = [
     evidenceCount: 2, evidence: { version: 1, provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", providerSlot: null },
     title: "Mutual Compose declarations need review", category: "Docker Compose", hint: "Observed Compose declarations", tone: "muted", severityLabel: "Advisory", inspectChanges: true,
     inspection: { ruleLabel: "Mutual Compose declarations", ruleId: "docker.compose_mutual_dependency", freshEvidenceRequirement: "Requires two fresh observed Compose declarations from one collection.", factDescription: "Two declared dependency facts in opposite directions.", limits: "Does not establish startup order, causality, readiness, or remediation." }
+  },
+  {
+    ruleId: "compose.declared_mount_missing_at_bound_container", severity: "warning",
+    summary: "A Compose-declared mount is absent from its exactly bound runtime container",
+    recommendation: "Inspect the Compose mount declaration and the bound container's current mount configuration.",
+    idPrefix: "finding_compose_declared_mount_missing_at_bound_container_", subjectPrefix: "compose_runtime_binding_", targetPrefix: "compose_runtime_binding_",
+    evidenceCount: 2, evidence: { version: 6, provider: "compose", kind: "compose_declared_mount", assertionKind: "declared", providerSlot: null },
+    title: "Declared Compose mount needs review", category: "Compose runtime drift", hint: "Bounded structural facts", tone: "warn", severityLabel: "Warning", inspectChanges: true,
+    inspection: { ruleLabel: "Compose declaration and runtime binding", ruleId: "compose.declared_mount_missing_at_bound_container", freshEvidenceRequirement: "Requires two fresh, paired structural facts from one collection.", factDescription: "One Compose mount declaration and one exact Docker Compose/runtime binding fact.", limits: "Does not expose mount paths, names, labels, or container identity, and does not establish causality or remediation." }
   }
 ];
 
@@ -104,6 +113,16 @@ const COMPOSE_DECLARATION_EVIDENCE_SUMMARY = "Docker recorded Compose dependency
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function isOpaqueComposeRuntimeBindingId(value: unknown): value is string {
+  return typeof value === "string" && /^compose_runtime_binding_[a-f0-9]{64}$/.test(value);
+}
+
+function composeMountFindingDigest(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = /^finding_compose_declared_mount_missing_at_bound_container_([a-f0-9]{64})$/.exec(value);
+  return match?.[1] ?? null;
 }
 
 /** Return static presentation only for a fully bounded supported finding. */
@@ -120,7 +139,7 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     || typeof finding.targetRef !== "string"
     || (spec.targetPrefix !== undefined && !finding.targetRef.startsWith(spec.targetPrefix))
     || (spec.targetRef !== undefined && finding.targetRef !== spec.targetRef)
-    || finding.subjectRef === finding.targetRef
+    || (spec.ruleId !== "compose.declared_mount_missing_at_bound_container" && finding.subjectRef === finding.targetRef)
     // Mutual findings are emitted in one canonical direction. This preserves
     // the API's ordered forward/reverse evidence meaning without displaying
     // either opaque reference.
@@ -136,7 +155,7 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     // The API permits the Compose observation's legacy absent slot as well as
     // null. Both mean the Docker-wide collector, never a provider-supplied
     // slot name; all other supported shapes require their exact slot value.
-    || ((spec.ruleId === "docker.compose_declared_target_not_active" || spec.ruleId === "docker.daemon_state_bind_mount_publishes_port" || spec.ruleId === "docker.compose_mutual_dependency")
+    || ((spec.ruleId === "docker.compose_declared_target_not_active" || spec.ruleId === "docker.daemon_state_bind_mount_publishes_port" || spec.ruleId === "docker.compose_mutual_dependency" || spec.ruleId === "compose.declared_mount_missing_at_bound_container")
       ? evidence.providerSlot !== undefined && evidence.providerSlot !== null
       : evidence.providerSlot !== spec.evidence.providerSlot)
     || evidence.freshness !== "fresh"
@@ -189,6 +208,40 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
       || !isFreshComposeEvidence(reverse, finding.targetRef)
       || evidence.collectedAt !== reverse.collectedAt
       || evidence.providerRevision !== reverse.providerRevision) return null;
+  }
+
+  // The identity comes from private Compose/Docker binding data. Verify its
+  // fixed opaque shape and coherent V6 pair, but keep every opaque field out
+  // of the presentation.
+  if (spec.ruleId === "compose.declared_mount_missing_at_bound_container") {
+    const digest = composeMountFindingDigest(finding.id);
+    const binding = record(finding.evidenceRefs[1]);
+    const isV6BindingEvidence = (
+      candidate: Record<string, unknown>, provider: string, kind: string,
+      assertionKind: string, summary: string, idPrefix: string,
+    ) => candidate.version === 6
+      && candidate.provider === provider
+      && candidate.kind === kind
+      && candidate.assertionKind === assertionKind
+      && candidate.summary === summary
+      && candidate.id === `${idPrefix}_${digest}`
+      && candidate.subjectRef === finding.subjectRef
+      && (candidate.providerSlot === undefined || candidate.providerSlot === null)
+      && candidate.freshness === "fresh"
+      && typeof candidate.collectedAt === "number"
+      && Number.isSafeInteger(candidate.collectedAt)
+      && candidate.collectedAt >= 0
+      && typeof candidate.providerRevision === "string"
+      && candidate.providerRevision.length > 0
+      && candidate.providerRevision !== String(candidate.collectedAt);
+    if (!digest
+      || !isOpaqueComposeRuntimeBindingId(finding.subjectRef)
+      || finding.targetRef !== finding.subjectRef
+      || !binding
+      || !isV6BindingEvidence(evidence, "compose", "compose_declared_mount", "declared", "Compose declared a mount for the bound service", "compose_declared_mount")
+      || !isV6BindingEvidence(binding, "docker", "docker_compose_runtime_binding", "observed", "Docker confirmed an exact Compose project, service, and config binding", "docker_compose_runtime_binding")
+      || evidence.collectedAt !== binding.collectedAt
+      || evidence.providerRevision !== binding.providerRevision) return null;
   }
 
   return spec;
