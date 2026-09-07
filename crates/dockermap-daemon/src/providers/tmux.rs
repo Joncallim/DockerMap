@@ -16,6 +16,9 @@ use std::{collections::BTreeMap, process::Command};
 /// Private handoff marker. Cache refresh removes it on every path and creates
 /// public evidence only after this exact Tmux slot owns a successful revision.
 pub(crate) const TMUX_EVIDENCE_SESSION_LISTING_MARKER: &str = "__dockermapTmuxSessionListing";
+/// A deliberately small upper bound. Apply it while parsing, before any
+/// runtime node or marker edge is allocated from provider output.
+pub(crate) const MAX_TMUX_SESSIONS: usize = 64;
 
 /// Collect tmux sessions using its documented, fixed read-only listing form.
 pub(crate) fn collect_tmux_sessions(
@@ -78,10 +81,15 @@ fn tmux_session_listing_edges(sessions: &[RuntimeMapNode]) -> Vec<RuntimeMapEdge
 }
 
 fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
-    let mut nodes = Vec::new();
+    let mut nodes = Vec::with_capacity(MAX_TMUX_SESSIONS);
     for line in value.lines() {
-        let parts = line.split('\t').collect::<Vec<_>>();
-        if parts.len() < 4 {
+        let mut parts = line.split('\t');
+        let Some(session_id) = parts.next() else {
+            continue;
+        };
+        // The remaining fixed fields establish that this is a full response
+        // record, but are intentionally never retained or published.
+        if parts.next().is_none() || parts.next().is_none() || parts.next().is_none() {
             continue;
         }
         let mut metadata = BTreeMap::new();
@@ -92,7 +100,7 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
         nodes.push(RuntimeMapNode {
             id: format!(
                 "tmux_session_{}",
-                opaque_runtime_id_component(parts[0], "session")
+                opaque_runtime_id_component(session_id, "session")
             ),
             provider: RuntimeProviderKind::Tmux,
             kind: RuntimeNodeKind::TmuxSession,
@@ -103,6 +111,9 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
             service: None,
             package: None,
         });
+        if nodes.len() == MAX_TMUX_SESSIONS {
+            break;
+        }
     }
     nodes
 }
@@ -110,7 +121,7 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
 #[cfg(test)]
 mod tests {
     use super::{
-        tmux_session_listing_edges, tmux_session_nodes_from_output,
+        tmux_session_listing_edges, tmux_session_nodes_from_output, MAX_TMUX_SESSIONS,
         TMUX_EVIDENCE_SESSION_LISTING_MARKER,
     };
     use dockermap_core::RuntimeNodeLayer;
@@ -179,5 +190,25 @@ mod tests {
                     == Some(&"observed".into())
                 && edge.evidence_refs.is_empty()
         }));
+    }
+
+    #[test]
+    fn session_parser_caps_before_public_node_or_marker_allocation() {
+        let output = (0..(MAX_TMUX_SESSIONS + 9))
+            .map(|index| format!("private-{index}\tname-{index}\t0\t1"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let nodes = tmux_session_nodes_from_output(&output);
+        let edges = tmux_session_listing_edges(&nodes);
+
+        assert_eq!(nodes.len(), MAX_TMUX_SESSIONS);
+        assert_eq!(edges.len(), MAX_TMUX_SESSIONS);
+        assert!(nodes.iter().zip(&edges).all(|(node, edge)| {
+            edge.source == node.id
+                && edge.metadata.get(TMUX_EVIDENCE_SESSION_LISTING_MARKER)
+                    == Some(&"observed".into())
+        }));
+        assert_no_raw_secrets(&nodes, &["private-0", "name-0"]);
+        assert_no_raw_secrets(&edges, &["private-0", "name-0"]);
     }
 }
