@@ -285,9 +285,47 @@
       "status": null,
       "layer": "host",
       "metadata": {}
+    },
+    {
+      "id": "runtime_integrity_scope",
+      "provider": "other",
+      "type": "integrity_scope",
+      "label": "Runtime identity integrity",
+      "status": null,
+      "layer": "advisory",
+      "metadata": {}
+    },
+    {
+      "id": "runtime_integrity_risk_identity_collision",
+      "provider": "other",
+      "type": "host_risk",
+      "label": "Duplicate runtime topology identity",
+      "status": null,
+      "layer": "advisory",
+      "metadata": {}
     }
   ],
   "edges": [
+    {
+      "source": "runtime_integrity_scope",
+      "target": "runtime_integrity_risk_identity_collision",
+      "relationship": "related_to",
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 7,
+          "id": "dockermap_evidence_runtime_identity_collision",
+          "provider": "dockermap",
+          "kind": "runtime_identity_collision",
+          "assertionKind": "observed",
+          "summary": "DockerMap detected duplicate runtime identities after publication normalization",
+          "subjectRef": "runtime_integrity_scope",
+          "collectedAt": 1787196125766,
+          "providerRevision": "0123456789abcdef0123456789abcdef-1",
+          "freshness": "fresh"
+        }
+      ]
+    },
     {
       "source": "docker_container_container_api",
       "target": "docker_container_container_db",

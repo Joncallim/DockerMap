@@ -83,6 +83,10 @@ const COMPOSE_DECLARED_MOUNT_MISSING_FINDING_SUMMARY = "A Compose-declared mount
 const COMPOSE_DECLARED_MOUNT_MISSING_FINDING_RECOMMENDATION = "Inspect the Compose mount declaration and the bound container's current mount configuration.";
 const COMPOSE_DECLARED_MOUNT_EVIDENCE_SUMMARY = "Compose declared a mount for the bound service";
 const DOCKER_COMPOSE_RUNTIME_BINDING_EVIDENCE_SUMMARY = "Docker confirmed an exact Compose project, service, and config binding";
+const RUNTIME_IDENTITY_COLLISION_FINDING_RULE = "runtime.identity_collision_detected";
+const RUNTIME_IDENTITY_COLLISION_FINDING_SUMMARY = "DockerMap detected duplicate runtime identities after publication normalization.";
+const RUNTIME_IDENTITY_COLLISION_FINDING_RECOMMENDATION = "Review the duplicate identity condition before relying on topology relationships.";
+const RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY = "DockerMap detected duplicate runtime identities after publication normalization";
 
 type FindingSummaryWire = {
   warningCount: number;
@@ -90,6 +94,7 @@ type FindingSummaryWire = {
   declaredDependencyCount: number;
   dockerDaemonAuthorityCount: number;
   hostPortPublicationCount: number;
+  evidenceIntegrityCount: number;
 };
 
 const FINDING_SUMMARY_KEYS = [
@@ -98,6 +103,7 @@ const FINDING_SUMMARY_KEYS = [
   "declaredDependencyCount",
   "dockerDaemonAuthorityCount",
   "hostPortPublicationCount",
+  "evidenceIntegrityCount",
 ] as const;
 
 // This is deliberately a finite duplicate of core's FindingRule::category.
@@ -111,6 +117,7 @@ const FINDING_RULE_CATEGORY = {
   [COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RULE]: "declaredDependencyCount",
   [COMPOSE_MUTUAL_DEPENDENCY_FINDING_RULE]: "declaredDependencyCount",
   [COMPOSE_DECLARED_MOUNT_MISSING_FINDING_RULE]: "declaredDependencyCount",
+  [RUNTIME_IDENTITY_COLLISION_FINDING_RULE]: "evidenceIntegrityCount",
 } as const;
 
 function coherentFindingSummary(value: unknown, findings: unknown[]): boolean {
@@ -120,7 +127,7 @@ function coherentFindingSummary(value: unknown, findings: unknown[]): boolean {
     || !FINDING_SUMMARY_KEYS.every((key) => Object.hasOwn(summary, key))) return false;
   const expected: FindingSummaryWire = {
     warningCount: 0, advisoryCount: 0, declaredDependencyCount: 0,
-    dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0,
+    dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0, evidenceIntegrityCount: 0,
   };
   for (const candidate of findings) {
     if (!candidate || typeof candidate !== "object") return false;
@@ -182,6 +189,10 @@ const V4_EVIDENCE_EDGE = {
 // attachment, activity, reachability, or process-execution claim.
 const V5_EVIDENCE_EDGE = {
   tmux_session_listing: { relationship: "runs_on", sourcePrefix: "tmux_session_", targetPrefix: "host_", target: "host_local" },
+} as const;
+
+const V7_EVIDENCE_EDGE = {
+  runtime_identity_collision: { relationship: "related_to", sourcePrefix: "runtime_integrity_scope", targetPrefix: "runtime_integrity_risk_identity_collision", target: "runtime_integrity_risk_identity_collision" },
 } as const;
 
 // Keep the finding identity binding byte-for-byte aligned with core's
@@ -399,7 +410,12 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
         && value.assertionKind === "observed"
         && value.providerSlot === "tmux"
         && (value.freshness === "fresh" || value.freshness === "stale" || value.freshness === "timed_out");
-      if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5) return "runtime_evidence_base_tuple";
+      const isV7 = value.version === 7
+        && value.provider === "dockermap"
+        && value.assertionKind === "observed"
+        && value.freshness === "fresh"
+        && (value.providerSlot === null || value.providerSlot === undefined);
+      if (!isV1 && !isV2 && !isV3 && !isV4 && !isV5 && !isV7) return "runtime_evidence_base_tuple";
       const expected = typeof value.kind === "string"
         ? (isV1
           ? V1_EVIDENCE_EDGE[value.kind as keyof typeof V1_EVIDENCE_EDGE]
@@ -409,11 +425,32 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
               ? V3_EVIDENCE_EDGE[value.kind as keyof typeof V3_EVIDENCE_EDGE]
               : isV4
                 ? V4_EVIDENCE_EDGE[value.kind as keyof typeof V4_EVIDENCE_EDGE]
-                : V5_EVIDENCE_EDGE[value.kind as keyof typeof V5_EVIDENCE_EDGE])
+                : isV5
+                  ? V5_EVIDENCE_EDGE[value.kind as keyof typeof V5_EVIDENCE_EDGE]
+                  : V7_EVIDENCE_EDGE[value.kind as keyof typeof V7_EVIDENCE_EDGE])
         : undefined;
       if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return "runtime_evidence_edge_binding";
       if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix) || candidate.source === candidate.target) return "runtime_evidence_source_binding";
       if ((isV4 || isV5) && candidate.target !== "host_local") return "runtime_evidence_edge_binding";
+      if (isV7 && (candidate.target !== "runtime_integrity_risk_identity_collision"
+        || value.summary !== RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY)) return "runtime_evidence_edge_binding";
+      if (isV7) {
+        const scope = nodesById.get("runtime_integrity_scope");
+        const risk = nodesById.get("runtime_integrity_risk_identity_collision");
+        const isFixedNode = (node: Record<string, unknown>, type: string, label: string) => (
+          node.provider === "other" && node.type === type && node.label === label
+          && (node.status === null || node.status === undefined)
+          && node.layer === "advisory"
+          && node.metadata !== null && typeof node.metadata === "object"
+          && !Array.isArray(node.metadata) && Object.keys(node.metadata as Record<string, unknown>).length === 0
+          && (node.service === null || node.service === undefined)
+          && (node.package === null || node.package === undefined)
+        );
+        if (!scope || scope.length !== 1 || !risk || risk.length !== 1
+          || !isFixedNode(scope[0], "integrity_scope", "Runtime identity integrity")
+          || !isFixedNode(risk[0], "host_risk", "Duplicate runtime topology identity")) return "runtime_evidence_edge_binding";
+        if (typeof value.providerRevision !== "string" || !/^[a-f0-9]{32}-[1-9][0-9]*$/.test(value.providerRevision)) return "runtime_evidence_revision";
+      }
       if (value.kind === "docker_daemon_state_bind_mount" && candidate.target !== "host_risk_docker_daemon_state") return "runtime_evidence_daemon_state_target";
       if (value.kind === "docker_unspecified_address_port_publication" && candidate.target !== "host_risk_docker_unspecified_address_port") return "runtime_evidence_edge_binding";
       if (value.kind === "docker_unspecified_address_port_publication"
@@ -651,6 +688,33 @@ function hasCoherentFindings(payload: unknown): boolean {
             && declared.providerRevision === binding.providerRevision;
         })();
     }
+    if (finding.ruleId === RUNTIME_IDENTITY_COLLISION_FINDING_RULE) return finding.severity === "advisory"
+      && finding.id === "finding_runtime_identity_collision_detected"
+      && finding.summary === RUNTIME_IDENTITY_COLLISION_FINDING_SUMMARY
+      && finding.recommendation === RUNTIME_IDENTITY_COLLISION_FINDING_RECOMMENDATION
+      && finding.subjectRef === "runtime_integrity_scope"
+      && finding.targetRef === "runtime_integrity_risk_identity_collision"
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 1
+      && (() => {
+        const candidateEvidence = finding.evidenceRefs[0];
+        if (!candidateEvidence || typeof candidateEvidence !== "object") return false;
+        const evidence = candidateEvidence as Record<string, unknown>;
+        return evidence.version === 7
+          && evidence.id === "dockermap_evidence_runtime_identity_collision"
+          && evidence.provider === "dockermap"
+          && evidence.kind === "runtime_identity_collision"
+          && evidence.assertionKind === "observed"
+          && evidence.summary === RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY
+          && evidence.subjectRef === finding.subjectRef
+          && (evidence.providerSlot === null || evidence.providerSlot === undefined)
+          && evidence.freshness === "fresh"
+          && typeof evidence.collectedAt === "number"
+          && Number.isSafeInteger(evidence.collectedAt) && evidence.collectedAt >= 0
+          && typeof evidence.providerRevision === "string"
+          && /^[a-f0-9]{32}-[1-9][0-9]*$/.test(evidence.providerRevision)
+          && evidence.providerRevision !== String(evidence.collectedAt);
+      })();
     if (finding.ruleId === UNSPECIFIED_ADDRESS_PORT_FINDING_RULE) return finding.severity === "advisory"
       && finding.summary === UNSPECIFIED_ADDRESS_PORT_FINDING_SUMMARY
       && finding.recommendation === UNSPECIFIED_ADDRESS_PORT_FINDING_RECOMMENDATION

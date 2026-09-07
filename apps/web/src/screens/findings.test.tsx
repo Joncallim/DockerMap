@@ -9,7 +9,7 @@ const findings: FindingsResponse = {
   modelRevision: "findings-revision",
   summary: {
     warningCount: 1, advisoryCount: 0, declaredDependencyCount: 1,
-    dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0,
+    dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0, evidenceIntegrityCount: 0,
   },
   findings: [{
     id: "finding_systemd_requires_target_not_active_test",
@@ -278,7 +278,7 @@ describe("Findings screen", () => {
       ]
     };
     mount.findings.splice(1);
-    mount.summary = { warningCount: 1, advisoryCount: 0, declaredDependencyCount: 1, dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0 };
+    mount.summary = { warningCount: 1, advisoryCount: 0, declaredDependencyCount: 1, dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0, evidenceIntegrityCount: 0 };
     const html = render({ findings: mount });
     expect(html).toContain("Declared Compose mount needs review");
     expect(html).toContain("Compose runtime drift");

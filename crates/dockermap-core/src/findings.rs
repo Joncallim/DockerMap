@@ -1225,11 +1225,20 @@ mod tests {
         let input = runtime_identity_collision_map();
         let findings = derive_findings(&input);
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].id, "finding_runtime_identity_collision_detected");
-        assert_eq!(findings[0].rule_id, FindingRule::RuntimeIdentityCollisionDetected);
+        assert_eq!(
+            findings[0].id,
+            "finding_runtime_identity_collision_detected"
+        );
+        assert_eq!(
+            findings[0].rule_id,
+            FindingRule::RuntimeIdentityCollisionDetected
+        );
         assert_eq!(findings[0].severity, FindingSeverity::Advisory);
         assert_eq!(findings[0].summary, RUNTIME_IDENTITY_COLLISION_SUMMARY);
-        assert_eq!(findings[0].recommendation, RUNTIME_IDENTITY_COLLISION_RECOMMENDATION);
+        assert_eq!(
+            findings[0].recommendation,
+            RUNTIME_IDENTITY_COLLISION_RECOMMENDATION
+        );
         assert_eq!(findings[0].subject_ref, RUNTIME_INTEGRITY_SCOPE_ID);
         assert_eq!(findings[0].target_ref, RUNTIME_IDENTITY_COLLISION_RISK_ID);
 

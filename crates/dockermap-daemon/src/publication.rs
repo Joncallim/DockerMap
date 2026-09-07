@@ -137,8 +137,9 @@ pub(crate) fn append_runtime_identity_collision_fact(
             provider: RuntimeEvidenceProvider::Dockermap,
             kind: RuntimeEvidenceKind::RuntimeIdentityCollision,
             assertion_kind: RuntimeEvidenceAssertionKind::Observed,
-            summary: "DockerMap detected duplicate runtime identities after publication normalization"
-                .into(),
+            summary:
+                "DockerMap detected duplicate runtime identities after publication normalization"
+                    .into(),
             subject_ref: SCOPE_ID.into(),
             collected_at,
             provider_revision: provider_revision.into(),
