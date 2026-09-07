@@ -247,6 +247,10 @@ function hasCoherentFindings(payload: unknown): boolean {
     if (!candidate || typeof candidate !== "object") return false;
     const finding = candidate as Record<string, unknown>;
     if (finding.ruleId === REPEATED_DIED_FINDING_RULE) return hasCoherentRepeatedDiedFinding(finding);
+    // Timeless rules retain their established evidence-bearing shape. They
+    // cannot use temporalEvidence (even an empty array) or arbitrary optional
+    // keys as a metadata channel.
+    if (!hasExactKeys(finding, ["id", "ruleId", "severity", "summary", "recommendation", "subjectRef", "targetRef", "evidenceRefs"])) return false;
     if (finding.ruleId === SYSTEMD_REQUIRES_FINDING_RULE) return finding.severity === "warning"
       && finding.summary === SYSTEMD_REQUIRES_FINDING_SUMMARY
       && finding.recommendation === SYSTEMD_REQUIRES_FINDING_RECOMMENDATION
