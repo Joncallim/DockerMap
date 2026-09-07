@@ -17,6 +17,28 @@ containers, or services.
   requires a bounded nonzero host binding rather than a container-only listener; Docker
   daemon-state evidence is path-free; and Systemd/npm declaration evidence is checked against
   its dedicated scheduler-slot revision and `fresh`/`stale`/`timed_out` lifecycle.
+- Bounded-finding tests: the Compose advisory accepts only a fresh, uniquely resolved Docker
+  Compose declaration from a running container to a stopped/failed container, keeps the single
+  canonical `docker_compose_depends_on` evidence reference, assigns advisory severity and static
+  review wording, and deterministically suppresses stale/timed-out, malformed, duplicate,
+  collided, ambiguous, non-Docker, and non-matching-status inputs. These are projection tests:
+  they add no collection and never assert requiredness, readiness, health, traffic, start-order,
+  root-cause, or drift conclusions.
+- The daemon-state-and-host-port warning accepts only an ordered pair of fresh version-1 Docker
+  observations for one unique container: a path-free daemon-state risk fact followed by a port
+  publication with a validated nonzero host binding. Tests require matching observation timestamp
+  and provider revision, and suppress private-only, zero, malformed, stale, duplicate, crossed,
+  collided, non-Docker, and mock inputs. They verify static review wording only; no test treats the
+  pair as proof of Internet reachability, traffic, exploitability, compromise, breach, impact, or
+  causality, and the projection adds no collection or write behavior.
+- Mutual Compose-advisory tests require exactly one fresh reciprocal Docker-recorded declaration
+  in each direction between the same unique Docker containers, with matching collection instant
+  and opaque observation revision. They preserve the ordered two-fact evidence budget and stable
+  single-pair result while rejecting mock, missing, stale/timed-out, duplicate, malformed,
+  self-referential, collided, non-Docker, and mismatched-observation inputs. These tests verify a
+  static advisory projection only; they do not treat it as evidence that Compose accepted a file,
+  applied a start order, required either dependency, or established readiness, health, traffic,
+  deployment failure, causality, Internet reachability, or compromise.
 - Rust-owned JSON Schema and generated TypeScript declarations, Node-owned
   envelope/request/SSE schemas, and readable contract fixtures. The contract
   check fails on stale generated output, invalid fixtures, incomplete
