@@ -1,8 +1,8 @@
 //! Read-only tmux session discovery.
 //!
-//! The provider invokes only a fixed `tmux list-sessions` command. Session
-//! labels and metadata are subsequently passed through the daemon's common
-//! runtime redaction boundary before publication.
+//! The provider invokes only a fixed `tmux list-sessions` command. Its output
+//! is used solely to derive opaque session identity; names, attachment state,
+//! window counts, and raw session IDs never enter the public runtime model.
 
 use crate::process_runner::{run_command_with_timeout, PROVIDER_COMMAND_TIMEOUT};
 use crate::{push_provider_diagnostic, safe_runtime_id_component};
@@ -85,8 +85,6 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
             continue;
         }
         let mut metadata = BTreeMap::new();
-        metadata.insert("sessionId".into(), parts[0].into());
-        metadata.insert("windows".into(), parts[3].into());
         metadata.insert(
             "serviceEntityKind".into(),
             service_entity_kind_name(&ServiceEntityKind::Session).into(),
@@ -98,15 +96,8 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
             ),
             provider: RuntimeProviderKind::Tmux,
             kind: RuntimeNodeKind::TmuxSession,
-            label: parts[1].into(),
-            status: Some(
-                if parts[2] == "0" {
-                    "detached"
-                } else {
-                    "attached"
-                }
-                .into(),
-            ),
+            label: "tmux session".into(),
+            status: None,
             layer: Some(RuntimeNodeLayer::Session),
             metadata,
             service: None,
@@ -122,7 +113,6 @@ mod tests {
         tmux_session_listing_edges, tmux_session_nodes_from_output,
         TMUX_EVIDENCE_SESSION_LISTING_MARKER,
     };
-    use crate::{redact_runtime_node, REDACTED_VALUE};
     use dockermap_core::RuntimeNodeLayer;
 
     fn assert_no_raw_secrets<T: serde::Serialize>(value: &T, secrets: &[&str]) {
@@ -136,18 +126,23 @@ mod tests {
     }
 
     #[test]
-    fn redacts_tmux_secret_like_fixture_output() {
-        let mut nodes = tmux_session_nodes_from_output(include_str!(
+    fn never_retains_tmux_raw_fixture_output() {
+        let nodes = tmux_session_nodes_from_output(include_str!(
             "../../../../tests/fixtures/providers/redaction/tmux-list-sessions.txt"
         ));
-        for node in &mut nodes {
-            redact_runtime_node(node);
-        }
 
         assert_eq!(nodes.len(), 2);
-        assert_eq!(nodes[0].label, REDACTED_VALUE);
-        assert_eq!(nodes[1].label, "safe-worker");
-        assert_no_raw_secrets(&nodes, &["DOCKERMAP_TEST_FAKE_TMUX_SESSION_SECRET"]);
+        assert!(nodes.iter().all(|node| node.label == "tmux session"));
+        assert!(nodes.iter().all(|node| node.status.is_none()));
+        assert!(nodes.iter().all(|node| node.metadata.len() == 1));
+        assert_no_raw_secrets(
+            &nodes,
+            &[
+                "DOCKERMAP_TEST_FAKE_TMUX_SESSION_SECRET",
+                "safe-worker",
+                "$1",
+            ],
+        );
     }
 
     #[test]
@@ -158,15 +153,9 @@ mod tests {
 
         assert_eq!(nodes.len(), 3);
         assert!(nodes[0].id.starts_with("tmux_session_0--"));
-        assert_eq!(nodes[0].label, "work");
-        assert_eq!(nodes[0].status.as_deref(), Some("attached"));
-        assert_eq!(
-            nodes[0].metadata.get("windows").map(String::as_str),
-            Some("3")
-        );
-        assert_eq!(nodes[1].status.as_deref(), Some("detached"));
-        assert_eq!(nodes[2].label, "monitoring");
-        assert_eq!(nodes[2].status.as_deref(), Some("attached"));
+        assert!(nodes.iter().all(|node| node.label == "tmux session"));
+        assert!(nodes.iter().all(|node| node.status.is_none()));
+        assert!(nodes.iter().all(|node| node.metadata.len() == 1));
         assert_eq!(nodes[0].layer, Some(RuntimeNodeLayer::Session));
     }
 
