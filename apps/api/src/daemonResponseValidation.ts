@@ -372,7 +372,7 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
       const value = evidence as {
         version?: unknown; provider?: unknown; kind?: unknown; assertionKind?: unknown;
         freshness?: unknown; providerRevision?: unknown; collectedAt?: unknown; subjectRef?: unknown;
-        providerSlot?: unknown;
+        providerSlot?: unknown; summary?: unknown;
       };
       const isV1 = value.version === 1
         && value.provider === "docker"
