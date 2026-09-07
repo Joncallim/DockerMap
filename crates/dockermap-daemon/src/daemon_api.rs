@@ -25,7 +25,8 @@ use axum::{
 use dockermap_core::{
     derive_graph, mock_log_entries, ContainerDetailResponse, ContainersResponse, DockerSnapshot,
     FindingsResponse, GraphResponse, HealthResponse, ImagesResponse, LogCursor, LogsResponse,
-    NetworksResponse, RuntimeMap, VolumesResponse, DEFAULT_LOG_PAGE_SIZE, MAX_LOG_PAGE_SIZE,
+    NetworksResponse, RuntimeMap, RuntimeMode, VolumesResponse, DEFAULT_LOG_PAGE_SIZE,
+    MAX_LOG_PAGE_SIZE,
 };
 
 pub(crate) const MAX_LOG_QUERY_CHARS: usize = 256;
@@ -114,8 +115,16 @@ async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
 async fn get_findings(State(state): State<AppState>) -> Json<FindingsResponse> {
     // Findings are cached during refresh immediately after the runtime map is
     // assigned its publication revision; requests never invoke providers.
+    // Stamp the actual cache mode at this same read boundary, matching the
+    // runtime-map source contract without trusting any request parameter.
     let cache = state.cache.read().await;
-    Json(cache.findings.clone())
+    Json(publish_findings(&cache.findings, &cache.health.mode))
+}
+
+fn publish_findings(findings: &FindingsResponse, mode: &RuntimeMode) -> FindingsResponse {
+    let mut published = findings.clone();
+    published.source = Some(mode.clone());
+    published
 }
 
 async fn get_containers(State(state): State<AppState>) -> Json<ContainersResponse> {
@@ -386,6 +395,41 @@ pub(crate) fn parse_log_limit(value: Option<usize>) -> Result<usize, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn findings_route_stamps_the_actual_cache_mode_after_live_and_mock_resets() {
+        let state = AppState::new();
+        assert_eq!(
+            get_findings(State(state.clone())).await.0.source,
+            Some(RuntimeMode::Mock),
+            "initial unavailable/fallback data must be visibly non-live"
+        );
+
+        {
+            let mut cache = state.cache.write().await;
+            cache.health.mode = RuntimeMode::Docker;
+            // A source marker is publication data, never cache data. This
+            // deliberately stale value models a completed live publication
+            // followed by an eventual reset.
+            cache.findings.source = Some(RuntimeMode::Mock);
+        }
+        assert_eq!(
+            get_findings(State(state.clone())).await.0.source,
+            Some(RuntimeMode::Docker),
+            "a live Docker cache must not be labelled as mock"
+        );
+
+        {
+            let mut cache = state.cache.write().await;
+            cache.health.mode = RuntimeMode::Mock;
+            cache.findings.source = Some(RuntimeMode::Docker);
+        }
+        assert_eq!(
+            get_findings(State(state)).await.0.source,
+            Some(RuntimeMode::Mock),
+            "a Docker-to-mock reset must overwrite stale live provenance"
+        );
+    }
 
     #[test]
     fn daemon_log_query_rejects_unknown_duplicate_and_malformed_input() {

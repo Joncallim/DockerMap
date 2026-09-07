@@ -1,5 +1,6 @@
 {
   "modelRevision": "fixture-findings-revision",
+  "source": "docker",
   "findings": [
     {
       "id": "finding_systemd_requires_target_not_active_fixture",
