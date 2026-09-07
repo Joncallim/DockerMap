@@ -23,13 +23,13 @@ allowlist, so it cannot fall through to the mock stack.
 
 Artifacts are written below Playwright's ignored `test-results/` directory:
 
-- `atlas-<profile>.png` is a locator shot of `.atlas-screen`, not a full-page
+- `atlas-<class>-<profile>.png` is a locator shot of `.atlas-screen`, not a full-page
   shot.
-- `atlas-<profile>.json` is its small, safe sidecar: route, profile, viewport,
-  color/motion settings, fixture inventory (including the heartbeat), served
-  fixture names, and artifact filename. It must not contain raw runtime
-  payloads, IDs, paths, source URLs, credentials, evidence, trace data, or host
-  metadata.
+- `atlas-<class>-<profile>.json` is its small, safe sidecar: synthetic class,
+  route, profile, viewport, color/motion settings, fixture inventory (including
+  the heartbeat), served fixture names, and artifact filename. It must not
+  contain raw runtime payloads, IDs, paths, source URLs, credentials, evidence,
+  trace data, or host metadata.
 
 Reviewers should retain or attach only the PNG plus its sidecar. Do not add a
 `toHaveScreenshot` assertion, commit a pixel baseline, or use a live-Docker or
@@ -45,16 +45,29 @@ The opt-in runner currently produces three deterministic Chromium profiles:
 | desktop-dark | 1440 × 960 | dark | no preference |
 | narrow-light-reduced | 390 × 844 | light | reduced |
 
+Each profile is produced for exactly three named synthetic classes:
+
+| Class | Safe modeled condition | It does not establish |
+| --- | --- | --- |
+| compose-heavy | Docker declarations plus recorded network/storage context | traffic, reachability, or host exposure |
+| mixed-docker-host-native | distinct Docker and stale Systemd records | label-based cross-provider correlation |
+| sparse-unusual | collision, unsupported record, and daemon-risk context | confidence, causality, or a real daemon condition |
+
+The opt-in lane also performs one narrow synthetic keyboard, pointer, and Axe
+check under the narrow dark reduced-motion profile. This supplements neither
+the default accessibility suite nor the manual review requirements below.
+
 This is an intentionally limited review sample, **not** a 12-cell visual
 certification matrix. Any unlisted viewport, theme, browser, device scale,
 motion mode, zoom level, localization, data-density, routing/congestion state,
 or operating-system rendering cell is unavailable until it has its own
 redacted fixture, profile, reviewer approval, and sidecar.
 
-Routing/congestion integration is pending: capture images must not be presented
-as evidence for unimplemented route rendering behavior. Browser zoom at 200%
-also remains a manual accessibility certification. A reviewer must perform it
-separately before making that claim.
+Browser zoom at 200%, real-host review, production-image evidence, live-Docker
+evidence, human visual approval, and cutover remain separate pending work.
+The synthetic packet must never be presented as evidence for any of those
+claims. A reviewer must perform the manual accessibility work separately before
+making a zoom or approval claim.
 
 ## Approval and change control
 
