@@ -494,6 +494,12 @@ impl DaemonCache {
             &self.runtime_providers,
             &docker_observation_token,
         );
+        self.apply_runtime_identity_collision_fact();
+    }
+
+    /// The map is rebuilt before this gate on every publication, so a prior
+    /// aggregate fact cannot survive a resolved collision or a source reset.
+    fn apply_runtime_identity_collision_fact(&mut self) {
         let active = self.health.mode == RuntimeMode::Docker
             && runtime_map_has_identity_collision(&self.runtime_map);
         self.integrity_observation_revision.assign(active);
@@ -2561,6 +2567,66 @@ mod scheduler_tests {
             .expect("Docker runtime map carries evidence")
             .provider_revision
             .clone()
+    }
+
+    #[test]
+    fn collision_fact_cache_gate_requires_docker_and_clears_on_rebuild_input() {
+        let mut cache = docker_cache(mock_snapshot());
+        cache.runtime_map = empty_runtime_map(cache.snapshot.last_updated);
+        cache.runtime_map.nodes = ["fixture_collision", "fixture_collision"]
+            .into_iter()
+            .map(|id| RuntimeMapNode {
+                id: id.into(),
+                provider: RuntimeProviderKind::Other,
+                kind: RuntimeNodeKind::HostRisk,
+                label: "[redacted]".into(),
+                status: None,
+                layer: None,
+                metadata: TestBTreeMap::new(),
+                service: None,
+                package: None,
+            })
+            .collect();
+        cache.apply_runtime_identity_collision_fact();
+        assert_eq!(
+            cache.runtime_map.edges.len(),
+            1,
+            "live collision injects one aggregate fact"
+        );
+        let active_revision = cache.integrity_observation_revision.current();
+
+        cache.runtime_map = empty_runtime_map(cache.snapshot.last_updated);
+        cache.apply_runtime_identity_collision_fact();
+        assert!(
+            cache.runtime_map.edges.is_empty(),
+            "a rebuilt collision-free map carries no prior aggregate fact"
+        );
+        assert_ne!(
+            cache.integrity_observation_revision.current(),
+            active_revision,
+            "resolved collision advances only the private aggregate token"
+        );
+
+        cache.health.mode = RuntimeMode::Mock;
+        cache.runtime_map.nodes = ["fixture_collision", "fixture_collision"]
+            .into_iter()
+            .map(|id| RuntimeMapNode {
+                id: id.into(),
+                provider: RuntimeProviderKind::Other,
+                kind: RuntimeNodeKind::HostRisk,
+                label: "[redacted]".into(),
+                status: None,
+                layer: None,
+                metadata: TestBTreeMap::new(),
+                service: None,
+                package: None,
+            })
+            .collect();
+        cache.apply_runtime_identity_collision_fact();
+        assert!(
+            cache.runtime_map.edges.is_empty(),
+            "mock never projects the collision aggregate"
+        );
     }
 
     /// Complete a claimed fixed slot without running a host collector. This is
