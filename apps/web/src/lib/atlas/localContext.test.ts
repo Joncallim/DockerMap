@@ -57,6 +57,19 @@ describe("Atlas selected local attachment rail", () => {
     const collided = collision.subjects.find((entry) => entry.routability === "non_routable")!;
     expect(localAttachmentContext(collision, collided.key as never)).toBeNull();
 
+    const attachmentModel = model(2);
+    const attachment = attachmentModel.attachments[0]!;
+    const target = attachmentModel.subjects.find((entry) => entry.key === attachment.context)!;
+    const collisionTarget = {
+      ...target, routability: "non_routable" as const, key: target.key as never,
+      source: { kind: "projection" as const, rule: "atlas-v1/non-routable-diagnostic" as const }, runtimeKind: null,
+      ambiguity: "collision" as const
+    };
+    const withCollisionContext = { ...attachmentModel, subjects: attachmentModel.subjects.map((entry) => entry.key === attachment.context ? collisionTarget : entry) as typeof attachmentModel.subjects };
+    const excluded = localAttachmentContext(withCollisionContext, attachment.subject)!;
+    expect(excluded.items).toHaveLength(0);
+    expect(excluded.population.ambiguous).toBe(1);
+
     const input = model(5);
     const first = localAttachmentContext(input, selected(input));
     const permuted = { ...input, attachments: [...input.attachments].reverse() };

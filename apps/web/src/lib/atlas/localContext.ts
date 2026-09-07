@@ -120,6 +120,8 @@ export function localAttachmentContext(model: AtlasModel, selected: AtlasKey | n
   const eligible: Array<{ attachment: AtlasAttachment; kind: LocalAttachmentKind; context: AtlasSubject }> = [];
   for (const candidate of candidates) {
     if (!candidate.kind || !candidate.context) { unresolved += 1; continue; }
+    // The canonical projector makes ambiguous identities non-routable. Do not
+    // fabricate a locally selectable context from a collision/uncertainty.
     if (candidate.context.routability !== "routable" || candidate.context.ambiguity !== "none") { ambiguous += 1; continue; }
     eligible.push({ attachment: candidate.attachment, kind: candidate.kind, context: candidate.context });
   }

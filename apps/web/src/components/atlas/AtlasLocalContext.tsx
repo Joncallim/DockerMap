@@ -1,5 +1,6 @@
 import type { AtlasKey, AtlasModel } from "../../lib/atlas/types";
 import { localAttachmentContext, type AtlasLocalAttachmentItem, type LocalAttachmentKind } from "../../lib/atlas/localContext";
+import { presentationText } from "../../lib/atlas/presentation";
 
 const KIND_COPY: Record<LocalAttachmentKind, string> = {
   network_membership: "Recorded network membership",
@@ -9,9 +10,7 @@ const KIND_COPY: Record<LocalAttachmentKind, string> = {
 };
 
 function localMarker(item: AtlasLocalAttachmentItem): string {
-  const attention = item.attention === "warning" ? "warning attention" : item.attention === "advisory" ? "advisory attention" : "no attention";
-  const ambiguity = item.ambiguity === "none" ? "unambiguous" : item.ambiguity;
-  return `${item.display}, ${attention}, ${ambiguity}, ${item.operationalState}, ${item.freshness}`;
+  return presentationText(item.display, item);
 }
 
 /** Selected-only, non-causal attachment disclosure; it consumes AtlasModel alone. */
