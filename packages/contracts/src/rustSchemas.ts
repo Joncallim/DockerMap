@@ -351,8 +351,13 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "tmux",
+          "description": "Tmux has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
+          "type": "string"
+        },
+        {
           "const": "cron",
-          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
           "type": "string"
         },
         {
@@ -562,16 +567,22 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "cron_schedule_declaration",
           "description": "A parsed cron declaration. This does not claim the command ran.",
           "type": "string"
+        },
+        {
+          "const": "tmux_session_listing",
+          "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
-      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
+      "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
       "enum": [
         "docker",
         "systemd",
         "npm",
-        "cron"
+        "cron",
+        "tmux"
       ],
       "type": "string"
     },
@@ -632,7 +643,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 4,
+          "maximum": 5,
           "minimum": 1,
           "type": "integer"
         }
@@ -1305,8 +1316,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/$defs/ProviderState"
       },
-      "maxItems": 7,
-      "minItems": 7,
+      "maxItems": 8,
+      "minItems": 8,
       "type": "array"
     },
     "source": {
@@ -1417,8 +1428,13 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "tmux",
+          "description": "Tmux has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
+          "type": "string"
+        },
+        {
           "const": "cron",
-          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
           "type": "string"
         },
         {
@@ -1489,16 +1505,22 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "cron_schedule_declaration",
           "description": "A parsed cron declaration. This does not claim the command ran.",
           "type": "string"
+        },
+        {
+          "const": "tmux_session_listing",
+          "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
-      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
+      "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
       "enum": [
         "docker",
         "systemd",
         "npm",
-        "cron"
+        "cron",
+        "tmux"
       ],
       "type": "string"
     },
@@ -1559,7 +1581,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 4,
+          "maximum": 5,
           "minimum": 1,
           "type": "integer"
         }
@@ -2897,8 +2919,13 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "tmux",
+          "description": "Tmux has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
+          "type": "string"
+        },
+        {
           "const": "cron",
-          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
           "type": "string"
         },
         {
@@ -3108,16 +3135,22 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "cron_schedule_declaration",
           "description": "A parsed cron declaration. This does not claim the command ran.",
           "type": "string"
+        },
+        {
+          "const": "tmux_session_listing",
+          "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
-      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
+      "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
       "enum": [
         "docker",
         "systemd",
         "npm",
-        "cron"
+        "cron",
+        "tmux"
       ],
       "type": "string"
     },
@@ -3178,7 +3211,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 4,
+          "maximum": 5,
           "minimum": 1,
           "type": "integer"
         }
@@ -3851,8 +3884,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/components/schemas/RuntimeMap/$defs/ProviderState"
       },
-      "maxItems": 7,
-      "minItems": 7,
+      "maxItems": 8,
+      "minItems": 8,
       "type": "array"
     },
     "source": {
@@ -3963,8 +3996,13 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "tmux",
+          "description": "Tmux has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
+          "type": "string"
+        },
+        {
           "const": "cron",
-          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
           "type": "string"
         },
         {
@@ -4035,16 +4073,22 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "cron_schedule_declaration",
           "description": "A parsed cron declaration. This does not claim the command ran.",
           "type": "string"
+        },
+        {
+          "const": "tmux_session_listing",
+          "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
-      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
+      "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
       "enum": [
         "docker",
         "systemd",
         "npm",
-        "cron"
+        "cron",
+        "tmux"
       ],
       "type": "string"
     },
@@ -4105,7 +4149,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 4,
+          "maximum": 5,
           "minimum": 1,
           "type": "integer"
         }
