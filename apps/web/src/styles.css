@@ -203,6 +203,12 @@ code,
    count is rendered here. */
 .atlas-screen { display: grid; gap: var(--s4); }
 .atlas-revision { margin: 0; color: var(--muted); font-size: 12px; }
+.atlas-lens-controls { display: grid; gap: var(--s2); padding: var(--s3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
+.atlas-lens-controls h2 { font-size: 14px; }
+.atlas-lens-controls div { display: flex; flex-wrap: wrap; gap: var(--s1); }
+.atlas-lens-controls button { min-height: 36px; padding: 5px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); color: var(--ink); }
+.atlas-lens-controls button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.atlas-lens-controls p { margin: 0; color: var(--muted); font-size: 12px; }
 .atlas-topology { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(250px, .7fr); gap: var(--s3); min-width: 0; }
 .atlas-canvas-wrap { min-width: 0; padding: var(--s3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); overflow: auto; }
 .atlas-canvas { display: block; min-width: 640px; width: 100%; min-height: 330px; color: var(--ink); }
@@ -210,6 +216,9 @@ code,
 .atlas-subject text { fill: currentColor; font: 10px var(--font); pointer-events: none; }
 .atlas-subject.is-selected rect { stroke: var(--focus-ring); stroke-width: 2; }
 .atlas-subject.is-nonroutable rect { stroke-dasharray: 3 2; fill: var(--bg-2); }
+.atlas-route { fill: none; stroke: var(--muted-deep); stroke-width: 1.5; stroke-linecap: round; pointer-events: none; }
+.atlas-route-declaration { stroke: var(--accent-text); }
+.atlas-route-storage_attachment { stroke: var(--s-warning); }
 .atlas-canvas-note { margin: var(--s2) 0 0; color: var(--muted); font-size: 12px; }
 .atlas-directory, .atlas-inspector, .atlas-text-alternative { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
 .atlas-directory { min-width: 0; max-height: 420px; overflow: auto; padding: var(--s3); }

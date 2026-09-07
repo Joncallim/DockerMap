@@ -11,7 +11,7 @@ function model(count: number, topology: Parameters<typeof runtimeFixture>[1], ev
 
 function plan(count: number, topology: Parameters<typeof runtimeFixture>[1], evidence: Parameters<typeof runtimeFixture>[2], selected?: AtlasKey) {
   const current = model(count, topology, evidence);
-  return { current, layout: layoutAtlas(current), value: planAtlasRoutes(current, layoutAtlas(current), { lens: "runtime", selected }) };
+  return { current, layout: layoutAtlas(current), value: planAtlasRoutes(current, layoutAtlas(current), { lens: "dependencies", selected }) };
 }
 
 describe("Atlas bounded orthogonal routing planner", () => {

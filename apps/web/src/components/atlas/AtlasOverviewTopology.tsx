@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import type { AtlasCamera, AtlasKey, AtlasLayout, AtlasModel, AtlasSubject } from "../../lib/atlas/types";
 import { pointFor } from "../../lib/atlas/layout";
 import { presentationMarkers, subjectPresentationText } from "../../lib/atlas/presentation";
+import type { AtlasLensView } from "../../lib/atlas/lens";
 
 const DISPLAY_LIMIT = 96;
 const SUBJECT_LIMIT = 250;
@@ -30,14 +31,16 @@ export interface AtlasOverviewTopologyProps {
   focusSubject?: boolean;
   /** Invalidation of an exact selected key returns keyboard focus to the directory. */
   focusRecoveryToken?: number;
+  lensView: AtlasLensView;
 }
 
 /**
  * The production adaptation of the selected SVG/HTML hybrid: SVG provides
- * orientation only; the adjacent HTML directory remains the complete keyboard
- * and text alternative. Overview intentionally suppresses all edge classes.
+ * orientation while the adjacent HTML directory remains the complete keyboard
+ * and text alternative. The closed lens view supplies only approved bounded
+ * connector classes; overview itself supplies none.
  */
-export default function AtlasOverviewTopology({ model, layout, camera, selectedKey, onSelect, focusSubject = true, focusRecoveryToken = 0 }: AtlasOverviewTopologyProps) {
+export default function AtlasOverviewTopology({ model, layout, camera, selectedKey, onSelect, focusSubject = true, focusRecoveryToken = 0, lensView }: AtlasOverviewTopologyProps) {
   const subjects = useMemo(() => model.subjects.slice(0, SUBJECT_LIMIT), [model.subjects]);
   const selectedRef = useRef<HTMLButtonElement | null>(null);
   const directoryRef = useRef<HTMLElement | null>(null);
@@ -45,10 +48,13 @@ export default function AtlasOverviewTopology({ model, layout, camera, selectedK
   useEffect(() => { if (focusRecoveryToken > 0) directoryRef.current?.focus(); }, [focusRecoveryToken]);
   const transform = `translate(${Number.isFinite(camera.x) ? Math.max(-100000, Math.min(100000, camera.x)) : 0} ${Number.isFinite(camera.y) ? Math.max(-100000, Math.min(100000, camera.y)) : 0}) scale(${Number.isFinite(camera.zoom) && camera.zoom > 0 ? Math.min(8, camera.zoom) : 1})`;
 
-  return <div className="atlas-topology" data-atlas-renderer="svg-html-hybrid" data-atlas-lens="overview">
+  return <div className="atlas-topology" data-atlas-renderer="svg-html-hybrid" data-atlas-lens={lensView.lens}>
     <div className="atlas-canvas-wrap">
-      <svg className="atlas-canvas" viewBox="-160 -80 1600 800" role="img" aria-label="Atlas orientation surface. Relations and attachments are suppressed until a subject is selected.">
+      <svg className="atlas-canvas" viewBox="-160 -80 1600 800" role="img" aria-label={`Atlas ${lensView.label.toLowerCase()} surface. ${lensView.description}`}>
         <g transform={transform}>
+          {lensView.routes.routes.map((route) => <g key={route.key} className={`atlas-route atlas-route-${route.routeClass}`} aria-hidden="true">
+            {route.segments.map((segment, index) => <line key={index} x1={segment.x1} y1={segment.y1} x2={segment.x2} y2={segment.y2} />)}
+          </g>)}
           {subjects.map((subject) => {
             const point = pointFor(layout, subject.key);
             if (!point) return null;
@@ -60,7 +66,7 @@ export default function AtlasOverviewTopology({ model, layout, camera, selectedK
           })}
         </g>
       </svg>
-      <p className="atlas-canvas-note">Orientation only. Recorded relations and attachments remain suppressed until local inspection is available.</p>
+      <p className="atlas-canvas-note">{lensView.description} {lensView.routes.population.omitted > 0 ? `${lensView.routes.population.omitted} bounded connector records are omitted.` : ""}</p>
     </div>
     <section ref={directoryRef} className="atlas-directory" aria-label="Atlas subject directory" tabIndex={-1}>
       <h2>Subjects</h2>

@@ -35,7 +35,7 @@ describe("AtlasOverview", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(html).toContain("Atlas Overview");
     expect(html).toContain("data-atlas-renderer=\"svg-html-hybrid\"");
-    expect(html).toContain("relations and attachments remain suppressed");
+    expect(html).toContain("Recorded relations and attachments are not drawn");
     expect(html).not.toContain("runtime_subject_");
   });
 
@@ -68,6 +68,14 @@ describe("AtlasOverview", () => {
     expect((html.match(/data-atlas-subject/g) ?? [])).toHaveLength(count);
     expect(html).not.toContain("data-atlas-relation");
     expect(html).not.toContain("data-atlas-attachment");
+  });
+
+  it("renders an accessible closed lens selector without raw source identities", () => {
+    const html = markup(context());
+    expect(html).toContain('aria-label="Atlas lens choices"');
+    expect(html).toContain("Dependencies");
+    expect(html).toContain("Connectivity");
+    expect(html).not.toContain("runtime_subject_");
   });
 
   it("uses a bounded URL-backed aggregate expansion without claiming inferred topology", async () => {
