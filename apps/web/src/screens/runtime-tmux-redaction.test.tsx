@@ -58,6 +58,7 @@ describe("tmux runtime presentation", () => {
 
     expect(host.textContent).toContain("tmux session");
     expect(host.textContent).not.toContain(rawSessionName);
+    expect(host.textContent).not.toContain("Healthy");
 
     const session = host.querySelector<HTMLButtonElement>(".runtime-node-btn");
     expect(session).not.toBeNull();
@@ -65,6 +66,7 @@ describe("tmux runtime presentation", () => {
 
     expect(host.textContent).toContain("tmux session");
     expect(host.textContent).not.toContain(rawSessionName);
+    expect(host.textContent).not.toContain("Healthy");
     expect(host.textContent).not.toContain("Metadata");
     expect(host.textContent).not.toContain("Inspect evidence");
   });
