@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { FindingsResponse, RuntimeEvidenceRef, RuntimeMapEdge } from "@dockermap/contracts";
+import type { FindingsResponse, RuntimeEvidenceRef, RuntimeMapEdge, RuntimeMapNode } from "@dockermap/contracts";
 import daemonRuntimeMapFixture from "../../../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json";
 import semanticGolden from "./__goldens__/two-container-semantic.json";
 import layoutGolden from "./__goldens__/two-container-layout.json";
@@ -58,6 +58,68 @@ describe("Atlas V1 fixture matrix", () => {
 });
 
 describe("Atlas truth and collision properties", () => {
+  it("projects only the closed collector-emitted provider and kind taxonomy", () => {
+    const emittedPairs = [
+      ["docker", "container", "primary"], ["docker", "docker_network", "attachment"],
+      ["docker", "docker_volume", "attachment"], ["docker", "host_risk", "inspector_only"],
+      ["host", "host", "context"], ["systemd", "systemd_service", "primary"],
+      ["scheduled_job", "scheduled_job", "inspector_only"],
+      ["npm", "node_application", "primary"], ["npm", "ai_agent", "inspector_only"],
+      ["npm", "package_dependency", "inspector_only"], ["pm2", "pm2_app", "primary"],
+      ["tmux", "tmux_session", "inspector_only"], ["tailscale", "tailnet_node", "context"],
+      ["headscale", "tailnet_node", "context"], ["reverse_proxy", "reverse_proxy", "context"],
+      ["local_dns", "local_dns_resolver", "context"], ["python", "python_application", "primary"],
+      ["process", "process", "inspector_only"], ["network", "network_listener", "attachment"]
+    ] as const;
+    const input = runtimeFixture(1);
+    input.nodes = emittedPairs.map(([provider, type], index) => ({
+      id: `atlas_taxonomy_${index}`, provider, type, layer: "process", label: "safe label", status: "running", metadata: {}
+    })) as RuntimeMapNode[];
+    input.edges = [];
+    const model = projectRuntimeMap(input).model;
+    expect(model.subjects).toHaveLength(emittedPairs.length);
+    for (const [provider, kind, role] of emittedPairs) {
+      expect(model.subjects).toContainEqual(expect.objectContaining({
+        source: expect.objectContaining({ kind: "runtime_node", provider }), runtimeKind: kind, role
+      }));
+    }
+    expect(model.lanes.every((lane) => lane.presentationOnly)).toBe(true);
+  });
+
+  it("fails closed for every wrong provider pairing and for unknown provider or kind", () => {
+    const emittedPairs = [
+      ["docker", "container"], ["docker", "docker_network"], ["docker", "docker_volume"], ["docker", "host_risk"],
+      ["host", "host"], ["systemd", "systemd_service"], ["scheduled_job", "scheduled_job"],
+      ["npm", "node_application"], ["npm", "ai_agent"], ["npm", "package_dependency"], ["pm2", "pm2_app"],
+      ["tmux", "tmux_session"], ["tailscale", "tailnet_node"], ["headscale", "tailnet_node"],
+      ["reverse_proxy", "reverse_proxy"], ["local_dns", "local_dns_resolver"], ["python", "python_application"],
+      ["process", "process"], ["network", "network_listener"]
+    ] as const;
+    const malformed = (provider: string, type: string): RuntimeMapNode => ({
+      id: "atlas_secret_routing_id", provider: provider as RuntimeMapNode["provider"], type: type as RuntimeMapNode["type"],
+      layer: "process", label: "do not publish", status: "running", metadata: {}
+    });
+    for (const [provider, type] of emittedPairs) {
+      const differentProvider = provider === "docker" ? "systemd" : "docker";
+      const input = runtimeFixture(1);
+      input.nodes = [malformed(differentProvider, type)];
+      input.edges = [];
+      const model = projectRuntimeMap(input).model;
+      expect(model.subjects).toEqual([expect.objectContaining({ routability: "non_routable", ambiguity: "unsupported" })]);
+      expect(model.lanes).toEqual([]);
+      expect(semanticJson(model)).not.toContain("atlas_secret_routing_id");
+    }
+    for (const node of [malformed("unknown_provider", "container"), malformed("docker", "unknown_kind")]) {
+      const input = runtimeFixture(1);
+      input.nodes = [node];
+      input.edges = [];
+      const model = projectRuntimeMap(input).model;
+      expect(model.subjects[0]).toMatchObject({ routability: "non_routable", ambiguity: "unsupported" });
+      expect(model.lanes).toEqual([]);
+      expect(semanticJson(model)).not.toContain("atlas_secret_routing_id");
+    }
+  });
+
   it("never creates a relation from legacy metadata, opaque ports, or an edge lacking structural evidence", () => {
     const model = projectRuntimeMap(opaquePortFixture()).model;
     expect(model.relations).toEqual([]);

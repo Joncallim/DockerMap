@@ -30,12 +30,30 @@ const RELATION_RULE = "atlas-v1/evidenced-declaration" as const satisfies Projec
 const ATTACHMENT_RULE = "atlas-v1/evidenced-context" as const satisfies ProjectionRuleId;
 const AGGREGATE_RULE = "atlas-v1/high-degree-aggregate" as const satisfies ProjectionRuleId;
 
-const RUNTIME_KINDS = [
-  "container", "docker_network", "docker_volume", "host", "host_risk", "service", "systemd_service",
-  "scheduled_job", "pm2_app", "tmux_session", "tailnet_node", "reverse_proxy", "local_dns_resolver",
-  "dns_provider", "node_application", "python_application", "ai_agent", "package", "storage", "external_api",
-  "package_dependency", "database", "worker", "process", "network_listener", "orchestrator_workload"
-] as const satisfies readonly RuntimeNodeKind[];
+// The daemon contract intentionally permits more provider and kind values than
+// current read-only collectors emit. Atlas must not turn that open transport
+// vocabulary into a topology claim. This is therefore a closed table of the
+// emitted collector pairs, rather than a kind-only classifier or a Cartesian
+// provider/kind allowlist. Keep the role beside the pair so a future collector
+// addition requires an explicit projection decision and test.
+const EMITTED_PROVIDER_KIND_ROLES: Readonly<Record<string, Readonly<Record<string, AtlasRole>>>> = {
+  docker: {
+    container: "primary", docker_network: "attachment", docker_volume: "attachment", host_risk: "inspector_only"
+  },
+  host: { host: "context" },
+  systemd: { systemd_service: "primary" },
+  scheduled_job: { scheduled_job: "inspector_only" },
+  npm: { node_application: "primary", ai_agent: "inspector_only", package_dependency: "inspector_only" },
+  pm2: { pm2_app: "primary" },
+  tmux: { tmux_session: "inspector_only" },
+  tailscale: { tailnet_node: "context" },
+  headscale: { tailnet_node: "context" },
+  reverse_proxy: { reverse_proxy: "context" },
+  local_dns: { local_dns_resolver: "context" },
+  python: { python_application: "primary" },
+  process: { process: "inspector_only" },
+  network: { network_listener: "attachment" }
+};
 
 const EVIDENCE_KINDS = [
   "docker_network_membership", "docker_volume_mount", "docker_port_publication", "docker_compose_depends_on",
@@ -105,24 +123,9 @@ function stateForRuntimeStatus(status: unknown): AtlasOperationalState {
   }
 }
 
-function roleForKind(kind: RuntimeNodeKind): AtlasRole {
-  switch (kind) {
-    case "container": case "systemd_service": case "pm2_app": case "node_application":
-    case "python_application": case "database": case "worker":
-      return "primary";
-    case "host": case "tailnet_node": case "reverse_proxy": case "local_dns_resolver":
-    case "dns_provider": case "external_api": case "orchestrator_workload":
-      return "context";
-    case "docker_network": case "docker_volume": case "storage": case "network_listener":
-      return "attachment";
-    case "scheduled_job": case "tmux_session": case "process": case "package":
-    case "package_dependency": case "ai_agent": case "host_risk": case "service":
-      return "inspector_only";
-  }
-}
-
-function isRuntimeKind(value: unknown): value is RuntimeNodeKind {
-  return includes(RUNTIME_KINDS, value);
+function roleForEmittedProviderKind(provider: unknown, kind: unknown): AtlasRole | null {
+  if (typeof provider !== "string" || typeof kind !== "string") return null;
+  return EMITTED_PROVIDER_KIND_ROLES[provider]?.[kind] ?? null;
 }
 
 function isBoundedEvidenceText(value: unknown): value is string {
@@ -373,7 +376,8 @@ export function projectRuntimeMap(input: AtlasRuntimeMapInput, options?: AtlasPr
       continue;
     }
     const node = records[0];
-    if (!isRuntimeKind(node.type)) {
+    const role = roleForEmittedProviderKind(node.provider, node.type);
+    if (!role) {
       subjects.push({
         key: derivedKey("unsupported", nonRoutableOrdinal++), routability: "non_routable",
         source: { kind: "projection", rule: DIAGNOSTIC_RULE }, runtimeKind: null,
@@ -385,7 +389,7 @@ export function projectRuntimeMap(input: AtlasRuntimeMapInput, options?: AtlasPr
     }
     const subject: AtlasSubject & { routability: "routable" } = {
       key, routability: "routable", source: { kind: "runtime_node", provider: node.provider, nodeId: key, runtimeKind: node.type },
-      runtimeKind: node.type, role: roleForKind(node.type), display: boundedDisplay(node.label, "Runtime subject"),
+      runtimeKind: node.type as RuntimeNodeKind, role, display: boundedDisplay(node.label, "Runtime subject"),
       operationalState: stateForRuntimeStatus(node.status ?? node.service?.status),
       freshness: freshnessForNode(node, freshnessBySlot), attention: findingOverlay.attention.get(key) ?? "none", ambiguity: "none", rule: SUBJECT_RULE
     };
