@@ -3570,13 +3570,28 @@ mod scheduler_tests {
         assert_eq!(ticker_cache.snapshot.model_revision, first_model_revision);
         drop(ticker_cache);
 
-        let mut changed = ticker_only.clone();
+        let mut publication_fact = ticker_only.clone();
+        publication_fact.containers[0].publishes_on_unspecified_address = true;
+        publish_docker_snapshot_cache(&state, docker_cache(publication_fact.clone())).await;
+        let publication_cache = state.cache.read().await;
+        let publication_token = first_docker_evidence_revision(&publication_cache);
+        assert_ne!(publication_token, first_token);
+        assert_ne!(
+            publication_cache.snapshot.model_revision,
+            first_model_revision
+        );
+        assert!(publication_cache.findings.findings.iter().any(|finding| {
+            finding.rule_id == dockermap_core::FindingRule::DockerPortPublishedOnUnspecifiedAddress
+        }));
+        drop(publication_cache);
+
+        let mut changed = publication_fact;
         changed.containers[0].name = "semantic-container-change".into();
         changed.last_updated = 14;
         publish_docker_snapshot_cache(&state, docker_cache(changed.clone())).await;
         let changed_cache = state.cache.read().await;
         let changed_token = first_docker_evidence_revision(&changed_cache);
-        assert_ne!(changed_token, first_token);
+        assert_ne!(changed_token, publication_token);
         assert_ne!(changed_token, changed.last_updated.to_string());
         drop(changed_cache);
 

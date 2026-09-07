@@ -56,6 +56,7 @@ export type RuntimeEvidenceFreshness = 'fresh' | 'stale' | 'timed_out';
  */
 export type RuntimeEvidenceKind =
   | ('docker_network_membership' | 'docker_volume_mount' | 'docker_port_publication')
+  | 'docker_unspecified_address_port_publication'
   | 'docker_compose_depends_on'
   | 'docker_daemon_state_bind_mount'
   | 'systemd_requires'
@@ -161,6 +162,7 @@ export type HealthState = 'ok' | 'degraded';
 export type FindingRule =
   | 'systemd.requires_target_not_active'
   | 'docker.internal_network_member_publishes_port'
+  | 'docker.port_published_on_unspecified_address'
   | 'docker.daemon_state_bind_mount'
   | 'docker.daemon_state_bind_mount_publishes_port'
   | 'docker.compose_declared_target_not_active'
@@ -200,6 +202,12 @@ export interface ContainerRecord {
   name: string;
   networks: string[];
   ports: string[];
+  /**
+   * Docker reported at least one valid nonzero published port whose host
+   * address is the IPv4 or IPv6 unspecified address. The collector reduces
+   * the raw bind address to this closed fact before snapshot retention.
+   */
+  publishesOnUnspecifiedAddress?: boolean;
   role: string;
   status: string;
 }

@@ -8,6 +8,7 @@
       "role": "api",
       "networks": ["network_app"],
       "ports": ["8080:8080/tcp"],
+      "publishesOnUnspecifiedAddress": false,
       "mounts": [
         {
           "id": "container_api:/workspace/src:/srv/dockermap/src",
