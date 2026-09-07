@@ -1,9 +1,12 @@
 use crate::snapshot_runtime::is_host_published_docker_port;
 use crate::{
-    collision_resistant_id_component, Finding, FindingRule, FindingSeverity,
+    collision_resistant_id_component, Finding, FindingRule, FindingSeverity, ObservedDockerEvent,
+    ObservedDockerEventCollectionState, ObservedDockerEventEvidenceSource, ObservedDockerEventKind,
     RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
-    RuntimeEvidenceProvider, RuntimeMap, RuntimeNodeKind, RuntimeProviderKind,
-    RuntimeRelationshipKind,
+    RuntimeEvidenceProvider, RuntimeMap, RuntimeMode, RuntimeNodeKind, RuntimeProviderKind,
+    RuntimeRelationshipKind, TemporalEvidenceKind, TemporalEvidenceSource, TemporalEvidenceWitness,
+    REPEATED_CONTAINER_DIED_EVENTS_RECOMMENDATION, REPEATED_CONTAINER_DIED_EVENTS_SUMMARY,
+    REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS,
 };
 use std::collections::BTreeMap;
 
@@ -100,9 +103,10 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             severity: FindingSeverity::Warning,
             summary: SUMMARY.into(),
             recommendation: RECOMMENDATION.into(),
-            subject_ref: edge.source.clone(),
-            target_ref: edge.target.clone(),
+            subject_ref: Some(edge.source.clone()),
+            target_ref: Some(edge.target.clone()),
             evidence_refs: vec![evidence],
+            temporal_evidence: Vec::new(),
         });
     }
     for edge in &runtime_map.edges {
@@ -121,9 +125,10 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             severity: FindingSeverity::Warning,
             summary: DOCKER_DAEMON_STATE_SUMMARY.into(),
             recommendation: DOCKER_DAEMON_STATE_RECOMMENDATION.into(),
-            subject_ref: edge.source.clone(),
-            target_ref: edge.target.clone(),
+            subject_ref: Some(edge.source.clone()),
+            target_ref: Some(edge.target.clone()),
             evidence_refs: vec![edge.evidence_refs[0].clone()],
+            temporal_evidence: Vec::new(),
         });
     }
     for edge in &runtime_map.edges {
@@ -150,9 +155,10 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             severity: FindingSeverity::Advisory,
             summary: INTERNAL_NETWORK_PORT_SUMMARY.into(),
             recommendation: INTERNAL_NETWORK_PORT_RECOMMENDATION.into(),
-            subject_ref: edge.source.clone(),
-            target_ref: edge.target.clone(),
+            subject_ref: Some(edge.source.clone()),
+            target_ref: Some(edge.target.clone()),
             evidence_refs: vec![network_evidence, port_evidence],
+            temporal_evidence: Vec::new(),
         });
     }
     findings.sort_by(|left, right| {
@@ -162,6 +168,111 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             .then_with(|| left.target_ref.cmp(&right.target_ref))
     });
     findings
+}
+
+/// Derive one privacy-preserving temporal advisory from the already-sanitized
+/// event journal. It deliberately publishes no subject, event identity, time,
+/// anchor or epoch: the three static witnesses establish only that the closed
+/// threshold was observed in this continuous collection epoch.
+pub fn derive_temporal_docker_findings(
+    source: RuntimeMode,
+    collection_state: ObservedDockerEventCollectionState,
+    now_ms: u64,
+    events: &[ObservedDockerEvent],
+) -> Vec<Finding> {
+    if source != RuntimeMode::Docker
+        || collection_state != ObservedDockerEventCollectionState::Collecting
+    {
+        return Vec::new();
+    }
+
+    let mut candidates = BTreeMap::<String, Vec<&ObservedDockerEvent>>::new();
+    for event in events {
+        if event.evidence_source != ObservedDockerEventEvidenceSource::DockerEventStream
+            || event.kind != ObservedDockerEventKind::ContainerDied
+            || !valid_temporal_input(event)
+        {
+            continue;
+        }
+        candidates
+            .entry(event.container_id.clone())
+            .or_default()
+            .push(event);
+    }
+
+    for mut events in candidates.into_values() {
+        events.sort_by(|left, right| {
+            left.source_occurred_at_ms
+                .cmp(&right.source_occurred_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if events.windows(2).any(|pair| pair[0].id == pair[1].id) {
+            continue;
+        }
+        let Some(window) = events.windows(3).find(|window| {
+            let oldest = window[0].source_occurred_at_ms;
+            let newest = window[2].source_occurred_at_ms;
+            newest.saturating_sub(oldest) <= REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS
+                && newest <= now_ms
+                && now_ms.saturating_sub(newest) <= REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS
+        }) else {
+            continue;
+        };
+        let _ = window; // The precise source rows remain internal by contract.
+        return vec![Finding {
+            id: "finding_docker_repeated_container_died_events".into(),
+            rule_id: FindingRule::DockerRepeatedContainerDiedEvents,
+            severity: FindingSeverity::Advisory,
+            summary: REPEATED_CONTAINER_DIED_EVENTS_SUMMARY.into(),
+            recommendation: REPEATED_CONTAINER_DIED_EVENTS_RECOMMENDATION.into(),
+            subject_ref: None,
+            target_ref: None,
+            evidence_refs: Vec::new(),
+            temporal_evidence: vec![
+                TemporalEvidenceWitness {
+                    source: TemporalEvidenceSource::DockerEventStream,
+                    kind: TemporalEvidenceKind::ContainerDied,
+                },
+                TemporalEvidenceWitness {
+                    source: TemporalEvidenceSource::DockerEventStream,
+                    kind: TemporalEvidenceKind::ContainerDied,
+                },
+                TemporalEvidenceWitness {
+                    source: TemporalEvidenceSource::DockerEventStream,
+                    kind: TemporalEvidenceKind::ContainerDied,
+                },
+            ],
+        }];
+    }
+    Vec::new()
+}
+
+fn valid_temporal_input(event: &ObservedDockerEvent) -> bool {
+    const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
+    event
+        .id
+        .strip_prefix("docker_event_")
+        .is_some_and(|suffix| {
+            suffix.len() == 64
+                && suffix.bytes().all(|byte| {
+                    byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte <= b'f')
+                })
+        })
+        && event
+            .container_id
+            .strip_prefix("docker_container_")
+            .is_some_and(|suffix| {
+                suffix.len() == 64
+                    && suffix.bytes().all(|byte| {
+                        byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte <= b'f')
+                    })
+            })
+        && event.source_occurred_at_ms <= MAX_SAFE_JS_INTEGER
+        && event.observed_at_ms <= MAX_SAFE_JS_INTEGER
+        && !event.anchor_model_revision.is_empty()
+        && event.anchor_model_revision.chars().count() <= 64
+        && !event.anchor_observation_revision.is_empty()
+        && event.anchor_observation_revision.chars().count() <= 64
 }
 
 fn is_docker_container(node: &crate::RuntimeMapNode) -> bool {
@@ -480,7 +591,10 @@ mod tests {
         assert_eq!(finding.severity, FindingSeverity::Warning);
         assert_eq!(finding.summary, DOCKER_DAEMON_STATE_SUMMARY);
         assert_eq!(finding.recommendation, DOCKER_DAEMON_STATE_RECOMMENDATION);
-        assert_eq!(finding.target_ref, DOCKER_DAEMON_STATE_RISK_ID);
+        assert_eq!(
+            finding.target_ref.as_deref(),
+            Some(DOCKER_DAEMON_STATE_RISK_ID)
+        );
         assert_eq!(finding.evidence_refs, input.edges[0].evidence_refs);
         let encoded = serde_json::to_string(finding).unwrap();
         for forbidden in ["/var/run/docker.sock", "readOnly", "mount-id"] {
@@ -581,8 +695,14 @@ mod tests {
         assert_eq!(finding.severity, FindingSeverity::Advisory);
         assert_eq!(finding.summary, INTERNAL_NETWORK_PORT_SUMMARY);
         assert_eq!(finding.recommendation, INTERNAL_NETWORK_PORT_RECOMMENDATION);
-        assert_eq!(finding.subject_ref, "docker_container_safe");
-        assert_eq!(finding.target_ref, "docker_network_internal");
+        assert_eq!(
+            finding.subject_ref.as_deref(),
+            Some("docker_container_safe")
+        );
+        assert_eq!(
+            finding.target_ref.as_deref(),
+            Some("docker_network_internal")
+        );
         assert_eq!(
             finding.evidence_refs,
             vec![
@@ -658,5 +778,128 @@ mod tests {
         ] {
             assert!(!is_host_published_docker_port(port), "rejected port {port}");
         }
+    }
+
+    fn temporal_event(id_tail: char, container_tail: char, source_at: u64) -> ObservedDockerEvent {
+        ObservedDockerEvent {
+            id: format!("docker_event_{}", id_tail.to_string().repeat(64)),
+            kind: ObservedDockerEventKind::ContainerDied,
+            evidence_source: ObservedDockerEventEvidenceSource::DockerEventStream,
+            observed_at_ms: source_at,
+            source_occurred_at_ms: source_at,
+            container_id: format!("docker_container_{}", container_tail.to_string().repeat(64)),
+            anchor_model_revision: "model-r1".into(),
+            anchor_observation_revision: "observation-r1".into(),
+        }
+    }
+
+    #[test]
+    fn repeated_died_finding_is_recent_continuous_and_redacted() {
+        let events = vec![
+            temporal_event('1', 'a', 100),
+            temporal_event('2', 'a', 150_000),
+            temporal_event('3', 'a', 300_000),
+        ];
+        let findings = derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            300_000,
+            &events,
+        );
+        assert_eq!(findings.len(), 1);
+        let finding = &findings[0];
+        assert_eq!(finding.id, "finding_docker_repeated_container_died_events");
+        assert!(finding.subject_ref.is_none());
+        assert!(finding.target_ref.is_none());
+        assert!(finding.evidence_refs.is_empty());
+        assert_eq!(finding.temporal_evidence.len(), 3);
+        let encoded = serde_json::to_string(finding).expect("finding serializes");
+        for forbidden in [
+            "docker_event_111",
+            "docker_container_",
+            "sourceOccurredAtMs",
+            "anchor",
+            "epoch",
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "public finding leaked {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_died_finding_fails_closed_for_age_window_mode_subject_and_duplicates() {
+        let events = vec![
+            temporal_event('1', 'a', 100),
+            temporal_event('2', 'a', 150_000),
+            temporal_event('3', 'a', 300_000),
+        ];
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Mock,
+            ObservedDockerEventCollectionState::Collecting,
+            300_000,
+            &events
+        )
+        .is_empty());
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Reconnecting,
+            300_000,
+            &events
+        )
+        .is_empty());
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            600_001,
+            &events
+        )
+        .is_empty());
+        let outside_window = vec![
+            temporal_event('1', 'a', 0),
+            temporal_event('2', 'a', 1),
+            temporal_event('3', 'a', 300_001),
+        ];
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            300_001,
+            &outside_window
+        )
+        .is_empty());
+        let mixed = vec![
+            temporal_event('1', 'a', 100),
+            temporal_event('2', 'b', 150_000),
+            temporal_event('3', 'a', 300_000),
+        ];
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            300_000,
+            &mixed
+        )
+        .is_empty());
+        let duplicate = vec![
+            temporal_event('1', 'a', 100),
+            temporal_event('1', 'a', 150_000),
+            temporal_event('3', 'a', 300_000),
+        ];
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            300_000,
+            &duplicate
+        )
+        .is_empty());
+        let mut malformed = events;
+        malformed[2].id = "docker_event_invalid".into();
+        assert!(derive_temporal_docker_findings(
+            RuntimeMode::Docker,
+            ObservedDockerEventCollectionState::Collecting,
+            300_000,
+            &malformed
+        )
+        .is_empty());
     }
 }

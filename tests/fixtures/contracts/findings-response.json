@@ -85,6 +85,19 @@
           "freshness": "fresh"
         }
       ]
+    },
+    {
+      "id": "finding_docker_repeated_container_died_events",
+      "ruleId": "docker.repeated_container_died_events",
+      "severity": "advisory",
+      "summary": "Three retained Docker container exit observations need review.",
+      "recommendation": "Review the container's recent configuration and logs to determine whether the repeated exits are expected.",
+      "evidenceRefs": [],
+      "temporalEvidence": [
+        { "source": "docker_event_stream", "kind": "container_died" },
+        { "source": "docker_event_stream", "kind": "container_died" },
+        { "source": "docker_event_stream", "kind": "container_died" }
+      ]
     }
   ]
 }
