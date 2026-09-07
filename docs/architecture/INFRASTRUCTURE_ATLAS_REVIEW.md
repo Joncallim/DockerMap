@@ -389,3 +389,21 @@ all current runtime node kinds to primary, context, attachment, inspector-only
 or neutral unsupported roles. Unknown future kinds remain diagnostics.
 
 Status: absorbed by #251/#259/#262. No new production authority is authorised.
+
+## Pass 30 — structural provenance closure sweep
+
+### Finding
+An evidence id is not a safe edge-routing key after publication redaction, and
+a generic projection reference could accidentally manufacture a semantic link.
+
+### Refinement
+The source-reference contract now separates runtime-node provenance, structural
+runtime-edge evidence (source, target, relationship and the full closed
+published evidence value) and projection-only references. Relations,
+memberships, attachments and semantic groups require non-empty edge evidence;
+V1 groups are explicitly empty until a grouping contract exists. Aggregates
+carry bounded evidence coverage plus resolved/unresolved/ambiguous/omitted
+counts. Subjects retain their closed runtime kind, derived keys are never
+routable, and collision diagnostics cannot become focus targets.
+
+Status: absorbed by #251/#259. No renderer or backend change is authorised.
