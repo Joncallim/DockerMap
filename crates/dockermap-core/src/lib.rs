@@ -39,8 +39,15 @@ pub fn service_entity_kind_name(kind: &ServiceEntityKind) -> &'static str {
 
 mod compose;
 pub use compose::{
-    correlate_compose_runtime, derive_compose_graph, discover_compose_files,
-    plan_compose_mount_edit, scan_compose_files,
+    compose_files_fingerprint, correlate_compose_runtime, derive_compose_graph,
+    discover_compose_files, explicit_compose_project_name, plan_compose_mount_edit,
+    scan_compose_binding_snapshot, scan_compose_files,
+};
+mod compose_runtime_binding;
+pub use compose_runtime_binding::{
+    derive_compose_runtime_mount_findings, ComposeRuntimeBinding, ComposeRuntimeContainer,
+    MAX_COMPOSE_RUNTIME_BINDING_CONFIG_FILES, MAX_COMPOSE_RUNTIME_BINDING_CONTAINERS,
+    MAX_RUNTIME_MOUNTS_PER_BOUND_CONTAINER,
 };
 
 #[cfg(test)]
@@ -1663,6 +1670,30 @@ services:
             .iter()
             .any(|diagnostic| diagnostic.id == "compose_no_files"
                 && diagnostic.severity == DiagnosticSeverity::Warning));
+    }
+
+    #[test]
+    fn explicit_project_name_rejects_a_file_over_the_compose_byte_limit() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let file = root.path().join("compose.yaml");
+        std::fs::write(
+            &file,
+            vec![b'x'; compose::MAX_COMPOSE_FILE_BYTES as usize + 1],
+        )
+        .expect("oversized fixture");
+        assert!(explicit_compose_project_name(&[file]).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binding_snapshot_rejects_a_symlink_swap_at_the_open_boundary() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let outside = tempfile::NamedTempFile::new().expect("outside file");
+        std::fs::write(outside.path(), "name: outside\nservices: {}\n").unwrap();
+        let file = root.path().join("compose.yaml");
+        symlink(outside.path(), &file).unwrap();
+        assert!(scan_compose_binding_snapshot(root.path(), &[file]).is_none());
     }
 
     #[cfg(unix)]

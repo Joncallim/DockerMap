@@ -63,13 +63,15 @@ export type RuntimeEvidenceKind =
   | 'systemd_part_of'
   | 'npm_package_manifest_dependency'
   | 'cron_schedule_declaration'
-  | 'tmux_session_listing';
+  | 'tmux_session_listing'
+  | 'compose_declared_mount'
+  | 'docker_compose_runtime_binding';
 /**
  * Evidence providers are deliberately closed. Every host provider enters only
  * after it receives its own scheduler slot, so it cannot inherit a broader
  * host collection's freshness or revision.
  */
-export type RuntimeEvidenceProvider = 'docker' | 'systemd' | 'npm' | 'cron' | 'tmux';
+export type RuntimeEvidenceProvider = 'docker' | 'compose' | 'systemd' | 'npm' | 'cron' | 'tmux';
 /**
  * Fixed, schema-backed host-provider slots. This is not a plugin or policy
  * interface: the daemon owns the complete finite list.
@@ -162,7 +164,8 @@ export type FindingRule =
   | 'docker.daemon_state_bind_mount'
   | 'docker.daemon_state_bind_mount_publishes_port'
   | 'docker.compose_declared_target_not_active'
-  | 'docker.compose_mutual_dependency';
+  | 'docker.compose_mutual_dependency'
+  | 'compose.declared_mount_missing_at_bound_container';
 /**
  * Findings are intentionally a small, closed advisory vocabulary. They do
  * not expose provider output or prescribe an automated remediation.

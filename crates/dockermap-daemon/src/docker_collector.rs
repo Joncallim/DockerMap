@@ -9,11 +9,18 @@ use bollard::{
 };
 use dockermap_core::{
     page_log_entries, parse_rfc3339_nano_millis, unix_timestamp_millis, ComposeMountKind,
-    ContainerMount, ContainerRecord, DockerSnapshot, LogCursor, LogEntry, LogsResponse,
-    NetworkRecord, VolumeRecord, MAX_LOG_PAGE_SIZE,
+    ComposeRuntimeContainer, ContainerMount, ContainerRecord, DockerSnapshot, LogCursor, LogEntry,
+    LogsResponse, NetworkRecord, VolumeRecord, MAX_COMPOSE_RUNTIME_BINDING_CONFIG_FILES,
+    MAX_COMPOSE_RUNTIME_BINDING_CONTAINERS, MAX_LOG_PAGE_SIZE,
+    MAX_RUNTIME_MOUNTS_PER_BOUND_CONTAINER,
 };
 use futures_util::stream::StreamExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+pub(crate) struct DockerObservation {
+    pub(crate) snapshot: DockerSnapshot,
+    pub(crate) compose_containers: Option<Vec<ComposeRuntimeContainer>>,
+}
 
 use crate::publication::truncate_chars;
 use crate::{
@@ -47,7 +54,12 @@ impl DockerCollector {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn collect_snapshot(&self) -> Result<DockerSnapshot, String> {
+        Ok(self.collect_observation().await?.snapshot)
+    }
+
+    pub(crate) async fn collect_observation(&self) -> Result<DockerObservation, String> {
         let filters = self.docker_filters();
         let mut container_options = ListContainersOptionsBuilder::new().all(true);
         if let Some(filters) = filters.as_ref() {
@@ -79,7 +91,78 @@ impl DockerCollector {
             .await
             .map_err(|error| format!("list_volumes failed: {error}"))?;
 
-        Ok(build_snapshot(containers, networks, volumes))
+        let snapshot = build_snapshot(containers.clone(), networks, volumes);
+        let mounts_by_id = snapshot
+            .containers
+            .iter()
+            .map(|container| (container.id.as_str(), container.mounts.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut compose_containers = Vec::new();
+        for container in containers {
+            let Some(labels) = container.labels else {
+                continue;
+            };
+            let Some(project) = labels
+                .get("com.docker.compose.project")
+                .map(|value| value.trim())
+            else {
+                continue;
+            };
+            let Some(service) = labels
+                .get("com.docker.compose.service")
+                .map(|value| value.trim())
+            else {
+                continue;
+            };
+            let Some(config_label) = labels.get("com.docker.compose.project.config_files") else {
+                continue;
+            };
+            if config_label.chars().count() > 4096 {
+                continue;
+            }
+            let config_files = config_label
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>();
+            let Some(id) = container.id else {
+                continue;
+            };
+            if project.is_empty()
+                || service.is_empty()
+                || project.chars().count() > 259
+                || service.chars().count() > 259
+                || config_files.is_empty()
+                || config_files.len() > MAX_COMPOSE_RUNTIME_BINDING_CONFIG_FILES
+                || !is_exact_docker_container_id(&id)
+            {
+                continue;
+            }
+            let Some(mounts) = mounts_by_id.get(id.as_str()) else {
+                continue;
+            };
+            if mounts.len() > MAX_RUNTIME_MOUNTS_PER_BOUND_CONTAINER {
+                continue;
+            }
+            compose_containers.push(ComposeRuntimeContainer {
+                mounts: mounts.clone(),
+                container_id: id,
+                project: project.to_string(),
+                service: service.to_string(),
+                config_files,
+            });
+            if compose_containers.len() > MAX_COMPOSE_RUNTIME_BINDING_CONTAINERS {
+                return Ok(DockerObservation {
+                    snapshot,
+                    compose_containers: None,
+                });
+            }
+        }
+        Ok(DockerObservation {
+            snapshot,
+            compose_containers: Some(compose_containers),
+        })
     }
 
     fn docker_filters(&self) -> Option<HashMap<String, Vec<String>>> {
@@ -169,6 +252,13 @@ impl DockerCollector {
             limit,
         ))
     }
+}
+
+fn is_exact_docker_container_id(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 /// Parse one timestamped Docker log line (collected with `--timestamps`) into

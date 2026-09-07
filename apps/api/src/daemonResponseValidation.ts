@@ -74,6 +74,11 @@ const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RECOMMENDATION = "Review the de
 const COMPOSE_MUTUAL_DEPENDENCY_FINDING_RULE = "docker.compose_mutual_dependency";
 const COMPOSE_MUTUAL_DEPENDENCY_FINDING_SUMMARY = "Docker recorded mutually declared Compose dependencies between two containers.";
 const COMPOSE_MUTUAL_DEPENDENCY_FINDING_RECOMMENDATION = "Review the declared dependencies and remove any unintended mutual dependency.";
+const COMPOSE_DECLARED_MOUNT_MISSING_FINDING_RULE = "compose.declared_mount_missing_at_bound_container";
+const COMPOSE_DECLARED_MOUNT_MISSING_FINDING_SUMMARY = "A Compose-declared mount is absent from its exactly bound runtime container";
+const COMPOSE_DECLARED_MOUNT_MISSING_FINDING_RECOMMENDATION = "Inspect the Compose mount declaration and the bound container's current mount configuration.";
+const COMPOSE_DECLARED_MOUNT_EVIDENCE_SUMMARY = "Compose declared a mount for the bound service";
+const DOCKER_COMPOSE_RUNTIME_BINDING_EVIDENCE_SUMMARY = "Docker confirmed an exact Compose project, service, and config binding";
 
 type FindingSummaryWire = {
   warningCount: number;
@@ -100,6 +105,7 @@ const FINDING_RULE_CATEGORY = {
   [DOCKER_DAEMON_STATE_PUBLISHED_PORT_FINDING_RULE]: "hostPortPublicationCount",
   [COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RULE]: "declaredDependencyCount",
   [COMPOSE_MUTUAL_DEPENDENCY_FINDING_RULE]: "declaredDependencyCount",
+  [COMPOSE_DECLARED_MOUNT_MISSING_FINDING_RULE]: "declaredDependencyCount",
 } as const;
 
 function coherentFindingSummary(value: unknown, findings: unknown[]): boolean {
@@ -237,6 +243,19 @@ function isCoherentTmuxSessionNode(value: Record<string, unknown>): boolean {
 
 function composeMutualDependencyFindingId(subjectRef: string, targetRef: string): string {
   return `finding_docker_compose_mutual_dependency_${collisionResistantIdComponent(`${subjectRef}\u001f${targetRef}`)}`;
+}
+
+// Core derives this identity from private Compose/Docker material. Keep that
+// material opaque, while requiring each public ID to have its fixed digest
+// shape and the finding/evidence IDs to carry one shared digest.
+function isOpaqueComposeRuntimeBindingId(value: unknown): value is string {
+  return typeof value === "string" && /^compose_runtime_binding_[a-f0-9]{64}$/.test(value);
+}
+
+function composeMountFindingDigest(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = /^finding_compose_declared_mount_missing_at_bound_container_([a-f0-9]{64})$/.exec(value);
+  return match?.[1] ?? null;
 }
 
 function hasCompleteProviderStateVector(payload: unknown): boolean {
@@ -581,6 +600,48 @@ function hasCoherentFindings(payload: unknown): boolean {
           && forward.collectedAt === reverse.collectedAt
           && forward.providerRevision === reverse.providerRevision;
       })();
+    if (finding.ruleId === COMPOSE_DECLARED_MOUNT_MISSING_FINDING_RULE) {
+      const digest = composeMountFindingDigest(finding.id);
+      return finding.severity === "warning"
+        && finding.summary === COMPOSE_DECLARED_MOUNT_MISSING_FINDING_SUMMARY
+        && finding.recommendation === COMPOSE_DECLARED_MOUNT_MISSING_FINDING_RECOMMENDATION
+        && digest !== null
+        && isOpaqueComposeRuntimeBindingId(finding.subjectRef)
+        // This is one opaque structural binding, not a relationship between
+        // public services. Equal refs ensure a daemon cannot substitute a
+        // separately supplied target identity.
+        && finding.targetRef === finding.subjectRef
+        && Array.isArray(finding.evidenceRefs)
+        && finding.evidenceRefs.length === 2
+        && (() => {
+          const [declaredCandidate, bindingCandidate] = finding.evidenceRefs;
+          if (!declaredCandidate || typeof declaredCandidate !== "object" || !bindingCandidate || typeof bindingCandidate !== "object") return false;
+          const declared = declaredCandidate as Record<string, unknown>;
+          const binding = bindingCandidate as Record<string, unknown>;
+          const isV6Evidence = (
+            evidence: Record<string, unknown>, provider: string, kind: string,
+            assertionKind: string, summary: string, idPrefix: string,
+          ) => evidence.version === 6
+            && evidence.provider === provider
+            && evidence.kind === kind
+            && evidence.assertionKind === assertionKind
+            && evidence.summary === summary
+            && evidence.id === `${idPrefix}_${digest}`
+            && evidence.subjectRef === finding.subjectRef
+            && (evidence.providerSlot === undefined || evidence.providerSlot === null)
+            && evidence.freshness === "fresh"
+            && typeof evidence.collectedAt === "number"
+            && Number.isSafeInteger(evidence.collectedAt)
+            && evidence.collectedAt >= 0
+            && typeof evidence.providerRevision === "string"
+            && evidence.providerRevision.length > 0
+            && evidence.providerRevision !== String(evidence.collectedAt);
+          return isV6Evidence(declared, "compose", "compose_declared_mount", "declared", COMPOSE_DECLARED_MOUNT_EVIDENCE_SUMMARY, "compose_declared_mount")
+            && isV6Evidence(binding, "docker", "docker_compose_runtime_binding", "observed", DOCKER_COMPOSE_RUNTIME_BINDING_EVIDENCE_SUMMARY, "docker_compose_runtime_binding")
+            && declared.collectedAt === binding.collectedAt
+            && declared.providerRevision === binding.providerRevision;
+        })();
+    }
     if (finding.ruleId !== INTERNAL_NETWORK_PORT_FINDING_RULE) return false;
     return finding.severity === "advisory"
       && finding.summary === INTERNAL_NETWORK_PORT_FINDING_SUMMARY

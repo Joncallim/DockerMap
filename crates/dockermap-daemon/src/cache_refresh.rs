@@ -6,6 +6,7 @@
 //! host providers directly.
 
 use crate::{
+    config::project_root,
     docker_collector::DockerCollector,
     provider_contract::ProviderCollection,
     providers::cron::CRON_EVIDENCE_SCHEDULE_MARKER,
@@ -22,15 +23,16 @@ use crate::{
     },
 };
 use dockermap_core::{
-    collision_resistant_id_component, derive_findings, derive_images, mock_snapshot,
-    DiagnosticSeverity, DockerSnapshot, FindingSummary, FindingsResponse, HealthResponse,
-    HealthState, ProviderSlot, ProviderState, ProviderStateKind, ProviderStatusReason,
-    RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
-    RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
-    RuntimeMode, RuntimeProviderKind,
+    collision_resistant_id_component, derive_compose_runtime_mount_findings, derive_findings,
+    derive_images, discover_compose_files, mock_snapshot, scan_compose_binding_snapshot,
+    ComposeRuntimeBinding, DiagnosticSeverity, DockerSnapshot, FindingSummary, FindingsResponse,
+    HealthResponse, HealthState, ProviderSlot, ProviderState, ProviderStateKind,
+    ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness,
+    RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap,
+    RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMode, RuntimeProviderKind,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{atomic::AtomicBool, Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -69,6 +71,7 @@ pub(crate) struct DaemonCache {
     pub(crate) health: HealthResponse,
     pub(crate) runtime_map: RuntimeMap,
     pub(crate) findings: FindingsResponse,
+    compose_runtime_binding: Option<(dockermap_core::ComposeScan, ComposeRuntimeBinding)>,
     runtime_providers: RuntimeProviderSlots,
     /// Increments on every Docker/mock source transition. A late worker must
     /// match this generation as well as evidence, so Docker→mock→Docker can
@@ -397,6 +400,7 @@ impl DaemonCache {
                 ..Default::default()
             },
             findings: FindingsResponse::default(),
+            compose_runtime_binding: None,
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
@@ -414,7 +418,15 @@ impl DaemonCache {
             .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
         // Findings are a pure projection of the sanitized runtime map, so
         // calculate and cache them only after the publication revision exists.
-        let findings = derive_findings(&self.runtime_map);
+        let mut findings = derive_findings(&self.runtime_map);
+        if self.health.mode == RuntimeMode::Docker {
+            if let Some((scan, binding)) = &self.compose_runtime_binding {
+                let mut binding = binding.clone();
+                binding.provider_revision = self.docker_observation_token();
+                findings.extend(derive_compose_runtime_mount_findings(scan, &binding));
+            }
+        }
+        findings.sort_by(|left, right| left.id.cmp(&right.id));
         self.findings = FindingsResponse {
             summary: FindingSummary::from_findings(&findings),
             findings,
@@ -565,9 +577,11 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     }
 
     let mut cache = match docker_collector(state).await {
-        Ok(collector) => match collector.collect_snapshot().await {
-            Ok(mut snapshot) => {
+        Ok(collector) => match collector.collect_observation().await {
+            Ok(observation) => {
+                let mut snapshot = observation.snapshot;
                 snapshot.images = derive_images(&snapshot);
+                let collected_at = snapshot.last_updated;
                 let health = HealthResponse {
                     status: HealthState::Ok,
                     mode: RuntimeMode::Docker,
@@ -582,6 +596,10 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     health,
                     runtime_map: empty_runtime_map(0),
                     findings: FindingsResponse::default(),
+                    compose_runtime_binding: bounded_compose_runtime_binding(
+                        observation.compose_containers,
+                        collected_at,
+                    ),
                     runtime_providers: unavailable_provider_slots(),
                     source_generation: 0,
                     docker_observation_revision: DockerObservationRevision::new(),
@@ -606,6 +624,51 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     // cache is observable through health, API proxy, or SSE routes.
     redact_health_response(&mut cache.health);
     cache
+}
+
+/// Compose declarations are read only from the configured project root and
+/// only through the existing bounded parser. A symlinked config is rejected
+/// rather than followed, so Docker-provided label text cannot broaden reads.
+fn bounded_compose_runtime_binding(
+    containers: Option<Vec<dockermap_core::ComposeRuntimeContainer>>,
+    collected_at: u64,
+) -> Option<(dockermap_core::ComposeScan, ComposeRuntimeBinding)> {
+    let containers = containers?;
+    let root = project_root().ok()?;
+    let files = discover_compose_files(&root);
+    if files.is_empty()
+        || files.iter().any(|file| {
+            std::fs::symlink_metadata(file)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(true)
+        })
+    {
+        return None;
+    }
+    let canonical_files = files
+        .iter()
+        .map(|file| file.canonicalize().ok())
+        .collect::<Option<Vec<_>>>()?;
+    let root = root.canonicalize().ok()?;
+    if canonical_files.iter().any(|file| !file.starts_with(&root)) {
+        return None;
+    }
+    let (scan, project, _fingerprint) = scan_compose_binding_snapshot(&root, &canonical_files)?;
+    let config_files = canonical_files
+        .iter()
+        .map(|file| file.to_string_lossy().to_string())
+        .collect::<BTreeSet<_>>();
+    Some((
+        scan,
+        ComposeRuntimeBinding {
+            project,
+            config_files,
+            containers,
+            collected_at,
+            provider_revision: String::new(),
+            fresh: true,
+        },
+    ))
 }
 
 const MAX_CONCURRENT_PROVIDER_SLOTS: usize = 2;
@@ -2423,6 +2486,7 @@ mod scheduler_tests {
             },
             runtime_map: empty_runtime_map(last_updated),
             findings: FindingsResponse::default(),
+            compose_runtime_binding: None,
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),

@@ -1123,6 +1123,12 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs.push(structuredClone(value.findings[5].evidenceRefs[0])); return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[1].kind = "docker_network_membership"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[6].evidenceRefs[0], value.findings[6].evidenceRefs[1]] = [value.findings[6].evidenceRefs[1], value.findings[6].evidenceRefs[0]]; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].targetRef = "compose_runtime_binding_" + "0".repeat(64); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].id = "/private/path/compose.yaml"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[1].providerRevision = "other-observation"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].summary = "/private/path/compose.yaml"; return value; })()],
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
