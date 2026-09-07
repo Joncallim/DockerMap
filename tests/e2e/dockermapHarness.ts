@@ -52,7 +52,15 @@ const daemonBinary = join(repoRoot, "crates/target/debug/dockermap-daemon");
 const gatewayBinary = join(repoRoot, "crates/target/debug/dockermap-docker-gateway");
 let contractsRuntimePackageReady = false;
 
-export async function startMockStack(): Promise<Stack> {
+/**
+ * Deliberately closed mock-stack switches. The Atlas route is a build-time
+ * preview and is never enabled by ambient test-process environment variables.
+ */
+export type MockStackOptions = {
+  atlasOverview?: true;
+};
+
+export async function startMockStack(options: MockStackOptions = {}): Promise<Stack> {
   const fixtureDir = mkdtempSync(join(tmpdir(), "dockermap-mock-e2e-"));
   const ports = await allocatePorts();
   const processes: ProcessHandle[] = [];
@@ -65,7 +73,7 @@ export async function startMockStack(): Promise<Stack> {
   processes.push(startApi({ port: ports.api, daemonPort: ports.daemon, webPort: ports.web }));
   await waitForJson(`http://127.0.0.1:${ports.api}/api/health`);
 
-  processes.push(startWeb({ port: ports.web, apiPort: ports.api }));
+  processes.push(startWeb({ port: ports.web, apiPort: ports.api, atlasOverview: options.atlasOverview === true }));
   await waitForHttp(`http://127.0.0.1:${ports.web}`);
 
   return {
@@ -462,7 +470,7 @@ function startApi(options: { port: number; daemonPort: number; webPort: number }
   });
 }
 
-function startWeb(options: { port: number; apiPort: number }) {
+function startWeb(options: { port: number; apiPort: number; atlasOverview?: boolean }) {
   return startProcess(
     "web",
     "npm",
@@ -471,7 +479,11 @@ function startWeb(options: { port: number; apiPort: number }) {
       cwd: repoRoot,
       env: {
         ...process.env,
-        VITE_API_BASE_URL: `http://127.0.0.1:${options.apiPort}`
+        VITE_API_BASE_URL: `http://127.0.0.1:${options.apiPort}`,
+        // Keep the public default closed even if a developer's shell happens
+        // to export a Vite preview flag. Only the explicit mock option opens
+        // this build-time test route.
+        VITE_ENABLE_ATLAS_OVERVIEW: options.atlasOverview ? "true" : "false"
       }
     },
   );
