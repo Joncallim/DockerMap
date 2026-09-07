@@ -1129,6 +1129,13 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[1].providerRevision = "other-observation"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].summary = "/private/path/compose.yaml"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].targetRef = "host_risk_untrusted"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].summary = "DOCKERMAP_TEST_FORGED_UNSPECIFIED_ADDRESS"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].kind = "docker_port_publication"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].summary = "0.0.0.0:443"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs.push(structuredClone(value.findings[7].evidenceRefs[0])); return value; })()],
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
@@ -1218,6 +1225,35 @@ test("runtime evidence is required and fails closed before browser publication",
     "utf8"
   ));
   assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
+
+  const unspecifiedAddressEdge = fixture.edges.find((edge: { evidenceRefs?: Array<{ kind?: unknown }> }) => (
+    edge.evidenceRefs?.[0]?.kind === "docker_unspecified_address_port_publication"
+  ));
+  assert.ok(unspecifiedAddressEdge, "canonical fixture must exercise the unspecified-address Docker boundary");
+  for (const [field, value] of [
+    ["target", "host_risk_untrusted"],
+    ["relationship", "connected_to"],
+  ] as const) {
+    const malformedUnspecifiedAddress = structuredClone(fixture);
+    const edge = malformedUnspecifiedAddress.edges.find((candidate: { evidenceRefs?: Array<{ kind?: unknown }> }) => (
+      candidate.evidenceRefs?.[0]?.kind === "docker_unspecified_address_port_publication"
+    ));
+    assert.ok(edge);
+    edge[field] = value;
+    assert.throws(() => validateDaemonResponse("/daemon/runtime/map", malformedUnspecifiedAddress));
+  }
+  for (const [field, value] of [
+    ["summary", "0.0.0.0:443"],
+    ["providerSlot", "project_npm"],
+  ] as const) {
+    const malformedUnspecifiedAddress = structuredClone(fixture);
+    const edge = malformedUnspecifiedAddress.edges.find((candidate: { evidenceRefs?: Array<{ kind?: unknown }> }) => (
+      candidate.evidenceRefs?.[0]?.kind === "docker_unspecified_address_port_publication"
+    ));
+    assert.ok(edge);
+    edge.evidenceRefs[0][field] = value;
+    assert.throws(() => validateDaemonResponse("/daemon/runtime/map", malformedUnspecifiedAddress));
+  }
 
   const missing = structuredClone(fixture);
   delete missing.edges[0].evidenceRefs;

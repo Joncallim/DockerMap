@@ -62,6 +62,10 @@ const SYSTEMD_REQUIRES_FINDING_RECOMMENDATION = "Inspect the target service stat
 const INTERNAL_NETWORK_PORT_FINDING_RULE = "docker.internal_network_member_publishes_port";
 const INTERNAL_NETWORK_PORT_FINDING_SUMMARY = "A container on an internal Docker network also has a published host port.";
 const INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION = "Review whether the host-port publication is intended for this internal-network service.";
+const UNSPECIFIED_ADDRESS_PORT_FINDING_RULE = "docker.port_published_on_unspecified_address";
+const UNSPECIFIED_ADDRESS_PORT_FINDING_SUMMARY = "Docker reported a container port published on an unspecified host address.";
+const UNSPECIFIED_ADDRESS_PORT_FINDING_RECOMMENDATION = "Review whether publishing this container port beyond loopback is intended.";
+const UNSPECIFIED_ADDRESS_PORT_EVIDENCE_SUMMARY = "Docker reported a container port published on an unspecified host address";
 const DOCKER_DAEMON_STATE_FINDING_RULE = "docker.daemon_state_bind_mount";
 const DOCKER_DAEMON_STATE_FINDING_SUMMARY = "A container has Docker daemon state access that may provide Docker daemon API authority.";
 const DOCKER_DAEMON_STATE_FINDING_RECOMMENDATION = "Review whether this container requires Docker daemon API authority.";
@@ -101,6 +105,7 @@ const FINDING_SUMMARY_KEYS = [
 const FINDING_RULE_CATEGORY = {
   [SYSTEMD_REQUIRES_FINDING_RULE]: "declaredDependencyCount",
   [INTERNAL_NETWORK_PORT_FINDING_RULE]: "hostPortPublicationCount",
+  [UNSPECIFIED_ADDRESS_PORT_FINDING_RULE]: "hostPortPublicationCount",
   [DOCKER_DAEMON_STATE_FINDING_RULE]: "dockerDaemonAuthorityCount",
   [DOCKER_DAEMON_STATE_PUBLISHED_PORT_FINDING_RULE]: "hostPortPublicationCount",
   [COMPOSE_DECLARED_TARGET_NOT_ACTIVE_FINDING_RULE]: "declaredDependencyCount",
@@ -145,6 +150,7 @@ const V1_EVIDENCE_EDGE = {
   docker_network_membership: { relationship: "connected_to", sourcePrefix: "docker_container_", targetPrefix: "docker_network_" },
   docker_volume_mount: { relationship: "mounts", sourcePrefix: "docker_container_", targetPrefix: "docker_volume_" },
   docker_port_publication: { relationship: "exposes", sourcePrefix: "docker_container_", targetPrefix: "network_listener_" },
+  docker_unspecified_address_port_publication: { relationship: "exposes", sourcePrefix: "docker_container_", targetPrefix: "host_risk_docker_unspecified_address_port" },
   docker_compose_depends_on: { relationship: "depends_on", sourcePrefix: "docker_container_", targetPrefix: "docker_container_" },
   docker_daemon_state_bind_mount: { relationship: "exposes_daemon_state", sourcePrefix: "docker_container_", targetPrefix: "host_risk_docker_daemon_state" },
 } as const;
@@ -409,6 +415,7 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
       if (value.subjectRef !== candidate.source || !candidate.source.startsWith(expected.sourcePrefix) || !candidate.target.startsWith(expected.targetPrefix) || candidate.source === candidate.target) return "runtime_evidence_source_binding";
       if ((isV4 || isV5) && candidate.target !== "host_local") return "runtime_evidence_edge_binding";
       if (value.kind === "docker_daemon_state_bind_mount" && candidate.target !== "host_risk_docker_daemon_state") return "runtime_evidence_daemon_state_target";
+      if (value.kind === "docker_unspecified_address_port_publication" && candidate.target !== "host_risk_docker_unspecified_address_port") return "runtime_evidence_edge_binding";
       if (value.kind === "docker_port_publication") {
         const listeners = nodesById.get(candidate.target);
         if (!listeners) return "runtime_evidence_port_listener_missing";
@@ -642,6 +649,38 @@ function hasCoherentFindings(payload: unknown): boolean {
             && declared.providerRevision === binding.providerRevision;
         })();
     }
+    if (finding.ruleId === UNSPECIFIED_ADDRESS_PORT_FINDING_RULE) return finding.severity === "advisory"
+      && finding.summary === UNSPECIFIED_ADDRESS_PORT_FINDING_SUMMARY
+      && finding.recommendation === UNSPECIFIED_ADDRESS_PORT_FINDING_RECOMMENDATION
+      && typeof finding.id === "string"
+      && finding.id.startsWith("finding_docker_port_published_on_unspecified_address_")
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("docker_container_")
+      && finding.targetRef === "host_risk_docker_unspecified_address_port"
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 1
+      && (() => {
+        const candidateEvidence = finding.evidenceRefs[0];
+        if (!candidateEvidence || typeof candidateEvidence !== "object") return false;
+        const evidence = candidateEvidence as Record<string, unknown>;
+        // V1 Docker facts predate the explicit null slot in some daemon
+        // responses. Both spellings represent the Docker-wide collector;
+        // no named slot is admissible at this browser boundary.
+        return evidence.version === 1
+          && evidence.provider === "docker"
+          && evidence.kind === "docker_unspecified_address_port_publication"
+          && evidence.assertionKind === "observed"
+          && evidence.summary === UNSPECIFIED_ADDRESS_PORT_EVIDENCE_SUMMARY
+          && evidence.subjectRef === finding.subjectRef
+          && (evidence.providerSlot === undefined || evidence.providerSlot === null)
+          && evidence.freshness === "fresh"
+          && typeof evidence.collectedAt === "number"
+          && Number.isSafeInteger(evidence.collectedAt)
+          && evidence.collectedAt >= 0
+          && typeof evidence.providerRevision === "string"
+          && evidence.providerRevision.length > 0
+          && evidence.providerRevision !== String(evidence.collectedAt);
+      })();
     if (finding.ruleId !== INTERNAL_NETWORK_PORT_FINDING_RULE) return false;
     return finding.severity === "advisory"
       && finding.summary === INTERNAL_NETWORK_PORT_FINDING_SUMMARY

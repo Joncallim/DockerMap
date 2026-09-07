@@ -81,6 +81,26 @@ describe("Findings screen", () => {
     expect(html).not.toContain("Internet exposure");
   });
 
+  it("renders only static unspecified-address publication advice and suppresses it for mock evidence", () => {
+    const unspecifiedAddress = structuredClone(findings);
+    unspecifiedAddress.findings[0] = {
+      id: "finding_docker_port_published_on_unspecified_address_opaque",
+      ruleId: "docker.port_published_on_unspecified_address",
+      severity: "advisory",
+      summary: "Docker reported a container port published on an unspecified host address.",
+      recommendation: "Review whether publishing this container port beyond loopback is intended.",
+      subjectRef: "docker_container_private", targetRef: "host_risk_docker_unspecified_address_port",
+      evidenceRefs: [{ version: 1, id: "opaque-publication", provider: "docker", kind: "docker_unspecified_address_port_publication", assertionKind: "observed", summary: "Docker reported a container port published on an unspecified host address", subjectRef: "docker_container_private", collectedAt: 1, providerRevision: "opaque-revision", freshness: "fresh" }]
+    };
+    const html = render({ findings: unspecifiedAddress });
+    expect(html).toContain("Unspecified-address port publication needs review");
+    expect(html).toContain("Host port publication");
+    expect(html).toContain("Review whether publishing this container port beyond loopback is intended.");
+    expect(html).toContain("Does not establish Internet reachability, reachability from any network, traffic, causality, or remediation.");
+    for (const hidden of ["docker_container_private", "opaque-publication", "opaque-revision", "0.0.0.0", ":443"]) expect(html).not.toContain(hidden);
+    expect(render({ findings: unspecifiedAddress, evidenceMode: "mock", modelProvenance: "mock" })).not.toContain("Unspecified-address port publication needs review");
+  });
+
   it("labels daemon-state access as a bounded authority review without mount details", () => {
     const daemonState = structuredClone(findings);
     daemonState.findings[0] = {
