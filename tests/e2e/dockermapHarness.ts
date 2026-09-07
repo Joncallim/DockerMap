@@ -85,7 +85,17 @@ export async function startMockStack(options: MockStackOptions = {}): Promise<St
   };
 }
 
-export async function startProductionImageStack(options: { liveDocker?: boolean } = {}): Promise<Stack> {
+/**
+ * Closed production-image switches.  Atlas is deliberately unavailable unless
+ * this exact test option supplies its build argument; ambient environment
+ * variables must never alter the image under test.
+ */
+export type ProductionImageStackOptions = {
+  liveDocker?: boolean;
+  atlasOverview?: true;
+};
+
+export async function startProductionImageStack(options: ProductionImageStackOptions = {}): Promise<Stack> {
   const docker = detectDockerCommand();
   if (!docker) {
     throw new SkipLiveDockerError("Docker is not reachable by the current user or sudo -n docker.");
@@ -120,7 +130,11 @@ export async function startProductionImageStack(options: { liveDocker?: boolean 
     // Select only after fixture networks exist so the isolated client bridge
     // cannot collide with either of the fixture's two explicitly pinned nets.
     clientSubnet = unusedFixtureSubnet(docker);
-    runDocker(docker, ["build", "--tag", image, "."], repoRoot);
+    runDocker(
+      docker,
+      ["build", ...(options.atlasOverview === true ? ["--build-arg", "VITE_ENABLE_ATLAS_OVERVIEW=true"] : []), "--tag", image, "."],
+      repoRoot,
+    );
     const runArgs = [
       "run", "--detach", "--name", container,
       "--publish", `127.0.0.1:${port}:3233`,

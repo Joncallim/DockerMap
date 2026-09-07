@@ -138,7 +138,7 @@ jobs:
       # exercises nginx, browser auth, live labeled Docker inventory, and the
       # two-client rate-limit regression inside the built production image.
       - name: Run production-image browser tests
-        run: DOCKERMAP_E2E_PRODUCTION_IMAGE=1 npx playwright test --config tests/e2e/playwright.config.ts --grep @production-image
+        run: DOCKERMAP_E2E_PRODUCTION_IMAGE=1 DOCKERMAP_ATLAS_PRODUCTION_IMAGE=1 npx playwright test --config tests/e2e/playwright.config.ts --grep @production-image
 
   docker-image:
     name: Docker image
