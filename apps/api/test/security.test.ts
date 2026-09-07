@@ -1021,6 +1021,14 @@ test("daemon model responses require non-empty revision and complete provider st
   const history = await fixture("observed-change-history-response.json");
   const observedEvents = await fixture("observed-docker-event-history-response.json");
   const resourceTelemetry = await fixture("observed-resource-telemetry-response.json");
+  // Rust serializes an absent V1 Docker provider slot by omitting the field.
+  // Keep this daemon-emitted form accepted alongside the older null fixture
+  // spelling, or real Docker findings fail closed at the browser proxy.
+  const emittedDockerFinding = structuredClone(findings);
+  delete ((emittedDockerFinding.findings as Array<{ evidenceRefs: Array<Record<string, unknown>> }>)[1]!.evidenceRefs[0]!).providerSlot;
+  delete ((emittedDockerFinding.findings as Array<{ evidenceRefs: Array<Record<string, unknown>> }>)[1]!.evidenceRefs[1]!).providerSlot;
+  const { validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/findings", emittedDockerFinding));
   const invalidResponses = [
     ["/daemon/snapshot", { ...snapshot, modelRevision: "" }],
     ["/daemon/snapshot", (() => { const value = structuredClone(snapshot); delete value.modelRevision; return value; })()],
