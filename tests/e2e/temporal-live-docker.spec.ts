@@ -103,18 +103,19 @@ test.describe("Docker temporal observations", () => {
     expect(preResetEvent).toBeDefined();
     const preResetId = preResetEvent!.id;
 
-    // Stop only the labelled read gateway and wait for the daemon to observe
-    // the broken stream before starting it again. This stable failure signal
-    // prevents an immediate stop/start from hiding the source transition.
+    // Stop only the labelled read gateway and require the bounded snapshot
+    // timeout's mock fallback before starting it again. A reconnecting Docker
+    // stream alone clears a continuity epoch but would not prove the stricter
+    // Docker -> mock -> Docker source-generation reset under test here.
     await stack.stopDockerGateway!();
     await pollJson(
-      "Docker event collection disconnect after filtered gateway stop",
+      "Docker mock fallback after filtered gateway stop",
       () => getJson<ObservedEventsResponse>(observedUrl, auth),
-      (response) => (
-        (response.source === "docker" && response.collectionState === "reconnecting")
-        || (response.source === "mock" && response.collectionState === "unavailable")
-      )
-        && !response.events.some((event) => event.id === preResetId),
+      (response) => response.source === "mock"
+        && response.collectionState === "unavailable"
+        && response.currentModelRevision === null
+        && response.currentObservationRevision === null
+        && response.events.length === 0,
     );
 
     // Start only the labelled read gateway. The daemon must recover its
@@ -209,13 +210,13 @@ test.describe("Docker temporal observations", () => {
 
 async function waitForNewDiedEvents(
   observedUrl: string,
-  headers: HeadersInit,
+  auth: RequestInit,
   existingIds: Set<string>,
   expectedCount: number,
 ) {
   return pollJson(
     `${expectedCount} new container_died event observation(s)`,
-    () => getJson<ObservedEventsResponse>(observedUrl, headers),
+    () => getJson<ObservedEventsResponse>(observedUrl, auth),
     (response) => response.source === "docker"
       && response.collectionState === "collecting"
       && response.events.filter((event) => event.kind === "container_died" && !existingIds.has(event.id)).length >= expectedCount,
@@ -291,21 +292,13 @@ function describeFindingsShape(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "root=non_object";
   const root = value as Record<string, unknown>;
   const findings = Array.isArray(root.findings) ? root.findings : null;
-  if (!findings) return `rootKeys=${safeKeys(root).join(",")};findings=non_array`;
-  const rules = findings.map((finding) => {
-    if (!finding || typeof finding !== "object" || Array.isArray(finding)) return "<non_object>";
-    const rule = (finding as Record<string, unknown>).ruleId;
-    return typeof rule === "string" ? rule : "<non_string>";
-  });
-  const findingKeys = findings.map((finding) => {
-    if (!finding || typeof finding !== "object" || Array.isArray(finding)) return "<non_object>";
-    return safeKeys(finding as Record<string, unknown>).join(",");
-  });
-  return `rootKeys=${safeKeys(root).join(",")};findingCount=${findings.length};rules=${rules.join("|")};findingKeys=${findingKeys.join("|")}`;
-}
-
-function safeKeys(value: Record<string, unknown>): string[] {
-  return Object.keys(value).sort();
+  if (!findings) return "root=object;findings=non_array";
+  const boundedCount = findings.length <= 64 ? String(findings.length) : "over_cap";
+  const temporalRows = findings.filter((finding) => finding
+    && typeof finding === "object"
+    && !Array.isArray(finding)
+    && (finding as Record<string, unknown>).ruleId === temporalRule).length;
+  return `root=object;findings=array;count=${boundedCount};temporalRows=${temporalRows <= 1 ? temporalRows : "multiple"}`;
 }
 
 async function pollJson<T>(label: string, request: () => Promise<T>, predicate: (response: T) => boolean, timeoutMs = 45_000): Promise<T> {
