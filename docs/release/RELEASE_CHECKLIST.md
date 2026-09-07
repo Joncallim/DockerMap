@@ -182,4 +182,11 @@ Store this evidence in release notes or the release PR.
   Current fixture evidence is `npm run test:rust:daemon`, covering fake systemd, tmux,
   npm/package, native-process-shaped, reverse-proxy marker, DNS marker, diagnostic, and
   edge-metadata secret sentinels without live host services.
+- For a candidate that includes V5 tmux provenance, record the focused core,
+  daemon, contract/API, and browser-state checks run for that exact candidate.
+  This evidence validates the constrained local-session listing fact, its
+  fail-closed lifecycle, and producer/UI suppression of raw session names, IDs,
+  and metadata; it is not a claim of live-host session availability or of session
+  attachment, activity, process ownership, health, reachability, persistence,
+  or completeness.
 - Known limitations and skipped tests.

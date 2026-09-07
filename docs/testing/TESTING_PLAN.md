@@ -39,6 +39,12 @@ containers, or services.
   static advisory projection only; they do not treat it as evidence that Compose accepted a file,
   applied a start order, required either dependency, or established readiness, health, traffic,
   deployment failure, causality, Internet reachability, or compromise.
+- V4 Cron evidence is tested as a schedule declaration, not execution proof. V5 tmux evidence
+  is tested as a fixed session listing for a unique `tmux_session_* -> host_local` `runs_on`
+  edge, with its independent 15-second slot lifecycle, fresh/stale/timed-out values, private
+  marker removal, mock and lifecycle-reset suppression, restricted-PID disablement, ambiguous
+  source or host rejection, and no raw session name, ID, or metadata in
+  producer-published or public UI state.
 - Rust-owned JSON Schema and generated TypeScript declarations, Node-owned
   envelope/request/SSE schemas, and readable contract fixtures. The contract
   check fails on stale generated output, invalid fixtures, incomplete
@@ -109,6 +115,11 @@ The API tests cover:
 
 These tests run against the real Express entry point with mock fallback or a stub daemon.
 They do not require Docker, systemd, tmux, reverse-proxy software, DNS services, or a GUI.
+
+The tmux provenance assertions are fixture-first and use fake command output;
+they are not live-host proof that a particular tmux server is available or that
+any listed session is attached, active, owns work, is healthy, reachable,
+persistent, or complete.
 
 The Python/native-process provider plan now lives in
 [`docs/planning/PYTHON_AND_PROCESS_PROVIDERS.md`](../planning/PYTHON_AND_PROCESS_PROVIDERS.md).
