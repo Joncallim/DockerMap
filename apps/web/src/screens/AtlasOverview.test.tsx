@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppContext, type AppContextValue } from "../context";
 import { collisionFixture, runtimeFixture } from "../lib/atlas/fixtures";
@@ -17,7 +18,11 @@ function context(atlas = envelope()): AppContextValue {
 }
 
 function markup(value: AppContextValue): string {
-  return renderToStaticMarkup(<AppContext.Provider value={value}><AtlasOverview /></AppContext.Provider>);
+  return renderToStaticMarkup(<AppContext.Provider value={value}><MemoryRouter initialEntries={["/atlas"]}><AtlasOverview /></MemoryRouter></AppContext.Provider>);
+}
+
+function mounted(value: AppContextValue, path = "/atlas") {
+  return <AppContext.Provider value={value}><MemoryRouter initialEntries={[path]}><Routes><Route path="/atlas" element={<AtlasOverview />} /></Routes></MemoryRouter></AppContext.Provider>;
 }
 
 describe("AtlasOverview", () => {
@@ -65,6 +70,46 @@ describe("AtlasOverview", () => {
     expect(html).not.toContain("data-atlas-attachment");
   });
 
+  it("uses a bounded URL-backed aggregate expansion without claiming inferred topology", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root: Root = createRoot(host);
+    const aggregateAtlas = projectRuntimeMap(runtimeFixture(10, "outbound_star", "network"));
+    await act(async () => root.render(mounted(context(aggregateAtlas))));
+    const control = host.querySelector<HTMLButtonElement>(".atlas-context-expansions button")!;
+    expect(control.getAttribute("aria-label")).toBe("Recorded context coverage 1 of 1");
+    await act(async () => control.click());
+    expect(control.getAttribute("aria-expanded")).toBe("true");
+    expect(host.querySelector("[data-atlas-expanded=aggregate]")?.textContent).toContain("resolved context records");
+    expect(host.textContent).toContain("not inferred topology or causality");
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it("names multiple aggregate controls by stable ordinal and count without exposing their keys", () => {
+    const base = projectRuntimeMap(runtimeFixture(10, "outbound_star", "network"));
+    const first = base.model.aggregates[0]!;
+    const second = { ...first, key: "atlas:attachment-aggregate:1" as typeof first.key };
+    const html = markup(context({ ...base, model: { ...base.model, aggregates: [first, second] } }));
+    expect(html).toContain('aria-label="Recorded context coverage 1 of 2"');
+    expect(html).toContain('aria-label="Recorded context coverage 2 of 2"');
+    expect(html).not.toContain("attachment-aggregate");
+  });
+
+  it("focuses URL-expanded aggregate content instead of a selected subject", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root: Root = createRoot(host);
+    const aggregateAtlas = projectRuntimeMap(runtimeFixture(10, "outbound_star", "network"));
+    const aggregate = aggregateAtlas.model.aggregates[0]!.key;
+    await act(async () => root.render(mounted(context(aggregateAtlas), `/atlas?expand=${encodeURIComponent(aggregate)}`)));
+    const expanded = host.querySelector<HTMLElement>("[data-atlas-expanded=aggregate]")!;
+    expect(document.activeElement).toBe(expanded);
+    expect(host.querySelector(".atlas-subject.is-selected")).toBeNull();
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
   it("keeps long names bounded while exposing the complete projected safe display in text", () => {
     const input = runtimeFixture(3);
     input.nodes[2] = { ...input.nodes[2]!, label: `safe ${"label ".repeat(120)}` };
@@ -78,7 +123,7 @@ describe("AtlasOverview", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const root: Root = createRoot(host);
-    await act(async () => root.render(<AppContext.Provider value={context()}><AtlasOverview /></AppContext.Provider>));
+    await act(async () => root.render(mounted(context())));
     const first = host.querySelector<HTMLButtonElement>(".atlas-directory button:not(:disabled)")!;
     await act(async () => first.click());
     expect(host.querySelector(".atlas-inspector")?.textContent).toContain("no attention");
@@ -95,7 +140,7 @@ describe("AtlasOverview", () => {
       ...atlas,
       model: { ...atlas.model, subjects: atlas.model.subjects.map((subject) => ({ ...subject, attention: "advisory" as const, ambiguity: "unresolved" as const, operationalState: "updating" as const, freshness: "unavailable" as const })) }
     };
-    await act(async () => root.render(<AppContext.Provider value={context(orthogonal)}><AtlasOverview /></AppContext.Provider>));
+    await act(async () => root.render(mounted(context(orthogonal))));
     await act(async () => host.querySelector<HTMLButtonElement>(".atlas-directory button:not(:disabled)")!.click());
     const inspector = host.querySelector(".atlas-inspector")?.textContent ?? "";
     expect(inspector).toContain("advisory attention, unresolved identity, updating, unavailable observation");
@@ -109,7 +154,7 @@ describe("AtlasOverview", () => {
     document.body.append(host);
     const root: Root = createRoot(host);
     const local = projectRuntimeMap(runtimeFixture(5, "outbound_star", "network"));
-    await act(async () => root.render(<AppContext.Provider value={context(local)}><AtlasOverview /></AppContext.Provider>));
+    await act(async () => root.render(mounted(context(local))));
     await act(async () => host.querySelector<HTMLButtonElement>(".atlas-directory button:not(:disabled)")!.click());
     const inspector = host.querySelector(".atlas-inspector")!;
     expect(inspector.textContent).toContain("Recorded local context");
@@ -132,7 +177,7 @@ describe("AtlasOverview", () => {
         ? { ...subject, attention: "advisory" as const, operationalState: "updating" as const, freshness: "unavailable" as const }
         : subject) }
     };
-    await act(async () => root.render(<AppContext.Provider value={context(marked)}><AtlasOverview /></AppContext.Provider>));
+    await act(async () => root.render(mounted(context(marked))));
     await act(async () => host.querySelector<HTMLButtonElement>(".atlas-directory button:not(:disabled)")!.click());
     const rail = host.querySelector(".atlas-local-context")?.textContent ?? "";
     expect(rail).toContain("advisory attention, unambiguous identity, updating, unavailable observation");
@@ -145,13 +190,16 @@ describe("AtlasOverview", () => {
     document.body.append(host);
     const root: Root = createRoot(host);
     const initial = context(envelope(2));
-    await act(async () => root.render(<AppContext.Provider value={initial}><AtlasOverview /></AppContext.Provider>));
-    await act(async () => host.querySelector<HTMLButtonElement>(".atlas-directory button:not(:disabled)")!.click());
+    const selectedKey = initial.atlas!.model.subjects.find((subject) => subject.routability === "routable")!.key;
+    await act(async () => root.render(mounted(initial, `/atlas?subject=${selectedKey}`)));
+    expect(host.querySelector(".atlas-inspector")?.textContent).not.toContain("Select a subject");
+    expect(host.querySelector(".atlas-subject.is-selected")).not.toBeNull();
     const replacement = projectRuntimeMap(collisionFixture());
     const revised = { ...replacement, sourceRevision: "replacement-r2" };
-    await act(async () => root.render(<AppContext.Provider value={context(revised)}><AtlasOverview /></AppContext.Provider>));
+    await act(async () => root.render(mounted(context(revised), `/atlas?subject=${selectedKey}`)));
     expect(document.activeElement).toBe(host.querySelector(".atlas-directory"));
     expect(host.querySelector(".atlas-inspector")?.textContent).toContain("Select a subject");
+    expect(host.querySelector(".atlas-route-status")?.textContent).toContain("unavailable");
     await act(async () => root.unmount());
     host.remove();
   });
