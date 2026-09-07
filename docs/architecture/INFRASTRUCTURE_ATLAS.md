@@ -11,7 +11,7 @@ The Atlas must be:
 - truthful: every subject, group, membership, attachment and directional relation has a deterministic source rule;
 - deterministic: equivalent canonical evidence produces equivalent projection and logical layout;
 - structurally stable: unrelated changes do not globally reshuffle the host;
-- useful: a user can locate subjects, exposure, attachments, declared relationships, attention and uncertainty quickly;
+- useful: a user can locate subjects, recorded port-publication context, attachments, declared relationships, attention and uncertainty quickly;
 - visually restrained: simple HTML/SVG/CSS, strong alignment/hierarchy, low simultaneous color, progressive disclosure;
 - continuous: Home, Atlas, Networking, Runtime and detail surfaces reuse one topology identity/interaction language;
 - read-only, collision-safe, redaction-safe and bounded.
@@ -28,7 +28,7 @@ The current web runtime depends on React, React DOM and React Router; it has no 
 
 `SystemModel` contains useful collision-safe services, networks, volumes and runtime records, but `ServiceKind` is heuristic classification. It is never topology authority.
 
-The canonical `ContainerRecord` currently contains id/name/role/image/status/ports/networks/mounts/dependsOn but no Compose project identity. V1 therefore cannot assume project grouping. Project grouping is optional only if #259 identifies a trustworthy existing source; otherwise Docker subjects remain ungrouped or use a provider-neutral presentation taxonomy.
+The canonical `ContainerRecord` currently contains id/name/role/image/status/ports/networks/mounts/dependsOn but no Compose project identity. V1 therefore has no project grouping. A future project group requires a separately approved, collision-safe contract; until then Docker subjects are ungrouped or use a provider-neutral presentation taxonomy.
 
 Runtime contracts contain many distinct node/provider kinds. Atlas must not flatten them all into fake generic services.
 
@@ -91,6 +91,43 @@ interface AtlasModel {
 to apply or reject a live result. It is not an input to semantic projection,
 exact layout golden files or logical coordinates.
 
+```ts
+type AtlasKey = string; // opaque, non-empty, unique after publication
+type AtlasRoutability = "routable" | "non_routable";
+type AtlasRole = "primary" | "context" | "attachment" | "inspector_only" | "unsupported";
+type AtlasSourceRef =
+  | { kind: "runtime_node"; provider: RuntimeProviderKind; nodeId: AtlasKey }
+  | { kind: "runtime_evidence"; evidenceId: string; subjectId: AtlasKey }
+  | { kind: "projection"; rule: ProjectionRuleId };
+type ProjectionRuleId = `atlas-v1/${string}`;
+
+interface AtlasSubject {
+  key: AtlasKey;
+  routability: AtlasRoutability;
+  role: AtlasRole;
+  source: AtlasSourceRef;
+  display: string; // bounded, redacted React text only; never a key
+  operationalState: "healthy" | "warning" | "degraded" | "offline" | "updating" | "unknown";
+  freshness: "fresh" | "stale" | "timed_out" | "unavailable" | "disabled" | "unknown";
+  attention: "none" | "advisory" | "warning";
+  ambiguity: "none" | "collision" | "unresolved" | "unsupported";
+  rule: ProjectionRuleId;
+}
+interface AtlasGroup { key: AtlasKey; memberKeys: AtlasKey[]; membershipEvidence: AtlasSourceRef[]; rule: ProjectionRuleId; }
+interface AtlasLane { key: string; subjectKeys: AtlasKey[]; rule: ProjectionRuleId; } // presentation only, never containment
+interface AtlasRelation { source: AtlasKey; target: AtlasKey; direction: "forward"; evidence: AtlasSourceRef[]; rule: ProjectionRuleId; }
+interface AtlasMembership { subject: AtlasKey; context: AtlasKey; evidence: AtlasSourceRef[]; rule: ProjectionRuleId; }
+interface AtlasAttachment { subject: AtlasKey; context: AtlasKey; evidence: AtlasSourceRef[]; rule: ProjectionRuleId; }
+interface AtlasAggregate { key: string; population: { resolved: number; unresolved: number; ambiguous: number }; rule: ProjectionRuleId; }
+interface AtlasDiagnostic { kind: "collision" | "unresolved" | "unsupported" | "disagreement" | "bounded_omission"; source: AtlasSourceRef; rule: ProjectionRuleId; }
+interface AtlasStats { subjects: number; relations: number; attachments: number; unsupported: number; boundedOmissions: number; }
+```
+
+The actual implementation must use closed discriminated unions equivalent to
+this contract (not free-form strings). `AtlasSourceRef` may contain only safe
+published runtime node/evidence identifiers and named projection rules: never
+raw metadata, path, label, port, Compose content or error text.
+
 ### Subject
 A routable or visible infrastructure identity. It carries provider/kind metadata plus **separate** operational state, freshness, attention and ambiguity fields.
 
@@ -110,7 +147,7 @@ Directional only when the source establishes direction. Compose start-order and 
 Non-causal context such as network membership or storage attachment.
 
 ### Aggregate
-A bounded deterministic presentation object for high-degree structures. Aggregation may reduce detail but must propagate material child attention/ambiguity/exposure counts.
+A bounded deterministic presentation object for high-degree structures. Aggregation may reduce detail but must propagate material child attention, ambiguity and recorded-port context counts.
 
 ### Diagnostic
 Represents unsupported, unresolved, collided or otherwise non-routable presentation evidence without selecting an arbitrary endpoint.
@@ -140,17 +177,23 @@ A healthy subject observed through stale evidence is not automatically unhealthy
 
 Compact aggregate summaries may define explicit precedence for markers/text, but the underlying fields remain separate and fixtures cover cross-products.
 
-## 6. Provider-neutral presentation taxonomy
+## 6. Frozen provider-neutral presentation taxonomy
 
-#262 must exhaustively classify supported runtime kinds into one of:
+The V1 adapter classifies every current `RuntimeNodeKind` as follows. This is
+presentation vocabulary, not a claim of service ownership, containment or
+causality; `provider` and `layer` may choose a non-semantic lane only.
 
-- primary spatial subject;
-- secondary/context subject;
-- membership/attachment object;
-- inspector-only evidence;
-- unsupported/neutral fallback.
+| Runtime kind | Atlas role |
+| --- | --- |
+| `container`, `systemd_service`, `pm2_app`, `node_application`, `python_application`, `database`, `worker` | primary subject |
+| `host`, `tailnet_node`, `reverse_proxy`, `local_dns_resolver`, `dns_provider`, `external_api`, `orchestrator_workload` | context subject |
+| `docker_network`, `docker_volume`, `storage`, `network_listener` | attachment/context; never causal containment |
+| `scheduled_job`, `tmux_session`, `process`, `package`, `package_dependency`, `ai_agent`, `host_risk`, `service` | inspector-only unless a later closed rule promotes it |
 
-The taxonomy preserves provider truth. `runtime.layer` and provider names may organise presentation but never become causal architecture by themselves. Unknown future kinds fail closed to neutral/unsupported presentation.
+Unknown future kinds, unknown provider/kind pairs, and collision/unresolved
+records become a visible neutral unsupported diagnostic. They never become a
+guessed primary service. `runtime.layer` and provider names may organise
+presentation but never become causal architecture by themselves.
 
 ## 7. Logical layout contract
 
@@ -196,7 +239,7 @@ Lenses alter emphasis, secondary visibility and inspector content. They do not r
 Orientation-first, not edge-first. Prioritise host/group/subject placement, identity and material attention. Do not draw every relation. Secondary relationship detail appears in a lens or selected local context.
 
 ### Connectivity
-Shows bounded network membership, published host bindings and other explicitly evidenced connectivity context. Membership is not traffic.
+Shows bounded network membership, Docker-recorded port-publication context and other explicitly evidenced connectivity context. Membership is not traffic, and a port record is not a host-boundary, bind-scope, protocol or reachability claim.
 
 ### Dependencies
 Shows only genuinely directional evidence. Dense relation sets obey #268 congestion/aggregation rules.
@@ -242,7 +285,7 @@ Relationship grammar:
 | evidenced dependency | as evidenced | restrained directed connector in dependency/focus context |
 | network membership | none | membership/rail/aggregate |
 | storage attachment | none | attachment/aggregate |
-| published host port/socket | binding only | host-boundary marker |
+| recorded port publication | no direction or reachability | bounded context/attachment |
 | provider/runtime membership | none unless source says otherwise | context/grouping |
 | unresolved/collided | none | visible non-routable uncertainty |
 | heuristic kind | none | icon/search metadata only |
@@ -333,7 +376,7 @@ Screenshot or AI visual review cannot authorize semantic change.
 
 ## 16. Usefulness and visual-quality gates
 
-#260 freezes task-oriented acceptance: locate a subject, attention, host-published exposure, network/storage membership, a recorded dependency, ambiguity, and the boundary of unknown evidence without critical facts depending on hover.
+#260 freezes task-oriented acceptance: locate a subject, attention, recorded port-publication context, network/storage membership, a recorded dependency, ambiguity, and the boundary of unknown evidence without critical facts depending on hover.
 
 Visual rubric covers hierarchy, alignment, whitespace/rhythm, label legibility, connector congestion/crossings, simultaneous color count, group distinguishability, selected/focus clarity, attention salience and continuity with adjacent screens.
 

@@ -371,3 +371,21 @@ diagnostics. The model separately defines non-semantic lanes, source-revision
 envelopes and named projection/bounds rules.
 
 Status: absorbed by #251/#259; no renderer or backend expansion is authorised.
+
+## Pass 29 — closure precision sweep
+
+### Finding
+The first authority-matrix amendment still used host-boundary wording for opaque
+port strings, described rather than defined the serialisable object contract,
+and deferred the current runtime-kind taxonomy to a later issue.
+
+### Refinement
+The architecture now calls opaque ports only Docker-recorded port-publication
+context, with no host placement, bind scope, protocol or reachability meaning.
+It includes a normative closed field contract for subjects, semantic groups,
+presentation lanes, relations, memberships, attachments, aggregates,
+diagnostics, statistics and safe source references. It also exhaustively maps
+all current runtime node kinds to primary, context, attachment, inspector-only
+or neutral unsupported roles. Unknown future kinds remain diagnostics.
+
+Status: absorbed by #251/#259/#262. No new production authority is authorised.
