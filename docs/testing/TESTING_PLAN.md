@@ -28,6 +28,13 @@ containers, or services.
   a daemon-lifetime 64-row newest-first bound, source reset, mock-empty behavior,
   opaque/closed response shapes, authenticated API routing, and live-model revision
   coherence in the browser.
+- Docker event and temporal-Finding tests for the separate fixed event vocabulary,
+  digest-only redaction, 64-row journal and 4,096-ID dedupe bounds, bounded replay
+  and reconnect lifecycle, source/collection-state reset, continuous-epoch
+  requirements, three-`container_died`/five-minute threshold, inclusive boundary
+  and expiry, backward-clock suppression, malformed/duplicate API payloads, and
+  redacted Findings presentation. These are deterministic local tests; they do not
+  prove a real-host event sequence or daemon-restart persistence.
 - Current Docker resource-telemetry tests for the finite unfiltered gateway
   authority, label-scoped denial, 16-row/two-request/750-ms/8-second bounds,
   source reset and revision coherence, raw-stat exclusion, contract/API
@@ -94,10 +101,42 @@ The API tests cover:
 - Authenticated `/api/history` and `/api/v1/history` routing, including schema rejection
   for malformed or incoherent daemon history responses and mock fallback that is empty
   rather than a fabricated live timeline.
+- Authenticated `/api/observed-events` and `/api/v1/observed-events` routing, including
+  rejection of mock/unavailable or malformed stream responses and raw identity/time,
+  source, and anchor-shape violations.
+- `/daemon/findings` response validation for the exact redacted temporal singleton,
+  its closed three-witness vocabulary, duplicate-row rejection, and rejection of
+  temporal fields on timeless findings.
 - Hidden daemon error details by default, with opt-in detail exposure for JSON and SSE routes.
 
 These tests run against the real Express entry point with mock fallback or a stub daemon.
 They do not require Docker, systemd, tmux, reverse-proxy software, DNS services, or a GUI.
+
+## Temporal event evidence and release boundary
+
+The temporal implementation is intentionally bounded and in-memory. Rust tests cover
+event parsing, source-time validation, deduplication, replay cursors, reconnect and
+source-generation transitions, continuity epochs, retention caps, clock regression,
+threshold negatives, and expiry. API and web tests cover authentication, closed
+contracts, redaction, revision/state coherence, and the static Findings presentation.
+Run the deterministic evidence with:
+
+```bash
+npm run test:rust:core
+npm run test:rust:daemon
+npm run test:api
+npm run test:web
+```
+
+The ordinary live-Docker suite remains a separate, labelled fixture gate. A future
+#70 release exercise must deliberately start, stop, and restart only isolated testbed
+containers, verify the exact event sequence appears once, prove unrelated services are
+excluded, and record cleanup. It must also state whether daemon restart is expected to
+replay the bounded five-minute window or to begin without persisted history; the current
+implementation has no DockerMap-owned event store and makes no persistence/continuity
+claim. Until that exercise and decision are recorded against an exact candidate SHA,
+the temporal slice is evidence for implementation behavior, not closure evidence for
+the #70 epic.
 
 The Python/native-process provider plan now lives in
 [`docs/planning/PYTHON_AND_PROCESS_PROVIDERS.md`](../planning/PYTHON_AND_PROCESS_PROVIDERS.md).

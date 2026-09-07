@@ -176,9 +176,52 @@ proof of a safe current-service mapping. Demo samples remain separately
 labelled sample data; they are not observed history.
 
 This is the initial #70 slice, not a general telemetry system. It has no
-persistence across daemon restarts, no Docker `events` collection, no timing
-guarantee beyond the later compared snapshot, and no assertion of deployment,
-restart, failure, recovery, causality, health, reachability, or impact.
+persistence across daemon restarts, no timing guarantee beyond the bounded
+event observations described below, and no assertion of deployment, restart,
+failure, recovery, causality, health, reachability, or impact from inventory
+deltas.
+
+### Bounded Docker event observations and temporal advisory
+
+The daemon also consumes a fixed, read-only Docker container event stream through
+the Docker Read Gateway. `GET /daemon/observed-events` (and the authenticated
+browser aliases) exposes this as a separate history source; it is never merged
+with the snapshot-derived `/daemon/history` deltas above. The event stream accepts
+only the closed `create`, `start`, `stop`, `die`, `restart`, `destroy`, and
+`health_status` vocabulary. Raw actor attributes, names, exit text, labels,
+paths, diagnostics, and other provider-controlled text are discarded before an
+event can enter the journal.
+
+The event journal is daemon-lifetime and in memory only. It retains at most 64
+newest rows and a separate 4,096-event opaque-ID dedupe horizon. A reconnect
+replays no more than 300 seconds of source time; reconnect backoff starts at
+250ms and caps at 8 seconds. Source transitions, mock fallback, and loss of a
+collecting stream reset the continuity epoch and clear comparable event rows.
+There is no persistence or continuity guarantee across daemon restarts, and a
+reconnect can leave gaps. The response reports collection state (`connecting`,
+`collecting`, `reconnecting`, or `unavailable`) and carries only opaque event and
+container identities, fixed event/source vocabulary, source and receipt times,
+and the model/observation revisions current when the event was received.
+
+The temporal Finding is a deliberately smaller projection of that journal. It
+emits one `advisory` only when Docker is collecting and three distinct
+`container_died` observations for the same opaque subject are retained in one
+continuous collection epoch, their source timestamps span at most five minutes,
+and the newest event is no more than five minutes old. The public Finding is a
+static, redacted singleton: it has no subject, target, event IDs, timestamps,
+anchors, raw Docker data, or evidence references. It is suppressed while the
+source is connecting, reconnecting, unavailable, mock, or temporally invalid.
+The Findings screen directs the operator to the bounded Change Center/event
+history for review; the advisory does not prove a current container, cause,
+deployment, restart, failure, recovery, health, reachability, compromise, or
+impact.
+
+This is an in-memory temporal observation slice, not completion of #70. A
+DockerMap-owned persistent event store, backup/reset procedure, and a deliberate
+longer-term persistence decision remain outstanding. Real-host evidence that
+starts/stops/restarts only isolated testbed containers and proves the exact
+sequence, deduplication, cleanup, and unrelated-service isolation also remains
+outstanding; deterministic local tests do not substitute for that exercise.
 
 ### Current Docker resource telemetry
 
