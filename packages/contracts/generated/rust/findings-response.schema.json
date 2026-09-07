@@ -57,6 +57,7 @@
       "enum": [
         "systemd.requires_target_not_active",
         "docker.internal_network_member_publishes_port",
+        "docker.port_published_on_unspecified_address",
         "docker.daemon_state_bind_mount",
         "docker.daemon_state_bind_mount_publishes_port",
         "docker.compose_declared_target_not_active",
@@ -167,6 +168,11 @@
             "docker_volume_mount",
             "docker_port_publication"
           ],
+          "type": "string"
+        },
+        {
+          "const": "docker_unspecified_address_port_publication",
+          "description": "Docker reported a valid nonzero port publication on the IPv4 or IPv6\nunspecified host address. No address or port value is retained here.",
           "type": "string"
         },
         {

@@ -18,6 +18,7 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 role: "edge proxy".into(),
                 networks: vec!["network_edge".into(), "network_app".into()],
                 ports: vec!["3233:80/tcp".into()],
+                publishes_on_unspecified_address: false,
                 mounts: Vec::new(),
                 depends_on: vec!["container_api".into()],
             },
@@ -29,6 +30,7 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 role: "api".into(),
                 networks: vec!["network_app".into(), "network_data".into()],
                 ports: vec!["3233:3233/tcp".into()],
+                publishes_on_unspecified_address: false,
                 mounts: vec![
                     ContainerMount {
                         id: "container_api:/workspace/src:/srv/dockermap/src".into(),
@@ -55,6 +57,7 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 role: "worker".into(),
                 networks: vec!["network_app".into(), "network_data".into()],
                 ports: vec![],
+                publishes_on_unspecified_address: false,
                 mounts: vec![ContainerMount {
                     id: "container_worker:/var/log/dockermap:logs".into(),
                     kind: ComposeMountKind::NamedVolume,
@@ -72,6 +75,7 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 role: "primary database".into(),
                 networks: vec!["network_data".into()],
                 ports: vec!["5432:5432/tcp".into()],
+                publishes_on_unspecified_address: false,
                 mounts: vec![ContainerMount {
                     id: "container_db:/var/lib/postgresql/data:postgres_data".into(),
                     kind: ComposeMountKind::NamedVolume,
@@ -89,6 +93,7 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 role: "cache and queue broker".into(),
                 networks: vec!["network_data".into()],
                 ports: vec!["6379:6379/tcp".into()],
+                publishes_on_unspecified_address: false,
                 mounts: Vec::new(),
                 depends_on: vec![],
             },
@@ -100,6 +105,7 @@ pub fn mock_snapshot() -> DockerSnapshot {
                 role: "registry mirror".into(),
                 networks: vec![],
                 ports: vec![],
+                publishes_on_unspecified_address: false,
                 mounts: Vec::new(),
                 depends_on: vec![],
             },

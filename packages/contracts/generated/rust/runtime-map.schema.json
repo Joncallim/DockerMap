@@ -206,6 +206,11 @@
           "type": "string"
         },
         {
+          "const": "docker_unspecified_address_port_publication",
+          "description": "Docker reported a valid nonzero port publication on the IPv4 or IPv6\nunspecified host address. No address or port value is retained here.",
+          "type": "string"
+        },
+        {
           "const": "docker_compose_depends_on",
           "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
           "type": "string"

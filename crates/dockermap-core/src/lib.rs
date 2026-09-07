@@ -140,6 +140,7 @@ mod tests {
                     role: "api".into(),
                     networks: vec![],
                     ports: vec![],
+                    publishes_on_unspecified_address: false,
                     mounts: vec![],
                     depends_on: vec!["container_redis".into(), "container_database".into()],
                 },
@@ -151,6 +152,7 @@ mod tests {
                     role: "redis".into(),
                     networks: vec![],
                     ports: vec![],
+                    publishes_on_unspecified_address: false,
                     mounts: vec![],
                     depends_on: vec![],
                 },
@@ -162,6 +164,7 @@ mod tests {
                     role: "database".into(),
                     networks: vec![],
                     ports: vec![],
+                    publishes_on_unspecified_address: false,
                     mounts: vec![],
                     depends_on: vec![],
                 },
@@ -202,6 +205,7 @@ mod tests {
             role: role.into(),
             networks: vec![],
             ports: vec![],
+            publishes_on_unspecified_address: false,
             mounts: vec![],
             depends_on: depends_on.into_iter().map(str::to_string).collect(),
         };
@@ -251,6 +255,7 @@ mod tests {
                 role: "self".into(),
                 networks: vec![],
                 ports: vec![],
+                publishes_on_unspecified_address: false,
                 mounts: vec![],
                 depends_on: vec!["container_self".into()],
             }],
@@ -276,6 +281,7 @@ mod tests {
             role: name.into(),
             networks: networks.into_iter().map(str::to_string).collect(),
             ports: vec![],
+            publishes_on_unspecified_address: false,
             mounts: vec![],
             depends_on: vec![],
         };
@@ -392,6 +398,7 @@ mod tests {
                 role: "container".into(),
                 networks: vec!["shared-id".into()],
                 ports: vec![],
+                publishes_on_unspecified_address: false,
                 mounts: vec![],
                 depends_on: vec![],
             }],
@@ -1265,6 +1272,7 @@ mod tests {
             role: "service".into(),
             networks: Vec::new(),
             ports: vec!["80/tcp".into()],
+            publishes_on_unspecified_address: false,
             mounts: Vec::new(),
             depends_on: Vec::new(),
         }];
@@ -1307,6 +1315,7 @@ mod tests {
             role: "service".into(),
             networks: Vec::new(),
             ports: vec!["8443:443/tcp".into(), "0:53/udp".into(), "53/udp".into()],
+            publishes_on_unspecified_address: false,
             mounts: Vec::new(),
             depends_on: Vec::new(),
         }];
@@ -1335,6 +1344,78 @@ mod tests {
             !serialized.contains("8443:443/tcp"),
             "evidence itself never copies port data"
         );
+    }
+
+    #[test]
+    fn unspecified_address_publication_is_a_path_and_port_free_structural_fact() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers.truncate(1);
+        snapshot.containers[0].ports = vec!["8443:443/tcp".into()];
+        snapshot.containers[0].publishes_on_unspecified_address = true;
+        snapshot.networks.clear();
+        snapshot.volumes.clear();
+
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        let risk = runtime_map
+            .nodes
+            .iter()
+            .find(|node| node.id == "host_risk_docker_unspecified_address_port")
+            .expect("closed unspecified-address risk target is present");
+        assert_eq!(risk.kind, RuntimeNodeKind::HostRisk);
+        assert!(risk.metadata.is_empty());
+        let edge = runtime_map
+            .edges
+            .iter()
+            .find(|edge| edge.target == risk.id)
+            .expect("one structural edge attests the closed fact");
+        assert_eq!(edge.relationship, RuntimeRelationshipKind::Exposes);
+        assert_eq!(edge.evidence_refs.len(), 1);
+        assert_eq!(
+            edge.evidence_refs[0].kind,
+            RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication
+        );
+        assert_eq!(
+            edge.evidence_refs[0].summary,
+            "Docker reported a container port published on an unspecified host address"
+        );
+        assert!(edge.has_valid_evidence_refs());
+        let serialized = serde_json::to_string(edge).expect("structural edge serializes");
+        for forbidden in ["8443:443/tcp", "0.0.0.0", "[::]", "127.0.0.1"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "structural evidence must omit raw bind details: {forbidden}"
+            );
+        }
+
+        snapshot.containers[0].publishes_on_unspecified_address = false;
+        assert!(
+            derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
+                .nodes
+                .iter()
+                .all(|node| node.id != "host_risk_docker_unspecified_address_port")
+        );
+        snapshot.containers[0].publishes_on_unspecified_address = true;
+        snapshot.containers[0].ports = vec!["443/tcp".into()];
+        assert!(
+            derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
+                .edges
+                .iter()
+                .all(|edge| edge.target != "host_risk_docker_unspecified_address_port"),
+            "a bare boolean cannot attest an unspecified-address publication without a valid host port"
+        );
+    }
+
+    #[test]
+    fn omitted_unspecified_address_fact_defaults_closed() {
+        let mut encoded =
+            serde_json::to_value(&mock_snapshot().containers[0]).expect("container serializes");
+        encoded
+            .as_object_mut()
+            .expect("container is an object")
+            .remove("publishesOnUnspecifiedAddress");
+        let decoded: ContainerRecord =
+            serde_json::from_value(encoded).expect("older container shape remains compatible");
+        assert!(!decoded.publishes_on_unspecified_address);
     }
 
     #[test]
@@ -1832,6 +1913,7 @@ services:
                 role: "api".into(),
                 networks: Vec::new(),
                 ports: Vec::new(),
+                publishes_on_unspecified_address: false,
                 mounts: vec![
                     ContainerMount {
                         id: "runtime-api:/app/src".into(),

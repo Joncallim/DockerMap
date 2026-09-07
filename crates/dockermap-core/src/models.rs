@@ -49,6 +49,11 @@ pub struct ContainerRecord {
     pub role: String,
     pub networks: Vec<String>,
     pub ports: Vec<String>,
+    /// Docker reported at least one valid nonzero published port whose host
+    /// address is the IPv4 or IPv6 unspecified address. The collector reduces
+    /// the raw bind address to this closed fact before snapshot retention.
+    #[serde(rename = "publishesOnUnspecifiedAddress", default)]
+    pub publishes_on_unspecified_address: bool,
     pub mounts: Vec<ContainerMount>,
     #[serde(rename = "dependsOn")]
     pub depends_on: Vec<String>,
@@ -858,6 +863,9 @@ pub enum RuntimeEvidenceKind {
     DockerNetworkMembership,
     DockerVolumeMount,
     DockerPortPublication,
+    /// Docker reported a valid nonzero port publication on the IPv4 or IPv6
+    /// unspecified host address. No address or port value is retained here.
+    DockerUnspecifiedAddressPortPublication,
     /// Docker's recorded Compose dependency declaration. This is deliberately
     /// not a health, readiness, or traffic-causality claim.
     DockerComposeDependsOn,
@@ -953,6 +961,7 @@ impl RuntimeEvidenceRef {
                 RuntimeEvidenceKind::DockerNetworkMembership
                     | RuntimeEvidenceKind::DockerVolumeMount
                     | RuntimeEvidenceKind::DockerPortPublication
+                    | RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication
                     | RuntimeEvidenceKind::DockerComposeDependsOn
                     | RuntimeEvidenceKind::DockerDaemonStateBindMount,
                 RuntimeEvidenceAssertionKind::Observed,
@@ -1164,6 +1173,18 @@ impl RuntimeMapEdge {
             (
                 1,
                 RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) => {
+                self.relationship == RuntimeRelationshipKind::Exposes
+                    && self.source.starts_with("docker_container_")
+                    && self.target == "host_risk_docker_unspecified_address_port"
+            }
+            (
+                1,
+                RuntimeEvidenceProvider::Docker,
                 RuntimeEvidenceKind::DockerComposeDependsOn,
                 RuntimeEvidenceAssertionKind::Observed,
                 RuntimeEvidenceFreshness::Fresh,
@@ -1343,6 +1364,8 @@ pub enum FindingRule {
     SystemdRequiresTargetNotActive,
     #[serde(rename = "docker.internal_network_member_publishes_port")]
     DockerInternalNetworkMemberPublishesPort,
+    #[serde(rename = "docker.port_published_on_unspecified_address")]
+    DockerPortPublishedOnUnspecifiedAddress,
     #[serde(rename = "docker.daemon_state_bind_mount")]
     DockerDaemonStateBindMount,
     #[serde(rename = "docker.daemon_state_bind_mount_publishes_port")]
@@ -1373,7 +1396,8 @@ impl FindingRule {
             | Self::DockerComposeMutualDependency => FindingCategory::DeclaredDependency,
             Self::DockerDaemonStateBindMount => FindingCategory::DockerDaemonAuthority,
             Self::DockerInternalNetworkMemberPublishesPort
-            | Self::DockerDaemonStateBindMountPublishesPort => FindingCategory::HostPortPublication,
+            | Self::DockerDaemonStateBindMountPublishesPort
+            | Self::DockerPortPublishedOnUnspecifiedAddress => FindingCategory::HostPortPublication,
             Self::ComposeDeclaredMountMissingAtBoundContainer => {
                 FindingCategory::DeclaredDependency
             }

@@ -79,6 +79,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           },
           "type": "array"
         },
+        "publishesOnUnspecifiedAddress": {
+          "default": false,
+          "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+          "type": "boolean"
+        },
         "role": {
           "type": "string"
         },
@@ -531,6 +536,11 @@ export const RUST_RESPONSE_SCHEMAS = {
             "docker_volume_mount",
             "docker_port_publication"
           ],
+          "type": "string"
+        },
+        {
+          "const": "docker_unspecified_address_port_publication",
+          "description": "Docker reported a valid nonzero port publication on the IPv4 or IPv6\nunspecified host address. No address or port value is retained here.",
           "type": "string"
         },
         {
@@ -1413,6 +1423,7 @@ export const RUST_RESPONSE_SCHEMAS = {
       "enum": [
         "systemd.requires_target_not_active",
         "docker.internal_network_member_publishes_port",
+        "docker.port_published_on_unspecified_address",
         "docker.daemon_state_bind_mount",
         "docker.daemon_state_bind_mount_publishes_port",
         "docker.compose_declared_target_not_active",
@@ -1523,6 +1534,11 @@ export const RUST_RESPONSE_SCHEMAS = {
             "docker_volume_mount",
             "docker_port_publication"
           ],
+          "type": "string"
+        },
+        {
+          "const": "docker_unspecified_address_port_publication",
+          "description": "Docker reported a valid nonzero port publication on the IPv4 or IPv6\nunspecified host address. No address or port value is retained here.",
           "type": "string"
         },
         {
@@ -2366,6 +2382,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           },
           "type": "array"
         },
+        "publishesOnUnspecifiedAddress": {
+          "default": false,
+          "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+          "type": "boolean"
+        },
         "role": {
           "type": "string"
         },
@@ -2480,6 +2501,11 @@ export const RUST_RESPONSE_SCHEMAS = {
         "type": "string"
       },
       "type": "array"
+    },
+    "publishesOnUnspecifiedAddress": {
+      "default": false,
+      "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+      "type": "boolean"
     },
     "role": {
       "type": "string"
@@ -2715,6 +2741,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
             "type": "string"
           },
           "type": "array"
+        },
+        "publishesOnUnspecifiedAddress": {
+          "default": false,
+          "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+          "type": "boolean"
         },
         "role": {
           "type": "string"
@@ -3168,6 +3199,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
             "docker_volume_mount",
             "docker_port_publication"
           ],
+          "type": "string"
+        },
+        {
+          "const": "docker_unspecified_address_port_publication",
+          "description": "Docker reported a valid nonzero port publication on the IPv4 or IPv6\nunspecified host address. No address or port value is retained here.",
           "type": "string"
         },
         {
@@ -4050,6 +4086,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "enum": [
         "systemd.requires_target_not_active",
         "docker.internal_network_member_publishes_port",
+        "docker.port_published_on_unspecified_address",
         "docker.daemon_state_bind_mount",
         "docker.daemon_state_bind_mount_publishes_port",
         "docker.compose_declared_target_not_active",
@@ -4160,6 +4197,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
             "docker_volume_mount",
             "docker_port_publication"
           ],
+          "type": "string"
+        },
+        {
+          "const": "docker_unspecified_address_port_publication",
+          "description": "Docker reported a valid nonzero port publication on the IPv4 or IPv6\nunspecified host address. No address or port value is retained here.",
           "type": "string"
         },
         {
@@ -5003,6 +5045,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           },
           "type": "array"
         },
+        "publishesOnUnspecifiedAddress": {
+          "default": false,
+          "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+          "type": "boolean"
+        },
         "role": {
           "type": "string"
         },
@@ -5117,6 +5164,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "type": "string"
       },
       "type": "array"
+    },
+    "publishesOnUnspecifiedAddress": {
+      "default": false,
+      "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+      "type": "boolean"
     },
     "role": {
       "type": "string"

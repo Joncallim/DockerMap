@@ -276,6 +276,15 @@
         "line": "1",
         "command": "daily backup"
       }
+    },
+    {
+      "id": "host_risk_docker_unspecified_address_port",
+      "provider": "docker",
+      "type": "host_risk",
+      "label": "Unspecified-address Docker port publication",
+      "status": null,
+      "layer": "host",
+      "metadata": {}
     }
   ],
   "edges": [
@@ -661,6 +670,26 @@
           "collectedAt": 1787196125766,
           "providerRevision": "fixture-cron-observation-1",
           "providerSlot": "cron",
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "source": "docker_container_container_api",
+      "target": "host_risk_docker_unspecified_address_port",
+      "relationship": "exposes",
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker-unspecified-address-publication-container-api",
+          "provider": "docker",
+          "kind": "docker_unspecified_address_port_publication",
+          "assertionKind": "observed",
+          "summary": "Docker reported a container port published on an unspecified host address",
+          "subjectRef": "docker_container_container_api",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
           "freshness": "fresh"
         }
       ]

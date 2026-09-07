@@ -2,10 +2,10 @@
   "modelRevision": "fixture-findings-revision",
   "summary": {
     "warningCount": 4,
-    "advisoryCount": 3,
+    "advisoryCount": 4,
     "declaredDependencyCount": 4,
     "dockerDaemonAuthorityCount": 1,
-    "hostPortPublicationCount": 2
+    "hostPortPublicationCount": 3
   },
   "findings": [
     {
@@ -220,6 +220,29 @@
           "subjectRef": "compose_runtime_binding_420e8e5caef5f0d51797e9c0157978667fd036787578e9d8c4d0f3693d8e1b9d",
           "collectedAt": 1710000000000,
           "providerRevision": "fixture-compose-observation",
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "id": "finding_docker_port_published_on_unspecified_address_fixture",
+      "ruleId": "docker.port_published_on_unspecified_address",
+      "severity": "advisory",
+      "summary": "Docker reported a container port published on an unspecified host address.",
+      "recommendation": "Review whether publishing this container port beyond loopback is intended.",
+      "subjectRef": "docker_container_container_api",
+      "targetRef": "host_risk_docker_unspecified_address_port",
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker-unspecified-address-publication-container-api",
+          "provider": "docker",
+          "kind": "docker_unspecified_address_port_publication",
+          "assertionKind": "observed",
+          "summary": "Docker reported a container port published on an unspecified host address",
+          "subjectRef": "docker_container_container_api",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
           "freshness": "fresh"
         }
       ]
