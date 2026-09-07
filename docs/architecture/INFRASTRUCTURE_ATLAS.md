@@ -92,20 +92,28 @@ to apply or reject a live result. It is not an input to semantic projection,
 exact layout golden files or logical coordinates.
 
 ```ts
-type AtlasKey = string; // opaque, non-empty, unique after publication
+type AtlasKey = string; // opaque, bounded, non-empty, unique after publication
+type AtlasDerivedKey = string; // named-rule-derived, bounded, never routable
 type AtlasRoutability = "routable" | "non_routable";
 type AtlasRole = "primary" | "context" | "attachment" | "inspector_only" | "unsupported";
-type AtlasSourceRef =
-  | { kind: "runtime_node"; provider: RuntimeProviderKind; nodeId: AtlasKey }
-  | { kind: "runtime_evidence"; evidenceId: string; subjectId: AtlasKey }
-  | { kind: "projection"; rule: ProjectionRuleId };
 type ProjectionRuleId = `atlas-v1/${string}`;
+type AtlasNodeSourceRef = { kind: "runtime_node"; provider: RuntimeProviderKind; nodeId: AtlasKey; runtimeKind: RuntimeNodeKind };
+type AtlasEdgeEvidenceSourceRef = {
+  kind: "runtime_edge_evidence";
+  source: AtlasKey;
+  target: AtlasKey;
+  relationship: RuntimeRelationshipKind;
+  evidence: RuntimeEvidenceRef; // exact existing closed, bounded published value
+};
+type AtlasEvidenceSources = [AtlasEdgeEvidenceSourceRef, ...AtlasEdgeEvidenceSourceRef[]]; // capped at the RuntimeMap evidence limit
+type AtlasProjectionRef = { kind: "projection"; rule: ProjectionRuleId };
 
 interface AtlasSubject {
   key: AtlasKey;
   routability: AtlasRoutability;
   role: AtlasRole;
-  source: AtlasSourceRef;
+  source: AtlasNodeSourceRef;
+  runtimeKind: RuntimeNodeKind;
   display: string; // bounded, redacted React text only; never a key
   operationalState: "healthy" | "warning" | "degraded" | "offline" | "updating" | "unknown";
   freshness: "fresh" | "stale" | "timed_out" | "unavailable" | "disabled" | "unknown";
@@ -113,20 +121,26 @@ interface AtlasSubject {
   ambiguity: "none" | "collision" | "unresolved" | "unsupported";
   rule: ProjectionRuleId;
 }
-interface AtlasGroup { key: AtlasKey; memberKeys: AtlasKey[]; membershipEvidence: AtlasSourceRef[]; rule: ProjectionRuleId; }
-interface AtlasLane { key: string; subjectKeys: AtlasKey[]; rule: ProjectionRuleId; } // presentation only, never containment
-interface AtlasRelation { source: AtlasKey; target: AtlasKey; direction: "forward"; evidence: AtlasSourceRef[]; rule: ProjectionRuleId; }
-interface AtlasMembership { subject: AtlasKey; context: AtlasKey; evidence: AtlasSourceRef[]; rule: ProjectionRuleId; }
-interface AtlasAttachment { subject: AtlasKey; context: AtlasKey; evidence: AtlasSourceRef[]; rule: ProjectionRuleId; }
-interface AtlasAggregate { key: string; population: { resolved: number; unresolved: number; ambiguous: number }; rule: ProjectionRuleId; }
-interface AtlasDiagnostic { kind: "collision" | "unresolved" | "unsupported" | "disagreement" | "bounded_omission"; source: AtlasSourceRef; rule: ProjectionRuleId; }
+interface AtlasGroup { key: AtlasDerivedKey; memberKeys: AtlasKey[]; membershipEvidence: AtlasEvidenceSources; rule: ProjectionRuleId; }
+interface AtlasLane { key: AtlasDerivedKey; subjectKeys: AtlasKey[]; rule: ProjectionRuleId; } // presentation only, never containment
+interface AtlasRelation { source: AtlasKey; target: AtlasKey; direction: "forward"; evidence: AtlasEvidenceSources; rule: ProjectionRuleId; }
+interface AtlasMembership { subject: AtlasKey; context: AtlasKey; evidence: AtlasEvidenceSources; rule: ProjectionRuleId; }
+interface AtlasAttachment { subject: AtlasKey; context: AtlasKey; evidence: AtlasEvidenceSources; rule: ProjectionRuleId; }
+interface AtlasAggregate { key: AtlasDerivedKey; population: { resolved: number; unresolved: number; ambiguous: number; omitted: number }; sourceCoverage: AtlasEvidenceSources; rule: ProjectionRuleId; }
+interface AtlasDiagnostic { kind: "collision" | "unresolved" | "unsupported" | "disagreement" | "bounded_omission"; source: AtlasProjectionRef; rule: ProjectionRuleId; }
 interface AtlasStats { subjects: number; relations: number; attachments: number; unsupported: number; boundedOmissions: number; }
 ```
 
 The actual implementation must use closed discriminated unions equivalent to
-this contract (not free-form strings). `AtlasSourceRef` may contain only safe
-published runtime node/evidence identifiers and named projection rules: never
-raw metadata, path, label, port, Compose content or error text.
+this contract (not free-form strings). A runtime evidence ref is structural and
+edge-scoped: its source, target, relationship and full closed published evidence
+record travel together. An evidence `id` is never a routing key. Relations,
+memberships and attachments require one or more such evidence refs; projection
+refs and bare node refs cannot manufacture a semantic link. Semantic groups
+also require edge evidence and are `[]` in V1 because no supported grouping fact
+exists. `AtlasProjectionRef` is only for adapter diagnostics/derived aggregates,
+never a subject, relation or group fact. Raw metadata, path, label, port,
+Compose content and error text are forbidden from every source ref.
 
 ### Subject
 A routable or visible infrastructure identity. It carries provider/kind metadata plus **separate** operational state, freshness, attention and ambiguity fields.
@@ -152,12 +166,12 @@ A bounded deterministic presentation object for high-degree structures. Aggregat
 ### Diagnostic
 Represents unsupported, unresolved, collided or otherwise non-routable presentation evidence without selecting an arbitrary endpoint.
 
-Every projected object carries a named/versioned projection rule and bounded source reference. Renderer-specific geometry does not enter AtlasModel.
+Every projected object carries a named/versioned projection rule and bounded source reference. Non-routable diagnostics must not expose a collided node key as a focus or route target. Renderer-specific geometry does not enter AtlasModel.
 
 The closed serialisable union also includes safe routability, source kind/ref,
 taxonomy role, operational state, evidence freshness, attention and ambiguity
 on each subject; relation evidence refs and direction; aggregate population
-coverage (resolved, unresolved and ambiguous); and diagnostics for unsupported
+coverage (resolved, unresolved, ambiguous and omitted); and diagnostics for unsupported
 kinds, collisions, disagreement and omitted bounded input. Unknown future
 provider/kind pairs must become neutral unsupported diagnostics, never guessed
 services. Projection sorts all input and output by canonical safe keys before
