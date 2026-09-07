@@ -4407,15 +4407,39 @@ mod scheduler_tests {
             .any(|finding| finding.rule_id
                 == dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
         assert_eq!(cache.findings_projection_generation, projection_generation);
+        let before_snapshot_expiry = cache.clone();
+        drop(cache);
+
+        // The age predicate is inclusive at exactly five minutes. With no
+        // state/event/snapshot change, the boundary remains visible and the
+        // next millisecond alone reprojects it away.
+        let mut cache = state.cache.write().await;
+        assert!(cache
+            .findings_response_at(Some(NOW_MS + 600_000))
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id
+                == dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+        assert!(cache
+            .findings_response_at(Some(NOW_MS + 600_001))
+            .findings
+            .iter()
+            .all(|finding| finding.rule_id
+                != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
         drop(cache);
 
         // A snapshot rebuild at B crosses the expiry boundary through the
         // same monotonic gate. The following route projection at prior A must
         // remain absent: publication cannot bypass or lower the watermark.
+        let snapshot_state = AppState {
+            cache: Arc::new(RwLock::new(before_snapshot_expiry)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
         let mut stale = snapshot.clone();
         stale.last_updated = NOW_MS + 600_001;
-        publish_docker_snapshot_cache(&state, docker_cache(stale)).await;
-        let mut cache = state.cache.write().await;
+        publish_docker_snapshot_cache(&snapshot_state, docker_cache(stale)).await;
+        let mut cache = snapshot_state.cache.write().await;
         assert!(cache.findings.findings.iter().all(|finding| finding.rule_id
             != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
         assert!(cache

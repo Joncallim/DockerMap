@@ -298,7 +298,15 @@ pub fn temporal_docker_findings_expiry_ms(
                         && newest <= now_ms
                         && now_ms.saturating_sub(newest)
                             <= REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS)
-                        .then(|| newest.saturating_add(REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS))
+                        // Eligibility is inclusive at the five-minute boundary;
+                        // cache invalidation therefore begins one millisecond
+                        // later. Saturation still fails closed at the public time
+                        // bound rather than wrapping into a fresh-looking value.
+                        .then(|| {
+                            newest
+                                .saturating_add(REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS)
+                                .saturating_add(1)
+                        })
                 })
                 .max()
         })
@@ -878,7 +886,7 @@ mod tests {
                 300_000,
                 &events,
             ),
-            Some(600_000),
+            Some(600_001),
         );
         let encoded = serde_json::to_string(finding).expect("finding serializes");
         for forbidden in [
