@@ -1489,6 +1489,20 @@ test("runtime evidence is required and fails closed before browser publication",
   const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === tmuxFixtureSource);
   assert.ok(tmuxEdge, "canonical daemon fixture carries a V5 tmux session listing");
   assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
+  for (const mutate of [
+    (node: Record<string, unknown>) => { node.label = "private session title"; },
+    (node: Record<string, unknown>) => { node.status = "attached"; },
+    (node: Record<string, unknown>) => { node.metadata = { serviceEntityKind: "session", sessionName: "private" }; },
+  ]) {
+    const malformedTmuxNode = structuredClone(fixture);
+    const node = malformedTmuxNode.nodes.find((candidate: { id?: unknown }) => candidate.id === tmuxFixtureSource);
+    assert.ok(node, "canonical fixture must include the tmux source node");
+    mutate(node);
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", malformedTmuxNode),
+      "v5 tmux session nodes must remain a closed redaction-safe public shape",
+    );
+  }
   for (const freshness of ["stale", "timed_out"] as const) {
     const retainedTmux = structuredClone(fixture);
     const edge = retainedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);

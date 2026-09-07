@@ -2,7 +2,7 @@
 
 DockerMap is a read-first local operational topology app. Docker and Docker Compose are
 deep providers, not the boundary of the product. The runtime map must represent the full
-self-hosted environment: Docker resources, systemd units, tmux-managed agents, package
+self-hosted environment: Docker resources, systemd units, tmux sessions, package
 ecosystems, native processes, reverse proxies, databases, DNS, storage, network edges,
 external APIs, and AI workloads.
 
@@ -268,8 +268,9 @@ The map is read-only and currently contains:
 - systemd services from fixed read-only `systemctl` calls when systemd is available,
   including dependency edges from `Requires=`, `Wants=`, and `PartOf=` where
   safe to collect.
-- tmux sessions and tmux-managed agents where the session metadata exposes a bounded
-  relationship.
+- tmux sessions from the fixed read-only listing. V5 records only the bounded
+  session-to-local-host fact; it does not infer tmux-managed agents or any
+  relationship from session metadata.
 - npm projects discovered from `package.json` and lockfiles under the configured project
   root, with scripts, framework hints, and dependency nodes. The contracts can represent
   package-update/advisory metadata, but no runtime registry or advisory lookup is enabled
@@ -328,9 +329,9 @@ when each hop comes from a different collector:
 Cloudflare -> Caddy (systemd) -> Docker network -> Immich container -> Postgres container -> Storage volume
 ```
 
-```text
-Forge (npm) -> forge.service -> tmux session -> GPT worker
-```
+Tmux V5 deliberately does not supply a session-to-worker edge. A future
+cross-provider agent relationship needs its own explicit, bounded evidence
+contract; a session listing or its metadata cannot establish one.
 
 Relationship discovery should prefer explicit evidence first, such as systemd dependency
 fields, Compose labels, process working directories, package manifests, lockfiles, known

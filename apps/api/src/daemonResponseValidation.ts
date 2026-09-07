@@ -51,6 +51,7 @@ const PROVIDER_STATE_SLOT_SET = {
   python_processes: true,
   native_processes: true,
   project_npm: true,
+  tmux: true,
   cron: true,
 } as const satisfies Record<ProviderSlot, true>;
 const PROVIDER_STATE_SLOTS = Object.keys(PROVIDER_STATE_SLOT_SET) as ProviderSlot[];
@@ -315,6 +316,7 @@ type RuntimeEvidenceDiagnostic =
   | "runtime_evidence_port_listener_ambiguous"
   | "runtime_evidence_port_listener_shape"
   | "runtime_evidence_port_listener_grammar"
+  | "runtime_evidence_tmux_session_shape"
   | "runtime_evidence_revision";
 
 // This returns only a fixed category for container-internal E2E diagnostics.
