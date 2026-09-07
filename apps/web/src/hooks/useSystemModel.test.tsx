@@ -3,7 +3,7 @@ import { testProviderStates } from "../lib/testProviderStates";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
+import type { DockerSnapshot, FindingsResponse, RuntimeEvidenceRef, RuntimeMap } from "@dockermap/contracts";
 import type { Settings } from "../lib/settingsStore";
 import { answer } from "../lib/copilot";
 import { useSystemModel } from "./useSystemModel";
@@ -49,6 +49,27 @@ const snapV2: DockerSnapshot = {
 };
 const runtimeV1: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 1, modelRevision: "revision-1", providerStates: testProviderStates };
 const runtimeV2: RuntimeMap = { nodes: [], edges: [], diagnostics: [], lastUpdated: 2, modelRevision: "revision-2", providerStates: testProviderStates };
+const runtimeWithAtlasSubject: RuntimeMap = {
+  ...runtimeV1,
+  nodes: [{ id: "docker_container_container_overlay", provider: "docker", type: "container", layer: "container", label: "overlay subject", status: "running", metadata: {} }]
+};
+const runtimeWithAtlasSubjectV2: RuntimeMap = { ...runtimeWithAtlasSubject, modelRevision: "revision-2", lastUpdated: 2 };
+const overlayEvidence: RuntimeEvidenceRef = {
+  version: 1, id: "docker_daemon_state_bind_mount:overlay", provider: "docker", kind: "docker_daemon_state_bind_mount",
+  assertionKind: "observed", freshness: "fresh", providerRevision: "fixture-docker", providerSlot: null,
+  subjectRef: "docker_container_container_overlay", summary: "Docker reported daemon-state context", collectedAt: 1
+};
+
+function overlayFindings(modelRevision: string): FindingsResponse {
+  return {
+    source: "docker",
+    modelRevision,
+    findings: [{
+      id: "finding", ruleId: "docker.daemon_state_bind_mount", severity: "warning", subjectRef: "docker_container_container_overlay",
+      targetRef: "host_risk_docker_daemon_state", summary: "safe", recommendation: "safe", evidenceRefs: [overlayEvidence]
+    }]
+  };
+}
 
 type PendingRequest = { url: string; resolve: (value: Response) => void; reject: (reason: Error) => void };
 const pending: PendingRequest[] = [];
@@ -136,6 +157,7 @@ describe("useSystemModel retains the last model across refresh failures", () => 
     await flush();
     expect(hook.result.current.model?.lastUpdated).toBe(1);
     expect(hook.result.current.model?.services[0].name).toBe("web");
+    expect(hook.result.current.atlas?.sourceRevision).toBe("revision-1");
     expect(hook.result.current.error).toBeNull();
 
     // Refresh tick: the snapshot request fails, the runtime map succeeds.
@@ -150,6 +172,7 @@ describe("useSystemModel retains the last model across refresh failures", () => 
     expect(hook.result.current.model).not.toBeNull();
     expect(hook.result.current.model?.lastUpdated).toBe(1);
     expect(hook.result.current.model?.services[0].name).toBe("web");
+    expect(hook.result.current.atlas?.sourceRevision).toBe("revision-1");
     expect(hook.result.current.error).toBe("snapshot exploded");
 
     // A later successful refresh clears the error and publishes the new model.
@@ -160,6 +183,7 @@ describe("useSystemModel retains the last model across refresh failures", () => 
     await flush();
     expect(hook.result.current.model?.lastUpdated).toBe(2);
     expect(hook.result.current.model?.services[0].name).toBe("web-v2");
+    expect(hook.result.current.atlas?.sourceRevision).toBe("revision-2");
     expect(hook.result.current.error).toBeNull();
   });
 
@@ -172,6 +196,7 @@ describe("useSystemModel retains the last model across refresh failures", () => 
     await flush();
 
     expect(hook.result.current.model).toBeNull();
+    expect(hook.result.current.atlas).toBeNull();
     expect(hook.result.current.error).toBe("runtime exploded");
     expect(hook.result.current.loading).toBe(false);
   });
@@ -405,5 +430,71 @@ describe("useSystemModel rebuilds only from a same-generation pair", () => {
     await flush();
 
     expect(hook.result.current.modelProvenance).toBe("live");
+  });
+});
+
+describe("useSystemModel Atlas Findings overlay", () => {
+  it("ignores a revision-mismatched Findings response instead of manufacturing attention", async () => {
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live", true), 0 as number);
+    await hook.mount();
+    expect(pending).toHaveLength(3);
+    const [snapshotRequest, runtimeRequest, findingsRequest] = pending.splice(0);
+    snapshotRequest.resolve(dockerResponse(snapV1));
+    runtimeRequest.resolve(dockerResponse(runtimeWithAtlasSubject));
+    findingsRequest.resolve(jsonResponse(overlayFindings("other-revision")));
+    await flush();
+    expect(hook.result.current.findings).toBeNull();
+    expect(hook.result.current.atlas?.model.subjects[0]?.attention).toBe("none");
+  });
+
+  it("projects a matching live Findings response only after the coherent pair arrives", async () => {
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live", true), 0 as number);
+    await hook.mount();
+    const [snapshotRequest, runtimeRequest, findingsRequest] = pending.splice(0);
+    snapshotRequest.resolve(dockerResponse(snapV1));
+    runtimeRequest.resolve(dockerResponse(runtimeWithAtlasSubject));
+    findingsRequest.resolve(jsonResponse(overlayFindings("revision-1")));
+    await flush();
+    expect(hook.result.current.findings?.modelRevision).toBe("revision-1");
+    expect(hook.result.current.atlas?.model.subjects[0]?.attention).toBe("warning");
+  });
+
+  it.each([
+    ["mock", () => ({ ...overlayFindings("revision-1"), source: "mock" as const })],
+    ["absent", () => {
+      const { source: _source, ...unstamped } = overlayFindings("revision-1");
+      return unstamped;
+    }]
+  ] as const)("rejects a %s Findings source even when its revision matches", async (_kind, fixture) => {
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live", true), 0 as number);
+    await hook.mount();
+    const [snapshotRequest, runtimeRequest, findingsRequest] = pending.splice(0);
+    snapshotRequest.resolve(dockerResponse(snapV1));
+    runtimeRequest.resolve(dockerResponse(runtimeWithAtlasSubject));
+    findingsRequest.resolve(jsonResponse(fixture()));
+    await flush();
+    expect(hook.result.current.findings).toBeNull();
+    expect(hook.result.current.atlas?.model.subjects[0]?.attention).toBe("none");
+  });
+
+  it("rejects a retained prior-generation Findings response after the model advances", async () => {
+    const hook = renderHook((tick: number) => useSystemModel(tick, "live", true), 0 as number);
+    await hook.mount();
+    const [snapshotV1, runtimeV1Request, findingsV1] = pending.splice(0);
+    snapshotV1.resolve(dockerResponse(snapV1));
+    runtimeV1Request.resolve(dockerResponse(runtimeWithAtlasSubject));
+    findingsV1.resolve(jsonResponse(overlayFindings("revision-1")));
+    await flush();
+    expect(hook.result.current.atlas?.model.subjects[0]?.attention).toBe("warning");
+
+    await hook.rerender(1);
+    const [snapshotV2, runtimeV2Request, findingsV2] = pending.splice(0);
+    snapshotV2.resolve(dockerResponse(snapV2));
+    runtimeV2Request.resolve(dockerResponse(runtimeWithAtlasSubjectV2));
+    findingsV2.reject(new Error("findings refresh failed"));
+    await flush();
+    expect(hook.result.current.atlas?.sourceRevision).toBe("revision-2");
+    expect(hook.result.current.findings).toBeNull();
+    expect(hook.result.current.atlas?.model.subjects[0]?.attention).toBe("none");
   });
 });

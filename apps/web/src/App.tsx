@@ -18,6 +18,8 @@ import Diagnostics from "./screens/Diagnostics";
 import Settings from "./screens/Settings";
 import Findings from "./screens/Findings";
 import NotFound from "./screens/NotFound";
+import AtlasOverview from "./screens/AtlasOverview";
+import { ATLAS_OVERVIEW_ENABLED } from "./lib/atlas/feature";
 import { useSettings } from "./hooks/useSettings";
 import { useEffect, useState } from "react";
 import TokenScreen from "./components/TokenScreen";
@@ -58,6 +60,7 @@ export function App() {
         <Route path="compose" element={<Compose />} />
         <Route path="diagnostics" element={<Diagnostics />} />
         <Route path="settings" element={<Settings />} />
+        {ATLAS_OVERVIEW_ENABLED && <Route path="atlas" element={<AtlasOverview />} />}
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
