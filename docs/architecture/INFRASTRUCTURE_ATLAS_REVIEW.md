@@ -350,3 +350,24 @@ A coding orchestrator should not reason from this ledger ad hoc. It should execu
 6. certify heterogeneous hosts and cut over.
 
 If implementation requires inventing a new semantic rule not present in `INFRASTRUCTURE_ATLAS.md`, this ledger, or the child issues, stop and reopen architecture rather than improvising in code.
+
+## Pass 28 — authority and correlation closure sweep
+
+### Finding
+The previous document deferred the authority matrix to #259. That left a coding
+agent able to choose a convenient but weaker source, merge Docker and runtime
+records by name, or turn a provider/layer lane into host containment.
+
+### Refinement
+`INFRASTRUCTURE_ATLAS.md` now freezes the V1 authority matrix: one coherent
+runtime-map-backed publication is the only topology input; `/api/graph` and
+Compose surfaces are excluded from semantic projection; project identity,
+cross-source correlation and host containment are unsupported without a future
+contract. Valid closed runtime evidence distinguishes directional declarations
+from non-causal network/storage/listener attachments. Opaque port strings remain
+context text. Every supported endpoint requires a unique published identity;
+collisions, disagreement and unsupported data become bounded non-routable
+diagnostics. The model separately defines non-semantic lanes, source-revision
+envelopes and named projection/bounds rules.
+
+Status: absorbed by #251/#259; no renderer or backend expansion is authorised.
