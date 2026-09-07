@@ -407,3 +407,10 @@ counts. Subjects retain their closed runtime kind, derived keys are never
 routable, and collision diagnostics cannot become focus targets.
 
 Status: absorbed by #251/#259. No renderer or backend change is authorised.
+
+## Pass 31 — non-routable identity precision
+
+The illustrative subject type now separates routable subjects (unique published
+runtime-node key) from visible non-routable occurrences (derived key plus
+projection diagnostic). A collision occurrence therefore cannot accidentally
+reuse a collided published node key as a route or focus identity.
