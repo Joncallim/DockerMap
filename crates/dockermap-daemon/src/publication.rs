@@ -6,8 +6,10 @@
 use dockermap_core::{
     collision_resistant_id_component, ComposeDiagnostic, ComposeEditPlan, ComposeFileOrigin,
     ComposeScan, ContainerRecord, DiagnosticSeverity, DockerSnapshot, HealthResponse,
-    RuntimeLocation, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode,
-    RuntimeOwnership, RuntimePackageEntity, RuntimeProviderKind, RuntimeServiceEntity,
+    RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
+    RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeLocation, RuntimeMap, RuntimeMapDiagnostic,
+    RuntimeMapEdge, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeOwnership,
+    RuntimePackageEntity, RuntimeProviderKind, RuntimeRelationshipKind, RuntimeServiceEntity,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,6 +74,81 @@ fn duplicate_runtime_node_ids(nodes: &[RuntimeMapNode]) -> BTreeSet<String> {
         .filter(|(_, count)| *count > 1)
         .map(|(id, _)| id.to_string())
         .collect()
+}
+
+/// Report only whether the already-sanitized public topology contains at
+/// least one ambiguous identity. Callers never receive the collided IDs or
+/// their count, so the derived revision cannot become an identity oracle.
+pub(crate) fn runtime_map_has_identity_collision(runtime_map: &RuntimeMap) -> bool {
+    !duplicate_runtime_node_ids(&runtime_map.nodes).is_empty()
+}
+
+/// Append one fixed, aggregate integrity fact. Reserved-ID conflicts suppress
+/// the fact rather than letting provider-controlled nodes spoof its endpoints.
+/// The collision IDs/count and diagnostic text never enter this structure.
+pub(crate) fn append_runtime_identity_collision_fact(
+    runtime_map: &mut RuntimeMap,
+    provider_revision: &str,
+    collected_at: u64,
+) -> bool {
+    const SCOPE_ID: &str = "runtime_integrity_scope";
+    const RISK_ID: &str = "runtime_integrity_risk_identity_collision";
+    if provider_revision.is_empty()
+        || runtime_map
+            .nodes
+            .iter()
+            .any(|node| matches!(node.id.as_str(), SCOPE_ID | RISK_ID))
+    {
+        return false;
+    }
+
+    runtime_map.nodes.extend([
+        RuntimeMapNode {
+            id: SCOPE_ID.into(),
+            provider: RuntimeProviderKind::Other,
+            kind: RuntimeNodeKind::IntegrityScope,
+            label: "Runtime identity integrity".into(),
+            status: None,
+            layer: Some(RuntimeNodeLayer::Advisory),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        },
+        RuntimeMapNode {
+            id: RISK_ID.into(),
+            provider: RuntimeProviderKind::Other,
+            kind: RuntimeNodeKind::HostRisk,
+            label: "Duplicate runtime topology identity".into(),
+            status: None,
+            layer: Some(RuntimeNodeLayer::Advisory),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        },
+    ]);
+    runtime_map.edges.push(RuntimeMapEdge {
+        source: SCOPE_ID.into(),
+        target: RISK_ID.into(),
+        relationship: RuntimeRelationshipKind::RelatedTo,
+        metadata: BTreeMap::new(),
+        evidence_refs: vec![RuntimeEvidenceRef {
+            version: 7,
+            id: "dockermap_evidence_runtime_identity_collision".into(),
+            provider: RuntimeEvidenceProvider::Dockermap,
+            kind: RuntimeEvidenceKind::RuntimeIdentityCollision,
+            assertion_kind: RuntimeEvidenceAssertionKind::Observed,
+            summary: "DockerMap detected duplicate runtime identities after publication normalization"
+                .into(),
+            subject_ref: SCOPE_ID.into(),
+            collected_at,
+            provider_revision: provider_revision.into(),
+            provider_slot: None,
+            freshness: RuntimeEvidenceFreshness::Fresh,
+        }],
+    });
+    runtime_map.nodes.sort_by_key(runtime_node_sort_key);
+    runtime_map.edges.sort_by_key(runtime_edge_sort_key);
+    true
 }
 
 fn runtime_node_sort_key(node: &RuntimeMapNode) -> String {

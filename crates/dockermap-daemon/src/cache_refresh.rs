@@ -16,7 +16,10 @@ use crate::{
         SYSTEMD_EVIDENCE_WANTS,
     },
     providers::tmux::TMUX_EVIDENCE_SESSION_LISTING_MARKER,
-    publication::{publish_docker_snapshot, redact_health_response, redact_runtime_map},
+    publication::{
+        append_runtime_identity_collision_fact, publish_docker_snapshot,
+        redact_health_response, redact_runtime_map, runtime_map_has_identity_collision,
+    },
     runtime_collection::{
         collect_provider_slot_bounded, runtime_map_from_collection, slot_interval,
         ProviderCollectionOutcome, STATIC_PROVIDER_SLOTS,
@@ -81,6 +84,10 @@ pub(crate) struct DaemonCache {
     /// This is intentionally distinct from the broader publication revision:
     /// provider slot state may change without changing Docker facts.
     docker_observation_revision: DockerObservationRevision,
+    /// Opaque revision of the one aggregate publication-integrity condition.
+    /// It advances only when the live collision boolean changes; no collided
+    /// identity, count, diagnostic, or provider material participates.
+    integrity_observation_revision: IntegrityObservationRevision,
     revision: PublicationRevision,
 }
 
@@ -186,6 +193,40 @@ impl DockerObservationRevision {
                 .expect("Docker observation revision sequence overflow");
             self.last_observable = Some(observable);
         }
+    }
+}
+
+/// Per-process opaque token for the collision aggregate. Unlike a Docker
+/// observation token, this is keyed only to the already-sanitized boolean
+/// condition that can safely be published as evidence.
+#[derive(Clone)]
+struct IntegrityObservationRevision {
+    boot: String,
+    sequence: u64,
+    last_active: Option<bool>,
+}
+
+impl IntegrityObservationRevision {
+    fn new() -> Self {
+        Self {
+            boot: opaque_revision_boot_component(),
+            sequence: 0,
+            last_active: None,
+        }
+    }
+
+    fn assign(&mut self, active: bool) {
+        if self.last_active != Some(active) {
+            self.sequence = self
+                .sequence
+                .checked_add(1)
+                .expect("integrity observation revision sequence overflow");
+            self.last_active = Some(active);
+        }
+    }
+
+    fn current(&self) -> String {
+        format!("{}-{}", self.boot, self.sequence)
     }
 }
 
@@ -404,6 +445,7 @@ impl DaemonCache {
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
+            integrity_observation_revision: IntegrityObservationRevision::new(),
             revision: PublicationRevision::new(),
         };
         cache.assign_docker_observation_revision();
@@ -452,6 +494,17 @@ impl DaemonCache {
             &self.runtime_providers,
             &docker_observation_token,
         );
+        let active = self.health.mode == RuntimeMode::Docker
+            && runtime_map_has_identity_collision(&self.runtime_map);
+        self.integrity_observation_revision.assign(active);
+        if active {
+            let token = self.integrity_observation_revision.current();
+            let _ = append_runtime_identity_collision_fact(
+                &mut self.runtime_map,
+                &token,
+                self.snapshot.last_updated,
+            );
+        }
     }
 }
 
@@ -603,6 +656,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     runtime_providers: unavailable_provider_slots(),
                     source_generation: 0,
                     docker_observation_revision: DockerObservationRevision::new(),
+                    integrity_observation_revision: IntegrityObservationRevision::new(),
                     revision: PublicationRevision::new(),
                 }
             }

@@ -41,6 +41,14 @@ const COMPOSE_MUTUAL_DEPENDENCY_SUMMARY: &str =
     "Docker recorded mutually declared Compose dependencies between two containers.";
 const COMPOSE_MUTUAL_DEPENDENCY_RECOMMENDATION: &str =
     "Review the declared dependencies and remove any unintended mutual dependency.";
+const RUNTIME_IDENTITY_COLLISION_SUMMARY: &str =
+    "DockerMap detected duplicate runtime identities after publication normalization.";
+const RUNTIME_IDENTITY_COLLISION_RECOMMENDATION: &str =
+    "Review the duplicate identity condition before relying on topology relationships.";
+const RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY: &str =
+    "DockerMap detected duplicate runtime identities after publication normalization";
+const RUNTIME_INTEGRITY_SCOPE_ID: &str = "runtime_integrity_scope";
+const RUNTIME_IDENTITY_COLLISION_RISK_ID: &str = "runtime_integrity_risk_identity_collision";
 
 /// Derive bounded, deterministic advisory findings from the already-public
 /// runtime topology. Every rule intentionally fails closed on its own closed
@@ -138,6 +146,29 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
     }
 
     let mut findings = Vec::new();
+    let integrity_edge_count = runtime_map
+        .edges
+        .iter()
+        .filter(|edge| {
+            edge.source == RUNTIME_INTEGRITY_SCOPE_ID
+                && edge.target == RUNTIME_IDENTITY_COLLISION_RISK_ID
+        })
+        .count();
+    for edge in &runtime_map.edges {
+        if integrity_edge_count != 1 || !is_candidate_runtime_identity_collision(edge, &nodes) {
+            continue;
+        }
+        findings.push(Finding {
+            id: "finding_runtime_identity_collision_detected".into(),
+            rule_id: FindingRule::RuntimeIdentityCollisionDetected,
+            severity: FindingSeverity::Advisory,
+            summary: RUNTIME_IDENTITY_COLLISION_SUMMARY.into(),
+            recommendation: RUNTIME_IDENTITY_COLLISION_RECOMMENDATION.into(),
+            subject_ref: edge.source.clone(),
+            target_ref: edge.target.clone(),
+            evidence_refs: vec![edge.evidence_refs[0].clone()],
+        });
+    }
     for edge in &runtime_map.edges {
         if unspecified_address_port_counts.get(edge.source.as_str()) != Some(&1)
             || !is_candidate_unspecified_address_port(edge, &nodes)
@@ -452,6 +483,57 @@ fn is_docker_port_shape<'a>(
     edge.relationship == RuntimeRelationshipKind::Exposes
         && matches!((nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
             (Some(source), Some(target)) if is_docker_container(source) && is_docker_listener(target))
+}
+
+fn is_runtime_integrity_scope(node: &crate::RuntimeMapNode) -> bool {
+    node.id == RUNTIME_INTEGRITY_SCOPE_ID
+        && node.provider == RuntimeProviderKind::Other
+        && node.kind == RuntimeNodeKind::IntegrityScope
+        && node.label == "Runtime identity integrity"
+        && node.status.is_none()
+        && node.layer == Some(crate::RuntimeNodeLayer::Advisory)
+        && node.metadata.is_empty()
+        && node.service.is_none()
+        && node.package.is_none()
+}
+
+fn is_runtime_identity_collision_risk(node: &crate::RuntimeMapNode) -> bool {
+    node.id == RUNTIME_IDENTITY_COLLISION_RISK_ID
+        && node.provider == RuntimeProviderKind::Other
+        && node.kind == RuntimeNodeKind::HostRisk
+        && node.label == "Duplicate runtime topology identity"
+        && node.status.is_none()
+        && node.layer == Some(crate::RuntimeNodeLayer::Advisory)
+        && node.metadata.is_empty()
+        && node.service.is_none()
+        && node.package.is_none()
+}
+
+fn is_candidate_runtime_identity_collision<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.metadata.is_empty()
+        && edge.relationship == RuntimeRelationshipKind::RelatedTo
+        && matches!(
+            (nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
+            (Some(source), Some(target))
+                if is_runtime_integrity_scope(source) && is_runtime_identity_collision_risk(target)
+        )
+        && edge.has_valid_evidence_refs()
+        && edge.evidence_refs.len() == 1
+        && matches!(edge.evidence_refs.first(), Some(evidence)
+            if evidence.version == 7
+                && evidence.id == "dockermap_evidence_runtime_identity_collision"
+                && evidence.provider == RuntimeEvidenceProvider::Dockermap
+                && evidence.kind == RuntimeEvidenceKind::RuntimeIdentityCollision
+                && evidence.assertion_kind == RuntimeEvidenceAssertionKind::Observed
+                && evidence.summary == RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY
+                && evidence.subject_ref == edge.source
+                && evidence.freshness == RuntimeEvidenceFreshness::Fresh
+                && evidence.provider_slot.is_none()
+                && !evidence.provider_revision.is_empty()
+                && evidence.provider_revision != evidence.collected_at.to_string())
 }
 
 fn is_unspecified_address_port_risk(node: &crate::RuntimeMapNode) -> bool {
@@ -1087,6 +1169,91 @@ mod tests {
         }
     }
 
+    fn runtime_identity_collision_map() -> RuntimeMap {
+        let scope = RUNTIME_INTEGRITY_SCOPE_ID;
+        let risk = RUNTIME_IDENTITY_COLLISION_RISK_ID;
+        RuntimeMap {
+            nodes: vec![
+                RuntimeMapNode {
+                    id: scope.into(),
+                    provider: RuntimeProviderKind::Other,
+                    kind: RuntimeNodeKind::IntegrityScope,
+                    label: "Runtime identity integrity".into(),
+                    status: None,
+                    layer: Some(RuntimeNodeLayer::Advisory),
+                    metadata: BTreeMap::new(),
+                    service: None,
+                    package: None,
+                },
+                RuntimeMapNode {
+                    id: risk.into(),
+                    provider: RuntimeProviderKind::Other,
+                    kind: RuntimeNodeKind::HostRisk,
+                    label: "Duplicate runtime topology identity".into(),
+                    status: None,
+                    layer: Some(RuntimeNodeLayer::Advisory),
+                    metadata: BTreeMap::new(),
+                    service: None,
+                    package: None,
+                },
+            ],
+            edges: vec![RuntimeMapEdge {
+                source: scope.into(),
+                target: risk.into(),
+                relationship: RuntimeRelationshipKind::RelatedTo,
+                metadata: BTreeMap::new(),
+                evidence_refs: vec![RuntimeEvidenceRef {
+                    version: 7,
+                    id: "dockermap_evidence_runtime_identity_collision".into(),
+                    provider: RuntimeEvidenceProvider::Dockermap,
+                    kind: RuntimeEvidenceKind::RuntimeIdentityCollision,
+                    assertion_kind: RuntimeEvidenceAssertionKind::Observed,
+                    summary: RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY.into(),
+                    subject_ref: scope.into(),
+                    collected_at: 1,
+                    provider_revision: "0123456789abcdef0123456789abcdef-1".into(),
+                    provider_slot: None,
+                    freshness: RuntimeEvidenceFreshness::Fresh,
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn runtime_identity_collision_rule_is_aggregate_deterministic_and_fail_closed() {
+        let input = runtime_identity_collision_map();
+        let findings = derive_findings(&input);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, "finding_runtime_identity_collision_detected");
+        assert_eq!(findings[0].rule_id, FindingRule::RuntimeIdentityCollisionDetected);
+        assert_eq!(findings[0].severity, FindingSeverity::Advisory);
+        assert_eq!(findings[0].summary, RUNTIME_IDENTITY_COLLISION_SUMMARY);
+        assert_eq!(findings[0].recommendation, RUNTIME_IDENTITY_COLLISION_RECOMMENDATION);
+        assert_eq!(findings[0].subject_ref, RUNTIME_INTEGRITY_SCOPE_ID);
+        assert_eq!(findings[0].target_ref, RUNTIME_IDENTITY_COLLISION_RISK_ID);
+
+        let mut reordered = input.clone();
+        reordered.nodes.reverse();
+        assert_eq!(derive_findings(&reordered), findings);
+
+        let mut duplicate = input.clone();
+        duplicate.edges.push(duplicate.edges[0].clone());
+        assert!(derive_findings(&duplicate).is_empty());
+
+        let mut stale = input.clone();
+        stale.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
+        assert!(derive_findings(&stale).is_empty());
+
+        let mut wrong_summary = input.clone();
+        wrong_summary.edges[0].evidence_refs[0].summary = "collision: raw-id".into();
+        assert!(derive_findings(&wrong_summary).is_empty());
+
+        let mut mock = input;
+        mock.source = Some(RuntimeMode::Mock);
+        assert!(derive_findings(&mock).is_empty());
+    }
+
     #[test]
     fn unspecified_address_port_rule_is_unique_deterministic_and_redacted() {
         let input = unspecified_address_port_map();
@@ -1538,6 +1705,7 @@ mod tests {
                 declared_dependency_count: 3,
                 docker_daemon_authority_count: 2,
                 host_port_publication_count: 3,
+                evidence_integrity_count: 0,
             }
         );
 

@@ -592,20 +592,34 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "docker_compose_runtime_binding",
           "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
           "type": "string"
+        },
+        {
+          "const": "runtime_identity_collision",
+          "description": "DockerMap detected at least one duplicate runtime node identity after\npublication redaction/normalization. IDs and counts are omitted.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
       "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
-      "enum": [
-        "docker",
-        "compose",
-        "systemd",
-        "npm",
-        "cron",
-        "tmux"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "docker",
+            "compose",
+            "systemd",
+            "npm",
+            "cron",
+            "tmux"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "dockermap",
+          "description": "DockerMap's own bounded publication-integrity checks. This provider\nnever carries raw provider material or user-controlled text.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeEvidenceRef": {
       "additionalProperties": false,
@@ -664,7 +678,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 6,
+          "maximum": 7,
           "minimum": 1,
           "type": "integer"
         }
@@ -925,35 +939,44 @@ export const RUST_RESPONSE_SCHEMAS = {
       "type": "string"
     },
     "RuntimeNodeKind": {
-      "enum": [
-        "container",
-        "docker_network",
-        "docker_volume",
-        "host",
-        "host_risk",
-        "service",
-        "systemd_service",
-        "scheduled_job",
-        "pm2_app",
-        "tmux_session",
-        "tailnet_node",
-        "reverse_proxy",
-        "local_dns_resolver",
-        "dns_provider",
-        "node_application",
-        "python_application",
-        "ai_agent",
-        "package",
-        "storage",
-        "external_api",
-        "package_dependency",
-        "database",
-        "worker",
-        "process",
-        "network_listener",
-        "orchestrator_workload"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "container",
+            "docker_network",
+            "docker_volume",
+            "host",
+            "host_risk",
+            "service",
+            "systemd_service",
+            "scheduled_job",
+            "pm2_app",
+            "tmux_session",
+            "tailnet_node",
+            "reverse_proxy",
+            "local_dns_resolver",
+            "dns_provider",
+            "node_application",
+            "python_application",
+            "ai_agent",
+            "package",
+            "storage",
+            "external_api",
+            "package_dependency",
+            "database",
+            "worker",
+            "process",
+            "network_listener",
+            "orchestrator_workload"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "integrity_scope",
+          "description": "Fixed synthetic scope for facts about the integrity of the published\nruntime model itself. It never represents a host/provider entity.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeNodeLayer": {
       "enum": [
@@ -1428,7 +1451,8 @@ export const RUST_RESPONSE_SCHEMAS = {
         "docker.daemon_state_bind_mount_publishes_port",
         "docker.compose_declared_target_not_active",
         "docker.compose_mutual_dependency",
-        "compose.declared_mount_missing_at_bound_container"
+        "compose.declared_mount_missing_at_bound_container",
+        "runtime.identity_collision_detected"
       ],
       "type": "string"
     },
@@ -1459,6 +1483,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           "minimum": 0,
           "type": "integer"
         },
+        "evidenceIntegrityCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
         "hostPortPublicationCount": {
           "format": "uint32",
           "minimum": 0,
@@ -1475,7 +1504,8 @@ export const RUST_RESPONSE_SCHEMAS = {
         "advisoryCount",
         "declaredDependencyCount",
         "dockerDaemonAuthorityCount",
-        "hostPortPublicationCount"
+        "hostPortPublicationCount",
+        "evidenceIntegrityCount"
       ],
       "type": "object"
     },
@@ -1590,20 +1620,34 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "docker_compose_runtime_binding",
           "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
           "type": "string"
+        },
+        {
+          "const": "runtime_identity_collision",
+          "description": "DockerMap detected at least one duplicate runtime node identity after\npublication redaction/normalization. IDs and counts are omitted.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
       "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
-      "enum": [
-        "docker",
-        "compose",
-        "systemd",
-        "npm",
-        "cron",
-        "tmux"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "docker",
+            "compose",
+            "systemd",
+            "npm",
+            "cron",
+            "tmux"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "dockermap",
+          "description": "DockerMap's own bounded publication-integrity checks. This provider\nnever carries raw provider material or user-controlled text.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeEvidenceRef": {
       "additionalProperties": false,
@@ -1662,7 +1706,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 6,
+          "maximum": 7,
           "minimum": 1,
           "type": "integer"
         }
@@ -3255,20 +3299,34 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "docker_compose_runtime_binding",
           "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
           "type": "string"
+        },
+        {
+          "const": "runtime_identity_collision",
+          "description": "DockerMap detected at least one duplicate runtime node identity after\npublication redaction/normalization. IDs and counts are omitted.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
       "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
-      "enum": [
-        "docker",
-        "compose",
-        "systemd",
-        "npm",
-        "cron",
-        "tmux"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "docker",
+            "compose",
+            "systemd",
+            "npm",
+            "cron",
+            "tmux"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "dockermap",
+          "description": "DockerMap's own bounded publication-integrity checks. This provider\nnever carries raw provider material or user-controlled text.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeEvidenceRef": {
       "additionalProperties": false,
@@ -3327,7 +3385,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 6,
+          "maximum": 7,
           "minimum": 1,
           "type": "integer"
         }
@@ -3588,35 +3646,44 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "type": "string"
     },
     "RuntimeNodeKind": {
-      "enum": [
-        "container",
-        "docker_network",
-        "docker_volume",
-        "host",
-        "host_risk",
-        "service",
-        "systemd_service",
-        "scheduled_job",
-        "pm2_app",
-        "tmux_session",
-        "tailnet_node",
-        "reverse_proxy",
-        "local_dns_resolver",
-        "dns_provider",
-        "node_application",
-        "python_application",
-        "ai_agent",
-        "package",
-        "storage",
-        "external_api",
-        "package_dependency",
-        "database",
-        "worker",
-        "process",
-        "network_listener",
-        "orchestrator_workload"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "container",
+            "docker_network",
+            "docker_volume",
+            "host",
+            "host_risk",
+            "service",
+            "systemd_service",
+            "scheduled_job",
+            "pm2_app",
+            "tmux_session",
+            "tailnet_node",
+            "reverse_proxy",
+            "local_dns_resolver",
+            "dns_provider",
+            "node_application",
+            "python_application",
+            "ai_agent",
+            "package",
+            "storage",
+            "external_api",
+            "package_dependency",
+            "database",
+            "worker",
+            "process",
+            "network_listener",
+            "orchestrator_workload"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "integrity_scope",
+          "description": "Fixed synthetic scope for facts about the integrity of the published\nruntime model itself. It never represents a host/provider entity.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeNodeLayer": {
       "enum": [
@@ -4091,7 +4158,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "docker.daemon_state_bind_mount_publishes_port",
         "docker.compose_declared_target_not_active",
         "docker.compose_mutual_dependency",
-        "compose.declared_mount_missing_at_bound_container"
+        "compose.declared_mount_missing_at_bound_container",
+        "runtime.identity_collision_detected"
       ],
       "type": "string"
     },
@@ -4122,6 +4190,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "minimum": 0,
           "type": "integer"
         },
+        "evidenceIntegrityCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
         "hostPortPublicationCount": {
           "format": "uint32",
           "minimum": 0,
@@ -4138,7 +4211,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "advisoryCount",
         "declaredDependencyCount",
         "dockerDaemonAuthorityCount",
-        "hostPortPublicationCount"
+        "hostPortPublicationCount",
+        "evidenceIntegrityCount"
       ],
       "type": "object"
     },
@@ -4253,20 +4327,34 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "docker_compose_runtime_binding",
           "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
           "type": "string"
+        },
+        {
+          "const": "runtime_identity_collision",
+          "description": "DockerMap detected at least one duplicate runtime node identity after\npublication redaction/normalization. IDs and counts are omitted.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
       "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
-      "enum": [
-        "docker",
-        "compose",
-        "systemd",
-        "npm",
-        "cron",
-        "tmux"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "docker",
+            "compose",
+            "systemd",
+            "npm",
+            "cron",
+            "tmux"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "dockermap",
+          "description": "DockerMap's own bounded publication-integrity checks. This provider\nnever carries raw provider material or user-controlled text.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeEvidenceRef": {
       "additionalProperties": false,
@@ -4325,7 +4413,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 6,
+          "maximum": 7,
           "minimum": 1,
           "type": "integer"
         }
