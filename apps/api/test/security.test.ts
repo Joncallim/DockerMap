@@ -1532,6 +1532,20 @@ test("runtime evidence is required and fails closed before browser publication",
     );
   }
 
+  const identityEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "runtime_integrity_scope");
+  assert.ok(identityEdge, "canonical daemon fixture carries the V7 aggregate collision boundary");
+  for (const mutate of [
+    (edge: Record<string, unknown>) => { (edge.evidenceRefs as Array<Record<string, unknown>>)[0].id = "secret=collision"; },
+    (edge: Record<string, unknown>) => { edge.metadata = { collisionCount: "secret=2" }; },
+    (edge: Record<string, unknown>) => { (edge.evidenceRefs as Array<Record<string, unknown>>).push(structuredClone((edge.evidenceRefs as Array<Record<string, unknown>>)[0])); },
+  ]) {
+    const malformedIdentity = structuredClone(fixture);
+    const edge = malformedIdentity.edges.find((candidate: { source?: unknown }) => candidate.source === "runtime_integrity_scope");
+    assert.ok(edge);
+    mutate(edge);
+    assert.throws(() => validateDaemonResponse("/daemon/runtime/map", malformedIdentity), "V7 collision evidence must not carry identity or count material");
+  }
+
   const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === tmuxFixtureSource);
   assert.ok(tmuxEdge, "canonical daemon fixture carries a V5 tmux session listing");
   assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));

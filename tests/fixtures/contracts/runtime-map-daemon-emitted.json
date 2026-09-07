@@ -296,6 +296,22 @@
       "metadata": {}
     },
     {
+      "id": "fixture_redacted_runtime_collision",
+      "provider": "other",
+      "type": "host_risk",
+      "label": "[redacted]",
+      "status": null,
+      "metadata": {}
+    },
+    {
+      "id": "fixture_redacted_runtime_collision",
+      "provider": "other",
+      "type": "host_risk",
+      "label": "[redacted]",
+      "status": null,
+      "metadata": {}
+    },
+    {
       "id": "runtime_integrity_risk_identity_collision",
       "provider": "other",
       "type": "host_risk",
