@@ -38,6 +38,16 @@ const composeMountFinding = {
   ]
 };
 
+const unspecifiedAddressFinding = {
+  id: "finding_docker_port_published_on_unspecified_address_opaque",
+  ruleId: "docker.port_published_on_unspecified_address",
+  severity: "advisory",
+  summary: "Docker reported a container port published on an unspecified host address.",
+  recommendation: "Review whether publishing this container port beyond loopback is intended.",
+  subjectRef: "docker_container_redacted", targetRef: "host_risk_docker_unspecified_address_port",
+  evidenceRefs: [{ version: 1, id: "opaque-publication", provider: "docker", kind: "docker_unspecified_address_port_publication", assertionKind: "observed", summary: "Docker reported a container port published on an unspecified host address", subjectRef: "docker_container_redacted", collectedAt: 1, providerRevision: "opaque-observation", providerSlot: null, freshness: "fresh" }]
+};
+
 describe("finding presentation boundary", () => {
   it("admits only the static closed Compose advisory shape", () => {
     expect(presentationForFinding(composeFinding)).toMatchObject({
@@ -83,5 +93,24 @@ describe("finding presentation boundary", () => {
     expect(presentationForFinding({ ...composeMountFinding, evidenceRefs: [{ ...composeMountFinding.evidenceRefs[0], id: "/private/compose.yaml" }, composeMountFinding.evidenceRefs[1]] })).toBeNull();
     expect(presentationForFinding({ ...composeMountFinding, evidenceRefs: [composeMountFinding.evidenceRefs[0], { ...composeMountFinding.evidenceRefs[1], providerRevision: "other-observation" }] })).toBeNull();
     expect(presentationForFinding({ ...composeMountFinding, evidenceRefs: [{ ...composeMountFinding.evidenceRefs[0], freshness: "stale" }, composeMountFinding.evidenceRefs[1]] })).toBeNull();
+  });
+
+  it("admits only the static unspecified-address Docker publication advisory", () => {
+    expect(presentationForFinding(unspecifiedAddressFinding)).toMatchObject({
+      title: "Unspecified-address port publication needs review", category: "Host port publication"
+    });
+    const omittedSlot = structuredClone(unspecifiedAddressFinding);
+    delete (omittedSlot.evidenceRefs[0] as { providerSlot?: unknown }).providerSlot;
+    expect(presentationForFinding(omittedSlot)).not.toBeNull();
+  });
+
+  it("suppresses forged, stale, or address-shaped unspecified-address publication data", () => {
+    expect(presentationForFinding({ ...unspecifiedAddressFinding, targetRef: "host_risk_other" })).toBeNull();
+    expect(presentationForFinding({ ...unspecifiedAddressFinding, summary: "0.0.0.0:443" })).toBeNull();
+    expect(presentationForFinding({ ...unspecifiedAddressFinding, evidenceRefs: [{ ...unspecifiedAddressFinding.evidenceRefs[0], kind: "docker_port_publication" }] })).toBeNull();
+    expect(presentationForFinding({ ...unspecifiedAddressFinding, evidenceRefs: [{ ...unspecifiedAddressFinding.evidenceRefs[0], summary: "0.0.0.0:443" }] })).toBeNull();
+    expect(presentationForFinding({ ...unspecifiedAddressFinding, evidenceRefs: [{ ...unspecifiedAddressFinding.evidenceRefs[0], providerSlot: "project_npm" }] })).toBeNull();
+    expect(presentationForFinding({ ...unspecifiedAddressFinding, evidenceRefs: [{ ...unspecifiedAddressFinding.evidenceRefs[0], freshness: "stale" }] })).toBeNull();
+    expect(presentationForFinding({ ...unspecifiedAddressFinding, evidenceRefs: [{ ...unspecifiedAddressFinding.evidenceRefs[0], providerRevision: "1" }] })).toBeNull();
   });
 });
