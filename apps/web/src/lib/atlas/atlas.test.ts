@@ -16,7 +16,7 @@ import {
   runtimeFixture,
   unsupportedKindFixture
 } from "./fixtures";
-import { focusCamera, layoutAtlas, layoutJson, pointFor, preserveCamera, rectanglesOverlap } from "./layout";
+import { ATLAS_CAMERA_POLICY, focusCamera, initialAtlasCamera, layoutAtlas, layoutJson, pointFor, preserveCamera, rectanglesOverlap } from "./layout";
 import {
   canonicalSubjectOrder,
   projectRuntimeMap,
@@ -330,6 +330,8 @@ describe("Atlas logical layout and camera properties", () => {
 
   it("preserves camera across routine revisions and bounds explicit focus", () => {
     const camera = { x: 4, y: -9, zoom: 1.5 };
+    expect(ATLAS_CAMERA_POLICY.preserveOn).toEqual(["state", "relation", "attachment", "unrelated_structure", "lens"]);
+    expect(initialAtlasCamera()).toEqual({ x: 0, y: 0, zoom: 1 });
     expect(preserveCamera(camera)).toEqual(camera);
     const point = pointFor(layoutAtlas(modelFor(1)), "runtime_subject_000");
     expect(point).toBeDefined();

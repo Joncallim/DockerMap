@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppContext, type AppContextValue } from "../context";
-import { collisionFixture, runtimeFixture } from "../lib/atlas/fixtures";
+import { collisionFixture, mutateStateOnly, runtimeFixture } from "../lib/atlas/fixtures";
 import { projectRuntimeMap } from "../lib/atlas/project";
 import AtlasOverview from "./AtlasOverview";
 
@@ -200,6 +200,35 @@ describe("AtlasOverview", () => {
     expect(document.activeElement).toBe(host.querySelector(".atlas-directory"));
     expect(host.querySelector(".atlas-inspector")?.textContent).toContain("Select a subject");
     expect(host.querySelector(".atlas-route-status")?.textContent).toContain("unavailable");
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it("keeps the exact viewport transform and surviving selection through coherent revision classes", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root: Root = createRoot(host);
+    const baseInput = runtimeFixture(5, "chain", "dependency");
+    const base = projectRuntimeMap(baseInput);
+    const selected = base.model.subjects.find((subject) => subject.routability === "routable")!.key;
+    const relationOnly = projectRuntimeMap({ ...baseInput, edges: [] });
+    const unrelatedStructural = projectRuntimeMap({
+      ...baseInput,
+      nodes: [...baseInput.nodes, {
+        id: "host_refresh_context", provider: "host", type: "host", layer: "host", label: "refresh context", status: "running", metadata: {}
+      }]
+    });
+    const stateOnly = projectRuntimeMap(mutateStateOnly(baseInput));
+    await act(async () => root.render(mounted(context(base), `/atlas?subject=${selected}`)));
+    const transform = () => host.querySelector<SVGGElement>(".atlas-canvas > g")!.getAttribute("transform");
+    const initialTransform = transform();
+
+    for (const revision of [stateOnly, relationOnly, unrelatedStructural]) {
+      await act(async () => root.render(mounted(context(revision), `/atlas?subject=${selected}`)));
+      expect(transform()).toBe(initialTransform);
+      expect(host.querySelector(".atlas-subject.is-selected")).not.toBeNull();
+    }
+
     await act(async () => root.unmount());
     host.remove();
   });
