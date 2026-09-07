@@ -53,8 +53,8 @@ acceptance work are recorded in [`CONTRACT_AUTHORITY.md`](CONTRACT_AUTHORITY.md)
 ### Relationship evidence lifecycle
 
 Each runtime edge has a required `evidenceRefs` array. The current Docker,
-Systemd, and npm slices emit bounded, versioned records alongside the edge during
-derivation; they are not reconstructed from labels in React:
+Systemd, npm, Cron, and tmux slices emit bounded, versioned records alongside
+the edge during derivation; they are not reconstructed from labels in React:
 
 ```text
 collector -> bounded RuntimeEvidenceRef -> RuntimeMapEdge -> daemon publication/redaction -> API contract validation -> Runtime inspector
@@ -89,6 +89,26 @@ project-to-package dependency: it is not proof that a package was installed,
 resolved, executed, healthy, safe, or used at runtime. The evidence contains a
 curated summary rather than raw manifest content.
 
+Version four adds parsed Cron schedule declarations. Version five adds a fixed
+tmux session-listing fact. Each uses its own bounded collector slot, opaque data
+revision, last-successful collection timestamp, and the closed
+`fresh`/retained-`stale`/`timed_out` vocabulary. Cron attests only that the
+bounded collector parsed the schedule declaration; it does not say the command
+ran. Tmux version five is `observed` and supports only the canonical
+`tmux_session_* -> host_local` `runs_on` relationship: the fixed read-only
+session listing recorded a local session. Its independent tmux slot has a
+private, non-configurable 15-second completion-relative cadence and its own
+single-flight, timeout, revision, and freshness lifecycle.
+
+The tmux fact is deliberately narrow. It does not establish session attachment
+or activity, process ownership, health, reachability, persistence, or a
+complete list of host sessions. It is suppressed rather than guessed when the
+daemon is in mock mode, after a Docker/mock lifecycle reset, when the tmux slot
+has no usable successful revision, when tmux is disabled in a restricted PID
+namespace, or when either the canonical local host or the tmux-session source
+identity is ambiguous. The producer/publication boundary and UI must not expose
+raw tmux session names, IDs, or metadata.
+
 Mock mode keeps representative topology available for UI and transport testing,
 but it is not a Docker observation. In that mode every runtime edge has an
 empty `evidenceRefs` array and no evidence-derived finding is published. A
@@ -113,7 +133,9 @@ Current relationship-source matrix:
 | Docker container -> Docker daemon state risk target | Docker inventory bind mount matching the closed daemon-state predicate | observed path-free risk condition, not breach, compromise, reachability, or impact evidence | emitted only for a uniquely resolved matching container; no mount path, ID, or options are published |
 | systemd service -> systemd service (`requires`, `wants`, `part_of`) | Systemd `Requires=`, `Wants=`, `PartOf=` declaration | declared relationship, not start/health/traffic evidence | emitted only with a valid dedicated Systemd-slot observation; retained facts state freshness explicitly |
 | npm project -> npm package dependency | bounded `package.json` manifest discovery under the configured project root | declared dependency, not installation, resolution, execution, health, safety, or runtime-use evidence | emitted only with a valid `project_npm` slot observation; retained facts state `fresh`, `stale`, or `timed_out` explicitly; raw manifest content is not evidence |
-| tmux, proxy, DNS, process and cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
+| scheduled job -> local host | bounded Cron declaration collection | declared schedule, not proof that its command ran | emitted with a valid dedicated Cron-slot observation |
+| tmux session -> local host | fixed read-only tmux session listing | observed local-session listing, not attachment, activity, ownership, health, reachability, persistence, or completeness | emitted only for a unique canonical source and `host_local` under a valid dedicated tmux-slot observation; producer and UI expose no raw session name, ID, or metadata |
+| proxy, DNS, process and other cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
 
 ### Bounded findings
 
