@@ -1,9 +1,11 @@
 import { selectedSubject } from "./project";
+import { ATLAS_DEFAULT_LENS, isAtlasLens, type AtlasSupportedLens } from "./lens";
+import { ATLAS_OVERVIEW_ENABLED } from "./feature";
 import type { AtlasDerivedKey, AtlasEnvelope, AtlasKey, AtlasModel } from "./types";
 
 /** Atlas has one deliberately closed, orientation-only lens in V1. */
-export const ATLAS_ROUTE_LENS = "overview" as const;
-export type AtlasRouteLens = typeof ATLAS_ROUTE_LENS;
+export const ATLAS_ROUTE_LENS = ATLAS_DEFAULT_LENS;
+export type AtlasRouteLens = AtlasSupportedLens;
 export type AtlasFocusTarget = "directory" | "subject" | "aggregate" | "group";
 
 export interface AtlasRouteState {
@@ -74,7 +76,7 @@ function actualSelection(model: AtlasModel, value: string | null): AtlasKey | nu
 
 function encodedSearch(state: AtlasRouteState): string {
   const params = new URLSearchParams();
-  // The only lens is the default, so it is intentionally omitted.
+  if (state.lens !== ATLAS_ROUTE_LENS) params.set("lens", state.lens);
   if (state.selectedKey) params.set("subject", state.selectedKey);
   if (state.expandedKey) params.set("expand", state.expandedKey);
   const value = params.toString();
@@ -111,14 +113,21 @@ export function parseAtlasSearch(search: string, model: AtlasModel): AtlasRouteP
   const lensValues = values("lens");
   const subjectValues = values("subject");
   const expansionValues = values("expand");
-  const lensValid = lensValues.length === 0 || (lensValues.length === 1 && lensValues[0] === ATLAS_ROUTE_LENS);
+  const requestedLens = lensValues.length === 0 ? ATLAS_ROUTE_LENS : lensValues[0];
+  const lensValid = lensValues.length <= 1 && !!requestedLens && isAtlasLens(requestedLens);
+  if (!lensValid) return {
+    state: DEFAULT_STATE,
+    rejectedLens: true,
+    rejectedSubject: subjectValues.length > 0,
+    rejectedExpansion: expansionValues.length > 0
+  };
   const selectedKey = subjectValues.length === 1 ? actualSelection(model, subjectValues[0]!) : null;
   const expansion = expansionValues.length === 1 ? actualExpansion(model, expansionValues[0]!) : null;
   const expandedKey = expansion?.key ?? null;
 
   return {
-    state: { lens: ATLAS_ROUTE_LENS, selectedKey, expandedKey, focusTarget: focusTarget(selectedKey, expansion) },
-    rejectedLens: !lensValid,
+    state: { lens: requestedLens, selectedKey, expandedKey, focusTarget: focusTarget(selectedKey, expansion) },
+    rejectedLens: false,
     rejectedSubject: subjectValues.length > 1 || (subjectValues.length === 1 && !selectedKey),
     rejectedExpansion: expansionValues.length > 1 || (expansionValues.length === 1 && !expandedKey)
   };
@@ -129,7 +138,7 @@ export function serializeAtlasState(model: AtlasModel, intent: AtlasRouteIntent 
   const selectedKey = actualSelection(model, intent.selectedKey ?? null);
   const expansion = actualExpansion(model, intent.expandedKey ?? null);
   return encodedSearch({
-    lens: ATLAS_ROUTE_LENS,
+    lens: intent.lens && isAtlasLens(intent.lens) ? intent.lens : ATLAS_ROUTE_LENS,
     selectedKey,
     expandedKey: expansion?.key ?? null,
     focusTarget: focusTarget(selectedKey, expansion)
@@ -152,6 +161,9 @@ export function atlasRouteState(model: AtlasModel, intent: AtlasRouteIntent = {}
  * participate in this lookup.
  */
 export function atlasSubjectHref(atlas: AtlasEnvelope | null | undefined, runtimeNodeId: string): string | null {
+  // App registers /atlas under this exact build-time gate. A handoff must not
+  // create a route to an intentionally absent screen in the default artifact.
+  if (!ATLAS_OVERVIEW_ENABLED) return null;
   if (!atlas) return null;
   const subject = atlas.model.subjects.find((entry) => entry.routability === "routable" && entry.source.kind === "runtime_node" && entry.source.nodeId === runtimeNodeId);
   return subject ? atlasHref(atlas.model, { selectedKey: subject.key }) : null;
