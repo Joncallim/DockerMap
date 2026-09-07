@@ -32,20 +32,41 @@ The canonical `ContainerRecord` currently contains id/name/role/image/status/por
 
 Runtime contracts contain many distinct node/provider kinds. Atlas must not flatten them all into fake generic services.
 
-## 3. Source authority gate
+## 3. Frozen source authority and correlation boundary
 
-Before implementation, #259 must produce an authority matrix for `DockerSnapshot`, `SystemModel`, `RuntimeMap`, `/api/graph`, and relevant Compose surfaces.
+Atlas consumes exactly one coherent `useSystemModel` publication: a snapshot and
+runtime map with the same request generation, source/provenance and non-empty
+`modelRevision`. Screens, renderers and lenses must not independently fetch
+`/api/graph`, Compose, network or runtime endpoints and join their responses.
+`/api/graph` is excluded from semantic input because it collapses different
+relationship classes into an unproven `connected_to` shape.
 
-For every Atlas object class, record:
+The adapter starts with the coherent runtime map and carries its source revision
+only in an outer live envelope. The deterministic `AtlasModel` excludes revision,
+timestamps and wall-clock data. `SystemModel` supplies collision-aware lookup and
+derived display state only; its `ServiceKind` and status parsing are presentation
+metadata, never topology authority.
 
-1. authoritative source;
-2. stable/collision-safe identity;
-3. whether direction or causality is actually established;
-4. source/evidence reference form;
-5. freshness/availability semantics;
-6. safe route/focus identity.
+| Atlas fact | Authority and safe identity | V1 outcome |
+| --- | --- | --- |
+| Docker/runtime subject | unique, non-empty published `RuntimeMapNode.id`, source-scoped by closed provider/kind | supported primary, context or inspector-only subject under the taxonomy |
+| Docker network, volume or listener | closed fresh runtime evidence with collision-safe endpoints | supported non-causal attachment/context only |
+| Compose dependency | closed `docker_compose_depends_on` evidence | supported directional *declaration*, never traffic, readiness, health or causality |
+| Systemd dependency | closed V2 Systemd evidence | supported directional *declaration* with independent freshness |
+| Provider freshness | matching `providerStates` and evidence freshness | independent marker, never health or membership |
+| Finding attention | only a response with the exact coherent model revision and a proven subject identity | independent overlay; unresolved identity remains a diagnostic |
+| Compose project/group | no published project identity | unsupported; no name/image/role inference |
+| Port/bind/external scope | opaque `ContainerRecord.ports` display strings | context-only observed text; no host-published, protocol, bind-address or reachability claim |
+| `/api/graph` and Compose graph/scan | no coherent revisioned evidence/correlation shape | context/inspector-only; excluded from topology projection |
+| Cross-source Docker/runtime equivalence | no browser-visible explicit correlation key | unsupported; retain source-scoped records, never fuzzy-merge |
+| Host containment and off-host placement | no emitted location/containment fact | requires a future contract change; provider/layer is a presentation lane only |
 
-Prefer a narrow frontend adapter over existing authorities. Do not expand backend contracts only to satisfy a preferred diagram.
+Every relation endpoint must have a unique safe key after publication redaction.
+Empty or collided identities remain visible as bounded non-routable diagnostics;
+array index, name, image, role and label similarity are never fallback identity.
+When a future source disagrees with a proven correlation, Atlas preserves a
+diagnostic or source-owned fields rather than selecting the most recent value.
+Prefer this narrow adapter over backend changes made solely for aesthetics.
 
 ## 4. Presentation-domain model
 
@@ -56,6 +77,7 @@ interface AtlasModel {
   projectionVersion: number;
   subjects: AtlasSubject[];
   groups: AtlasGroup[];
+  lanes: AtlasLane[];
   relations: AtlasRelation[];
   memberships: AtlasMembership[];
   attachments: AtlasAttachment[];
@@ -65,11 +87,21 @@ interface AtlasModel {
 }
 ```
 
+`AtlasEnvelope` separately carries the coherent source revision/provenance used
+to apply or reject a live result. It is not an input to semantic projection,
+exact layout golden files or logical coordinates.
+
 ### Subject
 A routable or visible infrastructure identity. It carries provider/kind metadata plus **separate** operational state, freshness, attention and ambiguity fields.
 
 ### Group
 Exists only when a trustworthy source establishes grouping. No fuzzy grouping, image-name clustering or inferred architecture.
+
+### Lane
+A deterministic presentation scaffold, explicitly distinct from containment.
+It has no membership/ownership claim, cannot reuse group styling or labels, and
+cannot be promoted to an `AtlasGroup` by a renderer. Provider/layer lanes may
+organise safe subjects but do not establish host placement.
 
 ### Relation
 Directional only when the source establishes direction. Compose start-order and qualifying runtime evidence are examples; shared network/storage membership is not.
@@ -84,6 +116,16 @@ A bounded deterministic presentation object for high-degree structures. Aggregat
 Represents unsupported, unresolved, collided or otherwise non-routable presentation evidence without selecting an arbitrary endpoint.
 
 Every projected object carries a named/versioned projection rule and bounded source reference. Renderer-specific geometry does not enter AtlasModel.
+
+The closed serialisable union also includes safe routability, source kind/ref,
+taxonomy role, operational state, evidence freshness, attention and ambiguity
+on each subject; relation evidence refs and direction; aggregate population
+coverage (resolved, unresolved and ambiguous); and diagnostics for unsupported
+kinds, collisions, disagreement and omitted bounded input. Unknown future
+provider/kind pairs must become neutral unsupported diagnostics, never guessed
+services. Projection sorts all input and output by canonical safe keys before
+layout and imposes named/versioned caps on subjects, relations, attachments per
+subject, groups, metadata keys/value length and aggregate expansion.
 
 ## 5. Orthogonal state model
 
