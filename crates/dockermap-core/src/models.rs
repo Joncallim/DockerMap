@@ -833,6 +833,7 @@ pub struct RuntimeMapNode {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeEvidenceProvider {
     Docker,
+    Compose,
     Systemd,
     Npm,
     Cron,
@@ -879,6 +880,13 @@ pub enum RuntimeEvidenceKind {
     /// A fixed tmux session listing. This does not claim that the session is
     /// attached, active, executing work, or reachable.
     TmuxSessionListing,
+    /// A bounded Compose declaration used only after an exact private binding
+    /// to one current Docker container has succeeded. Paths and labels are
+    /// intentionally not part of the public evidence.
+    ComposeDeclaredMount,
+    /// Docker attested the exact private Compose project/service/config-file
+    /// binding for the same public container. No label values are published.
+    DockerComposeRuntimeBinding,
 }
 
 /// A compact, versioned reference to the bounded fact supporting a runtime
@@ -889,7 +897,7 @@ pub enum RuntimeEvidenceKind {
 pub struct RuntimeEvidenceRef {
     /// Version of this closed evidence representation, not a provider API
     /// version.  It lets future additions remain explicit and reviewable.
-    #[schemars(range(min = 1, max = 5))]
+    #[schemars(range(min = 1, max = 6))]
     pub version: u8,
     #[schemars(length(min = 1, max = 259))]
     pub id: String,
@@ -988,6 +996,20 @@ impl RuntimeEvidenceRef {
                     | RuntimeEvidenceFreshness::Stale
                     | RuntimeEvidenceFreshness::TimedOut,
                 Some(ProviderSlot::Tmux),
+            ) | (
+                6,
+                RuntimeEvidenceProvider::Compose,
+                RuntimeEvidenceKind::ComposeDeclaredMount,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) | (
+                6,
+                RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerComposeRuntimeBinding,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
             )
         )
     }
@@ -1206,6 +1228,22 @@ impl RuntimeMapEdge {
                 | RuntimeEvidenceFreshness::Stale
                 | RuntimeEvidenceFreshness::TimedOut,
                 Some(ProviderSlot::Tmux),
+            )
+            | (
+                6,
+                RuntimeEvidenceProvider::Compose,
+                RuntimeEvidenceKind::ComposeDeclaredMount,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            )
+            | (
+                6,
+                RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerComposeRuntimeBinding,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
             ) => {
                 self.relationship == RuntimeRelationshipKind::RunsOn
                     && self.source.starts_with("tmux_session_")
@@ -1313,6 +1351,8 @@ pub enum FindingRule {
     DockerComposeDeclaredTargetNotActive,
     #[serde(rename = "docker.compose_mutual_dependency")]
     DockerComposeMutualDependency,
+    #[serde(rename = "compose.declared_mount_missing_at_bound_container")]
+    ComposeDeclaredMountMissingAtBoundContainer,
 }
 
 /// The one mutually-exclusive family assigned to every closed finding rule.
@@ -1334,6 +1374,9 @@ impl FindingRule {
             Self::DockerDaemonStateBindMount => FindingCategory::DockerDaemonAuthority,
             Self::DockerInternalNetworkMemberPublishesPort
             | Self::DockerDaemonStateBindMountPublishesPort => FindingCategory::HostPortPublication,
+            Self::ComposeDeclaredMountMissingAtBoundContainer => {
+                FindingCategory::DeclaredDependency
+            }
         }
     }
 }
