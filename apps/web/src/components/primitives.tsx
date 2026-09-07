@@ -113,7 +113,7 @@ export function Bar({ value, state = "healthy", label }: { value: number; state?
 export function EmptyState({ icon, title, body, action }: { icon: IconName; title: string; body: string; action?: ReactNode }) {
   return (
     <div className="empty">
-      <span className="empty-icon">
+      <span className="empty-icon" aria-hidden="true">
         <Icon name={icon} size={22} />
       </span>
       <h3>{title}</h3>
@@ -125,7 +125,7 @@ export function EmptyState({ icon, title, body, action }: { icon: IconName; titl
 
 export function Loading({ label }: { label: string }) {
   return (
-    <div className="loading" role="status">
+    <div className="loading" role="status" aria-live="polite" aria-atomic="true">
       <span className="loading-spinner" aria-hidden="true" />
       <span>{label}</span>
     </div>
@@ -134,8 +134,8 @@ export function Loading({ label }: { label: string }) {
 
 export function ErrorState({ title, body }: { title: string; body: string }) {
   return (
-    <div className="empty empty-error">
-      <span className="empty-icon">
+    <div className="empty empty-error" role="alert">
+      <span className="empty-icon" aria-hidden="true">
         <Icon name="alert" size={22} />
       </span>
       <h3>{title}</h3>
