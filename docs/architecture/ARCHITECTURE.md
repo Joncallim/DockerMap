@@ -129,6 +129,7 @@ Current relationship-source matrix:
 | Docker container -> network | Docker inventory membership | observed | emitted |
 | Docker container -> volume | Docker volume attachment | observed | emitted |
 | Docker container -> listener | Docker inventory port with a validated nonzero host binding | observed host publication, not reachability, health, or traffic evidence | emitted only for that host binding; container-only listeners remain topology without publication evidence |
+| Docker container -> unspecified-address port risk target | Docker inventory reduces an exact `0.0.0.0` or `::` nonzero TCP/UDP/SCTP publication to one closed boolean | observed unspecified-address host-publication condition, not Internet reachability, health, traffic, or impact evidence | emitted only for a unique container; raw bind address and port values are not copied into the risk edge or its finding |
 | Docker container -> Docker container (`depends_on`) | Docker-recorded Compose start-order label | observed declaration, not health or traffic causality | emitted when both identities resolve uniquely |
 | Docker container -> Docker daemon state risk target | Docker inventory bind mount matching the closed daemon-state predicate | observed path-free risk condition, not breach, compromise, reachability, or impact evidence | emitted only for a uniquely resolved matching container; no mount path, ID, or options are published |
 | systemd service -> systemd service (`requires`, `wants`, `part_of`) | Systemd `Requires=`, `Wants=`, `PartOf=` declaration | declared relationship, not start/health/traffic evidence | emitted only with a valid dedicated Systemd-slot observation; retained facts state freshness explicitly |
@@ -156,6 +157,16 @@ already-sanitized port form proves a nonzero host-to-container publication.
 Container-only ports, malformed or bind-address-like forms, stale evidence,
 duplicate facts, and identity collisions produce no finding. This is not an
 Internet-reachability, vulnerability, or security conclusion.
+
+`docker.port_published_on_unspecified_address` emits one advisory only when a
+unique Docker container has one fresh, version-1 Docker observation bound to
+the fixed unspecified-address port risk target. The collector reduces only an
+exact IPv4 or IPv6 unspecified bind address with a nonzero TCP, UDP, or SCTP
+publication to this closed fact; it retains no bind address for the edge or
+finding. Missing, loopback, specific, malformed, zero, stale, duplicate, or
+collided inputs produce no finding. The advisory asks only whether publishing
+beyond loopback is intended; it does not establish Internet reachability,
+traffic, health, exploitability, compromise, impact, or causality.
 
 `docker.daemon_state_bind_mount` emits a warning only when one uniquely
 identified Docker container has exactly one fresh, path-free Docker fact bound
