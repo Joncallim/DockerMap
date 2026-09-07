@@ -24,6 +24,23 @@ const findings: FindingsResponse = {
   }]
 };
 
+const temporalFinding: FindingsResponse = {
+  modelRevision: "temporal-revision",
+  findings: [{
+    id: "finding_docker_repeated_container_died_events",
+    ruleId: "docker.repeated_container_died_events",
+    severity: "advisory",
+    summary: "Three retained Docker container exit observations need review.",
+    recommendation: "Review the container's recent configuration and logs to determine whether the repeated exits are expected.",
+    evidenceRefs: [],
+    temporalEvidence: [
+      { source: "docker_event_stream", kind: "container_died" },
+      { source: "docker_event_stream", kind: "container_died" },
+      { source: "docker_event_stream", kind: "container_died" }
+    ]
+  }]
+};
+
 function render(value: Partial<AppContextValue>): string {
   const context: AppContextValue = {
     model: null, modelProvenance: null, loading: false, error: null, health: null,
@@ -87,5 +104,46 @@ describe("Findings screen", () => {
     expect(html).toContain("Docker daemon state");
     expect(html).toContain("may provide Docker daemon API authority");
     expect(html).not.toContain("/var/run/docker.sock");
+  });
+
+  it("renders the temporal advisory as static copy with only a Change Center link", () => {
+    const html = render({
+      findings: temporalFinding,
+      evidenceMode: "live",
+      modelProvenance: "live",
+      model: { modelRevision: "temporal-revision" } as AppContextValue["model"]
+    });
+    expect(html).toContain("Docker event history needs review");
+    expect(html).toContain("3 retained observations");
+    expect(html).toContain('href="/changes"');
+    for (const forbidden of ["subjectRef", "targetRef", "docker_container_", "docker_event_", "sourceOccurredAtMs", "temporal-revision"]) {
+      expect(html).not.toContain(forbidden);
+    }
+  });
+
+  it("suppresses temporal cards for demo/mock/revision-mismatched or hostile responses", () => {
+    const hostile = structuredClone(temporalFinding) as FindingsResponse & { findings: Array<Record<string, unknown>> };
+    hostile.findings[0]!.eventId = "docker_event_private";
+    const duplicate = structuredClone(temporalFinding);
+    duplicate.findings.push(structuredClone(duplicate.findings[0]!));
+    for (const value of [
+      { evidenceMode: "demo" as const, modelProvenance: "demo" as const, model: { modelRevision: "temporal-revision" } as AppContextValue["model"] },
+      { evidenceMode: "mock" as const, modelProvenance: "mock" as const, model: { modelRevision: "temporal-revision" } as AppContextValue["model"] },
+      { evidenceMode: "live" as const, modelProvenance: "live" as const, model: { modelRevision: "other-revision" } as AppContextValue["model"] }
+    ]) {
+      expect(render({ findings: temporalFinding, ...value })).not.toContain("Docker event history needs review");
+    }
+    expect(render({
+      findings: hostile as FindingsResponse,
+      evidenceMode: "live",
+      modelProvenance: "live",
+      model: { modelRevision: "temporal-revision" } as AppContextValue["model"]
+    })).not.toContain("Docker event history needs review");
+    expect(render({
+      findings: duplicate,
+      evidenceMode: "live",
+      modelProvenance: "live",
+      model: { modelRevision: "temporal-revision" } as AppContextValue["model"]
+    })).not.toContain("Docker event history needs review");
   });
 });
