@@ -4,6 +4,7 @@ import { layoutAtlas } from "../lib/atlas/layout";
 import { canonicalSubjectOrder, selectedSubject } from "../lib/atlas/project";
 import type { AtlasCamera, AtlasKey } from "../lib/atlas/types";
 import AtlasOverviewTopology, { markerText, safeDisplay } from "../components/atlas/AtlasOverviewTopology";
+import AtlasLocalContext from "../components/atlas/AtlasLocalContext";
 import { EmptyState, ErrorState, Loading, Panel } from "../components/primitives";
 
 const DEFAULT_CAMERA: AtlasCamera = { x: 0, y: 0, zoom: 1 };
@@ -51,7 +52,7 @@ export default function AtlasOverview() {
       </ol>
     </section>
     <aside className="atlas-inspector" aria-live="polite" aria-label="Atlas inspector">
-      {!selected ? <><h2>Select a subject</h2><p>Use the directory to inspect a routable subject. Collision and uncertainty records remain visible but cannot be selected.</p></> : <><h2>{safeDisplay(selected.display)}</h2><p>{markerText(selected)}</p><p>Only identity, independent state, freshness, and supported attention are shown here. This overview does not infer a dependency, network, storage, host, or exposure fact.</p></>}
+      {!selected ? <><h2>Select a subject</h2><p>Use the directory to inspect a routable subject. Collision and uncertainty records remain visible but cannot be selected.</p></> : <><h2>{safeDisplay(selected.display)}</h2><p>{markerText(selected)}</p><p>Only identity, independent state, freshness, and supported attention are shown here. This overview does not infer a dependency, network, storage, host, or exposure fact.</p><AtlasLocalContext model={atlas.model} selectedKey={selected.key} /></>}
     </aside>
   </div>;
 }
