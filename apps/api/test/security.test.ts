@@ -40,6 +40,7 @@ type StubDaemon = {
 
 const apiEntry = "apps/api/src/index.ts";
 const repoRoot = new URL("../../..", import.meta.url);
+const tmuxFixtureSource = "tmux_session_session--49e907719fa53f1b00e43d8721620f42979c31117ed46daa3fadf320aef94b4e";
 const processes: ApiProcess[] = [];
 const servers: Server[] = [];
 
@@ -884,7 +885,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
   const container = containers.find((entry) => (entry as { name?: unknown }).name === "api");
   assert.ok(container, "serialized Rust snapshot fixture must include the api detail fixture");
   const tmuxEvidence = (runtimeMap.edges as Array<Record<string, unknown>>)
-    .find((edge) => edge.source === "tmux_session_fixture_worker")?.evidenceRefs;
+    .find((edge) => edge.source === tmuxFixtureSource)?.evidenceRefs;
   assert.deepEqual(tmuxEvidence, [{
     version: 5,
     id: "fixture-tmux-session-listing-worker",
@@ -892,7 +893,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     kind: "tmux_session_listing",
     assertionKind: "observed",
     summary: "tmux listed a local session",
-    subjectRef: "tmux_session_fixture_worker",
+    subjectRef: tmuxFixtureSource,
     collectedAt: 1787196125766,
     providerRevision: "fixture-tmux-observation-1",
     providerSlot: "tmux",
@@ -1373,12 +1374,12 @@ test("runtime evidence is required and fails closed before browser publication",
     );
   }
 
-  const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "tmux_session_fixture_worker");
+  const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === tmuxFixtureSource);
   assert.ok(tmuxEdge, "canonical daemon fixture carries a V5 tmux session listing");
   assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
   for (const freshness of ["stale", "timed_out"] as const) {
     const retainedTmux = structuredClone(fixture);
-    const edge = retainedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === "tmux_session_fixture_worker");
+    const edge = retainedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
     assert.ok(edge);
     edge.evidenceRefs[0].freshness = freshness;
     assert.doesNotThrow(
@@ -1395,7 +1396,7 @@ test("runtime evidence is required and fails closed before browser publication",
     ["version", 4]
   ] as const) {
     const malformedTmux = structuredClone(fixture);
-    const edge = malformedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === "tmux_session_fixture_worker");
+    const edge = malformedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
     assert.ok(edge);
     edge.evidenceRefs[0][field] = value;
     assert.throws(
@@ -1409,7 +1410,7 @@ test("runtime evidence is required and fails closed before browser publication",
     ["relationship", "depends_on"]
   ] as const) {
     const malformedTmux = structuredClone(fixture);
-    const edge = malformedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === "tmux_session_fixture_worker");
+    const edge = malformedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
     assert.ok(edge);
     edge[field] = value;
     if (field === "source") edge.evidenceRefs[0].subjectRef = value;
@@ -1419,12 +1420,12 @@ test("runtime evidence is required and fails closed before browser publication",
     );
   }
   const selfReferentialTmux = structuredClone(fixture);
-  const selfReferentialTmuxEdge = selfReferentialTmux.edges.find((candidate: { source?: unknown }) => candidate.source === "tmux_session_fixture_worker");
+  const selfReferentialTmuxEdge = selfReferentialTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
   assert.ok(selfReferentialTmuxEdge);
   selfReferentialTmuxEdge.target = selfReferentialTmuxEdge.source;
   assert.throws(() => validateDaemonResponse("/daemon/runtime/map", selfReferentialTmux));
   const timestampAliasedTmux = structuredClone(fixture);
-  const timestampAliasedTmuxEdge = timestampAliasedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === "tmux_session_fixture_worker");
+  const timestampAliasedTmuxEdge = timestampAliasedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
   assert.ok(timestampAliasedTmuxEdge);
   timestampAliasedTmuxEdge.evidenceRefs[0].providerRevision = String(timestampAliasedTmuxEdge.evidenceRefs[0].collectedAt);
   assert.throws(() => validateDaemonResponse("/daemon/runtime/map", timestampAliasedTmux));
@@ -1512,7 +1513,7 @@ test("fabricated V5 tmux evidence is rejected neutrally over canonical and v1 AP
     "utf8"
   ));
   const sentinel = "DOCKERMAP_TEST_FAKE_TMUX_EVIDENCE_SECRET";
-  const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "tmux_session_fixture_worker");
+  const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === tmuxFixtureSource);
   assert.ok(tmuxEdge, "canonical fixture must exercise the V5 browser boundary");
   tmuxEdge.target = `host_${sentinel}`;
   tmuxEdge.evidenceRefs[0].subjectRef = tmuxEdge.source;
