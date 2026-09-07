@@ -15,6 +15,9 @@ containers, or services.
 - Runtime-evidence source boundaries: forced mock mode and a live-to-mock reset retain sample
   topology while clearing evidence and evidence-derived findings; Docker publication evidence
   requires a bounded nonzero host binding rather than a container-only listener; Docker
+  unspecified-address publication reduces only exact `0.0.0.0`/`::` nonzero TCP/UDP/SCTP binds
+  to a closed boolean while omitting raw bind addresses from retained snapshot, topology evidence,
+  and findings; and Docker
   daemon-state evidence is path-free; and Systemd/npm declaration evidence is checked against
   its dedicated scheduler-slot revision and `fresh`/`stale`/`timed_out` lifecycle.
 - Bounded-finding tests: the Compose advisory accepts only a fresh, uniquely resolved Docker
@@ -31,6 +34,12 @@ containers, or services.
   collided, non-Docker, and mock inputs. They verify static review wording only; no test treats the
   pair as proof of Internet reachability, traffic, exploitability, compromise, breach, impact, or
   causality, and the projection adds no collection or write behavior.
+- The unspecified-address host-publication advisory accepts one fresh version-1 Docker fact for a
+  unique container and the fixed risk target. Tests cover exact IPv4/IPv6 unspecified positives,
+  loopback/specific/missing/malformed/zero/unsupported negatives, deterministic collision and
+  duplicate suppression, mock suppression, revision change, and absence of raw bind address or
+  port data from the new topology evidence and finding. Its static copy remains
+  reachability-neutral.
 - Mutual Compose-advisory tests require exactly one fresh reciprocal Docker-recorded declaration
   in each direction between the same unique Docker containers, with matching collection instant
   and opaque observation revision. They preserve the ordered two-fact evidence budget and stable
