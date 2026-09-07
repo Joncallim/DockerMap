@@ -520,6 +520,9 @@ pub enum RuntimeNodeKind {
     Process,
     NetworkListener,
     OrchestratorWorkload,
+    /// Fixed synthetic scope for facts about the integrity of the published
+    /// runtime model itself. It never represents a host/provider entity.
+    IntegrityScope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -843,6 +846,9 @@ pub enum RuntimeEvidenceProvider {
     Npm,
     Cron,
     Tmux,
+    /// DockerMap's own bounded publication-integrity checks. This provider
+    /// never carries raw provider material or user-controlled text.
+    Dockermap,
 }
 
 /// Evidence assertion semantics are deliberately closed. A declaration says
@@ -895,6 +901,9 @@ pub enum RuntimeEvidenceKind {
     /// Docker attested the exact private Compose project/service/config-file
     /// binding for the same public container. No label values are published.
     DockerComposeRuntimeBinding,
+    /// DockerMap detected at least one duplicate runtime node identity after
+    /// publication redaction/normalization. IDs and counts are omitted.
+    RuntimeIdentityCollision,
 }
 
 /// A compact, versioned reference to the bounded fact supporting a runtime
@@ -905,7 +914,7 @@ pub enum RuntimeEvidenceKind {
 pub struct RuntimeEvidenceRef {
     /// Version of this closed evidence representation, not a provider API
     /// version.  It lets future additions remain explicit and reviewable.
-    #[schemars(range(min = 1, max = 6))]
+    #[schemars(range(min = 1, max = 7))]
     pub version: u8,
     #[schemars(length(min = 1, max = 259))]
     pub id: String,
@@ -1016,6 +1025,13 @@ impl RuntimeEvidenceRef {
                 6,
                 RuntimeEvidenceProvider::Docker,
                 RuntimeEvidenceKind::DockerComposeRuntimeBinding,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) | (
+                7,
+                RuntimeEvidenceProvider::Dockermap,
+                RuntimeEvidenceKind::RuntimeIdentityCollision,
                 RuntimeEvidenceAssertionKind::Observed,
                 RuntimeEvidenceFreshness::Fresh,
                 None,
@@ -1194,6 +1210,18 @@ impl RuntimeMapEdge {
                     && self.source.starts_with("docker_container_")
                     && self.target.starts_with("docker_container_")
                     && self.source != self.target
+            }
+            (
+                7,
+                RuntimeEvidenceProvider::Dockermap,
+                RuntimeEvidenceKind::RuntimeIdentityCollision,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) => {
+                self.relationship == RuntimeRelationshipKind::RelatedTo
+                    && self.source == "runtime_integrity_scope"
+                    && self.target == "runtime_integrity_risk_identity_collision"
             }
             (
                 2,
@@ -1376,6 +1404,8 @@ pub enum FindingRule {
     DockerComposeMutualDependency,
     #[serde(rename = "compose.declared_mount_missing_at_bound_container")]
     ComposeDeclaredMountMissingAtBoundContainer,
+    #[serde(rename = "runtime.identity_collision_detected")]
+    RuntimeIdentityCollisionDetected,
 }
 
 /// The one mutually-exclusive family assigned to every closed finding rule.
@@ -1386,6 +1416,7 @@ pub enum FindingCategory {
     DeclaredDependency,
     DockerDaemonAuthority,
     HostPortPublication,
+    EvidenceIntegrity,
 }
 
 impl FindingRule {
@@ -1401,6 +1432,7 @@ impl FindingRule {
             Self::ComposeDeclaredMountMissingAtBoundContainer => {
                 FindingCategory::DeclaredDependency
             }
+            Self::RuntimeIdentityCollisionDetected => FindingCategory::EvidenceIntegrity,
         }
     }
 }
@@ -1415,6 +1447,7 @@ pub struct FindingSummary {
     pub declared_dependency_count: u32,
     pub docker_daemon_authority_count: u32,
     pub host_port_publication_count: u32,
+    pub evidence_integrity_count: u32,
 }
 
 impl FindingSummary {
@@ -1441,6 +1474,10 @@ impl FindingSummary {
                 FindingCategory::HostPortPublication => {
                     summary.host_port_publication_count =
                         summary.host_port_publication_count.saturating_add(1)
+                }
+                FindingCategory::EvidenceIntegrity => {
+                    summary.evidence_integrity_count =
+                        summary.evidence_integrity_count.saturating_add(1)
                 }
             }
         }

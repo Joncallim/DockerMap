@@ -66,13 +66,14 @@ export type RuntimeEvidenceKind =
   | 'cron_schedule_declaration'
   | 'tmux_session_listing'
   | 'compose_declared_mount'
-  | 'docker_compose_runtime_binding';
+  | 'docker_compose_runtime_binding'
+  | 'runtime_identity_collision';
 /**
  * Evidence providers are deliberately closed. Every host provider enters only
  * after it receives its own scheduler slot, so it cannot inherit a broader
  * host collection's freshness or revision.
  */
-export type RuntimeEvidenceProvider = 'docker' | 'compose' | 'systemd' | 'npm' | 'cron' | 'tmux';
+export type RuntimeEvidenceProvider = ('docker' | 'compose' | 'systemd' | 'npm' | 'cron' | 'tmux') | 'dockermap';
 /**
  * Fixed, schema-backed host-provider slots. This is not a plugin or policy
  * interface: the daemon owns the complete finite list.
@@ -115,32 +116,35 @@ export type RuntimeHealthState = 'healthy' | 'degraded' | 'unhealthy' | 'unknown
 export type RuntimeLogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type RuntimeServiceStatus = 'running' | 'starting' | 'stopping' | 'stopped' | 'degraded' | 'failed' | 'unknown';
 export type RuntimeNodeKind =
-  | 'container'
-  | 'docker_network'
-  | 'docker_volume'
-  | 'host'
-  | 'host_risk'
-  | 'service'
-  | 'systemd_service'
-  | 'scheduled_job'
-  | 'pm2_app'
-  | 'tmux_session'
-  | 'tailnet_node'
-  | 'reverse_proxy'
-  | 'local_dns_resolver'
-  | 'dns_provider'
-  | 'node_application'
-  | 'python_application'
-  | 'ai_agent'
-  | 'package'
-  | 'storage'
-  | 'external_api'
-  | 'package_dependency'
-  | 'database'
-  | 'worker'
-  | 'process'
-  | 'network_listener'
-  | 'orchestrator_workload';
+  | (
+      | 'container'
+      | 'docker_network'
+      | 'docker_volume'
+      | 'host'
+      | 'host_risk'
+      | 'service'
+      | 'systemd_service'
+      | 'scheduled_job'
+      | 'pm2_app'
+      | 'tmux_session'
+      | 'tailnet_node'
+      | 'reverse_proxy'
+      | 'local_dns_resolver'
+      | 'dns_provider'
+      | 'node_application'
+      | 'python_application'
+      | 'ai_agent'
+      | 'package'
+      | 'storage'
+      | 'external_api'
+      | 'package_dependency'
+      | 'database'
+      | 'worker'
+      | 'process'
+      | 'network_listener'
+      | 'orchestrator_workload'
+    )
+  | 'integrity_scope';
 export type ProviderStateKind = 'fresh' | 'stale' | 'collecting' | 'unavailable' | 'timed_out' | 'disabled';
 /**
  * A deliberately small, non-diagnostic explanation for a provider slot that
@@ -167,7 +171,8 @@ export type FindingRule =
   | 'docker.daemon_state_bind_mount_publishes_port'
   | 'docker.compose_declared_target_not_active'
   | 'docker.compose_mutual_dependency'
-  | 'compose.declared_mount_missing_at_bound_container';
+  | 'compose.declared_mount_missing_at_bound_container'
+  | 'runtime.identity_collision_detected';
 /**
  * Findings are intentionally a small, closed advisory vocabulary. They do
  * not expose provider output or prescribe an automated remediation.
@@ -639,6 +644,7 @@ export interface FindingSummary {
   advisoryCount: number;
   declaredDependencyCount: number;
   dockerDaemonAuthorityCount: number;
+  evidenceIntegrityCount: number;
   hostPortPublicationCount: number;
   warningCount: number;
 }
