@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ProviderSlot, ProviderState, ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceRef, RuntimeLocation, RuntimeMapEdge, RuntimeProviderKind } from "@dockermap/contracts";
 import { useApp } from "../context";
+import { atlasSubjectHref } from "../lib/atlas/interaction";
 import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord } from "../lib/model";
 import { formatRelative } from "../lib/format";
 import Icon, { type IconName } from "../components/Icon";
@@ -112,7 +113,7 @@ function providerFreshnessText(providerState: ProviderState): string {
 }
 
 export default function RuntimeScreen() {
-  const { model, loading, error, evidenceMode } = useApp();
+  const { model, atlas, loading, error, evidenceMode } = useApp();
   const [providerFilter, setProviderFilter] = useState<RuntimeProviderKind | "all">("all");
   const [layerFilter, setLayerFilter] = useState<RuntimeLayerId | "all">("all");
   const [attentionOnly, setAttentionOnly] = useState(false);
@@ -333,6 +334,7 @@ export default function RuntimeScreen() {
                   // Duplicate runtime ids (redaction-collided) stay visible
                   // with the collision tag/hint but are never selectable.
                   const collided = runtime.idCollisions.has(node.id);
+                  const atlasHref = atlasSubjectHref(atlas, node.id);
                   const content = <>
                     <span className="runtime-node-main">
                       <Icon name={PROVIDER_ICON[node.provider]} size={15} />
@@ -356,6 +358,7 @@ export default function RuntimeScreen() {
                         }}
                         onClick={() => selectNode(node.id)}
                       >{content}</button> : <div className="runtime-node-btn runtime-node-unresolved" aria-label={`${identityText(node.label, UNAVAILABLE_RUNTIME_NODE)} is unavailable for selection${collided ? ` (${COLLISION_HINT})` : ""}`}>{content}</div>}
+                      {atlasHref && <Link className="ghost-link atlas-handoff-link" to={atlasHref}>Open in Atlas</Link>}
                     </li>
                   );
                 })}

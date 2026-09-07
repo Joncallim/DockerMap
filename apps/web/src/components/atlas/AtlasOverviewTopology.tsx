@@ -26,6 +26,8 @@ export interface AtlasOverviewTopologyProps {
   camera: AtlasCamera;
   selectedKey: AtlasKey | null;
   onSelect: (key: AtlasKey) => void;
+  /** Expansion focus is owned by its real content, never by a stale subject button. */
+  focusSubject?: boolean;
   /** Invalidation of an exact selected key returns keyboard focus to the directory. */
   focusRecoveryToken?: number;
 }
@@ -35,11 +37,11 @@ export interface AtlasOverviewTopologyProps {
  * orientation only; the adjacent HTML directory remains the complete keyboard
  * and text alternative. Overview intentionally suppresses all edge classes.
  */
-export default function AtlasOverviewTopology({ model, layout, camera, selectedKey, onSelect, focusRecoveryToken = 0 }: AtlasOverviewTopologyProps) {
+export default function AtlasOverviewTopology({ model, layout, camera, selectedKey, onSelect, focusSubject = true, focusRecoveryToken = 0 }: AtlasOverviewTopologyProps) {
   const subjects = useMemo(() => model.subjects.slice(0, SUBJECT_LIMIT), [model.subjects]);
   const selectedRef = useRef<HTMLButtonElement | null>(null);
   const directoryRef = useRef<HTMLElement | null>(null);
-  useEffect(() => { selectedRef.current?.focus(); }, [selectedKey]);
+  useEffect(() => { if (focusSubject) selectedRef.current?.focus(); }, [focusSubject, selectedKey]);
   useEffect(() => { if (focusRecoveryToken > 0) directoryRef.current?.focus(); }, [focusRecoveryToken]);
   const transform = `translate(${Number.isFinite(camera.x) ? Math.max(-100000, Math.min(100000, camera.x)) : 0} ${Number.isFinite(camera.y) ? Math.max(-100000, Math.min(100000, camera.y)) : 0}) scale(${Number.isFinite(camera.zoom) && camera.zoom > 0 ? Math.min(8, camera.zoom) : 1})`;
 

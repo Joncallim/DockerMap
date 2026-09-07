@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useApp } from "../context";
+import { useAtlasState } from "../hooks/useAtlasState";
 import { layoutAtlas } from "../lib/atlas/layout";
-import { canonicalSubjectOrder, selectedSubject } from "../lib/atlas/project";
-import type { AtlasCamera, AtlasKey } from "../lib/atlas/types";
+import { canonicalSubjectOrder } from "../lib/atlas/project";
+import type { AtlasCamera } from "../lib/atlas/types";
 import AtlasOverviewTopology, { markerText, safeDisplay } from "../components/atlas/AtlasOverviewTopology";
 import AtlasLocalContext from "../components/atlas/AtlasLocalContext";
 import { EmptyState, ErrorState, Loading, Panel } from "../components/primitives";
@@ -11,21 +12,15 @@ const DEFAULT_CAMERA: AtlasCamera = { x: 0, y: 0, zoom: 1 };
 
 export default function AtlasOverview() {
   const { atlas, loading, error } = useApp();
-  const [selectedKey, setSelectedKey] = useState<AtlasKey | null>(null);
-  const [focusRecoveryToken, setFocusRecoveryToken] = useState(0);
+  const atlasState = useAtlasState(atlas?.model ?? null, atlas?.sourceRevision ?? null);
+  const expandedContentRef = useRef<HTMLParagraphElement | null>(null);
   const camera = DEFAULT_CAMERA;
   const layout = useMemo(() => atlas ? layoutAtlas(atlas.model) : null, [atlas]);
-  const selected = atlas ? selectedSubject(atlas.model, selectedKey) : null;
-
-  // A selection is meaningful only for this exact coherent revision. Removed,
-  // ambiguous, and non-routable subjects fail closed; focus recovers to the
-  // stable directory rather than retaining an obsolete route-state key.
+  const expandedAggregate = atlasState.expandedKey && atlas ? atlas.model.aggregates.find((entry) => entry.key === atlasState.expandedKey) ?? null : null;
+  const expandedGroup = atlasState.expandedKey && atlas ? atlas.model.groups.find((entry) => entry.key === atlasState.expandedKey) ?? null : null;
   useEffect(() => {
-    if (!atlas || !selectedKey) return;
-    if (selectedSubject(atlas.model, selectedKey)) return;
-    setSelectedKey(null);
-    setFocusRecoveryToken((token) => token + 1);
-  }, [atlas, selectedKey]);
+    if (atlasState.focusTarget === "aggregate" || atlasState.focusTarget === "group") expandedContentRef.current?.focus();
+  }, [atlasState.expandedKey, atlasState.focusTarget]);
 
   if (loading && !atlas) return <Loading label="Preparing the Atlas overview…" />;
   if (error && !atlas) return <ErrorState title="Atlas unavailable" body={error} />;
@@ -42,7 +37,18 @@ export default function AtlasOverview() {
       </div>
       <p className="atlas-revision" role="status">{atlas.model.stats.subjects} bounded subjects · revision current</p>
     </header>
-    <AtlasOverviewTopology model={atlas.model} layout={layout} camera={camera} selectedKey={selectedKey} onSelect={setSelectedKey} focusRecoveryToken={focusRecoveryToken} />
+    {atlasState.selectionStatus && <p className="atlas-route-status" role="status">Selected subject is unavailable in this coherent revision.</p>}
+    <AtlasOverviewTopology model={atlas.model} layout={layout} camera={camera} selectedKey={atlasState.selectedKey} onSelect={atlasState.select} focusSubject={atlasState.focusTarget === "subject"} focusRecoveryToken={atlasState.focusRecoveryToken} />
+    {(atlas.model.aggregates.length > 0 || atlas.model.groups.length > 0) && <section className="atlas-context-expansions" aria-label="Atlas context summaries">
+      <h2>Context summaries</h2>
+      <p>These bounded summaries are recorded context coverage, not inferred topology or causality.</p>
+      <ul>
+        {atlas.model.aggregates.map((aggregate, index) => <li key={aggregate.key}><button type="button" aria-label={`Recorded context coverage ${index + 1} of ${atlas.model.aggregates.length}`} aria-expanded={atlasState.expandedKey === aggregate.key} onClick={() => atlasState.expand(atlasState.expandedKey === aggregate.key ? null : aggregate.key)}>Expand recorded context coverage {index + 1} of {atlas.model.aggregates.length}</button></li>)}
+        {atlas.model.groups.map((group, index) => <li key={group.key}><button type="button" aria-label={`Published group coverage ${index + 1} of ${atlas.model.groups.length}`} aria-expanded={atlasState.expandedKey === group.key} onClick={() => atlasState.expand(atlasState.expandedKey === group.key ? null : group.key)}>Expand published group coverage {index + 1} of {atlas.model.groups.length}</button></li>)}
+      </ul>
+      {expandedAggregate && <p ref={expandedContentRef} tabIndex={-1} data-atlas-expanded="aggregate">{expandedAggregate.population.resolved} resolved context records; {expandedAggregate.population.unresolved} unresolved; {expandedAggregate.population.ambiguous} ambiguous; {expandedAggregate.population.omitted} omitted.</p>}
+      {expandedGroup && <p ref={expandedContentRef} tabIndex={-1} data-atlas-expanded="group">{expandedGroup.memberKeys.length} published group members. Group coverage does not imply containment.</p>}
+    </section>}
     <section className="atlas-text-alternative" aria-label="Atlas text alternative">
       <h2>Text alternative</h2>
       <p>Subjects are listed in the same canonical order as the directory. This overview does not draw relations or attachments by default.</p>
@@ -52,7 +58,7 @@ export default function AtlasOverview() {
       </ol>
     </section>
     <aside className="atlas-inspector" aria-live="polite" aria-label="Atlas inspector">
-      {!selected ? <><h2>Select a subject</h2><p>Use the directory to inspect a routable subject. Collision and uncertainty records remain visible but cannot be selected.</p></> : <><h2>{safeDisplay(selected.display)}</h2><p>{markerText(selected)}</p><p>Only identity, independent state, freshness, and supported attention are shown here. This overview does not infer a dependency, network, storage, host, or exposure fact.</p><AtlasLocalContext model={atlas.model} selectedKey={selected.key} /></>}
+      {!atlasState.selected ? <><h2>Select a subject</h2><p>Use the directory to inspect a routable subject. Collision and uncertainty records remain visible but cannot be selected.</p></> : <><h2>{safeDisplay(atlasState.selected.display)}</h2><p>{markerText(atlasState.selected)}</p><p>Only identity, independent state, freshness, and supported attention are shown here. This overview does not infer a dependency, network, storage, host, or exposure fact.</p><AtlasLocalContext model={atlas.model} selectedKey={atlasState.selected.key} /></>}
     </aside>
   </div>;
 }
