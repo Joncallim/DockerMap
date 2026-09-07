@@ -416,6 +416,8 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
       if ((isV4 || isV5) && candidate.target !== "host_local") return "runtime_evidence_edge_binding";
       if (value.kind === "docker_daemon_state_bind_mount" && candidate.target !== "host_risk_docker_daemon_state") return "runtime_evidence_daemon_state_target";
       if (value.kind === "docker_unspecified_address_port_publication" && candidate.target !== "host_risk_docker_unspecified_address_port") return "runtime_evidence_edge_binding";
+      if (value.kind === "docker_unspecified_address_port_publication"
+        && value.summary !== UNSPECIFIED_ADDRESS_PORT_EVIDENCE_SUMMARY) return "runtime_evidence_edge_binding";
       if (value.kind === "docker_port_publication") {
         const listeners = nodesById.get(candidate.target);
         if (!listeners) return "runtime_evidence_port_listener_missing";
