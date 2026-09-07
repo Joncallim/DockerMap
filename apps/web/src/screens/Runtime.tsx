@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ProviderSlot, ProviderState, ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceRef, RuntimeLocation, RuntimeMapEdge, RuntimeProviderKind } from "@dockermap/contracts";
 import { useApp } from "../context";
-import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord } from "../lib/model";
+import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord, type ServiceState } from "../lib/model";
 import { formatRelative } from "../lib/format";
 import Icon, { type IconName } from "../components/Icon";
 import { EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, StateDot, StatePill, Tag } from "../components/primitives";
@@ -92,6 +92,10 @@ function isTmuxSessionId(id: string): boolean {
 function runtimeNodeLabel(node: RuntimeNodeRecord | null | undefined, fallback = UNAVAILABLE_RUNTIME_NODE): string {
   if (isTmuxSession(node)) return TMUX_SESSION_LABEL;
   return identityText(node?.label, fallback);
+}
+
+function runtimeNodeState(node: RuntimeNodeRecord): ServiceState {
+  return isTmuxSession(node) ? "unknown" : node.state;
 }
 
 function runtimeEndpointLabel(node: RuntimeNodeRecord | null | undefined, id: string): string {
@@ -375,7 +379,7 @@ export default function RuntimeScreen() {
                         <span className="runtime-node-meta">{node.provider} · {node.type.replaceAll("_", " ")} · {LAYER_LABEL[node.layer]}</span>
                       </span>
                     </span>
-                    <StatePill state={node.state} />
+                    <StatePill state={runtimeNodeState(node)} />
                     {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
                   </>;
                   return (
@@ -416,7 +420,7 @@ export default function RuntimeScreen() {
               </div>
               <h2 className="inspector-title">{runtimeNodeLabel(selected)}</h2>
               <div className="tag-wrap">
-                <StatePill state={selected.state} />
+                <StatePill state={runtimeNodeState(selected)} />
                 <Tag icon="layers">{LAYER_LABEL[selected.layer]}</Tag>
                 <Tag tone="muted">{selected.type.replaceAll("_", " ")}</Tag>
               </div>
