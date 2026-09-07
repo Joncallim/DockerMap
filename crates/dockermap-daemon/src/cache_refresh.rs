@@ -90,6 +90,10 @@ pub(crate) struct DaemonCache {
     revision: PublicationRevision,
     observed_history: ObservedHistoryCache,
     resource_telemetry: ResourceTelemetryCache,
+    /// Private monotonic watermark for temporal Finding reads. Wall clocks may
+    /// move backwards; retaining the greatest trusted value prevents an
+    /// expired event window from being resurrected by a later low reading.
+    temporal_findings_clock_watermark_ms: Option<u64>,
 }
 
 const MAX_RESOURCE_TELEMETRY_SAMPLES: usize = 16;
@@ -636,6 +640,7 @@ impl DaemonCache {
             revision: PublicationRevision::new(),
             observed_history: ObservedHistoryCache::new(),
             resource_telemetry: ResourceTelemetryCache::default(),
+            temporal_findings_clock_watermark_ms: None,
         };
         cache.assign_docker_observation_revision();
         cache.assign_revision();
@@ -655,7 +660,7 @@ impl DaemonCache {
     /// context; receipt/state transitions call this again without fabricating
     /// a new topology revision.
     fn rebuild_findings(&mut self) {
-        self.findings = self.findings_response_at(self.snapshot.last_updated);
+        self.findings = self.findings_projection_at(Some(self.snapshot.last_updated));
     }
 
     /// Re-evaluate temporal eligibility against a trusted current Unix time.
@@ -663,17 +668,19 @@ impl DaemonCache {
     /// sole expiry mechanism: `/daemon/findings` calls this projection on its
     /// read path so a quiet Docker host cannot retain a stale time-bound
     /// advisory forever.
-    pub(crate) fn findings_response_at(&self, now_ms: u64) -> FindingsResponse {
+    fn findings_projection_at(&self, now_ms: Option<u64>) -> FindingsResponse {
         let mut findings = derive_findings(&self.runtime_map);
-        findings.extend(derive_temporal_docker_findings(
-            self.health.mode.clone(),
-            self.observed_history.docker_events.collection_state(),
-            now_ms,
-            &self
-                .observed_history
-                .docker_events
-                .public_events_newest_first(),
-        ));
+        if let Some(now_ms) = now_ms {
+            findings.extend(derive_temporal_docker_findings(
+                self.health.mode.clone(),
+                self.observed_history.docker_events.collection_state(),
+                now_ms,
+                &self
+                    .observed_history
+                    .docker_events
+                    .public_events_newest_first(),
+            ));
+        }
         findings.sort_by(|left, right| {
             left.id
                 .cmp(&right.id)
@@ -689,8 +696,26 @@ impl DaemonCache {
     /// The OS wall clock is the only current-time authority available to the
     /// daemon. A pre-epoch/unsafe clock fails closed for temporal advice while
     /// preserving all timeless findings already held in the cache.
-    pub(crate) fn current_findings_response(&self) -> FindingsResponse {
-        self.findings_response_at(wall_clock_millis().unwrap_or(0))
+    pub(crate) fn findings_response_at(&mut self, now_ms: Option<u64>) -> FindingsResponse {
+        let trusted_now = match (now_ms, self.temporal_findings_clock_watermark_ms) {
+            (Some(now), Some(watermark)) if now >= watermark => {
+                self.temporal_findings_clock_watermark_ms = Some(now);
+                Some(now)
+            }
+            (Some(now), None) => {
+                self.temporal_findings_clock_watermark_ms = Some(now);
+                Some(now)
+            }
+            // An invalid or backwards system clock is not temporal evidence.
+            // Do not lower the watermark: an event that has expired once can
+            // never reappear merely because wall time regressed.
+            _ => None,
+        };
+        self.findings_projection_at(trusted_now)
+    }
+
+    pub(crate) fn current_findings_response(&mut self) -> FindingsResponse {
+        self.findings_response_at(wall_clock_millis())
     }
 
     fn assign_docker_observation_revision(&mut self) {
@@ -1323,6 +1348,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     revision: PublicationRevision::new(),
                     observed_history: ObservedHistoryCache::new(),
                     resource_telemetry: ResourceTelemetryCache::default(),
+                    temporal_findings_clock_watermark_ms: None,
                 }
             }
             Err(error) => {
@@ -2851,6 +2877,7 @@ mod scheduler_tests {
             revision: PublicationRevision::new(),
             observed_history: ObservedHistoryCache::new(),
             resource_telemetry: ResourceTelemetryCache::default(),
+            temporal_findings_clock_watermark_ms: None,
         };
         cache.assign_docker_observation_revision();
         cache
@@ -4255,16 +4282,24 @@ mod scheduler_tests {
         drop(cache);
 
         // The Findings read projection expires this without a new snapshot,
-        // event, reconnect, or provider completion.
-        assert!(state
-            .cache
-            .read()
-            .await
-            .findings_response_at(NOW_MS + 600_001)
+        // event, reconnect, or provider completion. A backward or invalid
+        // clock cannot resurrect the advisory after that expiry.
+        let mut cache = state.cache.write().await;
+        assert!(cache
+            .findings_response_at(Some(NOW_MS + 300_000))
             .findings
             .iter()
-            .all(|finding| finding.rule_id
-                != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+            .any(|finding| finding.rule_id
+                == dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+        for now in [Some(NOW_MS + 600_001), Some(NOW_MS + 300_000), None] {
+            assert!(cache
+                .findings_response_at(now)
+                .findings
+                .iter()
+                .all(|finding| finding.rule_id
+                    != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+        }
+        drop(cache);
 
         // Snapshot publication retains the same expiry result as a cache
         // projection, but is no longer required for correctness.
