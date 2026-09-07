@@ -22,8 +22,8 @@ use crate::{
 };
 use dockermap_core::{
     collision_resistant_id_component, derive_findings, derive_images, mock_snapshot,
-    DiagnosticSeverity, DockerSnapshot, FindingsResponse, HealthResponse, HealthState,
-    ProviderSlot, ProviderState, ProviderStateKind, ProviderStatusReason,
+    DiagnosticSeverity, DockerSnapshot, FindingSummary, FindingsResponse, HealthResponse,
+    HealthState, ProviderSlot, ProviderState, ProviderStateKind, ProviderStatusReason,
     RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
     RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
     RuntimeMode, RuntimeProviderKind,
@@ -409,8 +409,10 @@ impl DaemonCache {
             .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
         // Findings are a pure projection of the sanitized runtime map, so
         // calculate and cache them only after the publication revision exists.
+        let findings = derive_findings(&self.runtime_map);
         self.findings = FindingsResponse {
-            findings: derive_findings(&self.runtime_map),
+            summary: FindingSummary::from_findings(&findings),
+            findings,
             model_revision: self.runtime_map.model_revision.clone(),
         };
     }
