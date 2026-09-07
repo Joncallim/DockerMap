@@ -5,7 +5,7 @@
 //! window counts, and raw session IDs never enter the public runtime model.
 
 use crate::process_runner::{run_command_with_timeout, PROVIDER_COMMAND_TIMEOUT};
-use crate::{push_provider_diagnostic, safe_runtime_id_component};
+use crate::{opaque_runtime_id_component, push_provider_diagnostic};
 use dockermap_core::{
     service_entity_kind_name, DiagnosticSeverity, RuntimeMapDiagnostic, RuntimeMapEdge,
     RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
@@ -92,7 +92,7 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
         nodes.push(RuntimeMapNode {
             id: format!(
                 "tmux_session_{}",
-                safe_runtime_id_component(parts[0], "session")
+                opaque_runtime_id_component(parts[0], "session")
             ),
             provider: RuntimeProviderKind::Tmux,
             kind: RuntimeNodeKind::TmuxSession,
@@ -143,6 +143,10 @@ mod tests {
                 "$1",
             ],
         );
+
+        let hostile = tmux_session_nodes_from_output("tmux-ID-PRIVATE-7f3d\tinnocent-name\t1\t7\n");
+        assert_eq!(hostile.len(), 1);
+        assert_no_raw_secrets(&hostile, &["tmux-ID-PRIVATE-7f3d", "innocent-name"]);
     }
 
     #[test]
@@ -152,7 +156,7 @@ mod tests {
         ));
 
         assert_eq!(nodes.len(), 3);
-        assert!(nodes[0].id.starts_with("tmux_session_0--"));
+        assert!(nodes[0].id.starts_with("tmux_session_session--"));
         assert!(nodes.iter().all(|node| node.label == "tmux session"));
         assert!(nodes.iter().all(|node| node.status.is_none()));
         assert!(nodes.iter().all(|node| node.metadata.len() == 1));

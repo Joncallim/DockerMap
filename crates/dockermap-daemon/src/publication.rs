@@ -572,6 +572,18 @@ pub(crate) fn safe_runtime_id_component(value: &str, fallback: &str) -> String {
     }
 }
 
+/// Build a digest-only component for identities that must be correlated inside
+/// the graph but must never disclose even a readable slug of their provider
+/// value. Unlike `safe_runtime_id_component`, this is intentionally opaque for
+/// both ordinary and redacted inputs.
+pub(crate) fn opaque_runtime_id_component(value: &str, fallback: &str) -> String {
+    let generated = collision_resistant_id_component(value);
+    let hash = generated
+        .rsplit_once("--")
+        .map_or("identity", |(_, hash)| hash);
+    format!("{fallback}--{hash}")
+}
+
 pub(crate) fn push_provider_diagnostic(
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
     provider: RuntimeProviderKind,
