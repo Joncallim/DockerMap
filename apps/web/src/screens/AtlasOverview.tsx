@@ -1,20 +1,22 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useApp } from "../context";
 import { useAtlasState } from "../hooks/useAtlasState";
-import { layoutAtlas } from "../lib/atlas/layout";
+import { initialAtlasCamera, layoutAtlas } from "../lib/atlas/layout";
 import { canonicalSubjectOrder } from "../lib/atlas/project";
 import type { AtlasCamera } from "../lib/atlas/types";
 import AtlasOverviewTopology, { markerText, safeDisplay } from "../components/atlas/AtlasOverviewTopology";
 import AtlasLocalContext from "../components/atlas/AtlasLocalContext";
 import { EmptyState, ErrorState, Loading, Panel } from "../components/primitives";
 
-const DEFAULT_CAMERA: AtlasCamera = { x: 0, y: 0, zoom: 1 };
-
 export default function AtlasOverview() {
   const { atlas, loading, error } = useApp();
   const atlasState = useAtlasState(atlas?.model ?? null, atlas?.sourceRevision ?? null);
   const expandedContentRef = useRef<HTMLParagraphElement | null>(null);
-  const camera = DEFAULT_CAMERA;
+  // This ref establishes the single deterministic entry framing. It is not
+  // derived from Atlas data, so a coherent revision cannot refit/recenter it.
+  const cameraRef = useRef<AtlasCamera | null>(null);
+  if (!cameraRef.current) cameraRef.current = initialAtlasCamera();
+  const camera = cameraRef.current;
   const layout = useMemo(() => atlas ? layoutAtlas(atlas.model) : null, [atlas]);
   const expandedAggregate = atlasState.expandedKey && atlas ? atlas.model.aggregates.find((entry) => entry.key === atlasState.expandedKey) ?? null : null;
   const expandedGroup = atlasState.expandedKey && atlas ? atlas.model.groups.find((entry) => entry.key === atlasState.expandedKey) ?? null : null;
