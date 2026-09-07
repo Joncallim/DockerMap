@@ -94,7 +94,6 @@ exact layout golden files or logical coordinates.
 ```ts
 type AtlasKey = string; // opaque, bounded, non-empty, unique after publication
 type AtlasDerivedKey = string; // named-rule-derived, bounded, never routable
-type AtlasRoutability = "routable" | "non_routable";
 type AtlasRole = "primary" | "context" | "attachment" | "inspector_only" | "unsupported";
 type ProjectionRuleId = `atlas-v1/${string}`;
 type AtlasNodeSourceRef = { kind: "runtime_node"; provider: RuntimeProviderKind; nodeId: AtlasKey; runtimeKind: RuntimeNodeKind };
@@ -108,12 +107,8 @@ type AtlasEdgeEvidenceSourceRef = {
 type AtlasEvidenceSources = [AtlasEdgeEvidenceSourceRef, ...AtlasEdgeEvidenceSourceRef[]]; // capped at the RuntimeMap evidence limit
 type AtlasProjectionRef = { kind: "projection"; rule: ProjectionRuleId };
 
-interface AtlasSubject {
-  key: AtlasKey;
-  routability: AtlasRoutability;
+interface AtlasSubjectBase {
   role: AtlasRole;
-  source: AtlasNodeSourceRef;
-  runtimeKind: RuntimeNodeKind;
   display: string; // bounded, redacted React text only; never a key
   operationalState: "healthy" | "warning" | "degraded" | "offline" | "updating" | "unknown";
   freshness: "fresh" | "stale" | "timed_out" | "unavailable" | "disabled" | "unknown";
@@ -121,6 +116,9 @@ interface AtlasSubject {
   ambiguity: "none" | "collision" | "unresolved" | "unsupported";
   rule: ProjectionRuleId;
 }
+type AtlasSubject =
+  | (AtlasSubjectBase & { key: AtlasKey; routability: "routable"; source: AtlasNodeSourceRef; runtimeKind: RuntimeNodeKind })
+  | (AtlasSubjectBase & { key: AtlasDerivedKey; routability: "non_routable"; source: AtlasProjectionRef; runtimeKind: RuntimeNodeKind | null });
 interface AtlasGroup { key: AtlasDerivedKey; memberKeys: AtlasKey[]; membershipEvidence: AtlasEvidenceSources; rule: ProjectionRuleId; }
 interface AtlasLane { key: AtlasDerivedKey; subjectKeys: AtlasKey[]; rule: ProjectionRuleId; } // presentation only, never containment
 interface AtlasRelation { source: AtlasKey; target: AtlasKey; direction: "forward"; evidence: AtlasEvidenceSources; rule: ProjectionRuleId; }
