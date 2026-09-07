@@ -151,6 +151,34 @@ mod tests {
     }
 
     #[test]
+    fn findings_source_schema_is_closed_and_not_a_client_selected_mode() {
+        let schema = DAEMON_SCHEMA_NAMES
+            .iter()
+            .zip(daemon_schema_documents())
+            .find_map(|(name, schema)| (*name == "FindingsResponse").then_some(schema))
+            .expect("findings schema exists");
+        let source = schema
+            .pointer("/properties/source")
+            .expect("findings source property exists");
+        assert_eq!(
+            source.pointer("/anyOf/0/$ref").and_then(Value::as_str),
+            Some("#/$defs/RuntimeMode")
+        );
+        assert_eq!(
+            schema.pointer("/$defs/RuntimeMode/enum"),
+            Some(&serde_json::json!(["docker", "mock"])),
+            "the source vocabulary must stay finite and daemon-authored"
+        );
+        assert!(
+            !schema
+                .get("required")
+                .and_then(Value::as_array)
+                .is_some_and(|required| required.iter().any(|field| field == "source")),
+            "only the daemon publication boundary can add the source stamp"
+        );
+    }
+
+    #[test]
     fn runtime_provider_states_schema_is_exactly_the_fixed_static_slot_count() {
         let schema = DAEMON_SCHEMA_NAMES
             .iter()
