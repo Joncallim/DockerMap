@@ -131,23 +131,29 @@ test.describe("Docker temporal observations", () => {
     expect(afterReset.events.some((event) => event.id === preResetId)).toBe(false);
     expect((await getFindingsThroughApi(findingsUrl, stack.daemonUrl, auth)).findings.some((finding) => finding.ruleId === temporalRule)).toBe(false);
 
+    // Count only events first observed after recovery established the new
+    // continuity epoch. The pre-reset baseline is intentionally not a
+    // threshold baseline: replay/dedupe may retain non-die history safely.
+    const postResetBaselineIds = new Set(afterReset.events
+      .filter((event) => event.kind === "container_died")
+      .map((event) => event.id));
     const postResetDieIds = new Set<string>();
     await stack.restartFixtureWorker!();
-    const postResetOne = await waitForNewDiedEvents(observedUrl, auth, initialDieIds, 1);
-    addNewDiedIds(postResetDieIds, postResetOne, initialDieIds);
+    const postResetOne = await waitForNewDiedEvents(observedUrl, auth, postResetBaselineIds, 1);
+    addNewDiedIds(postResetDieIds, postResetOne, postResetBaselineIds);
     expect((await getFindingsThroughApi(findingsUrl, stack.daemonUrl, auth)).findings.some((finding) => finding.ruleId === temporalRule)).toBe(false);
 
     await stack.restartFixtureWorker!();
-    const postResetTwo = await waitForNewDiedEvents(observedUrl, auth, initialDieIds, 2);
-    addNewDiedIds(postResetDieIds, postResetTwo, initialDieIds);
+    const postResetTwo = await waitForNewDiedEvents(observedUrl, auth, postResetBaselineIds, 2);
+    addNewDiedIds(postResetDieIds, postResetTwo, postResetBaselineIds);
     expect((await getFindingsThroughApi(findingsUrl, stack.daemonUrl, auth)).findings.some((finding) => finding.ruleId === temporalRule)).toBe(false);
 
     await stack.restartFixtureWorker!();
-    const observed = await waitForNewDiedEvents(observedUrl, auth, initialDieIds, 3);
+    const observed = await waitForNewDiedEvents(observedUrl, auth, postResetBaselineIds, 3);
     assertObservedEventShape(observed);
-    addNewDiedIds(postResetDieIds, observed, initialDieIds);
+    addNewDiedIds(postResetDieIds, observed, postResetBaselineIds);
     expect(postResetDieIds.size).toBe(3);
-    const newDiedEvents = observed.events.filter((event) => event.kind === "container_died" && !initialDieIds.has(event.id));
+    const newDiedEvents = observed.events.filter((event) => event.kind === "container_died" && !postResetBaselineIds.has(event.id));
     expect(newDiedEvents).toHaveLength(3);
     expect(new Set(newDiedEvents.map((event) => event.id)).size).toBe(3);
     expect(new Set(newDiedEvents.map((event) => event.containerId)).size).toBe(1);
@@ -316,6 +322,27 @@ async function pollJson<T>(label: string, request: () => Promise<T>, predicate: 
     }
     await delay(250);
   }
-  const detail = lastError instanceof Error ? "request failed" : lastResponse === undefined ? "no response" : "response did not reach the expected state";
+  const detail = lastError instanceof Error
+    ? "request failed"
+    : lastResponse === undefined
+      ? "no response"
+      : `response did not reach the expected state (${closedPollState(lastResponse)})`;
   throw new Error(`Timed out waiting for ${label}: ${detail}`);
+}
+
+// Failure output stays structural: never include a provider response, opaque
+// identity, timestamp, revision, or error text in an operator-facing test log.
+function closedPollState(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "non_object";
+  const response = value as Record<string, unknown>;
+  const source = response.source === "docker" || response.source === "mock" ? response.source : "other";
+  const state = response.collectionState === "collecting"
+    || response.collectionState === "reconnecting"
+    || response.collectionState === "unavailable"
+    ? response.collectionState
+    : "other";
+  const eventCount = Array.isArray(response.events) ? response.events.length : null;
+  const hasCurrentRevisions = typeof response.currentModelRevision === "string"
+    && typeof response.currentObservationRevision === "string";
+  return `source=${source};state=${state};events=${eventCount === null ? "non_array" : eventCount};revisions=${hasCurrentRevisions ? "present" : "absent"}`;
 }
