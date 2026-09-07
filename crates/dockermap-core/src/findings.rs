@@ -247,6 +247,64 @@ pub fn derive_temporal_docker_findings(
     Vec::new()
 }
 
+/// The first instant after which the current temporal projection must be
+/// reconsidered. This remains private daemon scheduling data: callers must
+/// never expose it as finding evidence. Only candidates which could produce a
+/// finding at `now_ms` participate, so caching through this deadline cannot
+/// retain an expired advisory.
+pub fn temporal_docker_findings_expiry_ms(
+    source: RuntimeMode,
+    collection_state: ObservedDockerEventCollectionState,
+    now_ms: u64,
+    events: &[ObservedDockerEvent],
+) -> Option<u64> {
+    if source != RuntimeMode::Docker
+        || collection_state != ObservedDockerEventCollectionState::Collecting
+    {
+        return None;
+    }
+
+    let mut candidates = BTreeMap::<String, Vec<&ObservedDockerEvent>>::new();
+    for event in events {
+        if event.evidence_source != ObservedDockerEventEvidenceSource::DockerEventStream
+            || event.kind != ObservedDockerEventKind::ContainerDied
+            || !valid_temporal_input(event)
+        {
+            continue;
+        }
+        candidates
+            .entry(event.container_id.clone())
+            .or_default()
+            .push(event);
+    }
+
+    candidates
+        .into_values()
+        .filter_map(|mut events| {
+            events.sort_by(|left, right| {
+                left.source_occurred_at_ms
+                    .cmp(&right.source_occurred_at_ms)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            if events.windows(2).any(|pair| pair[0].id == pair[1].id) {
+                return None;
+            }
+            events
+                .windows(3)
+                .filter_map(|window| {
+                    let oldest = window[0].source_occurred_at_ms;
+                    let newest = window[2].source_occurred_at_ms;
+                    (newest.saturating_sub(oldest) <= REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS
+                        && newest <= now_ms
+                        && now_ms.saturating_sub(newest)
+                            <= REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS)
+                        .then(|| newest.saturating_add(REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS))
+                })
+                .max()
+        })
+        .max()
+}
+
 fn valid_temporal_input(event: &ObservedDockerEvent) -> bool {
     const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
     event
@@ -813,6 +871,15 @@ mod tests {
         assert!(finding.target_ref.is_none());
         assert!(finding.evidence_refs.is_empty());
         assert_eq!(finding.temporal_evidence.len(), 3);
+        assert_eq!(
+            temporal_docker_findings_expiry_ms(
+                RuntimeMode::Docker,
+                ObservedDockerEventCollectionState::Collecting,
+                300_000,
+                &events,
+            ),
+            Some(600_000),
+        );
         let encoded = serde_json::to_string(finding).expect("finding serializes");
         for forbidden in [
             "docker_event_111",
