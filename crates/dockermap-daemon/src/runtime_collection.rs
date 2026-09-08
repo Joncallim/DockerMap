@@ -7,6 +7,7 @@
 use crate::{
     config::project_root,
     pid_namespace::{daemon_pid_namespace_scope, PidNamespaceScope},
+    process_runner::ProviderCommandError,
     provider_contract::{ProviderCollection, ProviderDiagnostic},
     providers::{
         cron::collect_scheduled_jobs,
@@ -82,6 +83,32 @@ pub(crate) enum ProviderCollectionOutcome {
     TimedOut,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderCollectionError {
+    Failed,
+    TimedOut,
+}
+
+impl From<ProviderCommandError> for ProviderCollectionError {
+    fn from(error: ProviderCommandError) -> Self {
+        if matches!(error, ProviderCommandError::TimedOut(_)) {
+            Self::TimedOut
+        } else {
+            Self::Failed
+        }
+    }
+}
+
+fn provider_collection_outcome(
+    result: Result<ProviderCollection, ProviderCollectionError>,
+) -> ProviderCollectionOutcome {
+    match result {
+        Ok(collection) => ProviderCollectionOutcome::Collected(collection),
+        Err(ProviderCollectionError::Failed) => ProviderCollectionOutcome::Failed,
+        Err(ProviderCollectionError::TimedOut) => ProviderCollectionOutcome::TimedOut,
+    }
+}
+
 /// Collect provider observations off the async runtime: provider commands are
 /// blocking `std::process` calls, so they must never run on a Tokio worker
 /// thread. The collection is single-flight and bounded so pathological
@@ -104,8 +131,7 @@ pub(crate) async fn collect_provider_slot_bounded(
         })
     };
     match tokio::time::timeout(RUNTIME_MAP_COLLECTION_TIMEOUT, work).await {
-        Ok(Ok(Ok(collection))) => ProviderCollectionOutcome::Collected(collection),
-        Ok(Ok(Err(()))) => ProviderCollectionOutcome::Failed,
+        Ok(Ok(result)) => provider_collection_outcome(result),
         Ok(Err(join_error)) => {
             eprintln!("runtime map collection task failed: {join_error}");
             ProviderCollectionOutcome::Failed
@@ -148,7 +174,7 @@ pub(crate) fn runtime_map_from_collection(
 fn collect_provider_slot(
     slot: StaticProviderSlot,
     snapshot: &DockerSnapshot,
-) -> Result<ProviderCollection, ()> {
+) -> Result<ProviderCollection, ProviderCollectionError> {
     let mut collection = ProviderCollection::default();
     let project_root = project_root().ok();
     let pid_namespace = daemon_pid_namespace_scope();
@@ -208,9 +234,8 @@ fn collect_provider_slot(
             );
         }
         StaticProviderSlot::Systemd => {
-            if !collect_systemd_runtime_provider(pid_namespace, &mut collection) {
-                return Err(());
-            }
+            collect_systemd_runtime_provider(pid_namespace, &mut collection)
+                .map_err(ProviderCollectionError::from)?;
             collection.set_state(
                 slot,
                 if pid_namespace.is_restricted() {
@@ -363,14 +388,14 @@ fn collect_cron_runtime_provider(
 fn collect_systemd_runtime_provider(
     pid_namespace: PidNamespaceScope,
     collection: &mut ProviderCollection,
-) -> bool {
+) -> Result<(), ProviderCommandError> {
     if pid_namespace.is_restricted() {
         collection.push_diagnostic(ProviderDiagnostic::new(
             RuntimeProviderKind::Systemd,
             DiagnosticSeverity::Info,
             "systemd discovery omitted because the daemon runs in a restricted PID namespace",
         ));
-        return true;
+        return Ok(());
     }
 
     let (nodes, edges, diagnostics) = collection.parts_mut();
@@ -469,7 +494,8 @@ mod tests {
             .all(|diagnostic| diagnostic.provider != RuntimeProviderKind::Systemd));
 
         let mut systemd = ProviderCollection::default();
-        collect_systemd_runtime_provider(PidNamespaceScope::Restricted, &mut systemd);
+        collect_systemd_runtime_provider(PidNamespaceScope::Restricted, &mut systemd)
+            .expect("restricted systemd collection is intentionally disabled, not failed");
         systemd.set_state(StaticProviderSlot::Systemd, ProviderStateKind::Disabled);
         assert!(systemd.states().iter().any(|state| {
             state.slot == StaticProviderSlot::Systemd && state.state == ProviderStateKind::Disabled
@@ -495,6 +521,19 @@ mod tests {
             RuntimeCollectionGuard::acquire(in_flight).is_some(),
             "the next refresh may run after the original collection finishes"
         );
+    }
+
+    #[test]
+    fn systemd_timeout_and_failure_map_to_distinct_provider_outcomes() {
+        let timeout = provider_collection_outcome(Err(ProviderCollectionError::from(
+            ProviderCommandError::TimedOut(Duration::from_secs(3)),
+        )));
+        let failure = provider_collection_outcome(Err(ProviderCollectionError::from(
+            ProviderCommandError::Wait,
+        )));
+
+        assert!(matches!(timeout, ProviderCollectionOutcome::TimedOut));
+        assert!(matches!(failure, ProviderCollectionOutcome::Failed));
     }
 
     #[test]

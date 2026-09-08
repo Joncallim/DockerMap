@@ -2255,6 +2255,47 @@ mod scheduler_tests {
             .any(|edge| edge.source == "systemd_service_application"));
     }
 
+    #[tokio::test]
+    async fn timed_out_systemd_collection_publishes_collection_timed_out_not_failed() {
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        let snapshot = state.cache.read().await.snapshot.clone();
+        apply_provider_slot_outcome(
+            &state,
+            ProviderSlot::Systemd,
+            snapshot,
+            RuntimeMode::Docker,
+            0,
+            ProviderCollectionOutcome::TimedOut,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        let cache = state.cache.read().await;
+        assert!(matches!(
+            cache.runtime_providers[&ProviderSlot::Systemd].observation,
+            RuntimeProviderState::TimedOut(None)
+        ));
+        let systemd = cache
+            .runtime_map
+            .provider_states
+            .iter()
+            .find(|provider| provider.slot == ProviderSlot::Systemd)
+            .expect("the fixed systemd slot is always projected");
+        assert_eq!(systemd.state, ProviderStateKind::TimedOut);
+        assert_eq!(
+            systemd.status_reason,
+            Some(ProviderStatusReason::CollectionTimedOut)
+        );
+        assert_ne!(
+            systemd.status_reason,
+            Some(ProviderStatusReason::CollectionFailed)
+        );
+    }
+
     #[test]
     fn npm_manifest_evidence_is_slot_bound_redacted_and_truthfully_retained() {
         for (observation, expected) in [
