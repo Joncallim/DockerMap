@@ -63,6 +63,15 @@ const SPECS: readonly FindingSpec[] = [
     inspection: { ruleLabel: "Internal network and host port", ruleId: "docker.internal_network_member_publishes_port", freshEvidenceRequirement: "Requires two fresh observed Docker facts.", factDescription: "One network-membership fact and one host-port-publication fact.", limits: "Does not establish Internet reachability, traffic, causality, or remediation." }
   },
   {
+    ruleId: "docker.port_published_on_unspecified_address", severity: "advisory",
+    summary: "Docker reported a container port published on an unspecified host address.",
+    recommendation: "Review whether publishing this container port beyond loopback is intended.",
+    idPrefix: "finding_docker_port_published_on_unspecified_address_", subjectPrefix: "docker_container_", targetRef: "host_risk_docker_unspecified_address_port",
+    evidenceCount: 1, evidence: { version: 1, provider: "docker", kind: "docker_unspecified_address_port_publication", assertionKind: "observed", providerSlot: null },
+    title: "Unspecified-address port publication needs review", category: "Host port publication", hint: "Observed Docker fact", tone: "muted", severityLabel: "Advisory",
+    inspection: { ruleLabel: "Unspecified-address host port", ruleId: "docker.port_published_on_unspecified_address", freshEvidenceRequirement: "Requires one fresh observed Docker fact.", factDescription: "One Docker fact that records a valid nonzero port published on an unspecified host address.", limits: "Does not establish Internet reachability, reachability from any network, traffic, causality, or remediation." }
+  },
+  {
     ruleId: "docker.daemon_state_bind_mount", severity: "warning",
     summary: "A container has Docker daemon state access that may provide Docker daemon API authority.",
     recommendation: "Review whether this container requires Docker daemon API authority.",
@@ -110,6 +119,7 @@ const SPECS: readonly FindingSpec[] = [
 ];
 
 const COMPOSE_DECLARATION_EVIDENCE_SUMMARY = "Docker recorded Compose dependency declaration";
+const UNSPECIFIED_ADDRESS_PUBLICATION_EVIDENCE_SUMMARY = "Docker reported a container port published on an unspecified host address";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -155,7 +165,7 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     // The API permits the Compose observation's legacy absent slot as well as
     // null. Both mean the Docker-wide collector, never a provider-supplied
     // slot name; all other supported shapes require their exact slot value.
-    || ((spec.ruleId === "docker.compose_declared_target_not_active" || spec.ruleId === "docker.daemon_state_bind_mount_publishes_port" || spec.ruleId === "docker.compose_mutual_dependency" || spec.ruleId === "compose.declared_mount_missing_at_bound_container")
+    || ((spec.ruleId === "docker.compose_declared_target_not_active" || spec.ruleId === "docker.daemon_state_bind_mount_publishes_port" || spec.ruleId === "docker.compose_mutual_dependency" || spec.ruleId === "compose.declared_mount_missing_at_bound_container" || spec.ruleId === "docker.port_published_on_unspecified_address")
       ? evidence.providerSlot !== undefined && evidence.providerSlot !== null
       : evidence.providerSlot !== spec.evidence.providerSlot)
     || evidence.freshness !== "fresh"
@@ -169,6 +179,15 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
       || port.assertionKind !== "observed" || port.providerSlot !== null || port.freshness !== "fresh"
       || port.subjectRef !== finding.subjectRef) return null;
   }
+
+  // This advisory deliberately has no address or port fields at all. Its one
+  // V1 observation must remain the fixed redacted fact before generic copy is
+  // shown; the legacy absent/null Docker-wide slot is accepted above.
+  if (spec.ruleId === "docker.port_published_on_unspecified_address"
+    && (evidence.summary !== UNSPECIFIED_ADDRESS_PUBLICATION_EVIDENCE_SUMMARY
+      || typeof evidence.collectedAt !== "number" || !Number.isSafeInteger(evidence.collectedAt) || evidence.collectedAt < 0
+      || typeof evidence.providerRevision !== "string" || evidence.providerRevision.length === 0
+      || evidence.providerRevision === String(evidence.collectedAt))) return null;
 
   // The daemon-state + host-port advisory is a paired observation from one
   // Docker collection. The UI never renders either fact's values, but it must

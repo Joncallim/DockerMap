@@ -1,6 +1,8 @@
 use bollard::{
     container::LogOutput,
-    models::{ContainerSummary, MountPoint, MountPointTypeEnum, VolumeListResponse},
+    models::{
+        ContainerSummary, MountPoint, MountPointTypeEnum, Port, PortTypeEnum, VolumeListResponse,
+    },
     query_parameters::{
         ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder,
         LogsOptionsBuilder,
@@ -455,6 +457,10 @@ fn build_snapshot(
             .map(|value| parse_depends_on_label(value))
             .unwrap_or_default();
 
+        let ports = container.ports.unwrap_or_default();
+        let publishes_on_unspecified_address =
+            ports.iter().any(is_valid_unspecified_address_publication);
+
         container_records.push(ContainerRecord {
             id,
             name,
@@ -467,9 +473,7 @@ fn build_snapshot(
                 .cloned()
                 .unwrap_or_else(|| "service".into()),
             networks: network_ids,
-            ports: container
-                .ports
-                .unwrap_or_default()
+            ports: ports
                 .into_iter()
                 .map(|port| {
                     let private = port.private_port;
@@ -485,6 +489,7 @@ fn build_snapshot(
                     }
                 })
                 .collect(),
+            publishes_on_unspecified_address,
             mounts,
             depends_on,
         });
@@ -553,6 +558,19 @@ fn build_snapshot(
     }
 }
 
+/// Reduce Docker's raw host bind address to the one closed fact needed by the
+/// finding engine. Missing, malformed, specific, and loopback addresses fail
+/// closed, and the address itself never enters the retained snapshot.
+fn is_valid_unspecified_address_publication(port: &Port) -> bool {
+    matches!(port.ip.as_deref(), Some("0.0.0.0" | "::"))
+        && port.public_port.is_some_and(|value| value > 0)
+        && port.private_port > 0
+        && matches!(
+            port.typ,
+            Some(PortTypeEnum::TCP | PortTypeEnum::UDP | PortTypeEnum::SCTP)
+        )
+}
+
 fn collect_container_mounts(
     container_id: &str,
     mounts: Option<&[MountPoint]>,
@@ -594,4 +612,89 @@ fn collect_container_mounts(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod unspecified_address_tests {
+    use super::*;
+
+    fn port(
+        ip: Option<&str>,
+        public_port: Option<u16>,
+        private_port: u16,
+        typ: Option<PortTypeEnum>,
+    ) -> Port {
+        Port {
+            ip: ip.map(str::to_string),
+            public_port,
+            private_port,
+            typ,
+        }
+    }
+
+    #[test]
+    fn unspecified_address_classifier_requires_an_exact_complete_publication() {
+        for candidate in [
+            port(Some("0.0.0.0"), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some("::"), Some(5353), 53, Some(PortTypeEnum::UDP)),
+            port(Some("::"), Some(443), 443, Some(PortTypeEnum::SCTP)),
+        ] {
+            assert!(is_valid_unspecified_address_publication(&candidate));
+        }
+
+        for candidate in [
+            port(None, Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some(""), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some("127.0.0.1"), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some("::1"), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some("192.0.2.8"), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some("0.0.0.0 "), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(
+                Some("not-an-address"),
+                Some(8080),
+                80,
+                Some(PortTypeEnum::TCP),
+            ),
+            port(Some("0.0.0.0"), None, 80, Some(PortTypeEnum::TCP)),
+            port(Some("0.0.0.0"), Some(0), 80, Some(PortTypeEnum::TCP)),
+            port(Some("0.0.0.0"), Some(8080), 0, Some(PortTypeEnum::TCP)),
+            port(Some("0.0.0.0"), Some(8080), 80, None),
+            port(Some("0.0.0.0"), Some(8080), 80, Some(PortTypeEnum::EMPTY)),
+        ] {
+            assert!(!is_valid_unspecified_address_publication(&candidate));
+        }
+    }
+
+    #[test]
+    fn snapshot_retains_only_the_closed_boolean_not_docker_bind_addresses() {
+        let snapshot = build_snapshot(
+            vec![ContainerSummary {
+                id: Some("a".repeat(64)),
+                names: Some(vec!["/bounded".into()]),
+                image: Some("example:latest".into()),
+                status: Some("running".into()),
+                ports: Some(vec![
+                    port(Some("0.0.0.0"), Some(8080), 80, Some(PortTypeEnum::TCP)),
+                    port(Some("192.0.2.77"), Some(8443), 443, Some(PortTypeEnum::TCP)),
+                ]),
+                ..Default::default()
+            }],
+            Vec::new(),
+            VolumeListResponse::default(),
+        );
+
+        assert!(snapshot.containers[0].publishes_on_unspecified_address);
+        assert_eq!(
+            snapshot.containers[0].ports,
+            ["8080:80/tcp", "8443:443/tcp"]
+        );
+        let serialized = serde_json::to_string(&snapshot).expect("snapshot serializes");
+        assert!(serialized.contains("\"publishesOnUnspecifiedAddress\":true"));
+        for raw_address in ["0.0.0.0", "192.0.2.77"] {
+            assert!(
+                !serialized.contains(raw_address),
+                "raw Docker bind address must not enter retained snapshot: {raw_address}"
+            );
+        }
+    }
 }
