@@ -980,11 +980,10 @@ pub(crate) fn unsafe_bind_source_diagnostic(
 /// Closed, path-boundary predicate shared by Compose diagnostics and runtime
 /// derivation. Callers must never publish the matching source path.
 pub(crate) fn is_docker_daemon_state_bind_source(resolved: &str) -> bool {
-    let path = Path::new(resolved);
-    path.components()
-        .any(|component| component.as_os_str() == "docker.sock")
-        || resolved == "/var/lib/docker"
-        || resolved.starts_with("/var/lib/docker/")
+    matches!(
+        resolved,
+        "/var/run/docker.sock" | "/run/docker.sock" | "/var/lib/docker"
+    ) || resolved.starts_with("/var/lib/docker/")
 }
 
 fn mounts_match(compose_mount: &ComposeMount, runtime_mount: &ContainerMount) -> bool {

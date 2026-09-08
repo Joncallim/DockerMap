@@ -113,7 +113,12 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
     }
 
     let mut membership_counts = BTreeMap::<(&str, &str), usize>::new();
-    let mut port_counts = BTreeMap::<&str, usize>::new();
+    // A service may deliberately publish more than one distinct port. Count
+    // each source/listener pair instead of flattening all listener facts into
+    // one source-wide ambiguity bucket: duplicated or conflicting evidence
+    // for a listener still fails closed, while distinct listeners remain
+    // independently explainable.
+    let mut port_counts = BTreeMap::<(&str, &str), usize>::new();
     let mut unspecified_address_port_counts = BTreeMap::<&str, usize>::new();
     for edge in &runtime_map.edges {
         if is_docker_membership_shape(edge, &nodes) {
@@ -121,8 +126,10 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
                 .entry((edge.source.as_str(), edge.target.as_str()))
                 .or_default() += 1;
         }
-        if is_docker_port_shape(edge, &nodes) {
-            *port_counts.entry(edge.source.as_str()).or_default() += 1;
+        if is_docker_port_publication_pair_shape(edge, &nodes) {
+            *port_counts
+                .entry((edge.source.as_str(), edge.target.as_str()))
+                .or_default() += 1;
         }
         if is_unspecified_address_port_shape(edge, &nodes) {
             *unspecified_address_port_counts
@@ -372,31 +379,35 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
     for edge in &runtime_map.edges {
         let pair = (edge.source.as_str(), edge.target.as_str());
         if membership_counts.get(&pair) != Some(&1)
-            || port_counts.get(edge.source.as_str()) != Some(&1)
             || !is_candidate_internal_network_membership(edge, &nodes)
         {
             continue;
         }
-        let Some(port_edge) = runtime_map.edges.iter().find(|candidate| {
-            candidate.source == edge.source && is_candidate_port_publication(candidate, &nodes)
-        }) else {
-            continue;
-        };
-        let network_evidence = edge.evidence_refs[0].clone();
-        let port_evidence = port_edge.evidence_refs[0].clone();
-        findings.push(Finding {
-            id: format!(
-                "finding_docker_internal_network_member_publishes_port_{}",
-                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
-            ),
-            rule_id: FindingRule::DockerInternalNetworkMemberPublishesPort,
-            severity: FindingSeverity::Advisory,
-            summary: INTERNAL_NETWORK_PORT_SUMMARY.into(),
-            recommendation: INTERNAL_NETWORK_PORT_RECOMMENDATION.into(),
-            subject_ref: edge.source.clone(),
-            target_ref: edge.target.clone(),
-            evidence_refs: vec![network_evidence, port_evidence],
-        });
+        for port_edge in runtime_map.edges.iter().filter(|candidate| {
+            candidate.source == edge.source
+                && port_counts.get(&(candidate.source.as_str(), candidate.target.as_str()))
+                    == Some(&1)
+                && is_candidate_port_publication(candidate, &nodes)
+        }) {
+            let network_evidence = edge.evidence_refs[0].clone();
+            let port_evidence = port_edge.evidence_refs[0].clone();
+            findings.push(Finding {
+                id: format!(
+                    "finding_docker_internal_network_member_publishes_port_{}",
+                    collision_resistant_id_component(&format!(
+                        "{}\u{1f}{}\u{1f}{}",
+                        edge.source, edge.target, port_edge.target
+                    ))
+                ),
+                rule_id: FindingRule::DockerInternalNetworkMemberPublishesPort,
+                severity: FindingSeverity::Advisory,
+                summary: INTERNAL_NETWORK_PORT_SUMMARY.into(),
+                recommendation: INTERNAL_NETWORK_PORT_RECOMMENDATION.into(),
+                subject_ref: edge.source.clone(),
+                target_ref: edge.target.clone(),
+                evidence_refs: vec![network_evidence, port_evidence],
+            });
+        }
     }
     findings.sort_by(|left, right| {
         left.id
@@ -1370,6 +1381,40 @@ mod tests {
     }
 
     #[test]
+    fn internal_network_ports_emit_one_advisory_per_distinct_listener() {
+        let mut input = internal_network_port_map();
+        input.nodes.push(docker_node(
+            "network_listener_second",
+            RuntimeProviderKind::Network,
+            RuntimeNodeKind::NetworkListener,
+            BTreeMap::from([("port".into(), "8443:443/tcp".into())]),
+        ));
+        input.edges.push(RuntimeMapEdge {
+            source: "docker_container_safe".into(),
+            target: "network_listener_second".into(),
+            relationship: RuntimeRelationshipKind::Exposes,
+            metadata: BTreeMap::new(),
+            evidence_refs: vec![docker_evidence(
+                RuntimeEvidenceKind::DockerPortPublication,
+                "docker_container_safe",
+            )],
+        });
+
+        let findings = derive_findings(&input);
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().all(|finding| {
+            finding.rule_id == FindingRule::DockerInternalNetworkMemberPublishesPort
+                && finding.evidence_refs.len() == 2
+                && finding.evidence_refs[1].kind == RuntimeEvidenceKind::DockerPortPublication
+        }));
+        assert_ne!(findings[0].id, findings[1].id);
+
+        let mut reordered = input;
+        reordered.edges.reverse();
+        assert_eq!(derive_findings(&reordered), findings);
+    }
+
+    #[test]
     fn docker_internal_network_port_rule_fails_closed() {
         let mut stale_membership = internal_network_port_map();
         stale_membership.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
@@ -1382,6 +1427,15 @@ mod tests {
         let mut duplicate_port = internal_network_port_map();
         duplicate_port.edges.push(duplicate_port.edges[1].clone());
         assert!(derive_findings(&duplicate_port).is_empty());
+
+        let mut conflicting_port = internal_network_port_map();
+        let mut conflicting_edge = conflicting_port.edges[1].clone();
+        conflicting_edge.evidence_refs.clear();
+        conflicting_port.edges.push(conflicting_edge);
+        assert!(
+            derive_findings(&conflicting_port).is_empty(),
+            "a conflicting assertion for the same listener must not be ignored"
+        );
 
         let mut duplicate_membership = internal_network_port_map();
         duplicate_membership

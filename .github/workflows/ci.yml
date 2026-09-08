@@ -147,9 +147,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # The runtime stage copies the pruned workspace dependency closure from
-      # the resolver's root. Build on every PR so hoisting or closure drift
-      # cannot ship unnoticed.
+      # The runtime stage resolves an API-only production dependency closure.
+      # Build on every PR so workspace hoisting cannot pull web dependencies
+      # across that boundary unnoticed.
       - name: Build image
         run: docker build -t dockermap:ci .
 
@@ -163,6 +163,9 @@ jobs:
             test ! -e /opt/dockermap/node_modules/.bin/vite
             test ! -d /opt/dockermap/node_modules/typescript
             test ! -e /opt/dockermap/node_modules/@playwright/test/package.json
+            test ! -e /opt/dockermap/node_modules/react/package.json
+            test ! -e /opt/dockermap/node_modules/react-dom/package.json
+            test ! -e /opt/dockermap/node_modules/react-router-dom/package.json
             node -e "import(\"express\").then(() => import(\"@dockermap/contracts\"))"
           '
 

@@ -2641,7 +2641,7 @@ mod tests {
         snapshot.containers[0].mounts = vec![ContainerMount {
             id: "private-daemon-state-mount".into(),
             kind: ComposeMountKind::Bind,
-            source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+            source: Some("/var/run/docker.sock".into()),
             target: "/private/target".into(),
             read_only: false,
         }];

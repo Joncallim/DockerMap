@@ -1603,6 +1603,77 @@ test("runtime evidence is required and fails closed before browser publication",
     "collision findings have a single aggregate budget"
   );
 
+  const canonicalEvidenceKinds = new Set([
+    "docker_network_membership",
+    "docker_volume_mount",
+    "docker_port_publication",
+    "docker_unspecified_address_port_publication",
+    "docker_compose_depends_on",
+    "npm_package_manifest_dependency",
+    "cron_schedule_declaration",
+    "tmux_session_listing",
+  ]);
+  for (const kind of canonicalEvidenceKinds) {
+    const hostileSummary = structuredClone(fixture);
+    const edge = hostileSummary.edges.find((candidate: { evidenceRefs?: Array<{ kind?: unknown }> }) => (
+      candidate.evidenceRefs?.some((evidence) => evidence.kind === kind)
+    ));
+    assert.ok(edge, `canonical fixture carries ${kind}`);
+    const evidence = edge.evidenceRefs.find((candidate: { kind?: unknown }) => candidate.kind === kind);
+    assert.ok(evidence);
+    evidence.summary = "DOCKERMAP_TEST_HOSTILE_PROVIDER_SUMMARY";
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", hostileSummary),
+      `${kind} must retain its exact daemon-owned summary`
+    );
+  }
+
+  // The canonical fixture intentionally omits daemon-state and Systemd
+  // collection evidence. Add their closed node/edge shapes here so every
+  // remaining V1/V2 producer summary receives the same hostile boundary test.
+  const additionalEvidence = structuredClone(fixture);
+  additionalEvidence.nodes.push(
+    { id: "host_risk_docker_daemon_state", provider: "docker", type: "host_risk", label: "Docker daemon state exposure", status: null, layer: "host", metadata: {} },
+    { id: "systemd_service_fixture_api", provider: "systemd", type: "systemd_service", label: "fixture-api.service", status: "active", layer: "service", metadata: {} },
+    { id: "systemd_service_fixture_database", provider: "systemd", type: "systemd_service", label: "fixture-database.service", status: "active", layer: "service", metadata: {} },
+  );
+  const v1DaemonState = {
+    version: 1, id: "docker_evidence_daemon_state", provider: "docker", kind: "docker_daemon_state_bind_mount",
+    assertionKind: "observed", summary: "Docker reported a bind mount exposing Docker daemon state",
+    subjectRef: "docker_container_container_api", collectedAt: 1, providerRevision: "0123456789abcdef0123456789abcdef-1", freshness: "fresh"
+  };
+  const v2SummaryCases = [
+    ["systemd_requires", "requires", "systemd declared a Requires dependency"],
+    ["systemd_wants", "wants", "systemd declared a Wants dependency"],
+    ["systemd_part_of", "part_of", "systemd declared a PartOf dependency"],
+  ] as const;
+  additionalEvidence.edges.push({
+    source: "docker_container_container_api", target: "host_risk_docker_daemon_state", relationship: "exposes_daemon_state", metadata: {}, evidenceRefs: [v1DaemonState]
+  });
+  for (const [kind, relationship, summary] of v2SummaryCases) {
+    additionalEvidence.edges.push({
+      source: "systemd_service_fixture_api", target: "systemd_service_fixture_database", relationship, metadata: {}, evidenceRefs: [{
+        version: 2, id: `systemd_evidence_${kind}`, provider: "systemd", kind, assertionKind: "declared", summary,
+        subjectRef: "systemd_service_fixture_api", collectedAt: 1, providerRevision: "systemd-observation-1", providerSlot: "systemd", freshness: "fresh"
+      }]
+    });
+  }
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", additionalEvidence));
+  for (const kind of ["docker_daemon_state_bind_mount", ...v2SummaryCases.map(([candidate]) => candidate)]) {
+    const hostileSummary = structuredClone(additionalEvidence);
+    const edge = hostileSummary.edges.find((candidate: { evidenceRefs?: Array<{ kind?: unknown }> }) => (
+      candidate.evidenceRefs?.some((evidence) => evidence.kind === kind)
+    ));
+    assert.ok(edge);
+    const evidence = edge.evidenceRefs.find((candidate: { kind?: unknown }) => candidate.kind === kind);
+    assert.ok(evidence);
+    evidence.summary = "DOCKERMAP_TEST_HOSTILE_PROVIDER_SUMMARY";
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", hostileSummary),
+      `${kind} must retain its exact daemon-owned summary`
+    );
+  }
+
   const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === tmuxFixtureSource);
   assert.ok(tmuxEdge, "canonical daemon fixture carries a V5 tmux session listing");
   assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
@@ -2651,7 +2722,12 @@ test("API publishes redacted and normalized daemon data on every response route"
             provider: "docker",
             kind: "docker_network_membership",
             assertionKind: "observed",
-            summary: hostile,
+            // This remains an intentionally hostile daemon payload through its
+            // node and edge metadata, identifiers, and labels. The evidence
+            // summary itself must be the daemon-owned canonical text so the
+            // RuntimeMap validation boundary accepts it before this test
+            // verifies publication redaction.
+            summary: "Docker reported container network membership",
             subjectRef: `docker_container_${hostile}`,
             collectedAt: 1,
             providerRevision: hostile,

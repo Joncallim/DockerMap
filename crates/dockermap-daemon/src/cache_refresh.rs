@@ -2173,6 +2173,129 @@ mod scheduler_tests {
         }
     }
 
+    #[tokio::test]
+    async fn failed_systemd_collection_is_unavailable_initially_and_stale_when_retained() {
+        let initial = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        let initial_snapshot = initial.cache.read().await.snapshot.clone();
+        apply_provider_slot_outcome(
+            &initial,
+            ProviderSlot::Systemd,
+            initial_snapshot,
+            RuntimeMode::Docker,
+            0,
+            ProviderCollectionOutcome::Failed,
+            Duration::from_secs(1),
+        )
+        .await;
+        let initial_cache = initial.cache.read().await;
+        assert!(matches!(
+            initial_cache.runtime_providers[&ProviderSlot::Systemd].observation,
+            RuntimeProviderState::Degraded(None)
+        ));
+        assert!(initial_cache
+            .runtime_map
+            .provider_states
+            .iter()
+            .any(|state| {
+                state.slot == ProviderSlot::Systemd
+                    && state.state == ProviderStateKind::Unavailable
+                    && state.status_reason == Some(ProviderStatusReason::CollectionFailed)
+            }));
+        drop(initial_cache);
+
+        let retained = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        {
+            let mut cache = retained.cache.write().await;
+            let state = cache
+                .runtime_providers
+                .get_mut(&ProviderSlot::Systemd)
+                .unwrap();
+            state.observation = RuntimeProviderState::Fresh(marked_systemd_dependency());
+            state.freshness.data_revision = Some(SlotDataRevision::first());
+            state.freshness.last_success_ms = Some(42);
+            cache.rebuild_runtime_map();
+        }
+        let retained_snapshot = retained.cache.read().await.snapshot.clone();
+        apply_provider_slot_outcome(
+            &retained,
+            ProviderSlot::Systemd,
+            retained_snapshot,
+            RuntimeMode::Docker,
+            0,
+            ProviderCollectionOutcome::Failed,
+            Duration::from_secs(2),
+        )
+        .await;
+        let retained_cache = retained.cache.read().await;
+        assert!(matches!(
+            retained_cache.runtime_providers[&ProviderSlot::Systemd].observation,
+            RuntimeProviderState::Degraded(Some(_))
+        ));
+        assert!(retained_cache
+            .runtime_map
+            .provider_states
+            .iter()
+            .any(|state| {
+                state.slot == ProviderSlot::Systemd
+                    && state.state == ProviderStateKind::Stale
+                    && state.status_reason == Some(ProviderStatusReason::CollectionFailed)
+            }));
+        assert!(retained_cache
+            .runtime_map
+            .edges
+            .iter()
+            .any(|edge| edge.source == "systemd_service_application"));
+    }
+
+    #[tokio::test]
+    async fn timed_out_systemd_collection_publishes_collection_timed_out_not_failed() {
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        let snapshot = state.cache.read().await.snapshot.clone();
+        apply_provider_slot_outcome(
+            &state,
+            ProviderSlot::Systemd,
+            snapshot,
+            RuntimeMode::Docker,
+            0,
+            ProviderCollectionOutcome::TimedOut,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        let cache = state.cache.read().await;
+        assert!(matches!(
+            cache.runtime_providers[&ProviderSlot::Systemd].observation,
+            RuntimeProviderState::TimedOut(None)
+        ));
+        let systemd = cache
+            .runtime_map
+            .provider_states
+            .iter()
+            .find(|provider| provider.slot == ProviderSlot::Systemd)
+            .expect("the fixed systemd slot is always projected");
+        assert_eq!(systemd.state, ProviderStateKind::TimedOut);
+        assert_eq!(
+            systemd.status_reason,
+            Some(ProviderStatusReason::CollectionTimedOut)
+        );
+        assert_ne!(
+            systemd.status_reason,
+            Some(ProviderStatusReason::CollectionFailed)
+        );
+    }
+
     #[test]
     fn npm_manifest_evidence_is_slot_bound_redacted_and_truthfully_retained() {
         for (observation, expected) in [
@@ -2338,7 +2461,7 @@ mod scheduler_tests {
         snapshot.containers[0].mounts = vec![ContainerMount {
             id: "private-mount-id".into(),
             kind: ComposeMountKind::Bind,
-            source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+            source: Some("/var/run/docker.sock".into()),
             target: "/private/target".into(),
             read_only: true,
         }];
@@ -2378,7 +2501,7 @@ mod scheduler_tests {
         snapshot.containers[0].mounts = vec![ContainerMount {
             id: "private-mount-id".into(),
             kind: ComposeMountKind::Bind,
-            source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+            source: Some("/var/run/docker.sock".into()),
             target: "/private/target".into(),
             read_only: true,
         }];

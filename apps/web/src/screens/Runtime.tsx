@@ -133,7 +133,6 @@ const FRESHNESS_LABEL: Record<RuntimeEvidenceRef["freshness"], string> = {
 };
 
 type SelectedRuntimeEdge = {
-  edge: RuntimeMapEdge;
   key: string;
 };
 
@@ -153,6 +152,9 @@ export default function RuntimeScreen() {
   const [layerFilter, setLayerFilter] = useState<RuntimeLayerId | "all">("all");
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Keep only an edge's stable identity in UI state. Runtime maps refresh as
+  // whole models, so retaining the old edge object would let an inspector
+  // render evidence that no longer belongs to the current topology.
   const [selectedEdge, setSelectedEdge] = useState<SelectedRuntimeEdge | null>(null);
   const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
   /**
@@ -166,6 +168,12 @@ export default function RuntimeScreen() {
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
 
   const runtime = model?.runtime;
+  const selected = selectedId && runtime ? runtime.byId.get(selectedId) ?? null : null;
+  const resolvedSelectedEdge = useMemo(() => {
+    if (!selectedEdge || !selected) return null;
+    return [...selected.outgoing, ...selected.incoming]
+      .find((edge) => runtimeEdgeKey(edge) === selectedEdge.key) ?? null;
+  }, [selected, selectedEdge]);
   const filteredNodes = useMemo(() => {
     if (!runtime) return [];
     return runtime.nodes.filter((node) => {
@@ -180,6 +188,10 @@ export default function RuntimeScreen() {
     if (!runtime || !selectedId) return;
     if (!filteredNodes.some((node) => node.id === selectedId && runtime.byId.has(node.id))) setSelectedId(null);
   }, [filteredNodes, runtime, selectedId]);
+
+  useEffect(() => {
+    if (selectedEdge && !resolvedSelectedEdge) setSelectedEdge(null);
+  }, [resolvedSelectedEdge, selectedEdge]);
 
   // Consume a pending focus request in a LAYOUT effect, once its row is
   // actually LIVE in the DOM. Layout effects run synchronously after the
@@ -204,7 +216,6 @@ export default function RuntimeScreen() {
   if (error && !model) return <ErrorState title="Runtime unavailable" body={error} />;
   if (!model || !runtime) return <EmptyState icon="layers" title="No runtime map yet" body="Connect a host or enable Demo Mode to inspect runtime signals." />;
 
-  const selected = selectedId ? runtime.byId.get(selectedId) ?? null : null;
   const selectedTmuxSession = isTmuxSession(selected);
   const selectedDetail = resolveDockerDetail(model, selected);
   const selectedImage = selected?.provider === "docker" && selected.type === "container" && typeof selected.metadata.image === "string" && selected.metadata.image !== "" ? model.imageByRef.get(selected.metadata.image) ?? null : null;
@@ -471,10 +482,10 @@ export default function RuntimeScreen() {
                 </div>
               )}
 
-              <RelationList title="Outgoing relationships" selected={selected} model={model} edges={selected.outgoing} direction="outgoing" onSelect={selectNode} onInspectEdge={(edge) => setSelectedEdge({ edge, key: runtimeEdgeKey(edge) })} selectedEdgeKey={selectedEdge?.key ?? null} />
-              <RelationList title="Incoming relationships" selected={selected} model={model} edges={selected.incoming} direction="incoming" onSelect={selectNode} onInspectEdge={(edge) => setSelectedEdge({ edge, key: runtimeEdgeKey(edge) })} selectedEdgeKey={selectedEdge?.key ?? null} />
+              <RelationList title="Outgoing relationships" selected={selected} model={model} edges={selected.outgoing} direction="outgoing" onSelect={selectNode} onInspectEdge={(edge) => setSelectedEdge({ key: runtimeEdgeKey(edge) })} selectedEdgeKey={selectedEdge?.key ?? null} />
+              <RelationList title="Incoming relationships" selected={selected} model={model} edges={selected.incoming} direction="incoming" onSelect={selectNode} onInspectEdge={(edge) => setSelectedEdge({ key: runtimeEdgeKey(edge) })} selectedEdgeKey={selectedEdge?.key ?? null} />
 
-              {selectedEdge ? <RuntimeEvidenceInspector edge={selectedEdge.edge} model={model} /> : null}
+              {resolvedSelectedEdge ? <RuntimeEvidenceInspector edge={resolvedSelectedEdge} model={model} /> : null}
 
               {!selectedTmuxSession && selected.service?.logs.length ? (
                 <div className="inspector-section">
