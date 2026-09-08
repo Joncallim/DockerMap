@@ -572,6 +572,16 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "tmux_session_listing",
           "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
           "type": "string"
+        },
+        {
+          "const": "compose_declared_mount",
+          "description": "A bounded Compose declaration used only after an exact private binding\nto one current Docker container has succeeded. Paths and labels are\nintentionally not part of the public evidence.",
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_runtime_binding",
+          "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
+          "type": "string"
         }
       ]
     },
@@ -579,6 +589,7 @@ export const RUST_RESPONSE_SCHEMAS = {
       "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
       "enum": [
         "docker",
+        "compose",
         "systemd",
         "npm",
         "cron",
@@ -643,7 +654,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 5,
+          "maximum": 6,
           "minimum": 1,
           "type": "integer"
         }
@@ -1405,7 +1416,8 @@ export const RUST_RESPONSE_SCHEMAS = {
         "docker.daemon_state_bind_mount",
         "docker.daemon_state_bind_mount_publishes_port",
         "docker.compose_declared_target_not_active",
-        "docker.compose_mutual_dependency"
+        "docker.compose_mutual_dependency",
+        "compose.declared_mount_missing_at_bound_container"
       ],
       "type": "string"
     },
@@ -1552,6 +1564,16 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "tmux_session_listing",
           "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
           "type": "string"
+        },
+        {
+          "const": "compose_declared_mount",
+          "description": "A bounded Compose declaration used only after an exact private binding\nto one current Docker container has succeeded. Paths and labels are\nintentionally not part of the public evidence.",
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_runtime_binding",
+          "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
+          "type": "string"
         }
       ]
     },
@@ -1559,6 +1581,7 @@ export const RUST_RESPONSE_SCHEMAS = {
       "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
       "enum": [
         "docker",
+        "compose",
         "systemd",
         "npm",
         "cron",
@@ -1623,7 +1646,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 5,
+          "maximum": 6,
           "minimum": 1,
           "type": "integer"
         }
@@ -3186,6 +3209,16 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "tmux_session_listing",
           "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
           "type": "string"
+        },
+        {
+          "const": "compose_declared_mount",
+          "description": "A bounded Compose declaration used only after an exact private binding\nto one current Docker container has succeeded. Paths and labels are\nintentionally not part of the public evidence.",
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_runtime_binding",
+          "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
+          "type": "string"
         }
       ]
     },
@@ -3193,6 +3226,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
       "enum": [
         "docker",
+        "compose",
         "systemd",
         "npm",
         "cron",
@@ -3257,7 +3291,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 5,
+          "maximum": 6,
           "minimum": 1,
           "type": "integer"
         }
@@ -4019,7 +4053,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "docker.daemon_state_bind_mount",
         "docker.daemon_state_bind_mount_publishes_port",
         "docker.compose_declared_target_not_active",
-        "docker.compose_mutual_dependency"
+        "docker.compose_mutual_dependency",
+        "compose.declared_mount_missing_at_bound_container"
       ],
       "type": "string"
     },
@@ -4166,6 +4201,16 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "tmux_session_listing",
           "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
           "type": "string"
+        },
+        {
+          "const": "compose_declared_mount",
+          "description": "A bounded Compose declaration used only after an exact private binding\nto one current Docker container has succeeded. Paths and labels are\nintentionally not part of the public evidence.",
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_runtime_binding",
+          "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
+          "type": "string"
         }
       ]
     },
@@ -4173,6 +4218,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
       "enum": [
         "docker",
+        "compose",
         "systemd",
         "npm",
         "cron",
@@ -4237,7 +4283,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 5,
+          "maximum": 6,
           "minimum": 1,
           "type": "integer"
         }
