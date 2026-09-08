@@ -22,7 +22,8 @@ const roots = [
   ["ImagesResponse", "images-response"], ["NetworksResponse", "networks-response"],
   ["VolumesResponse", "volumes-response"], ["FindingsResponse", "findings-response"],
   ["ObservedChangeHistoryResponse", "observed-change-history-response"],
-  ["ObservedDockerEventHistoryResponse", "observed-docker-event-history-response"]
+  ["ObservedDockerEventHistoryResponse", "observed-docker-event-history-response"],
+  ["ObservedResourceTelemetryResponse", "observed-resource-telemetry-response"]
 ];
 
 function stable(value) {

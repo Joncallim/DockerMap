@@ -611,6 +611,7 @@ registerRoute("runtime-map", readHandlers.runtimeMap);
 registerRoute("findings", readHandlers.findings);
 registerRoute("history", readHandlers.history);
 registerRoute("observed-events", readHandlers.observedEvents);
+registerRoute("resource-telemetry", readHandlers.resourceTelemetry);
 registerRoute("diagnostics", readHandlers.diagnostics);
 registerRoute("containers", readHandlers.containers);
 registerRoute("container", readHandlers.container);

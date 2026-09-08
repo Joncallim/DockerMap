@@ -156,6 +156,7 @@ export const ROUTE_OPERATION_METADATA = {
   "findings": { summary: "Evidence-backed advisory findings", tags: ["runtime"], responses: withApiErrors(rustJsonResponseFor("findings")) },
   "history": { summary: "Bounded observed Docker inventory history", tags: ["docker"], responses: withApiErrors(rustJsonResponseFor("history")) },
   "observed-events": { summary: "Bounded observed Docker event-stream history", tags: ["docker"], responses: withApiErrors(rustJsonResponseFor("observed-events")) },
+  "resource-telemetry": { summary: "Bounded current Docker resource telemetry", tags: ["docker"], responses: withApiErrors(rustJsonResponseFor("resource-telemetry")) },
   "diagnostics": { summary: "Aggregated compose and runtime diagnostics", tags: ["system"], responses: withApiErrors(nodeJsonResponse("Diagnostics")) },
   "containers": { summary: "List containers", tags: ["docker"], responses: withApiErrors(rustJsonResponseFor("containers")) },
   "container": { summary: "Container detail", tags: ["docker"], responses: withApiErrors(rustJsonResponseFor("container")) },
