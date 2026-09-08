@@ -680,7 +680,13 @@ type ExpressLayer = {
 };
 
 export function registeredRoutes(appInstance: express.Express): RegisteredRoute[] {
-  const router = appInstance as express.Express & { _router?: { stack?: ExpressLayer[] } };
+  // Express 5 exposes the live router at `router`; Express 4 used the
+  // underscored `_router` property. This inspection is test/startup-policy
+  // evidence only: runtime request routing remains wholly Express-owned.
+  const router = appInstance as express.Express & {
+    router?: { stack?: ExpressLayer[] };
+    _router?: { stack?: ExpressLayer[] };
+  };
   const routes: RegisteredRoute[] = [];
   const unknownLayers: string[] = [];
   const walk = (stack: readonly ExpressLayer[]) => {
@@ -701,7 +707,7 @@ export function registeredRoutes(appInstance: express.Express): RegisteredRoute[
       }
     }
   };
-  walk(router._router?.stack ?? []);
+  walk(router.router?.stack ?? router._router?.stack ?? []);
   if (unknownLayers.length) throw new Error(`Unknown Express layer(s): ${unknownLayers.join(", ")}`);
   return routes;
 }
