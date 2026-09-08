@@ -86,6 +86,22 @@ describe("AtlasOverview", () => {
     host.remove();
   });
 
+  it("discloses only selected evidence-backed non-causal local context to keyboard selection", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root: Root = createRoot(host);
+    const local = projectRuntimeMap(runtimeFixture(5, "outbound_star", "network"));
+    await act(async () => root.render(<AppContext.Provider value={context(local)}><AtlasOverview /></AppContext.Provider>));
+    await act(async () => host.querySelector<HTMLButtonElement>(".atlas-directory button:not(:disabled)")!.click());
+    const inspector = host.querySelector(".atlas-inspector")!;
+    expect(inspector.textContent).toContain("Recorded local context");
+    expect(inspector.textContent).toContain("Recorded network membership");
+    expect(inspector.textContent).toContain("do not establish communication, data direction, host exposure, reachability, or ownership");
+    expect(inspector.textContent).not.toContain("0.0.0.0");
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
   it("recovers focus to the directory when a selected subject disappears in a replacement revision", async () => {
     const host = document.createElement("div");
     document.body.append(host);
