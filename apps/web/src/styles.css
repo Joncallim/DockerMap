@@ -697,6 +697,7 @@ kbd {
   gap: var(--s2);
   padding: var(--s6) var(--s4);
   color: var(--muted);
+  font-size: var(--hearth-type-sm);
 }
 
 .empty h3 {
@@ -729,6 +730,7 @@ kbd {
   gap: var(--s3);
   padding: var(--s6);
   color: var(--muted);
+  font-size: var(--hearth-type-sm);
 }
 
 .loading-spinner {
@@ -736,7 +738,7 @@ kbd {
   height: 18px;
   border-radius: 50%;
   border: 2px solid var(--border-strong);
-  border-top-color: var(--accent);
+  border-top-color: var(--hearth-azure);
 }
 
 @keyframes spin {
