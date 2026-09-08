@@ -41,13 +41,21 @@ pub fn observed_container_inventory(snapshot: &DockerSnapshot) -> ObservedContai
 /// An opaque, stable history-only identity. History must retain enough
 /// identity to compare sanitized inventories, but must not make a readable
 /// portion of a Docker container ID observable through temporal events.
-fn observed_container_identity(raw_container_id: &str) -> String {
-    let digest = Sha256::digest(raw_container_id.as_bytes());
-    let encoded_digest = digest
+pub fn observed_container_identity(raw_container_id: &str) -> String {
+    format!(
+        "docker_container_{}",
+        opaque_sha256_hex(raw_container_id.as_bytes())
+    )
+}
+
+/// Digest-only identity material for retained observations. Unlike topology
+/// identifiers, this deliberately has no readable prefix derived from the
+/// input because temporal records make identifiers observable over time.
+pub fn opaque_sha256_hex(value: &[u8]) -> String {
+    Sha256::digest(value)
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("docker_container_{encoded_digest}")
+        .collect()
 }
 
 fn observed_status_class(status: &str) -> ObservedContainerStatus {
@@ -98,5 +106,15 @@ mod tests {
         let inventory = observed_container_inventory(&snapshot);
         assert_eq!(inventory.containers.len(), snapshot.containers.len() - 2);
         assert_eq!(inventory.ambiguous_ids.len(), 1);
+    }
+
+    #[test]
+    fn temporal_digest_has_no_readable_input_component() {
+        const SENTINEL: &str = "private-service-name-7f2ac9e481";
+        let digest = opaque_sha256_hex(SENTINEL.as_bytes());
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(!digest.contains(SENTINEL));
+        assert!(!observed_container_identity(SENTINEL).contains(SENTINEL));
     }
 }
