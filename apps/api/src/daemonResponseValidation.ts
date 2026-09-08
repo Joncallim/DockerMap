@@ -154,41 +154,41 @@ function coherentFindingSummary(value: unknown, findings: unknown[]): boolean {
 // this small cross-field table binds an emitted fact to the relationship it
 // can actually support. A later evidence version must add an explicit row.
 const V1_EVIDENCE_EDGE = {
-  docker_network_membership: { relationship: "connected_to", sourcePrefix: "docker_container_", targetPrefix: "docker_network_" },
-  docker_volume_mount: { relationship: "mounts", sourcePrefix: "docker_container_", targetPrefix: "docker_volume_" },
-  docker_port_publication: { relationship: "exposes", sourcePrefix: "docker_container_", targetPrefix: "network_listener_" },
-  docker_unspecified_address_port_publication: { relationship: "exposes", sourcePrefix: "docker_container_", targetPrefix: "host_risk_docker_unspecified_address_port" },
-  docker_compose_depends_on: { relationship: "depends_on", sourcePrefix: "docker_container_", targetPrefix: "docker_container_" },
-  docker_daemon_state_bind_mount: { relationship: "exposes_daemon_state", sourcePrefix: "docker_container_", targetPrefix: "host_risk_docker_daemon_state" },
+  docker_network_membership: { relationship: "connected_to", sourcePrefix: "docker_container_", targetPrefix: "docker_network_", summary: "Docker reported container network membership" },
+  docker_volume_mount: { relationship: "mounts", sourcePrefix: "docker_container_", targetPrefix: "docker_volume_", summary: "Docker reported volume attachment" },
+  docker_port_publication: { relationship: "exposes", sourcePrefix: "docker_container_", targetPrefix: "network_listener_", summary: "Docker reported container port publication" },
+  docker_unspecified_address_port_publication: { relationship: "exposes", sourcePrefix: "docker_container_", targetPrefix: "host_risk_docker_unspecified_address_port", summary: UNSPECIFIED_ADDRESS_PORT_EVIDENCE_SUMMARY },
+  docker_compose_depends_on: { relationship: "depends_on", sourcePrefix: "docker_container_", targetPrefix: "docker_container_", summary: "Docker recorded Compose dependency declaration" },
+  docker_daemon_state_bind_mount: { relationship: "exposes_daemon_state", sourcePrefix: "docker_container_", targetPrefix: "host_risk_docker_daemon_state", summary: "Docker reported a bind mount exposing Docker daemon state" },
 } as const;
 
 // Version two is the intentionally narrow systemd declaration vocabulary.
 // It is tied to Systemd's independently scheduled slot, rather than to the
 // broader host collection, so retained freshness stays attributable.
 const V2_EVIDENCE_EDGE = {
-  systemd_requires: { relationship: "requires", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_" },
-  systemd_wants: { relationship: "wants", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_" },
-  systemd_part_of: { relationship: "part_of", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_" },
+  systemd_requires: { relationship: "requires", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_", summary: "systemd declared a Requires dependency" },
+  systemd_wants: { relationship: "wants", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_", summary: "systemd declared a Wants dependency" },
+  systemd_part_of: { relationship: "part_of", sourcePrefix: "systemd_service_", targetPrefix: "systemd_service_", summary: "systemd declared a PartOf dependency" },
 } as const;
 
 // Version three is equally narrow: a package manifest declaration from the
 // separately scheduled ProjectNpm slot.  It says nothing about installation,
 // resolution, execution, or package safety.
 const V3_EVIDENCE_EDGE = {
-  npm_package_manifest_dependency: { relationship: "depends_on", sourcePrefix: "npm_project_", targetPrefix: "npm_package_" },
+  npm_package_manifest_dependency: { relationship: "depends_on", sourcePrefix: "npm_project_", targetPrefix: "npm_package_", summary: "package manifest declared a dependency" },
 } as const;
 
 // Version four is a parsed cron declaration from Cron's own scheduler slot.
 // It makes no execution, successful-run, or host-health claim.
 const V4_EVIDENCE_EDGE = {
-  cron_schedule_declaration: { relationship: "runs_on", sourcePrefix: "scheduled_job_", targetPrefix: "host_", target: "host_local" },
+  cron_schedule_declaration: { relationship: "runs_on", sourcePrefix: "scheduled_job_", targetPrefix: "host_", target: "host_local", summary: "cron declared a scheduled job" },
 } as const;
 
 // Version five is a bounded observation from tmux's separately scheduled
 // slot. It conveys only that tmux listed a local session: it is not an
 // attachment, activity, reachability, or process-execution claim.
 const V5_EVIDENCE_EDGE = {
-  tmux_session_listing: { relationship: "runs_on", sourcePrefix: "tmux_session_", targetPrefix: "host_", target: "host_local" },
+  tmux_session_listing: { relationship: "runs_on", sourcePrefix: "tmux_session_", targetPrefix: "host_", target: "host_local", summary: "tmux listed a local session" },
 } as const;
 
 const V7_EVIDENCE_EDGE = {
@@ -200,6 +200,7 @@ const V7_EVIDENCE_EDGE = {
     sourcePrefix: "runtime_integrity_scope",
     targetPrefix: "runtime_integrity_risk_identity_collision",
     target: "runtime_integrity_risk_identity_collision",
+    summary: RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY,
   },
 } as const;
 
@@ -459,7 +460,7 @@ function runtimeEvidenceDiagnostic(payload: unknown): RuntimeEvidenceDiagnostic 
                   ? V5_EVIDENCE_EDGE[value.kind as keyof typeof V5_EVIDENCE_EDGE]
                   : V7_EVIDENCE_EDGE[value.kind as keyof typeof V7_EVIDENCE_EDGE])
         : undefined;
-      if (!expected || candidate.relationship !== expected.relationship || typeof candidate.source !== "string" || typeof candidate.target !== "string") return "runtime_evidence_edge_binding";
+      if (!expected || candidate.relationship !== expected.relationship || value.summary !== expected.summary || typeof candidate.source !== "string" || typeof candidate.target !== "string") return "runtime_evidence_edge_binding";
       if (value.subjectRef !== candidate.source
         || (isV7
           ? candidate.source !== V7_EVIDENCE_EDGE.runtime_identity_collision.source
