@@ -1,0 +1,7 @@
+{
+  "policyVersion": "atlas-v1/local-lanes",
+  "points": [
+    { "subject": "docker_container_container_000", "x": 0, "y": 0, "width": 46, "height": 30 },
+    { "subject": "docker_container_container_001", "x": 64, "y": 0, "width": 46, "height": 30 }
+  ]
+}
