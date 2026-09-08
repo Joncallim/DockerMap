@@ -7,8 +7,8 @@
 use crate::process_runner::{run_command_with_timeout, PROVIDER_COMMAND_TIMEOUT};
 use crate::{push_provider_diagnostic, redact_sensitive_text, safe_runtime_id_component};
 use dockermap_core::{
-    DiagnosticSeverity, RuntimeMapDiagnostic, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer,
-    RuntimeProviderKind,
+    DiagnosticSeverity, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode, RuntimeNodeKind,
+    RuntimeNodeLayer, RuntimeProviderKind, RuntimeRelationshipKind,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -22,8 +22,13 @@ use std::{
 const MAX_CRON_D_ENTRIES: usize = 64;
 const MAX_CRON_FILE_BYTES: u64 = 64 * 1024;
 
+/// Private handoff marker. Cache refresh removes it on every path and creates
+/// public evidence only after this exact Cron slot owns a successful revision.
+pub(crate) const CRON_EVIDENCE_SCHEDULE_MARKER: &str = "__dockermapCronScheduleDeclaration";
+
 pub(crate) fn collect_scheduled_jobs(
     nodes: &mut Vec<RuntimeMapNode>,
+    edges: &mut Vec<RuntimeMapEdge>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
 ) {
     let mut job_sources = Vec::new();
@@ -60,12 +65,13 @@ pub(crate) fn collect_scheduled_jobs(
         metadata.insert("source".into(), source.clone());
         metadata.insert("line".into(), line.to_string());
         metadata.insert("command".into(), safe_command.clone());
+        let id = format!(
+            "scheduled_job_{}_{}",
+            safe_runtime_id_component(&source, "source"),
+            safe_runtime_id_component(&format!("{line}_{safe_command}"), "command")
+        );
         nodes.push(RuntimeMapNode {
-            id: format!(
-                "scheduled_job_{}_{}",
-                safe_runtime_id_component(&source, "source"),
-                safe_runtime_id_component(&format!("{line}_{safe_command}"), "command")
-            ),
+            id: id.clone(),
             provider: RuntimeProviderKind::ScheduledJob,
             kind: RuntimeNodeKind::ScheduledJob,
             label: safe_command,
@@ -74,6 +80,13 @@ pub(crate) fn collect_scheduled_jobs(
             metadata,
             service: None,
             package: None,
+        });
+        edges.push(RuntimeMapEdge {
+            source: id,
+            target: "host_local".into(),
+            relationship: RuntimeRelationshipKind::RunsOn,
+            metadata: BTreeMap::from([(CRON_EVIDENCE_SCHEDULE_MARKER.into(), "declared".into())]),
+            evidence_refs: Vec::new(),
         });
     }
 }

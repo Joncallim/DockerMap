@@ -49,6 +49,10 @@ pub(crate) struct ProviderCollection {
 }
 
 impl ProviderCollection {
+    pub(crate) fn nodes(&self) -> &[RuntimeMapNode] {
+        &self.nodes
+    }
+
     pub(crate) fn nodes_mut(&mut self) -> &mut Vec<RuntimeMapNode> {
         &mut self.nodes
     }
@@ -183,6 +187,7 @@ mod tests {
             target: "docker_container_target".into(),
             relationship: RuntimeRelationshipKind::RelatedTo,
             metadata: edge_metadata,
+            evidence_refs: Vec::new(),
         });
         collection.diagnostics.push(RuntimeMapDiagnostic {
             provider: RuntimeProviderKind::Process,

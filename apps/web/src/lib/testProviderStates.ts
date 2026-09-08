@@ -8,8 +8,10 @@ function unavailableProviderState(slot: ProviderSlot): ProviderState {
 }
 
 /** Complete fixed-slot state used by browser-only fixtures. */
-export const testProviderStates: [ProviderState, ProviderState, ProviderState, ProviderState, ProviderState] = [
+export const testProviderStates: [ProviderState, ProviderState, ProviderState, ProviderState, ProviderState, ProviderState, ProviderState] = [
   unavailableProviderState("network_infrastructure"), unavailableProviderState("host_scoped"),
+  unavailableProviderState("cron"),
+  unavailableProviderState("systemd"),
   unavailableProviderState("python_processes"), unavailableProviderState("native_processes"),
   unavailableProviderState("project_npm")
 ];

@@ -241,6 +241,7 @@ fn push_network_container_node(
         ),
         relationship: RuntimeRelationshipKind::RelatedTo,
         metadata: BTreeMap::new(),
+        evidence_refs: Vec::new(),
     });
 }
 

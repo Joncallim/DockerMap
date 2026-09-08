@@ -6,11 +6,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    collision_resistant_id_component, service_entity_kind_name, ContainerRecord,
-    DiagnosticSeverity, DockerSnapshot, GraphEdge, GraphNode, GraphResponse, ImageRecord, NodeKind,
-    RelationshipKind, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode,
-    RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind, RuntimeRelationshipKind,
-    RuntimeServiceEntity, RuntimeServiceStatus,
+    collision_resistant_id_component, compose::is_docker_daemon_state_bind_source,
+    service_entity_kind_name, ContainerRecord, DiagnosticSeverity, DockerSnapshot, GraphEdge,
+    GraphNode, GraphResponse, ImageRecord, NodeKind, RelationshipKind,
+    RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
+    RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
+    RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
+    RuntimeRelationshipKind, RuntimeServiceEntity, RuntimeServiceStatus,
 };
 
 pub fn derive_images(snapshot: &DockerSnapshot) -> Vec<ImageRecord> {
@@ -38,6 +40,39 @@ pub fn derive_images(snapshot: &DockerSnapshot) -> Vec<ImageRecord> {
             containers: containers.into_iter().collect(),
         })
         .collect()
+}
+
+/// Return whether a bounded Docker collector port string proves that Docker
+/// bound a nonzero host port. The collector publishes `private/protocol` for
+/// a container-only listener and `host:private/protocol` for a host binding.
+/// Keep this discriminant at the derivation boundary so publication evidence
+/// never attests the former.
+pub(crate) fn is_host_published_docker_port(port: &str) -> bool {
+    let Some((host, private_and_protocol)) = port.split_once(':') else {
+        return false;
+    };
+    if host.is_empty()
+        || !host.bytes().all(|byte| byte.is_ascii_digit())
+        || host
+            .parse::<u16>()
+            .ok()
+            .filter(|value| *value > 0)
+            .is_none()
+        || private_and_protocol.contains(':')
+    {
+        return false;
+    }
+    let Some((private, protocol)) = private_and_protocol.split_once('/') else {
+        return false;
+    };
+    !private.is_empty()
+        && private.bytes().all(|byte| byte.is_ascii_digit())
+        && private
+            .parse::<u16>()
+            .ok()
+            .filter(|value| *value > 0)
+            .is_some()
+        && matches!(protocol, "tcp" | "udp" | "sctp")
 }
 
 pub fn derive_graph(snapshot: &DockerSnapshot) -> GraphResponse {
@@ -299,6 +334,38 @@ fn duplicate_runtime_node_ids(nodes: &[RuntimeMapNode]) -> BTreeSet<String> {
         .collect()
 }
 
+/// Runtime dependency edges may only use a container identity when that
+/// generated public identity names exactly one non-empty Docker record. This
+/// is intentionally narrower than a best-effort Compose join: duplicate,
+/// empty, and self references remain visible in inventory but cannot create a
+/// misleading topology relationship.
+struct RuntimeContainerIdentityIndex {
+    counts: BTreeMap<String, usize>,
+}
+
+impl RuntimeContainerIdentityIndex {
+    fn from_containers(containers: &[ContainerRecord]) -> Self {
+        let mut counts = BTreeMap::new();
+        for container in containers {
+            if !container.id.is_empty() {
+                *counts.entry(runtime_container_id(container)).or_default() += 1;
+            }
+        }
+        Self { counts }
+    }
+
+    fn has_unique_id(&self, container: &ContainerRecord) -> bool {
+        !container.id.is_empty() && self.counts.get(&runtime_container_id(container)) == Some(&1)
+    }
+}
+
+fn runtime_container_id(container: &ContainerRecord) -> String {
+    format!(
+        "docker_container_{}",
+        collision_resistant_id_component(&container.id)
+    )
+}
+
 fn runtime_node_sort_key(node: &RuntimeMapNode) -> String {
     serde_json::to_string(node).expect("runtime nodes must serialize")
 }
@@ -307,12 +374,87 @@ fn runtime_edge_sort_key(edge: &RuntimeMapEdge) -> String {
     serde_json::to_string(edge).expect("runtime edges must serialize")
 }
 
+/// Construct evidence only from already-derived runtime identities and a
+/// closed fact family. No raw Docker value is copied into the evidence record:
+/// labels and detail stay on their existing, independently redacted entities.
+fn docker_runtime_evidence(
+    snapshot: &DockerSnapshot,
+    source: &str,
+    target: &str,
+    kind: RuntimeEvidenceKind,
+    provider_revision: &str,
+) -> RuntimeEvidenceRef {
+    let kind_id = match kind {
+        RuntimeEvidenceKind::DockerNetworkMembership => "network-membership",
+        RuntimeEvidenceKind::DockerVolumeMount => "volume-mount",
+        RuntimeEvidenceKind::DockerPortPublication => "port-publication",
+        RuntimeEvidenceKind::DockerComposeDependsOn => "compose-depends-on",
+        RuntimeEvidenceKind::DockerDaemonStateBindMount => "daemon-state-bind-mount",
+        RuntimeEvidenceKind::SystemdRequires
+        | RuntimeEvidenceKind::SystemdWants
+        | RuntimeEvidenceKind::SystemdPartOf
+        | RuntimeEvidenceKind::NpmPackageManifestDependency
+        | RuntimeEvidenceKind::CronScheduleDeclaration => {
+            unreachable!("Docker evidence helper only accepts Docker evidence kinds")
+        }
+    };
+    let summary = match kind {
+        RuntimeEvidenceKind::DockerNetworkMembership => {
+            "Docker reported container network membership"
+        }
+        RuntimeEvidenceKind::DockerVolumeMount => "Docker reported volume attachment",
+        RuntimeEvidenceKind::DockerPortPublication => "Docker reported container port publication",
+        RuntimeEvidenceKind::DockerComposeDependsOn => {
+            "Docker recorded Compose dependency declaration"
+        }
+        RuntimeEvidenceKind::DockerDaemonStateBindMount => {
+            "Docker reported a bind mount exposing Docker daemon state"
+        }
+        RuntimeEvidenceKind::SystemdRequires
+        | RuntimeEvidenceKind::SystemdWants
+        | RuntimeEvidenceKind::SystemdPartOf
+        | RuntimeEvidenceKind::NpmPackageManifestDependency
+        | RuntimeEvidenceKind::CronScheduleDeclaration => {
+            unreachable!("Docker evidence helper only accepts Docker evidence kinds")
+        }
+    };
+    RuntimeEvidenceRef {
+        version: 1,
+        id: format!(
+            "docker_evidence_{}_{}",
+            kind_id,
+            collision_resistant_id_component(&format!("{source}\u{1f}{target}"))
+        ),
+        provider: RuntimeEvidenceProvider::Docker,
+        kind,
+        assertion_kind: RuntimeEvidenceAssertionKind::Observed,
+        summary: summary.into(),
+        subject_ref: source.into(),
+        collected_at: snapshot.last_updated,
+        provider_revision: provider_revision.into(),
+        provider_slot: None,
+        freshness: RuntimeEvidenceFreshness::Fresh,
+    }
+}
+
+/// Derive runtime topology with the daemon-owned opaque Docker observation
+/// token that attests the bounded snapshot used for this map. Callers must
+/// supply a nonempty opaque token; a timestamp fallback would falsely claim a
+/// provider revision and is intentionally not exposed.
 pub fn derive_runtime_map(
     snapshot: &DockerSnapshot,
     mut nodes: Vec<RuntimeMapNode>,
     mut edges: Vec<RuntimeMapEdge>,
     mut diagnostics: Vec<RuntimeMapDiagnostic>,
+    evidence_provider_revision: &str,
 ) -> RuntimeMap {
+    assert!(
+        !evidence_provider_revision.is_empty(),
+        "runtime evidence requires a nonempty opaque Docker observation token"
+    );
+    let container_aliases = ContainerAliases::from_containers(&snapshot.containers);
+    let runtime_container_ids =
+        RuntimeContainerIdentityIndex::from_containers(&snapshot.containers);
     for container in &snapshot.containers {
         let mut metadata = BTreeMap::new();
         metadata.insert("image".into(), container.image.clone());
@@ -326,10 +468,7 @@ pub fn derive_runtime_map(
         }
 
         nodes.push(RuntimeMapNode {
-            id: format!(
-                "docker_container_{}",
-                collision_resistant_id_component(&container.id)
-            ),
+            id: runtime_container_id(container),
             provider: RuntimeProviderKind::Docker,
             kind: RuntimeNodeKind::Container,
             label: container.name.clone(),
@@ -344,15 +483,21 @@ pub fn derive_runtime_map(
         });
 
         for network_id in &container.networks {
+            let source = runtime_container_id(container);
+            let target = format!(
+                "docker_network_{}",
+                collision_resistant_id_component(network_id)
+            );
             edges.push(RuntimeMapEdge {
-                source: format!(
-                    "docker_container_{}",
-                    collision_resistant_id_component(&container.id)
-                ),
-                target: format!(
-                    "docker_network_{}",
-                    collision_resistant_id_component(network_id)
-                ),
+                evidence_refs: vec![docker_runtime_evidence(
+                    snapshot,
+                    &source,
+                    &target,
+                    RuntimeEvidenceKind::DockerNetworkMembership,
+                    evidence_provider_revision,
+                )],
+                source,
+                target,
                 relationship: RuntimeRelationshipKind::ConnectedTo,
                 metadata: BTreeMap::new(),
             });
@@ -381,13 +526,62 @@ pub fn derive_runtime_map(
                 service: None,
                 package: None,
             });
+            let source = runtime_container_id(container);
             edges.push(RuntimeMapEdge {
-                source: format!(
-                    "docker_container_{}",
-                    collision_resistant_id_component(&container.id)
-                ),
+                // A container-only port remains useful topology, but it is
+                // not a host publication. Findings rely on this attestation,
+                // so emit it only when the bounded record proves a nonzero
+                // host binding.
+                evidence_refs: is_host_published_docker_port(port)
+                    .then(|| {
+                        docker_runtime_evidence(
+                            snapshot,
+                            &source,
+                            &listener_id,
+                            RuntimeEvidenceKind::DockerPortPublication,
+                            evidence_provider_revision,
+                        )
+                    })
+                    .into_iter()
+                    .collect(),
+                source,
                 target: listener_id,
                 relationship: RuntimeRelationshipKind::Exposes,
+                metadata: BTreeMap::new(),
+            });
+        }
+
+        for dependency in &container.depends_on {
+            // A Docker Compose label is a direct declaration, but it is not a
+            // sufficient basis for a relationship unless both container
+            // endpoints resolve uniquely. In particular, never select an
+            // arbitrary duplicate role/name or turn a self/empty reference
+            // into topology.
+            let Some(target) = container_aliases.resolve_dependency(dependency) else {
+                continue;
+            };
+            if !runtime_container_ids.has_unique_id(container)
+                || !runtime_container_ids.has_unique_id(target)
+                || std::ptr::eq(container, target)
+            {
+                continue;
+            }
+            let source = runtime_container_id(container);
+            let target = runtime_container_id(target);
+            if source == target {
+                continue;
+            }
+            edges.push(RuntimeMapEdge {
+                evidence_refs: vec![docker_runtime_evidence(
+                    snapshot,
+                    &source,
+                    &target,
+                    RuntimeEvidenceKind::DockerComposeDependsOn,
+                    evidence_provider_revision,
+                )],
+                source,
+                target,
+                relationship: RuntimeRelationshipKind::DependsOn,
                 metadata: BTreeMap::new(),
             });
         }
@@ -440,19 +634,77 @@ pub fn derive_runtime_map(
                 .iter()
                 .find(|container| container.name == *attached)
             {
+                let source = runtime_container_id(container);
+                let target = format!(
+                    "docker_volume_{}",
+                    collision_resistant_id_component(&volume.id)
+                );
                 edges.push(RuntimeMapEdge {
-                    source: format!(
-                        "docker_container_{}",
-                        collision_resistant_id_component(&container.id)
-                    ),
-                    target: format!(
-                        "docker_volume_{}",
-                        collision_resistant_id_component(&volume.id)
-                    ),
+                    evidence_refs: vec![docker_runtime_evidence(
+                        snapshot,
+                        &source,
+                        &target,
+                        RuntimeEvidenceKind::DockerVolumeMount,
+                        evidence_provider_revision,
+                    )],
+                    source,
+                    target,
                     relationship: RuntimeRelationshipKind::Mounts,
                     metadata: BTreeMap::new(),
                 });
             }
+        }
+    }
+
+    const DOCKER_DAEMON_STATE_RISK_ID: &str = "host_risk_docker_daemon_state";
+    let daemon_state_sources = snapshot
+        .containers
+        .iter()
+        .filter(|container| {
+            runtime_container_ids.has_unique_id(container)
+                && container.mounts.iter().any(|mount| {
+                    mount.kind == crate::ComposeMountKind::Bind
+                        && mount
+                            .source
+                            .as_deref()
+                            .is_some_and(is_docker_daemon_state_bind_source)
+                })
+        })
+        .map(runtime_container_id)
+        .collect::<BTreeSet<_>>();
+    if !daemon_state_sources.is_empty()
+        && !nodes
+            .iter()
+            .any(|node| node.id == DOCKER_DAEMON_STATE_RISK_ID)
+    {
+        nodes.push(RuntimeMapNode {
+            id: DOCKER_DAEMON_STATE_RISK_ID.into(),
+            provider: RuntimeProviderKind::Docker,
+            kind: RuntimeNodeKind::HostRisk,
+            label: "Docker daemon state exposure".into(),
+            status: None,
+            layer: Some(RuntimeNodeLayer::Host),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        });
+        for source in daemon_state_sources {
+            if nodes.iter().filter(|node| node.id == source).count() != 1 {
+                continue;
+            }
+            edges.push(RuntimeMapEdge {
+                evidence_refs: vec![docker_runtime_evidence(
+                    snapshot,
+                    &source,
+                    DOCKER_DAEMON_STATE_RISK_ID,
+                    RuntimeEvidenceKind::DockerDaemonStateBindMount,
+                    evidence_provider_revision,
+                )],
+                source,
+                target: DOCKER_DAEMON_STATE_RISK_ID.into(),
+                relationship: RuntimeRelationshipKind::ExposesDaemonState,
+                metadata: BTreeMap::new(),
+            });
         }
     }
 
