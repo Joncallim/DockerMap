@@ -8,7 +8,7 @@
   --bg-2: var(--hearth-canvas-raised);
   --surface: var(--hearth-surface);
   --surface-2: var(--hearth-surface-raised);
-  --surface-3: #2b3443;
+  --surface-3: var(--hearth-surface-sunken);
   --border: var(--hearth-border);
   --border-strong: var(--hearth-border-strong);
 
@@ -20,10 +20,9 @@
   --accent: var(--hearth-azure-text);
   --accent-fill: var(--hearth-azure-strong);
   --accent-text: var(--hearth-azure-text);
-  --on-accent: #ffffff;
+  --on-accent: var(--hearth-on-azure);
   --focus-ring: var(--hearth-azure);
   --accent-soft: var(--hearth-azure-soft);
-  --chrome: rgb(11 15 26 / 78%);
 
   /* State system — the single source of meaning for color. */
   --s-healthy: #50df95;
@@ -33,16 +32,29 @@
   --s-updating: #7db4ff;
   --s-unknown: #9ba7b8;
 
-  --r-sm: 7px;
-  --r-md: 11px;
-  --r-lg: 16px;
+  --r-sm: var(--hearth-radius-sm);
+  --r-md: var(--hearth-radius-md);
+  --r-lg: var(--hearth-radius-lg);
 
-  --s1: 4px;
-  --s2: 8px;
-  --s3: 12px;
-  --s4: 16px;
-  --s5: 24px;
-  --s6: 32px;
+  --s1: var(--hearth-space-1);
+  --s2: var(--hearth-space-2);
+  --s3: var(--hearth-space-3);
+  --s4: var(--hearth-space-4);
+  --s5: var(--hearth-space-5);
+  --s6: var(--hearth-space-6);
+  --type-xs: var(--hearth-type-xs);
+  --type-sm: var(--hearth-type-sm);
+  --type-body: var(--hearth-type-body);
+  --type-title: var(--hearth-type-title);
+
+  /* Shared control roles stay on the public Hearth primitive scale. */
+  --control-radius: var(--hearth-radius-sm);
+  --control-pad-block: var(--hearth-space-2);
+  --control-pad-inline: var(--hearth-space-3);
+  --control-font-size: var(--hearth-type-sm);
+  --control-background: var(--hearth-surface);
+  --control-border: var(--hearth-border);
+  --action-gap: var(--hearth-space-2);
 
   --shadow: var(--hearth-shadow);
   --t: 140ms cubic-bezier(0.22, 0.61, 0.36, 1);
@@ -68,7 +80,7 @@ body {
   background: radial-gradient(1200px 700px at 80% -10%, var(--surface-2) 0%, var(--bg) 55%);
   color: var(--ink);
   font-family: var(--font);
-  font-size: 14px;
+  font-size: var(--type-body);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
@@ -91,8 +103,8 @@ body {
 
 .auth-card h1 { margin: var(--s2) 0 var(--s2); }
 .auth-card form { display: grid; gap: var(--s2); margin-top: var(--s5); }
-.auth-card input { padding: 10px 12px; color: var(--ink); background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: var(--r-sm); }
-.auth-card button { padding: 10px 12px; color: var(--on-accent); background: var(--accent-fill); border: 0; border-radius: var(--r-sm); font-weight: 700; }
+.auth-card input { padding: var(--control-pad-block) var(--control-pad-inline); color: var(--ink); background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: var(--control-radius); font-size: var(--control-font-size); }
+.auth-card button { padding: var(--control-pad-block) var(--control-pad-inline); color: var(--on-accent); background: var(--accent-fill); border: 0; border-radius: var(--control-radius); font-size: var(--control-font-size); font-weight: 700; }
 .auth-card button:disabled { opacity: .65; cursor: wait; }
 .auth-error { color: var(--s-offline); }
 
@@ -160,7 +172,7 @@ code,
 }
 
 .eyebrow {
-  font-size: 11px;
+  font-size: var(--type-xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -202,8 +214,8 @@ code,
   flex-direction: column;
   gap: var(--s5);
   padding: var(--s5) var(--s4);
-  background: var(--bg-2);
-  border-right: 1px solid var(--border);
+  background: var(--hearth-canvas-raised);
+  border-right: 1px solid var(--hearth-border);
 }
 
 .brand {
@@ -218,8 +230,8 @@ code,
   width: 34px;
   height: 34px;
   border-radius: var(--r-sm);
-  background: linear-gradient(135deg, var(--accent-fill), #14b8a6);
-  color: #fff;
+  background: var(--hearth-azure-strong);
+  color: var(--hearth-on-azure);
 }
 
 .brand-title {
@@ -267,18 +279,18 @@ code,
 }
 
 .nav-item:hover {
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.04);
+  color: var(--hearth-text);
+  background: var(--hearth-surface-raised);
 }
 
 .nav-item.active {
-  color: var(--ink);
-  background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--hearth-text);
+  background: var(--hearth-azure-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hearth-azure) 35%, transparent);
 }
 
 .nav-item.active svg {
-  color: var(--accent);
+  color: var(--hearth-azure);
 }
 
 .rail-foot {
@@ -317,23 +329,23 @@ code,
   align-items: center;
   gap: var(--s4);
   padding: var(--s3) var(--s5);
-  border-bottom: 1px solid var(--border);
-  background: var(--chrome);
+  border-bottom: 1px solid var(--hearth-border);
+  background: var(--hearth-surface);
   backdrop-filter: blur(8px);
 }
 
 .topbar-search {
   display: flex;
   align-items: center;
-  gap: var(--s3);
+  gap: var(--action-gap);
   width: 360px;
   max-width: 42vw;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--surface);
+  padding: var(--control-pad-block) var(--control-pad-inline);
+  border: 1px solid var(--control-border);
+  border-radius: var(--control-radius);
+  background: var(--control-background);
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--control-font-size);
   transition: border var(--t), color var(--t);
 }
 
@@ -420,9 +432,9 @@ kbd {
 .ghost-link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--action-gap);
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--control-font-size);
   font-weight: 600;
   background: none;
   border: none;
@@ -436,14 +448,14 @@ kbd {
 .primary-link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--action-gap);
   margin-top: var(--s3);
-  padding: 8px 12px;
-  border-radius: var(--r-sm);
+  padding: var(--control-pad-block) var(--control-pad-inline);
+  border-radius: var(--control-radius);
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--control-font-size);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
   width: fit-content;
 }
@@ -1268,8 +1280,8 @@ kbd {
   place-items: center;
   width: 30px;
   height: 30px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  border: 1px solid var(--control-border);
   background: rgba(24, 29, 37, 0.92);
   color: var(--map-ink-soft);
   transition: color var(--t), border var(--t);
@@ -1752,14 +1764,16 @@ kbd {
 }
 
 .service-select,
-.log-level-select {
-  padding: 7px 11px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border);
-  background: var(--surface);
+.log-level-select,
+.log-search,
+.field-control input[type="url"] {
+  padding: var(--control-pad-block) var(--control-pad-inline);
+  border-radius: var(--control-radius);
+  border: 1px solid var(--control-border);
+  background: var(--control-background);
   color: var(--ink);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--control-font-size);
 }
 
 .log-controls {
@@ -1771,13 +1785,6 @@ kbd {
 }
 
 .log-search {
-  padding: 7px 11px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--ink);
-  font-family: inherit;
-  font-size: 13px;
   min-width: 200px;
 }
 
@@ -1870,15 +1877,15 @@ kbd {
 .copilot-input {
   display: flex;
   align-items: center;
-  gap: var(--s3);
-  padding: 10px 14px;
+  gap: var(--action-gap);
+  padding: var(--control-pad-block) var(--control-pad-inline);
   border-radius: var(--r-md);
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--hearth-ai) 42%, var(--border-strong));
+  background: color-mix(in srgb, var(--hearth-ai-soft) 62%, var(--surface));
 }
 
 .copilot-input svg {
-  color: var(--accent);
+  color: var(--hearth-ai);
 }
 
 .copilot-input input {
@@ -1886,22 +1893,22 @@ kbd {
   border: none;
   background: none;
   color: var(--ink);
-  font-size: 14px;
+  font-size: var(--type-body);
 }
 
 .copilot-input input:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--hearth-ai);
   outline-offset: 2px;
 }
 
 .copilot-input button {
-  padding: 7px 16px;
-  border-radius: var(--r-sm);
+  padding: var(--control-pad-block) var(--control-pad-inline);
+  border-radius: var(--control-radius);
   border: none;
-  background: var(--accent-fill);
-  color: var(--on-accent);
+  background: var(--hearth-ai-strong);
+  color: var(--hearth-on-ai);
   font-weight: 700;
-  font-size: 13px;
+  font-size: var(--control-font-size);
 }
 
 .chip-cloud {
@@ -1911,18 +1918,27 @@ kbd {
 }
 
 .suggest-chip {
-  padding: 6px 12px;
+  padding: var(--control-pad-block) var(--control-pad-inline);
   border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 12.5px;
+  border: 1px solid color-mix(in srgb, var(--hearth-ai) 32%, var(--border));
+  background: var(--hearth-ai-soft);
+  color: var(--hearth-ai);
+  font-size: var(--control-font-size);
   transition: color var(--t), border var(--t);
 }
 
 .suggest-chip:hover {
-  color: var(--ink);
-  border-color: var(--border-strong);
+  color: var(--hearth-text);
+  border-color: var(--hearth-ai);
+}
+
+.copilot-answer-panel {
+  border-color: color-mix(in srgb, var(--hearth-ai) 30%, var(--border));
+  background: color-mix(in srgb, var(--hearth-ai-soft) 28%, var(--surface));
+}
+
+.copilot-answer-panel .panel-title svg {
+  color: var(--hearth-ai);
 }
 
 .copilot-answer p {
@@ -1966,6 +1982,11 @@ kbd {
   border-color: var(--border-strong);
 }
 
+.copilot-answer-panel .ref-chip {
+  background: var(--hearth-ai-soft);
+  border-color: color-mix(in srgb, var(--hearth-ai) 45%, var(--border));
+}
+
 /* ===========================================================================
    Command palette
    =========================================================================== */
@@ -1994,8 +2015,8 @@ kbd {
 .cmdk-input {
   display: flex;
   align-items: center;
-  gap: var(--s3);
-  padding: 14px 16px;
+  gap: var(--action-gap);
+  padding: var(--control-pad-block) var(--control-pad-inline);
   border-bottom: 1px solid var(--border);
 }
 
@@ -2008,7 +2029,7 @@ kbd {
   border: none;
   background: none;
   color: var(--ink);
-  font-size: 15px;
+  font-size: var(--type-body);
 }
 
 .cmdk-input input:focus-visible {
@@ -2033,15 +2054,15 @@ kbd {
 .cmdk-item {
   display: flex;
   align-items: center;
-  gap: var(--s3);
+  gap: var(--action-gap);
   width: 100%;
-  padding: 10px 12px;
+  padding: var(--control-pad-block) var(--control-pad-inline);
   border: none;
   background: none;
   color: var(--ink-soft);
-  border-radius: var(--r-sm);
+  border-radius: var(--control-radius);
   text-align: left;
-  font-size: 13.5px;
+  font-size: var(--control-font-size);
 }
 
 .cmdk-item svg {
@@ -2189,7 +2210,7 @@ kbd {
   --bg-2: var(--hearth-canvas-raised);
   --surface: var(--hearth-surface);
   --surface-2: var(--hearth-surface-raised);
-  --surface-3: #e2e8f0;
+  --surface-3: var(--hearth-surface-sunken);
   --border: var(--hearth-border);
   --border-strong: var(--hearth-border-strong);
 
@@ -2201,7 +2222,7 @@ kbd {
   --accent: var(--hearth-azure-text);
   --accent-fill: var(--hearth-azure-strong);
   --accent-text: var(--hearth-azure-text);
-  --on-accent: #ffffff;
+  --on-accent: var(--hearth-on-azure);
   --focus-ring: var(--hearth-azure);
   --accent-soft: var(--hearth-azure-soft);
   --chrome: rgba(255, 255, 255, 0.78);
@@ -2212,7 +2233,7 @@ kbd {
   --s-updating: #1d4ed8;
   --s-unknown: #526174;
 
-  --shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+  --shadow: var(--hearth-shadow);
   color-scheme: light;
 }
 
@@ -2258,6 +2279,8 @@ kbd {
     gap: var(--s2);
     overflow-x: auto;
     overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
     scroll-padding-inline: var(--s3);
     padding-bottom: 2px;
   }
@@ -2269,7 +2292,7 @@ kbd {
     place-items: center;
     min-width: 24px;
     color: var(--muted);
-    background: linear-gradient(90deg, transparent, var(--bg-2) 42%);
+    background: linear-gradient(90deg, transparent, var(--hearth-canvas-raised) 42%);
     pointer-events: none;
   }
   .nav-group { flex-direction: row; gap: 2px; min-width: max-content; }
