@@ -4,7 +4,7 @@
  * Rust serialization models are the only authority for daemon-facing values.
  */
 import { compile } from "json-schema-to-typescript";
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const check = process.argv.slice(2).join(" ") === "--check";
@@ -21,7 +21,8 @@ const roots = [
   ["ContainersResponse", "containers-response"], ["ContainerDetailResponse", "container-detail-response"],
   ["ImagesResponse", "images-response"], ["NetworksResponse", "networks-response"],
   ["VolumesResponse", "volumes-response"], ["FindingsResponse", "findings-response"],
-  ["ObservedChangeHistoryResponse", "observed-change-history-response"]
+  ["ObservedChangeHistoryResponse", "observed-change-history-response"],
+  ["ObservedDockerEventHistoryResponse", "observed-docker-event-history-response"]
 ];
 
 function stable(value) {
@@ -85,7 +86,22 @@ function assertTransparentDetailMatchesRecord(documents) {
   }
 }
 
+async function assertSchemaRootInventory() {
+  const expected = new Set(roots.map(([, file]) => `${file}.schema.json`));
+  const actual = new Set(
+    (await readdir(schemaDirectory)).filter((file) => file.endsWith(".schema.json"))
+  );
+  const missing = [...expected].filter((file) => !actual.has(file));
+  const unexpected = [...actual].filter((file) => !expected.has(file));
+  if (missing.length || unexpected.length) {
+    throw new Error(
+      `Rust schema root inventory differs from the declaration generator; missing=${missing.join(",") || "none"}; unexpected=${unexpected.join(",") || "none"}`
+    );
+  }
+}
+
 async function render() {
+  await assertSchemaRootInventory();
   const definitions = {};
   const documents = new Map();
   for (const [name, file] of roots) {

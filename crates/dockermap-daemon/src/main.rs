@@ -260,6 +260,34 @@ mod tests {
         assert_eq!(accepted.status(), StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn observed_docker_events_route_publishes_only_the_unavailable_mock_shape() {
+        let response = daemon_router(test_daemon_state(), DaemonAuthToken(None))
+            .oneshot(
+                Request::builder()
+                    .uri("/daemon/observed-events")
+                    .body(axum::body::Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("daemon router should respond");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should be readable");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body)
+                .expect("observed event response should be JSON"),
+            serde_json::json!({
+                "source": "mock",
+                "collectionState": "unavailable",
+                "currentModelRevision": null,
+                "currentObservationRevision": null,
+                "events": []
+            })
+        );
+    }
+
     #[test]
     fn docker_stub_log_errors_have_a_fixed_location_neutral_client_message() {
         // Mirrors the body returned by a Unix-socket Docker stub during logs
