@@ -9,6 +9,11 @@ http-body-util = "0.1"
 http = "1"
 hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+serde = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "io-util", "sync", "time"] }
 url = "2"
+
+[dev-dependencies]
+bollard = "=0.19.4"
+futures-util = "0.3"
