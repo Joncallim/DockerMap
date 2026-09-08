@@ -42,13 +42,22 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
   authentication boundary. Live `dockermap.jo-nas.com` uses Caddy plus DockerMap
   bearer-session protection; it rejects anonymous API access and client-supplied
   identity headers.
-- [ ] Run `scripts/smoke-deploy.sh` against `http://127.0.0.1:4000` on the host.
-  (Local-loopback smoke not yet recorded this release track.)
+- [x] Run `scripts/smoke-deploy.sh` against `http://127.0.0.1:4000` on the host.
+  The #16 evidence record includes a passing local loopback smoke at
+  `17c7dd1ef0e8bc53b33a7367eef4283e830053a8`: it checked unauthenticated
+  denial, authenticated protected routes, and an SSE snapshot without retaining
+  the test token. The later private-review certification at
+  `ca66725a0391d4533d162a0887a23027ba66525f` repeated the protected proxy
+  checks after cutover.
 - [x] Run `scripts/smoke-deploy.sh` against the public review URL through the reverse proxy.
   Recorded on Hearth on 2026-08-29 without retaining tokens. It verified anonymous
   browser API denial and authenticated browser API access.
-- [ ] Confirm direct remote access to `127.0.0.1:4100` is impossible from another machine.
-  (Daemon binds loopback; external-port confirmation not yet recorded this track.)
+- [x] Confirm direct remote access to `127.0.0.1:4100` is impossible from another machine.
+  The final #16 certification records that the collector has no published host
+  port and the review host has no TCP listener on `4100`; the private-review
+  smoke also passed after collector recovery. This is deployment evidence for
+  the bearer-session/Caddy review path, not a general claim about an operator
+  who deliberately enables remote-daemon mode.
 - [x] Confirm `/api/snapshot` returns `401` without a browser session or bearer
   token. The public entrypoint also rejects client-supplied `X-Authentik-*`
   identity headers; the daemon has no public listener.
@@ -57,7 +66,24 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 - [ ] Create release notes with known limitations and the exact commit SHA.
   The non-tagging baseline and known limitations are recorded in
   [ALPHA_BASELINE.md](ALPHA_BASELINE.md). Final release notes must be refreshed
-  for the exact tagged candidate after the remaining #16/#63 proxy gate.
+  for the exact tagged candidate. #16's reverse-proxy and private-daemon gate
+  has completed evidence; #63 still requires clean supported-host install,
+  rollback/cleanup, and host-reboot recovery evidence.
+
+## Completed #16 boundary evidence; remaining #63 recovery evidence
+
+The current private-review deployment has completed #16 resolution evidence at
+DockerMap commit `ca66725a0391d4533d162a0887a23027ba66525f`: Caddy fronts the
+browser API, bearer-session protection denies anonymous and spoofed-identity
+requests, authenticated API and SSE checks pass, and the collector has no public
+listener. That evidence satisfies the reverse-proxy boundary gate and does not
+require Authentik or an interactive SSO flow.
+
+It does **not** satisfy #63's separate release-recovery gate. Before promoting a
+new alpha candidate, capture clean supported-host installation, documented
+rollback/cleanup, and an actual host-reboot recovery result for each advertised
+deployment profile. Do not treat a container recreation or a service-only
+restart as host-reboot evidence.
 
 ## Docker authority isolation (#62)
 
@@ -128,8 +154,9 @@ before a broader beta.
 - [ ] Add a clean-host install test for systemd units and Nginx/Caddy proxy config.
 - [x] Add tag-triggered release automation for deploy artifacts and SHA-256
   checksums. [`.github/workflows/release.yml`](../../.github/workflows/release.yml)
-  validates the tag/version, builds, packages, checksums, and publishes the
-  prerelease assets (PR #98).
+  validates the tag/version, builds, packages, checksums, and retains candidate
+  artifacts for maintainer review. It does not publish prerelease assets
+  automatically.
 - [x] Add a documented support policy for Linux distro, Node, Rust, Docker, and browser versions.
   See [SUPPORT_POLICY.md](SUPPORT_POLICY.md); each release must still rerun the
   relevant gates against its exact candidate.
