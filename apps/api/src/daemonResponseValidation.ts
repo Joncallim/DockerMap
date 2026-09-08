@@ -67,6 +67,10 @@ const INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION = "Review whether the host-po
 const DOCKER_DAEMON_STATE_FINDING_RULE = "docker.daemon_state_bind_mount";
 const DOCKER_DAEMON_STATE_FINDING_SUMMARY = "A container has Docker daemon state access that may provide Docker daemon API authority.";
 const DOCKER_DAEMON_STATE_FINDING_RECOMMENDATION = "Review whether this container requires Docker daemon API authority.";
+const REPEATED_DIED_FINDING_RULE = "docker.repeated_container_died_events";
+const REPEATED_DIED_FINDING_ID = "finding_docker_repeated_container_died_events";
+const REPEATED_DIED_FINDING_SUMMARY = "Three retained Docker container exit observations need review.";
+const REPEATED_DIED_FINDING_RECOMMENDATION = "Review the container's recent configuration and logs to determine whether the repeated exits are expected.";
 
 // Version-one evidence is intentionally a discriminated Docker observation,
 // not a generic provenance bag. JSON Schema owns each field's closed enum;
@@ -234,9 +238,19 @@ function hasCoherentFindings(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
   const findings = (payload as { findings?: unknown }).findings;
   if (!Array.isArray(findings)) return false;
+  // This temporal rule is a single closed advisory, never a per-subject
+  // stream. Count it before accepting any row so duplicated static rows
+  // cannot become an unbounded historical signal.
+  if (findings.filter((candidate) => candidate && typeof candidate === "object"
+    && (candidate as Record<string, unknown>).ruleId === REPEATED_DIED_FINDING_RULE).length > 1) return false;
   return findings.every((candidate) => {
     if (!candidate || typeof candidate !== "object") return false;
     const finding = candidate as Record<string, unknown>;
+    if (finding.ruleId === REPEATED_DIED_FINDING_RULE) return hasCoherentRepeatedDiedFinding(finding);
+    // Timeless rules retain their established evidence-bearing shape. They
+    // cannot use temporalEvidence (even an empty array) or arbitrary optional
+    // keys as a metadata channel.
+    if (!hasExactKeys(finding, ["id", "ruleId", "severity", "summary", "recommendation", "subjectRef", "targetRef", "evidenceRefs"])) return false;
     if (finding.ruleId === SYSTEMD_REQUIRES_FINDING_RULE) return finding.severity === "warning"
       && finding.summary === SYSTEMD_REQUIRES_FINDING_SUMMARY
       && finding.recommendation === SYSTEMD_REQUIRES_FINDING_RECOMMENDATION
@@ -281,7 +295,10 @@ function hasCoherentFindings(payload: unknown): boolean {
           && evidence.assertionKind === "observed"
           && evidence.summary === "Docker reported a bind mount exposing Docker daemon state"
           && evidence.subjectRef === finding.subjectRef
-          && evidence.providerSlot === null
+          // Rust omits the optional V1 Docker slot from its JSON when it is
+          // absent. Hand-authored fixtures may still spell that absence as
+          // null, so accept only those two equivalent wire forms.
+          && (evidence.providerSlot === null || evidence.providerSlot === undefined)
           && evidence.freshness === "fresh"
           && typeof evidence.providerRevision === "string"
           && evidence.providerRevision !== String(evidence.collectedAt);
@@ -308,7 +325,7 @@ function hasCoherentFindings(payload: unknown): boolean {
           && networkEvidence.kind === "docker_network_membership"
           && networkEvidence.assertionKind === "observed"
           && networkEvidence.freshness === "fresh"
-          && networkEvidence.providerSlot === null
+          && (networkEvidence.providerSlot === null || networkEvidence.providerSlot === undefined)
           && networkEvidence.subjectRef === finding.subjectRef
           && typeof networkEvidence.providerRevision === "string"
           && networkEvidence.providerRevision !== String(networkEvidence.collectedAt)
@@ -317,12 +334,43 @@ function hasCoherentFindings(payload: unknown): boolean {
           && portEvidence.kind === "docker_port_publication"
           && portEvidence.assertionKind === "observed"
           && portEvidence.freshness === "fresh"
-          && portEvidence.providerSlot === null
+          && (portEvidence.providerSlot === null || portEvidence.providerSlot === undefined)
           && portEvidence.subjectRef === finding.subjectRef
           && typeof portEvidence.providerRevision === "string"
           && portEvidence.providerRevision !== String(portEvidence.collectedAt);
       })();
   });
+}
+
+/**
+ * This historical advisory is intentionally a singleton static projection.
+ * Its three witnesses attest only a closed count/kind threshold. Identities,
+ * timestamps, anchors, epochs, raw Docker attributes and service references
+ * must never become a Findings transport channel.
+ */
+function hasCoherentRepeatedDiedFinding(finding: Record<string, unknown>): boolean {
+  if (!hasExactKeys(finding, ["id", "ruleId", "severity", "summary", "recommendation", "evidenceRefs", "temporalEvidence"])) return false;
+  if (finding.id !== REPEATED_DIED_FINDING_ID
+    || finding.severity !== "advisory"
+    || finding.summary !== REPEATED_DIED_FINDING_SUMMARY
+    || finding.recommendation !== REPEATED_DIED_FINDING_RECOMMENDATION
+    || !Array.isArray(finding.evidenceRefs)
+    || finding.evidenceRefs.length !== 0
+    || !Array.isArray(finding.temporalEvidence)
+    || finding.temporalEvidence.length !== 3) return false;
+  return finding.temporalEvidence.every((witness) => isRecord(witness)
+    && hasExactKeys(witness, ["source", "kind"])
+    && witness.source === "docker_event_stream"
+    && witness.kind === "container_died");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => Object.hasOwn(value, key));
 }
 
 // History is a deliberately narrow observation envelope. In particular mock

@@ -158,14 +158,28 @@ export type HealthState = 'ok' | 'degraded';
  * provider messages. New rules require an explicit contract addition.
  */
 export type FindingRule =
-  | 'systemd.requires_target_not_active'
-  | 'docker.internal_network_member_publishes_port'
-  | 'docker.daemon_state_bind_mount';
+  | (
+      | 'systemd.requires_target_not_active'
+      | 'docker.internal_network_member_publishes_port'
+      | 'docker.daemon_state_bind_mount'
+    )
+  | 'docker.repeated_container_died_events';
 /**
  * Findings are intentionally a small, closed advisory vocabulary. They do
  * not expose provider output or prescribe an automated remediation.
  */
 export type FindingSeverity = 'warning' | 'advisory';
+/**
+ * Closed event vocabulary eligible for a temporal finding. New rules must
+ * explicitly extend this type; raw Docker action text is never accepted.
+ */
+export type TemporalEvidenceKind = 'container_died';
+/**
+ * Closed event source vocabulary for temporal finding evidence. Kept
+ * separate from runtime-map evidence so a historical stream row can never
+ * be promoted into an assertion about a current topology node or edge.
+ */
+export type TemporalEvidenceSource = 'docker_event_stream';
 /**
  * Closed status classes prevent raw Docker status text from entering the
  * temporal-history boundary.
@@ -645,17 +659,37 @@ export interface Finding {
    * this finding. Each closed rule has a fixed, small evidence budget,
    * preventing this response from becoming a generic metadata channel.
    *
-   * @minItems 1
    * @maxItems 2
    */
-  evidenceRefs: [RuntimeEvidenceRef] | [RuntimeEvidenceRef, RuntimeEvidenceRef];
+  evidenceRefs: [] | [RuntimeEvidenceRef] | [RuntimeEvidenceRef, RuntimeEvidenceRef];
   id: string;
   recommendation: string;
   ruleId: FindingRule;
   severity: FindingSeverity;
-  subjectRef: string;
+  subjectRef?: string | null;
   summary: string;
-  targetRef: string;
+  targetRef?: string | null;
+  /**
+   * Retained stream evidence is separate from runtime evidence. Each
+   * closed rule has a small fixed budget and a validating wire shape.
+   *
+   * @maxItems 3
+   */
+  temporalEvidence?:
+    | []
+    | [TemporalEvidenceWitness]
+    | [TemporalEvidenceWitness, TemporalEvidenceWitness]
+    | [TemporalEvidenceWitness, TemporalEvidenceWitness, TemporalEvidenceWitness];
+}
+/**
+ * One static, redacted witness for a temporal finding. This intentionally
+ * contains no event/container identity, timestamp, anchor, epoch, provider
+ * message, path, name, status or exit value. The exact count is proof of the
+ * closed threshold without turning Findings into an event-history API.
+ */
+export interface TemporalEvidenceWitness {
+  kind: TemporalEvidenceKind;
+  source: TemporalEvidenceSource;
 }
 /**
  * Bounded in-memory history for the daemon process only. `mock` never

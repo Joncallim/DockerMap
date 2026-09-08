@@ -1021,6 +1021,14 @@ test("daemon model responses require non-empty revision and complete provider st
   const history = await fixture("observed-change-history-response.json");
   const observedEvents = await fixture("observed-docker-event-history-response.json");
   const resourceTelemetry = await fixture("observed-resource-telemetry-response.json");
+  // Rust serializes an absent V1 Docker provider slot by omitting the field.
+  // Keep this daemon-emitted form accepted alongside the older null fixture
+  // spelling, or real Docker findings fail closed at the browser proxy.
+  const emittedDockerFinding = structuredClone(findings);
+  delete ((emittedDockerFinding.findings as Array<{ evidenceRefs: Array<Record<string, unknown>> }>)[1]!.evidenceRefs[0]!).providerSlot;
+  delete ((emittedDockerFinding.findings as Array<{ evidenceRefs: Array<Record<string, unknown>> }>)[1]!.evidenceRefs[1]!).providerSlot;
+  const { validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/findings", emittedDockerFinding));
   const invalidResponses = [
     ["/daemon/snapshot", { ...snapshot, modelRevision: "" }],
     ["/daemon/snapshot", (() => { const value = structuredClone(snapshot); delete value.modelRevision; return value; })()],
@@ -1074,6 +1082,13 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[2].targetRef = "host_risk_untrusted"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[1].kind = "docker_volume_mount"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].subjectRef = "docker_container_private"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].temporalEvidence[0].eventId = "docker_event_private"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].temporalEvidence.pop(); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].summary = "raw daemon claim"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings.push(structuredClone(value.findings[3])); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); delete value.findings[0].subjectRef; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].temporalEvidence = []; return value; })()],
     ["/daemon/history", (() => { const value = structuredClone(history); delete value.observedRevision; return value; })()],
     ["/daemon/history", { ...history, source: "untrusted" }],
     ["/daemon/history", { ...history, source: "mock" }],

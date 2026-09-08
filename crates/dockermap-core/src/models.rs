@@ -1727,9 +1727,82 @@ pub enum FindingRule {
     DockerInternalNetworkMemberPublishesPort,
     #[serde(rename = "docker.daemon_state_bind_mount")]
     DockerDaemonStateBindMount,
+    /// Exactly three distinct, retained Docker `die` observations for one
+    /// opaque container in a short continuous collection epoch. This is an
+    /// advisory about those observations only; it does not assert a crash
+    /// cause, restart policy, current state, or service impact.
+    #[serde(rename = "docker.repeated_container_died_events")]
+    DockerRepeatedContainerDiedEvents,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+/// Closed event source vocabulary for temporal finding evidence. Kept
+/// separate from runtime-map evidence so a historical stream row can never
+/// be promoted into an assertion about a current topology node or edge.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TemporalEvidenceSource {
+    DockerEventStream,
+}
+
+/// Closed event vocabulary eligible for a temporal finding. New rules must
+/// explicitly extend this type; raw Docker action text is never accepted.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TemporalEvidenceKind {
+    ContainerDied,
+}
+
+/// Fixed source-time horizon for the repeated-died advisory. The same bound
+/// is used for the historical span and for its current-age freshness gate.
+pub const REPEATED_CONTAINER_DIED_EVENTS_WINDOW_MS: u64 = 300_000;
+pub const REPEATED_CONTAINER_DIED_EVENTS_SUMMARY: &str =
+    "Three retained Docker container exit observations need review.";
+pub const REPEATED_CONTAINER_DIED_EVENTS_RECOMMENDATION: &str =
+    "Review the container's recent configuration and logs to determine whether the repeated exits are expected.";
+
+/// One static, redacted witness for a temporal finding. This intentionally
+/// contains no event/container identity, timestamp, anchor, epoch, provider
+/// message, path, name, status or exit value. The exact count is proof of the
+/// closed threshold without turning Findings into an event-history API.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TemporalEvidenceWitness {
+    pub source: TemporalEvidenceSource,
+    pub kind: TemporalEvidenceKind,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TemporalEvidenceWitnessWire {
+    source: TemporalEvidenceSource,
+    kind: TemporalEvidenceKind,
+}
+
+impl<'de> Deserialize<'de> for TemporalEvidenceWitness {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = TemporalEvidenceWitnessWire::deserialize(deserializer)?;
+        let evidence = Self {
+            source: wire.source,
+            kind: wire.kind,
+        };
+        evidence
+            .has_valid_shape()
+            .then_some(evidence)
+            .ok_or_else(|| serde::de::Error::custom("temporal evidence has an invalid shape"))
+    }
+}
+
+impl TemporalEvidenceWitness {
+    pub fn has_valid_shape(&self) -> bool {
+        self.source == TemporalEvidenceSource::DockerEventStream
+            && self.kind == TemporalEvidenceKind::ContainerDied
+    }
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
     #[schemars(length(min = 1, max = 259))]
@@ -1741,16 +1814,96 @@ pub struct Finding {
     pub summary: String,
     #[schemars(length(min = 1, max = 259))]
     pub recommendation: String,
-    #[serde(rename = "subjectRef")]
-    pub subject_ref: String,
-    #[serde(rename = "targetRef")]
-    pub target_ref: String,
+    #[serde(rename = "subjectRef", skip_serializing_if = "Option::is_none")]
+    pub subject_ref: Option<String>,
+    #[serde(rename = "targetRef", skip_serializing_if = "Option::is_none")]
+    pub target_ref: Option<String>,
     /// Canonical, already-sanitized runtime evidence that directly triggered
     /// this finding. Each closed rule has a fixed, small evidence budget,
     /// preventing this response from becoming a generic metadata channel.
     #[serde(rename = "evidenceRefs")]
-    #[schemars(required, length(min = 1, max = 2))]
+    #[schemars(required, length(max = 2))]
     pub evidence_refs: Vec<RuntimeEvidenceRef>,
+    /// Retained stream evidence is separate from runtime evidence. Each
+    /// closed rule has a small fixed budget and a validating wire shape.
+    #[serde(
+        rename = "temporalEvidence",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    #[schemars(length(max = 3))]
+    pub temporal_evidence: Vec<TemporalEvidenceWitness>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FindingWire {
+    id: String,
+    #[serde(rename = "ruleId")]
+    rule_id: FindingRule,
+    severity: FindingSeverity,
+    summary: String,
+    recommendation: String,
+    #[serde(rename = "subjectRef", default)]
+    subject_ref: Option<String>,
+    #[serde(rename = "targetRef", default)]
+    target_ref: Option<String>,
+    #[serde(rename = "evidenceRefs", default)]
+    evidence_refs: Vec<RuntimeEvidenceRef>,
+    #[serde(rename = "temporalEvidence", default)]
+    temporal_evidence: Vec<TemporalEvidenceWitness>,
+}
+
+impl<'de> Deserialize<'de> for Finding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = FindingWire::deserialize(deserializer)?;
+        let finding = Self {
+            id: wire.id,
+            rule_id: wire.rule_id,
+            severity: wire.severity,
+            summary: wire.summary,
+            recommendation: wire.recommendation,
+            subject_ref: wire.subject_ref,
+            target_ref: wire.target_ref,
+            evidence_refs: wire.evidence_refs,
+            temporal_evidence: wire.temporal_evidence,
+        };
+        finding
+            .has_valid_evidence_shape()
+            .then_some(finding)
+            .ok_or_else(|| serde::de::Error::custom("finding has an invalid evidence shape"))
+    }
+}
+
+impl Finding {
+    fn has_valid_evidence_shape(&self) -> bool {
+        match self.rule_id {
+            FindingRule::DockerRepeatedContainerDiedEvents => {
+                self.severity == FindingSeverity::Advisory
+                    && self.evidence_refs.is_empty()
+                    && self.temporal_evidence.len() == 3
+                    && self
+                        .temporal_evidence
+                        .iter()
+                        .all(TemporalEvidenceWitness::has_valid_shape)
+                    && self.id == "finding_docker_repeated_container_died_events"
+                    && self.summary == REPEATED_CONTAINER_DIED_EVENTS_SUMMARY
+                    && self.recommendation == REPEATED_CONTAINER_DIED_EVENTS_RECOMMENDATION
+                    && self.subject_ref.is_none()
+                    && self.target_ref.is_none()
+            }
+            _ => {
+                !self.evidence_refs.is_empty()
+                    && self.evidence_refs.len() <= 2
+                    && self.temporal_evidence.is_empty()
+                    && self.subject_ref.is_some()
+                    && self.target_ref.is_some()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]

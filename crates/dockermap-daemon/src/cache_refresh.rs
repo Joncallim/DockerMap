@@ -22,9 +22,10 @@ use crate::{
     },
 };
 use dockermap_core::{
-    collision_resistant_id_component, derive_findings, derive_images, mock_snapshot,
-    observed_container_identity, observed_container_inventory, DiagnosticSeverity, DockerSnapshot,
-    FindingsResponse, HealthResponse, HealthState, ObservedChangeEvent,
+    collision_resistant_id_component, derive_findings, derive_images,
+    derive_temporal_docker_findings, mock_snapshot, observed_container_identity,
+    observed_container_inventory, temporal_docker_findings_expiry_ms, DiagnosticSeverity,
+    DockerSnapshot, FindingsResponse, HealthResponse, HealthState, ObservedChangeEvent,
     ObservedChangeHistoryResponse, ObservedChangeKind, ObservedContainerInventory,
     ObservedDockerEventCollectionState, ObservedDockerEventHistoryResponse, ObservedResourceMetric,
     ObservedResourceTelemetryCollectionState, ObservedResourceTelemetryResponse,
@@ -89,6 +90,20 @@ pub(crate) struct DaemonCache {
     revision: PublicationRevision,
     observed_history: ObservedHistoryCache,
     resource_telemetry: ResourceTelemetryCache,
+    /// Private monotonic watermark for temporal Finding reads. Wall clocks may
+    /// move backwards; retaining the greatest trusted value prevents an
+    /// expired event window from being resurrected by a later low reading.
+    temporal_findings_clock_watermark_ms: Option<u64>,
+    /// Private deadline for the cached temporal projection. A Findings read
+    /// needs no full re-derivation before this instant.
+    temporal_findings_expiry_ms: Option<u64>,
+    /// Whether the cached Findings were projected with a trusted monotonic
+    /// clock. An invalid/backwards clock suppresses temporal advice but does
+    /// not poison timeless cached findings.
+    temporal_findings_projection_valid: bool,
+    /// Private testable accounting for cache projection work. It is not part
+    /// of any response and ensures read-path work stays bounded.
+    findings_projection_generation: u64,
 }
 
 const MAX_RESOURCE_TELEMETRY_SAMPLES: usize = 16;
@@ -635,6 +650,10 @@ impl DaemonCache {
             revision: PublicationRevision::new(),
             observed_history: ObservedHistoryCache::new(),
             resource_telemetry: ResourceTelemetryCache::default(),
+            temporal_findings_clock_watermark_ms: None,
+            temporal_findings_expiry_ms: None,
+            temporal_findings_projection_valid: false,
+            findings_projection_generation: 0,
         };
         cache.assign_docker_observation_revision();
         cache.assign_revision();
@@ -646,12 +665,154 @@ impl DaemonCache {
         // publication. Provider state is runtime-topology evidence only.
         self.revision
             .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
-        // Findings are a pure projection of the sanitized runtime map, so
-        // calculate and cache them only after the publication revision exists.
-        self.findings = FindingsResponse {
-            findings: derive_findings(&self.runtime_map),
+        self.rebuild_findings();
+    }
+
+    /// Temporal rows retain their own private continuity context. Findings
+    /// remain a projection of the current publication and never expose that
+    /// context; receipt/state transitions call this again without fabricating
+    /// a new topology revision.
+    fn rebuild_findings(&mut self) {
+        self.rebuild_findings_at(Some(self.snapshot.last_updated));
+    }
+
+    /// Re-evaluate temporal eligibility against a trusted current Unix time.
+    /// Snapshot publication remains a convenient cache refresh, but never the
+    /// sole expiry mechanism: `/daemon/findings` calls this projection on its
+    /// read path so a quiet Docker host cannot retain a stale time-bound
+    /// advisory forever.
+    fn findings_projection_at(&self, now_ms: Option<u64>) -> FindingsResponse {
+        let mut findings = derive_findings(&self.runtime_map);
+        if let Some(now_ms) = now_ms {
+            findings.extend(derive_temporal_docker_findings(
+                self.health.mode.clone(),
+                self.observed_history.docker_events.collection_state(),
+                now_ms,
+                &self
+                    .observed_history
+                    .docker_events
+                    .public_events_newest_first(),
+            ));
+        }
+        findings.sort_by(|left, right| {
+            left.id
+                .cmp(&right.id)
+                .then_with(|| left.subject_ref.cmp(&right.subject_ref))
+                .then_with(|| left.target_ref.cmp(&right.target_ref))
+        });
+        FindingsResponse {
+            findings,
             model_revision: self.runtime_map.model_revision.clone(),
+        }
+    }
+
+    /// The OS wall clock is the only current-time authority available to the
+    /// daemon. A pre-epoch/unsafe clock fails closed for temporal advice while
+    /// preserving all timeless findings already held in the cache.
+    fn trusted_temporal_now(&mut self, now_ms: Option<u64>) -> Option<u64> {
+        match (now_ms, self.temporal_findings_clock_watermark_ms) {
+            (Some(now), Some(watermark)) if now >= watermark => {
+                self.temporal_findings_clock_watermark_ms = Some(now);
+                Some(now)
+            }
+            (Some(now), None) => {
+                self.temporal_findings_clock_watermark_ms = Some(now);
+                Some(now)
+            }
+            // An invalid or backwards system clock is not temporal evidence.
+            // Do not lower the watermark: an event that has expired once can
+            // never reappear merely because wall time regressed.
+            _ => None,
+        }
+    }
+
+    /// All temporal projections, including snapshot/event rebuilds, must pass
+    /// through this one monotonic gate. This prevents a later publication from
+    /// bypassing an expiry observed on the Findings route.
+    fn rebuild_findings_at(&mut self, now_ms: Option<u64>) {
+        let trusted_now = self.trusted_temporal_now(now_ms);
+        self.findings = self.findings_projection_at(trusted_now);
+        self.temporal_findings_projection_valid = trusted_now.is_some();
+        self.temporal_findings_expiry_ms = trusted_now.and_then(|now_ms| {
+            self.findings
+                .findings
+                .iter()
+                .any(|finding| {
+                    finding.rule_id
+                        == dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents
+                })
+                .then(|| {
+                    temporal_docker_findings_expiry_ms(
+                        self.health.mode.clone(),
+                        self.observed_history.docker_events.collection_state(),
+                        now_ms,
+                        &self
+                            .observed_history
+                            .docker_events
+                            .public_events_newest_first(),
+                    )
+                })
+                .flatten()
+                .filter(|deadline| *deadline > now_ms)
+        });
+        self.findings_projection_generation = self
+            .findings_projection_generation
+            .checked_add(1)
+            .expect("findings projection generation overflow");
+    }
+
+    fn findings_without_temporal(&self) -> FindingsResponse {
+        let mut findings = self.findings.clone();
+        findings.findings.retain(|finding| {
+            finding.rule_id != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents
+        });
+        findings
+    }
+
+    pub(crate) fn findings_response_at(&mut self, now_ms: Option<u64>) -> FindingsResponse {
+        let Some(trusted_now) = self.trusted_temporal_now(now_ms) else {
+            return self.findings_without_temporal();
         };
+        if !self.temporal_findings_projection_valid
+            || self
+                .temporal_findings_expiry_ms
+                .is_some_and(|deadline| trusted_now >= deadline)
+        {
+            // `trusted_now` already advanced the watermark. Project directly
+            // to avoid a second gate while retaining the same monotonic value.
+            self.findings = self.findings_projection_at(Some(trusted_now));
+            self.temporal_findings_projection_valid = true;
+            self.temporal_findings_expiry_ms = self
+                .findings
+                .findings
+                .iter()
+                .any(|finding| {
+                    finding.rule_id
+                        == dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents
+                })
+                .then(|| {
+                    temporal_docker_findings_expiry_ms(
+                        self.health.mode.clone(),
+                        self.observed_history.docker_events.collection_state(),
+                        trusted_now,
+                        &self
+                            .observed_history
+                            .docker_events
+                            .public_events_newest_first(),
+                    )
+                })
+                .flatten()
+                .filter(|deadline| *deadline > trusted_now);
+            self.findings_projection_generation = self
+                .findings_projection_generation
+                .checked_add(1)
+                .expect("findings projection generation overflow");
+        }
+        self.findings.clone()
+    }
+
+    pub(crate) fn current_findings_response(&mut self) -> FindingsResponse {
+        self.findings_response_at(wall_clock_millis())
     }
 
     fn assign_docker_observation_revision(&mut self) {
@@ -1082,7 +1243,7 @@ pub(crate) async fn retain_docker_event(
     }
     let model_revision = cache.snapshot.model_revision.clone();
     let observation_revision = cache.docker_observation_token();
-    match cache.observed_history.docker_events.retain(
+    let result = match cache.observed_history.docker_events.retain(
         event,
         context.source_generation,
         &model_revision,
@@ -1091,7 +1252,11 @@ pub(crate) async fn retain_docker_event(
         DockerEventRetention::Retained => DockerEventApply::Retained,
         DockerEventRetention::Duplicate => DockerEventApply::Duplicate,
         DockerEventRetention::Rejected => DockerEventApply::StaleSource,
+    };
+    if result == DockerEventApply::Retained {
+        cache.rebuild_findings();
     }
+    result
 }
 
 /// Advance the public collector lifecycle only for the exact live source
@@ -1108,10 +1273,14 @@ pub(crate) async fn set_docker_event_collection_state(
     {
         return false;
     }
+    let prior_state = cache.observed_history.docker_events.collection_state();
     cache
         .observed_history
         .docker_events
         .set_collection_state(collection_state);
+    if prior_state != collection_state {
+        cache.rebuild_findings();
+    }
     true
 }
 
@@ -1175,6 +1344,11 @@ async fn publish_docker_snapshot_cache(
         mark_network_observation_stale(&mut updated.runtime_providers);
     }
     updated.docker_observation_revision = cache.docker_observation_revision.clone();
+    // Findings are rebuilt below, but their private clock continuity belongs
+    // to the daemon cache rather than an individual snapshot result. Carry it
+    // forward before rebuilding so a publication cannot bypass a read-time
+    // expiry watermark.
+    updated.temporal_findings_clock_watermark_ms = cache.temporal_findings_clock_watermark_ms;
     updated.observed_history = if same_source {
         cache.observed_history.clone()
     } else {
@@ -1276,6 +1450,10 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     revision: PublicationRevision::new(),
                     observed_history: ObservedHistoryCache::new(),
                     resource_telemetry: ResourceTelemetryCache::default(),
+                    temporal_findings_clock_watermark_ms: None,
+                    temporal_findings_expiry_ms: None,
+                    temporal_findings_projection_valid: false,
+                    findings_projection_generation: 0,
                 }
             }
             Err(error) => {
@@ -2804,6 +2982,10 @@ mod scheduler_tests {
             revision: PublicationRevision::new(),
             observed_history: ObservedHistoryCache::new(),
             resource_telemetry: ResourceTelemetryCache::default(),
+            temporal_findings_clock_watermark_ms: None,
+            temporal_findings_expiry_ms: None,
+            temporal_findings_projection_valid: false,
+            findings_projection_generation: 0,
         };
         cache.assign_docker_observation_revision();
         cache
@@ -4129,6 +4311,187 @@ mod scheduler_tests {
         assert!(mock.current_model_revision.is_none());
         assert!(mock.current_observation_revision.is_none());
         assert!(mock.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn temporal_died_finding_requires_one_fresh_continuous_collecting_epoch() {
+        const NOW_SECONDS: u64 = 1_800_000_000;
+        const NOW_MS: u64 = NOW_SECONDS * 1_000;
+        const RAW_CONTAINER_ID: &str =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let mut snapshot = mock_snapshot();
+        snapshot.last_updated = NOW_MS + 300_000;
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(snapshot.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(snapshot.clone())).await;
+        let context = docker_event_source_context(&state, NOW_SECONDS)
+            .await
+            .expect("live context");
+        assert!(
+            set_docker_event_collection_state(
+                &state,
+                &context,
+                ObservedDockerEventCollectionState::Collecting
+            )
+            .await
+        );
+        for offset_ms in [0_u64, 150_000, 300_000] {
+            let nanos = NOW_MS.saturating_add(offset_ms).saturating_mul(1_000_000);
+            let event = parse_docker_event(
+                EventMessage {
+                    typ: Some(EventMessageTypeEnum::CONTAINER),
+                    action: Some("die".into()),
+                    actor: Some(EventActor {
+                        id: Some(RAW_CONTAINER_ID.into()),
+                        attributes: Some(std::collections::HashMap::from([(
+                            "name".into(),
+                            "/private/temporal-name".into(),
+                        )])),
+                    }),
+                    time: Some((nanos / 1_000_000_000) as i64),
+                    time_nano: Some(nanos as i64),
+                    ..Default::default()
+                },
+                NOW_MS.saturating_add(offset_ms),
+            )
+            .expect("bounded controlled event parses");
+            assert_eq!(
+                retain_docker_event(&state, &context, event).await,
+                DockerEventApply::Retained
+            );
+        }
+        let cache = state.cache.read().await;
+        let temporal = cache
+            .findings
+            .findings
+            .iter()
+            .filter(|finding| {
+                finding.rule_id == dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(temporal.len(), 1);
+        let encoded = serde_json::to_string(temporal[0]).expect("temporal finding serializes");
+        for forbidden in [
+            RAW_CONTAINER_ID,
+            "/private/temporal-name",
+            "containerId",
+            "eventId",
+            "sourceOccurredAtMs",
+            "anchor",
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "temporal finding leaked {forbidden}"
+            );
+        }
+        drop(cache);
+
+        // A normal read is served from the cached projection while its private
+        // expiry deadline has not arrived: repeated reads do not re-derive all
+        // findings under the route writer lock.
+        let mut cache = state.cache.write().await;
+        assert!(cache
+            .findings_response_at(Some(NOW_MS + 300_000))
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id
+                == dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+        let projection_generation = cache.findings_projection_generation;
+        assert!(cache
+            .findings_response_at(Some(NOW_MS + 300_001))
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id
+                == dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+        assert_eq!(cache.findings_projection_generation, projection_generation);
+        let before_snapshot_expiry = cache.clone();
+        drop(cache);
+
+        // The age predicate is inclusive at exactly five minutes. With no
+        // state/event/snapshot change, the boundary remains visible and the
+        // next millisecond alone reprojects it away.
+        let mut cache = state.cache.write().await;
+        assert!(cache
+            .findings_response_at(Some(NOW_MS + 600_000))
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id
+                == dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+        assert!(cache
+            .findings_response_at(Some(NOW_MS + 600_001))
+            .findings
+            .iter()
+            .all(|finding| finding.rule_id
+                != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+        drop(cache);
+
+        // A snapshot rebuild at B crosses the expiry boundary through the
+        // same monotonic gate. The following route projection at prior A must
+        // remain absent: publication cannot bypass or lower the watermark.
+        let snapshot_state = AppState {
+            cache: Arc::new(RwLock::new(before_snapshot_expiry)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        let mut stale = snapshot.clone();
+        stale.last_updated = NOW_MS + 600_001;
+        publish_docker_snapshot_cache(&snapshot_state, docker_cache(stale)).await;
+        let mut cache = snapshot_state.cache.write().await;
+        assert!(cache.findings.findings.iter().all(|finding| finding.rule_id
+            != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+        assert!(cache
+            .findings_response_at(Some(NOW_MS + 300_000))
+            .findings
+            .iter()
+            .all(|finding| finding.rule_id
+                != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+
+        // An invalid clock remains temporal-only suppression; a later
+        // backwards read cannot resurrect the advisory either.
+        for now in [Some(NOW_MS + 600_001), Some(NOW_MS + 300_000), None] {
+            assert!(cache
+                .findings_response_at(now)
+                .findings
+                .iter()
+                .all(|finding| finding.rule_id
+                    != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+        }
+        drop(cache);
+
+        assert!(
+            set_docker_event_collection_state(
+                &state,
+                &context,
+                ObservedDockerEventCollectionState::Reconnecting
+            )
+            .await
+        );
+        let cache = state.cache.read().await;
+        assert!(cache.observed_history.docker_events.retained().is_empty());
+        assert!(cache.findings.findings.iter().all(|finding| finding.rule_id
+            != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
+        drop(cache);
+
+        assert!(
+            set_docker_event_collection_state(
+                &state,
+                &context,
+                ObservedDockerEventCollectionState::Collecting
+            )
+            .await
+        );
+        assert!(state
+            .cache
+            .read()
+            .await
+            .findings
+            .findings
+            .iter()
+            .all(|finding| finding.rule_id
+                != dockermap_core::FindingRule::DockerRepeatedContainerDiedEvents));
     }
 
     #[tokio::test]

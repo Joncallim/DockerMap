@@ -12,7 +12,9 @@ mod observed_history;
 pub mod schema_baseline;
 mod snapshot_runtime;
 
-pub use findings::derive_findings;
+pub use findings::{
+    derive_findings, derive_temporal_docker_findings, temporal_docker_findings_expiry_ms,
+};
 pub use fixtures::{mock_log_entries, mock_logs, mock_snapshot, unix_timestamp_millis};
 pub use identity::collision_resistant_id_component;
 pub use logs::{

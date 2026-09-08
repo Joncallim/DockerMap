@@ -1343,7 +1343,6 @@ export const RUST_RESPONSE_SCHEMAS = {
             "$ref": "#/$defs/RuntimeEvidenceRef"
           },
           "maxItems": 2,
-          "minItems": 1,
           "type": "array"
         },
         "id": {
@@ -1363,7 +1362,10 @@ export const RUST_RESPONSE_SCHEMAS = {
           "$ref": "#/$defs/FindingSeverity"
         },
         "subjectRef": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "summary": {
           "maxLength": 259,
@@ -1371,7 +1373,18 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         "targetRef": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "temporalEvidence": {
+          "description": "Retained stream evidence is separate from runtime evidence. Each\nclosed rule has a small fixed budget and a validating wire shape.",
+          "items": {
+            "$ref": "#/$defs/TemporalEvidenceWitness"
+          },
+          "maxItems": 3,
+          "type": "array"
         }
       },
       "required": [
@@ -1380,20 +1393,27 @@ export const RUST_RESPONSE_SCHEMAS = {
         "severity",
         "summary",
         "recommendation",
-        "subjectRef",
-        "targetRef",
         "evidenceRefs"
       ],
       "type": "object"
     },
     "FindingRule": {
       "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
-      "enum": [
-        "systemd.requires_target_not_active",
-        "docker.internal_network_member_publishes_port",
-        "docker.daemon_state_bind_mount"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "systemd.requires_target_not_active",
+            "docker.internal_network_member_publishes_port",
+            "docker.daemon_state_bind_mount"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "docker.repeated_container_died_events",
+          "description": "Exactly three distinct, retained Docker `die` observations for one\nopaque container in a short continuous collection epoch. This is an\nadvisory about those observations only; it does not assert a crash\ncause, restart policy, current state, or service impact.",
+          "type": "string"
+        }
+      ]
     },
     "FindingSeverity": {
       "description": "Findings are intentionally a small, closed advisory vocabulary. They do\nnot expose provider output or prescribe an automated remediation.",
@@ -1575,6 +1595,37 @@ export const RUST_RESPONSE_SCHEMAS = {
         "collectedAt",
         "providerRevision",
         "freshness"
+      ],
+      "type": "object"
+    },
+    "TemporalEvidenceKind": {
+      "description": "Closed event vocabulary eligible for a temporal finding. New rules must\nexplicitly extend this type; raw Docker action text is never accepted.",
+      "enum": [
+        "container_died"
+      ],
+      "type": "string"
+    },
+    "TemporalEvidenceSource": {
+      "description": "Closed event source vocabulary for temporal finding evidence. Kept\nseparate from runtime-map evidence so a historical stream row can never\nbe promoted into an assertion about a current topology node or edge.",
+      "enum": [
+        "docker_event_stream"
+      ],
+      "type": "string"
+    },
+    "TemporalEvidenceWitness": {
+      "additionalProperties": false,
+      "description": "One static, redacted witness for a temporal finding. This intentionally\ncontains no event/container identity, timestamp, anchor, epoch, provider\nmessage, path, name, status or exit value. The exact count is proof of the\nclosed threshold without turning Findings into an event-history API.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/TemporalEvidenceKind"
+        },
+        "source": {
+          "$ref": "#/$defs/TemporalEvidenceSource"
+        }
+      },
+      "required": [
+        "source",
+        "kind"
       ],
       "type": "object"
     }
@@ -4337,7 +4388,6 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
             "$ref": "#/components/schemas/FindingsResponse/$defs/RuntimeEvidenceRef"
           },
           "maxItems": 2,
-          "minItems": 1,
           "type": "array"
         },
         "id": {
@@ -4357,7 +4407,10 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "$ref": "#/components/schemas/FindingsResponse/$defs/FindingSeverity"
         },
         "subjectRef": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "summary": {
           "maxLength": 259,
@@ -4365,7 +4418,18 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         "targetRef": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "temporalEvidence": {
+          "description": "Retained stream evidence is separate from runtime evidence. Each\nclosed rule has a small fixed budget and a validating wire shape.",
+          "items": {
+            "$ref": "#/components/schemas/FindingsResponse/$defs/TemporalEvidenceWitness"
+          },
+          "maxItems": 3,
+          "type": "array"
         }
       },
       "required": [
@@ -4374,20 +4438,27 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "severity",
         "summary",
         "recommendation",
-        "subjectRef",
-        "targetRef",
         "evidenceRefs"
       ],
       "type": "object"
     },
     "FindingRule": {
       "description": "Closed rule identifiers keep clients from treating findings as arbitrary\nprovider messages. New rules require an explicit contract addition.",
-      "enum": [
-        "systemd.requires_target_not_active",
-        "docker.internal_network_member_publishes_port",
-        "docker.daemon_state_bind_mount"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "systemd.requires_target_not_active",
+            "docker.internal_network_member_publishes_port",
+            "docker.daemon_state_bind_mount"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "docker.repeated_container_died_events",
+          "description": "Exactly three distinct, retained Docker `die` observations for one\nopaque container in a short continuous collection epoch. This is an\nadvisory about those observations only; it does not assert a crash\ncause, restart policy, current state, or service impact.",
+          "type": "string"
+        }
+      ]
     },
     "FindingSeverity": {
       "description": "Findings are intentionally a small, closed advisory vocabulary. They do\nnot expose provider output or prescribe an automated remediation.",
@@ -4569,6 +4640,37 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "collectedAt",
         "providerRevision",
         "freshness"
+      ],
+      "type": "object"
+    },
+    "TemporalEvidenceKind": {
+      "description": "Closed event vocabulary eligible for a temporal finding. New rules must\nexplicitly extend this type; raw Docker action text is never accepted.",
+      "enum": [
+        "container_died"
+      ],
+      "type": "string"
+    },
+    "TemporalEvidenceSource": {
+      "description": "Closed event source vocabulary for temporal finding evidence. Kept\nseparate from runtime-map evidence so a historical stream row can never\nbe promoted into an assertion about a current topology node or edge.",
+      "enum": [
+        "docker_event_stream"
+      ],
+      "type": "string"
+    },
+    "TemporalEvidenceWitness": {
+      "additionalProperties": false,
+      "description": "One static, redacted witness for a temporal finding. This intentionally\ncontains no event/container identity, timestamp, anchor, epoch, provider\nmessage, path, name, status or exit value. The exact count is proof of the\nclosed threshold without turning Findings into an event-history API.",
+      "properties": {
+        "kind": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/TemporalEvidenceKind"
+        },
+        "source": {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/TemporalEvidenceSource"
+        }
+      },
+      "required": [
+        "source",
+        "kind"
       ],
       "type": "object"
     }

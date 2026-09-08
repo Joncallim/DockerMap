@@ -154,6 +154,9 @@ pub(crate) struct RetainedDockerEvent {
     pub(crate) source_generation: u64,
     pub(crate) anchor_model_revision: String,
     pub(crate) anchor_observation_revision: String,
+    /// Private collection epoch. It is never serialized: a temporal Finding
+    /// can only use rows retained while one stream was continuously collecting.
+    continuity_epoch: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +178,7 @@ pub(crate) struct DockerEventJournal {
     dedupe_ids: BTreeSet<String>,
     last_source_timestamp_nanos: Option<u64>,
     collection_state: ObservedDockerEventCollectionState,
+    continuity_epoch: u64,
 }
 
 impl Default for DockerEventJournal {
@@ -185,6 +189,7 @@ impl Default for DockerEventJournal {
             dedupe_ids: BTreeSet::new(),
             last_source_timestamp_nanos: None,
             collection_state: ObservedDockerEventCollectionState::Unavailable,
+            continuity_epoch: 0,
         }
     }
 }
@@ -227,6 +232,7 @@ impl DockerEventJournal {
             source_generation,
             anchor_model_revision: anchor_model_revision.to_owned(),
             anchor_observation_revision: anchor_observation_revision.to_owned(),
+            continuity_epoch: self.continuity_epoch,
         });
         while self.events.len() > MAX_OBSERVED_CHANGE_EVENTS {
             self.events.pop_front();
@@ -246,6 +252,21 @@ impl DockerEventJournal {
     /// proving the stream generation is still current. It carries no gateway
     /// error text or other provider-controlled display data.
     pub(crate) fn set_collection_state(&mut self, state: ObservedDockerEventCollectionState) {
+        if state != self.collection_state {
+            // A reconnect, source loss, or a new collecting stream begins a
+            // new continuity epoch. Retained rows from a prior stream are
+            // not comparable to new rows and are cleared before the new
+            // stream can contribute to a temporal threshold. Dedupe remains
+            // intact across reconnect replay, preventing old rows from being
+            // counted again in the new epoch.
+            self.events.clear();
+            if state == ObservedDockerEventCollectionState::Collecting {
+                self.continuity_epoch = self
+                    .continuity_epoch
+                    .checked_add(1)
+                    .expect("Docker event continuity epoch overflow");
+            }
+        }
         self.collection_state = state;
     }
 
@@ -259,6 +280,7 @@ impl DockerEventJournal {
         self.events
             .iter()
             .rev()
+            .filter(|event| event.continuity_epoch == self.continuity_epoch)
             .map(|event| ObservedDockerEvent {
                 id: event.id.clone(),
                 kind: event.kind.public_kind(),
