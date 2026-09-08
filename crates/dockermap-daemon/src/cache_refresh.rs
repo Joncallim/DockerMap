@@ -16,7 +16,10 @@ use crate::{
         SYSTEMD_EVIDENCE_WANTS,
     },
     providers::tmux::TMUX_EVIDENCE_SESSION_LISTING_MARKER,
-    publication::{publish_docker_snapshot, redact_health_response, redact_runtime_map},
+    publication::{
+        append_runtime_identity_collision_fact, publish_docker_snapshot, redact_health_response,
+        redact_runtime_map, runtime_map_has_identity_collision,
+    },
     runtime_collection::{
         collect_provider_slot_bounded, runtime_map_from_collection, slot_interval,
         ProviderCollectionOutcome, STATIC_PROVIDER_SLOTS,
@@ -81,6 +84,10 @@ pub(crate) struct DaemonCache {
     /// This is intentionally distinct from the broader publication revision:
     /// provider slot state may change without changing Docker facts.
     docker_observation_revision: DockerObservationRevision,
+    /// Opaque revision of the one aggregate publication-integrity condition.
+    /// It advances only when the live collision boolean changes; no collided
+    /// identity, count, diagnostic, or provider material participates.
+    integrity_observation_revision: IntegrityObservationRevision,
     revision: PublicationRevision,
 }
 
@@ -186,6 +193,40 @@ impl DockerObservationRevision {
                 .expect("Docker observation revision sequence overflow");
             self.last_observable = Some(observable);
         }
+    }
+}
+
+/// Per-process opaque token for the collision aggregate. Unlike a Docker
+/// observation token, this is keyed only to the already-sanitized boolean
+/// condition that can safely be published as evidence.
+#[derive(Clone)]
+struct IntegrityObservationRevision {
+    boot: String,
+    sequence: u64,
+    last_active: Option<bool>,
+}
+
+impl IntegrityObservationRevision {
+    fn new() -> Self {
+        Self {
+            boot: opaque_revision_boot_component(),
+            sequence: 0,
+            last_active: None,
+        }
+    }
+
+    fn assign(&mut self, active: bool) {
+        if self.last_active != Some(active) {
+            self.sequence = self
+                .sequence
+                .checked_add(1)
+                .expect("integrity observation revision sequence overflow");
+            self.last_active = Some(active);
+        }
+    }
+
+    fn current(&self) -> String {
+        format!("{}-{}", self.boot, self.sequence)
     }
 }
 
@@ -404,6 +445,7 @@ impl DaemonCache {
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
+            integrity_observation_revision: IntegrityObservationRevision::new(),
             revision: PublicationRevision::new(),
         };
         cache.assign_docker_observation_revision();
@@ -452,6 +494,23 @@ impl DaemonCache {
             &self.runtime_providers,
             &docker_observation_token,
         );
+        self.apply_runtime_identity_collision_fact();
+    }
+
+    /// The map is rebuilt before this gate on every publication, so a prior
+    /// aggregate fact cannot survive a resolved collision or a source reset.
+    fn apply_runtime_identity_collision_fact(&mut self) {
+        let active = self.health.mode == RuntimeMode::Docker
+            && runtime_map_has_identity_collision(&self.runtime_map);
+        self.integrity_observation_revision.assign(active);
+        if active {
+            let token = self.integrity_observation_revision.current();
+            let _ = append_runtime_identity_collision_fact(
+                &mut self.runtime_map,
+                &token,
+                self.snapshot.last_updated,
+            );
+        }
     }
 }
 
@@ -535,6 +594,13 @@ async fn publish_docker_snapshot_cache(
         mark_network_observation_stale(&mut updated.runtime_providers);
     }
     updated.docker_observation_revision = cache.docker_observation_revision.clone();
+    // The collision aggregate is one stable boolean observation for this
+    // source generation. Replacing the cache for an otherwise identical
+    // Docker refresh must not mint a new V7 evidence token and churn the
+    // public model revision/SSE stream.
+    if same_source {
+        updated.integrity_observation_revision = cache.integrity_observation_revision.clone();
+    }
     updated.rebuild_runtime_map();
     updated.revision = cache.revision.clone();
     updated.assign_revision();
@@ -603,6 +669,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     runtime_providers: unavailable_provider_slots(),
                     source_generation: 0,
                     docker_observation_revision: DockerObservationRevision::new(),
+                    integrity_observation_revision: IntegrityObservationRevision::new(),
                     revision: PublicationRevision::new(),
                 }
             }
@@ -2490,6 +2557,7 @@ mod scheduler_tests {
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
+            integrity_observation_revision: IntegrityObservationRevision::new(),
             revision: PublicationRevision::new(),
         };
         cache.assign_docker_observation_revision();
@@ -2506,6 +2574,112 @@ mod scheduler_tests {
             .expect("Docker runtime map carries evidence")
             .provider_revision
             .clone()
+    }
+
+    #[test]
+    fn collision_fact_cache_gate_requires_docker_and_clears_on_rebuild_input() {
+        let mut cache = docker_cache(mock_snapshot());
+        cache.runtime_map = empty_runtime_map(cache.snapshot.last_updated);
+        cache.runtime_map.nodes = ["fixture_collision", "fixture_collision"]
+            .into_iter()
+            .map(|id| RuntimeMapNode {
+                id: id.into(),
+                provider: RuntimeProviderKind::Other,
+                kind: RuntimeNodeKind::HostRisk,
+                label: "[redacted]".into(),
+                status: None,
+                layer: None,
+                metadata: TestBTreeMap::new(),
+                service: None,
+                package: None,
+            })
+            .collect();
+        cache.apply_runtime_identity_collision_fact();
+        assert_eq!(
+            cache.runtime_map.edges.len(),
+            1,
+            "live collision injects one aggregate fact"
+        );
+        let active_revision = cache.integrity_observation_revision.current();
+
+        cache.runtime_map = empty_runtime_map(cache.snapshot.last_updated);
+        cache.apply_runtime_identity_collision_fact();
+        assert!(
+            cache.runtime_map.edges.is_empty(),
+            "a rebuilt collision-free map carries no prior aggregate fact"
+        );
+        assert_ne!(
+            cache.integrity_observation_revision.current(),
+            active_revision,
+            "resolved collision advances only the private aggregate token"
+        );
+
+        cache.health.mode = RuntimeMode::Mock;
+        cache.runtime_map.nodes = ["fixture_collision", "fixture_collision"]
+            .into_iter()
+            .map(|id| RuntimeMapNode {
+                id: id.into(),
+                provider: RuntimeProviderKind::Other,
+                kind: RuntimeNodeKind::HostRisk,
+                label: "[redacted]".into(),
+                status: None,
+                layer: None,
+                metadata: TestBTreeMap::new(),
+                service: None,
+                package: None,
+            })
+            .collect();
+        cache.apply_runtime_identity_collision_fact();
+        assert!(
+            cache.runtime_map.edges.is_empty(),
+            "mock never projects the collision aggregate"
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_identity_collision_keeps_aggregate_token_and_model_revision_stable() {
+        let collision_snapshot = |last_updated| {
+            let mut snapshot = mock_snapshot();
+            let duplicate = snapshot.containers[0].clone();
+            snapshot.containers.push(duplicate);
+            snapshot.last_updated = last_updated;
+            snapshot
+        };
+        let first = collision_snapshot(10);
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        publish_docker_snapshot_cache(&state, docker_cache(first)).await;
+        let first_cache = state.cache.read().await;
+        let first_revision = first_cache.snapshot.model_revision.clone();
+        let first_token = first_cache
+            .runtime_map
+            .edges
+            .iter()
+            .flat_map(|edge| edge.evidence_refs.iter())
+            .find(|evidence| evidence.kind == RuntimeEvidenceKind::RuntimeIdentityCollision)
+            .expect("collision aggregate carries one V7 evidence ref")
+            .provider_revision
+            .clone();
+        drop(first_cache);
+
+        publish_docker_snapshot_cache(&state, docker_cache(collision_snapshot(12))).await;
+        let refreshed = state.cache.read().await;
+        let refreshed_token = refreshed
+            .runtime_map
+            .edges
+            .iter()
+            .flat_map(|edge| edge.evidence_refs.iter())
+            .find(|evidence| evidence.kind == RuntimeEvidenceKind::RuntimeIdentityCollision)
+            .expect("persistent collision retains one V7 evidence ref")
+            .provider_revision
+            .clone();
+        assert_eq!(refreshed_token, first_token);
+        assert_eq!(refreshed.snapshot.model_revision, first_revision);
+        assert_eq!(refreshed.runtime_map.model_revision, first_revision);
     }
 
     /// Complete a claimed fixed slot without running a host collector. This is

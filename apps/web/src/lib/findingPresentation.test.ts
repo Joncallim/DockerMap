@@ -48,6 +48,16 @@ const unspecifiedAddressFinding = {
   evidenceRefs: [{ version: 1, id: "opaque-publication", provider: "docker", kind: "docker_unspecified_address_port_publication", assertionKind: "observed", summary: "Docker reported a container port published on an unspecified host address", subjectRef: "docker_container_redacted", collectedAt: 1, providerRevision: "opaque-observation", providerSlot: null, freshness: "fresh" }]
 };
 
+const identityCollisionFinding = {
+  id: "finding_runtime_identity_collision_detected",
+  ruleId: "runtime.identity_collision_detected",
+  severity: "advisory",
+  summary: "DockerMap detected duplicate runtime identities after publication normalization.",
+  recommendation: "Review the duplicate identity condition before relying on topology relationships.",
+  subjectRef: "runtime_integrity_scope", targetRef: "runtime_integrity_risk_identity_collision",
+  evidenceRefs: [{ version: 7, id: "dockermap_evidence_runtime_identity_collision", provider: "dockermap", kind: "runtime_identity_collision", assertionKind: "observed", summary: "DockerMap detected duplicate runtime identities after publication normalization", subjectRef: "runtime_integrity_scope", collectedAt: 1, providerRevision: "0123456789abcdef0123456789abcdef-1", freshness: "fresh" }]
+};
+
 describe("finding presentation boundary", () => {
   it("admits only the static closed Compose advisory shape", () => {
     expect(presentationForFinding(composeFinding)).toMatchObject({
@@ -112,5 +122,14 @@ describe("finding presentation boundary", () => {
     expect(presentationForFinding({ ...unspecifiedAddressFinding, evidenceRefs: [{ ...unspecifiedAddressFinding.evidenceRefs[0], providerSlot: "project_npm" }] })).toBeNull();
     expect(presentationForFinding({ ...unspecifiedAddressFinding, evidenceRefs: [{ ...unspecifiedAddressFinding.evidenceRefs[0], freshness: "stale" }] })).toBeNull();
     expect(presentationForFinding({ ...unspecifiedAddressFinding, evidenceRefs: [{ ...unspecifiedAddressFinding.evidenceRefs[0], providerRevision: "1" }] })).toBeNull();
+  });
+
+  it("admits only the fixed aggregate identity-collision fact without identities", () => {
+    expect(presentationForFinding(identityCollisionFinding)).toMatchObject({
+      title: "Runtime identity integrity needs review", category: "Evidence integrity"
+    });
+    expect(presentationForFinding({ ...identityCollisionFinding, subjectRef: "runtime_integrity_scope_collision_a" })).toBeNull();
+    expect(presentationForFinding({ ...identityCollisionFinding, evidenceRefs: [{ ...identityCollisionFinding.evidenceRefs[0], summary: "collision: secret-container" }] })).toBeNull();
+    expect(presentationForFinding({ ...identityCollisionFinding, evidenceRefs: [{ ...identityCollisionFinding.evidenceRefs[0], providerRevision: "fixture-revision" }] })).toBeNull();
   });
 });

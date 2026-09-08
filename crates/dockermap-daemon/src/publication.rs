@@ -6,8 +6,10 @@
 use dockermap_core::{
     collision_resistant_id_component, ComposeDiagnostic, ComposeEditPlan, ComposeFileOrigin,
     ComposeScan, ContainerRecord, DiagnosticSeverity, DockerSnapshot, HealthResponse,
-    RuntimeLocation, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode,
-    RuntimeOwnership, RuntimePackageEntity, RuntimeProviderKind, RuntimeServiceEntity,
+    RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
+    RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeLocation, RuntimeMap, RuntimeMapDiagnostic,
+    RuntimeMapEdge, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeOwnership,
+    RuntimePackageEntity, RuntimeProviderKind, RuntimeRelationshipKind, RuntimeServiceEntity,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -40,15 +42,10 @@ pub(crate) fn redact_runtime_map(runtime_map: &mut RuntimeMap) {
 /// explicit: the web model removes collided IDs from its selection index, so
 /// no client can route an ambiguous ID to an arbitrary record.
 fn normalize_runtime_map_topology(runtime_map: &mut RuntimeMap) {
-    let duplicate_node_ids = duplicate_runtime_node_ids(&runtime_map.nodes);
     runtime_map.nodes.sort_by_key(runtime_node_sort_key);
-    for _ in duplicate_node_ids {
-        runtime_map.diagnostics.push(RuntimeMapDiagnostic {
-            provider: RuntimeProviderKind::Other,
-            severity: DiagnosticSeverity::Warning,
-            message: "Duplicate runtime topology ID after publication normalization; records remain visible and non-routable".into(),
-        });
-    }
+    // Collision detail is deliberately not published as diagnostics: even a
+    // fixed message repeated per collision group leaks cardinality. The
+    // cache may instead project one closed aggregate integrity finding.
 
     let node_ids = runtime_map
         .nodes
@@ -72,6 +69,82 @@ fn duplicate_runtime_node_ids(nodes: &[RuntimeMapNode]) -> BTreeSet<String> {
         .filter(|(_, count)| *count > 1)
         .map(|(id, _)| id.to_string())
         .collect()
+}
+
+/// Report only whether the already-sanitized public topology contains at
+/// least one ambiguous identity. Callers never receive the collided IDs or
+/// their count, so the derived revision cannot become an identity oracle.
+pub(crate) fn runtime_map_has_identity_collision(runtime_map: &RuntimeMap) -> bool {
+    !duplicate_runtime_node_ids(&runtime_map.nodes).is_empty()
+}
+
+/// Append one fixed, aggregate integrity fact. Reserved-ID conflicts suppress
+/// the fact rather than letting provider-controlled nodes spoof its endpoints.
+/// The collision IDs/count and diagnostic text never enter this structure.
+pub(crate) fn append_runtime_identity_collision_fact(
+    runtime_map: &mut RuntimeMap,
+    provider_revision: &str,
+    collected_at: u64,
+) -> bool {
+    const SCOPE_ID: &str = "runtime_integrity_scope";
+    const RISK_ID: &str = "runtime_integrity_risk_identity_collision";
+    if provider_revision.is_empty()
+        || runtime_map
+            .nodes
+            .iter()
+            .any(|node| matches!(node.id.as_str(), SCOPE_ID | RISK_ID))
+    {
+        return false;
+    }
+
+    runtime_map.nodes.extend([
+        RuntimeMapNode {
+            id: SCOPE_ID.into(),
+            provider: RuntimeProviderKind::Other,
+            kind: RuntimeNodeKind::IntegrityScope,
+            label: "Runtime identity integrity".into(),
+            status: None,
+            layer: Some(RuntimeNodeLayer::Advisory),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        },
+        RuntimeMapNode {
+            id: RISK_ID.into(),
+            provider: RuntimeProviderKind::Other,
+            kind: RuntimeNodeKind::HostRisk,
+            label: "Duplicate runtime topology identity".into(),
+            status: None,
+            layer: Some(RuntimeNodeLayer::Advisory),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        },
+    ]);
+    runtime_map.edges.push(RuntimeMapEdge {
+        source: SCOPE_ID.into(),
+        target: RISK_ID.into(),
+        relationship: RuntimeRelationshipKind::RelatedTo,
+        metadata: BTreeMap::new(),
+        evidence_refs: vec![RuntimeEvidenceRef {
+            version: 7,
+            id: "dockermap_evidence_runtime_identity_collision".into(),
+            provider: RuntimeEvidenceProvider::Dockermap,
+            kind: RuntimeEvidenceKind::RuntimeIdentityCollision,
+            assertion_kind: RuntimeEvidenceAssertionKind::Observed,
+            summary:
+                "DockerMap detected duplicate runtime identities after publication normalization"
+                    .into(),
+            subject_ref: SCOPE_ID.into(),
+            collected_at,
+            provider_revision: provider_revision.into(),
+            provider_slot: None,
+            freshness: RuntimeEvidenceFreshness::Fresh,
+        }],
+    });
+    runtime_map.nodes.sort_by_key(runtime_node_sort_key);
+    runtime_map.edges.sort_by_key(runtime_edge_sort_key);
+    true
 }
 
 fn runtime_node_sort_key(node: &RuntimeMapNode) -> String {
@@ -614,11 +687,83 @@ pub(crate) fn write_provider_diagnostic(
 
 #[cfg(test)]
 mod shared_helper_tests {
-    use super::truncate_chars;
+    use super::{
+        append_runtime_identity_collision_fact, runtime_map_has_identity_collision, truncate_chars,
+    };
+    use dockermap_core::{RuntimeMap, RuntimeMapNode, RuntimeNodeKind, RuntimeProviderKind};
+    use std::collections::BTreeMap;
+
+    fn collision_map(ids: &[&str]) -> RuntimeMap {
+        RuntimeMap {
+            nodes: ids
+                .iter()
+                .map(|id| RuntimeMapNode {
+                    id: (*id).into(),
+                    provider: RuntimeProviderKind::Other,
+                    kind: RuntimeNodeKind::HostRisk,
+                    label: "[redacted]".into(),
+                    status: None,
+                    layer: None,
+                    metadata: BTreeMap::new(),
+                    service: None,
+                    package: None,
+                })
+                .collect(),
+            edges: vec![],
+            diagnostics: vec![],
+            last_updated: 1,
+            model_revision: "fixture-revision".into(),
+            provider_states: vec![],
+            source: None,
+        }
+    }
 
     #[test]
     fn truncates_log_messages_on_character_boundaries() {
         assert_eq!(truncate_chars("abcdef", 3), "abc...");
         assert_eq!(truncate_chars("ok", 3), "ok");
+    }
+
+    #[test]
+    fn collision_fact_is_aggregate_and_reserved_ids_fail_closed() {
+        let mut map = collision_map(&["redacted-collision", "redacted-collision"]);
+        assert!(runtime_map_has_identity_collision(&map));
+        assert!(append_runtime_identity_collision_fact(
+            &mut map,
+            "0123456789abcdef0123456789abcdef-1",
+            7
+        ));
+        assert_eq!(
+            map.nodes
+                .iter()
+                .filter(|node| node.id == "runtime_integrity_scope")
+                .count(),
+            1
+        );
+        assert_eq!(
+            map.nodes
+                .iter()
+                .filter(|node| node.id == "runtime_integrity_risk_identity_collision")
+                .count(),
+            1
+        );
+        assert_eq!(map.edges.len(), 1);
+        assert_eq!(
+            map.edges[0].evidence_refs[0].id,
+            "dockermap_evidence_runtime_identity_collision"
+        );
+        assert!(
+            map.diagnostics.is_empty(),
+            "collision cardinality is not a public diagnostic channel"
+        );
+
+        let mut reserved = collision_map(&["runtime_integrity_scope", "runtime_integrity_scope"]);
+        assert!(runtime_map_has_identity_collision(&reserved));
+        assert!(!append_runtime_identity_collision_fact(
+            &mut reserved,
+            "0123456789abcdef0123456789abcdef-1",
+            7
+        ));
+        assert!(reserved.edges.is_empty());
     }
 }

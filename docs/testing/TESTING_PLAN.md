@@ -27,6 +27,11 @@ containers, or services.
   collided, ambiguous, non-Docker, and non-matching-status inputs. These are projection tests:
   they add no collection and never assert requiredness, readiness, health, traffic, start-order,
   root-cause, or drift conclusions.
+- Runtime-identity integrity tests exercise the post-publication collision boundary only. They
+  admit at most one fixed aggregate advisory from one fresh V7 DockerMap fact, are invariant to
+  input ordering, and suppress mock, stale, malformed, duplicate, and reserved-ID-conflicted
+  facts. The assertions prove that collided identities, collision counts, diagnostics, and
+  provider material never enter the aggregate edge, finding, or browser presentation.
 - The daemon-state-and-host-port warning accepts only an ordered pair of fresh version-1 Docker
   observations for one unique container: a path-free daemon-state risk fact followed by a port
   publication with a validated nonzero host binding. Tests require matching observation timestamp

@@ -1136,6 +1136,10 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].freshness = "stale"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs.push(structuredClone(value.findings[7].evidenceRefs[0])); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].targetRef = "runtime_integrity_risk_other"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].summary = "collision: secret-provider-value"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].providerRevision = "fixture-revision"; return value; })()],
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
@@ -1527,6 +1531,77 @@ test("runtime evidence is required and fails closed before browser publication",
       `v4 cron evidence must reject a noncanonical ${field}`
     );
   }
+
+  const identityEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "runtime_integrity_scope");
+  assert.ok(identityEdge, "canonical daemon fixture carries the V7 aggregate collision boundary");
+  for (const mutate of [
+    (edge: Record<string, unknown>) => { (edge.evidenceRefs as Array<Record<string, unknown>>)[0].id = "secret=collision"; },
+    (edge: Record<string, unknown>) => { edge.metadata = { collisionCount: "secret=2" }; },
+    (edge: Record<string, unknown>) => { (edge.evidenceRefs as Array<Record<string, unknown>>).push(structuredClone((edge.evidenceRefs as Array<Record<string, unknown>>)[0])); },
+  ]) {
+    const malformedIdentity = structuredClone(fixture);
+    const edge = malformedIdentity.edges.find((candidate: { source?: unknown }) => candidate.source === "runtime_integrity_scope");
+    assert.ok(edge);
+    mutate(edge);
+    assert.throws(() => validateDaemonResponse("/daemon/runtime/map", malformedIdentity), "V7 collision evidence must not carry identity or count material");
+  }
+  const prefixedIdentitySource = structuredClone(fixture);
+  const prefixedIdentityEdge = prefixedIdentitySource.edges.find((candidate: { source?: unknown }) => candidate.source === "runtime_integrity_scope");
+  assert.ok(prefixedIdentityEdge);
+  prefixedIdentityEdge.source = "runtime_integrity_scope_provider_controlled_material";
+  prefixedIdentityEdge.evidenceRefs[0].subjectRef = prefixedIdentityEdge.source;
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", prefixedIdentitySource),
+    "V7 collision evidence requires the exact fixed, identity-free source"
+  );
+
+  const noActualCollision = structuredClone(fixture);
+  const collisionNode = noActualCollision.nodes.find((node: { id?: unknown }, index: number, nodes: Array<{ id?: unknown }>) => (
+    typeof node.id === "string"
+      && node.id !== "runtime_integrity_scope"
+      && node.id !== "runtime_integrity_risk_identity_collision"
+      && nodes.filter((candidate) => candidate.id === node.id).length > 1
+  ));
+  assert.ok(collisionNode && typeof collisionNode.id === "string", "canonical fixture includes a real non-synthetic collision");
+  let retainedCollisionNode = false;
+  noActualCollision.nodes = noActualCollision.nodes.filter((node: { id?: unknown }) => {
+    if (node.id !== collisionNode.id) return true;
+    if (!retainedCollisionNode) {
+      retainedCollisionNode = true;
+      return true;
+    }
+    return false;
+  });
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", noActualCollision),
+    "V7 collision evidence requires a duplicate non-synthetic node identity"
+  );
+
+  const repeatedIdentityAggregate = structuredClone(fixture);
+  const repeatedIdentityEdge = repeatedIdentityAggregate.edges.find((candidate: { source?: unknown }) => candidate.source === "runtime_integrity_scope");
+  assert.ok(repeatedIdentityEdge);
+  repeatedIdentityAggregate.edges.push(structuredClone(repeatedIdentityEdge));
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", repeatedIdentityAggregate),
+    "V7 collision evidence has a single aggregate budget"
+  );
+
+  const findingsFixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/findings-response.json", import.meta.url),
+    "utf8"
+  ));
+  const repeatedCollisionFinding = structuredClone(findingsFixture);
+  const collisionFinding = repeatedCollisionFinding.findings.find((finding: { ruleId?: unknown }) => (
+    finding.ruleId === "runtime.identity_collision_detected"
+  ));
+  assert.ok(collisionFinding, "canonical findings fixture includes the collision aggregate");
+  repeatedCollisionFinding.findings.push(structuredClone(collisionFinding));
+  repeatedCollisionFinding.summary.advisoryCount += 1;
+  repeatedCollisionFinding.summary.evidenceIntegrityCount += 1;
+  assert.throws(
+    () => validateDaemonResponse("/daemon/findings", repeatedCollisionFinding),
+    "collision findings have a single aggregate budget"
+  );
 
   const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === tmuxFixtureSource);
   assert.ok(tmuxEdge, "canonical daemon fixture carries a V5 tmux session listing");
