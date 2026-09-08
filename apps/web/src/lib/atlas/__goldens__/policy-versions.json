@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "policyVersions": {
+    "projection": "atlas-v1/projection-1",
+    "layout": "atlas-v1/local-lanes",
+    "visual": "atlas-v1/visual-grammar-1",
+    "renderer": "atlas-v1/renderer-spike-1"
+  },
+  "artifacts": {
+    "semantic": {
+      "fixture": "two-container",
+      "file": "two-container-semantic.json",
+      "projection": "atlas-v1/projection-1"
+    },
+    "layout": {
+      "fixture": "two-container",
+      "file": "two-container-layout.json",
+      "layout": "atlas-v1/local-lanes"
+    },
+    "localAttachment": {
+      "fixture": "two-container",
+      "file": "local-attachment-policy.json",
+      "policy": "atlas-v1/local-attachment-rail-1",
+      "projection": "atlas-v1/projection-1",
+      "visual": "atlas-v1/visual-grammar-1"
+    }
+  }
+}
