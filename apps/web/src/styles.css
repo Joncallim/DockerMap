@@ -495,7 +495,7 @@ kbd {
 .metric {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--s1);
   padding: var(--s4);
   background: var(--surface);
   border: 1px solid var(--border);
@@ -503,20 +503,20 @@ kbd {
 }
 
 .metric-label {
-  font-size: 11px;
+  font-size: var(--type-xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted-deep);
 }
 
 .metric-value {
-  font-size: 26px;
+  font-size: var(--type-title);
   font-weight: 700;
   letter-spacing: -0.02em;
 }
 
 .metric-sub {
-  font-size: 12px;
+  font-size: var(--type-sm);
   color: var(--muted);
 }
 
@@ -549,7 +549,7 @@ kbd {
   display: flex;
   align-items: center;
   gap: var(--s2);
-  font-size: 14px;
+  font-size: var(--type-body);
 }
 
 .panel-title svg {
@@ -557,7 +557,7 @@ kbd {
 }
 
 .panel-hint {
-  font-size: 11.5px;
+  font-size: var(--type-xs);
   color: var(--muted-deep);
   margin-left: var(--s2);
 }
@@ -604,10 +604,12 @@ kbd {
 .tag {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: 6px;
-  font-size: 11.5px;
+  /* The 2px block padding is a DockerMap density exception; the shared
+     type, horizontal rhythm, and corner geometry come from Hearth. */
+  gap: var(--s1);
+  padding: 2px var(--s2);
+  border-radius: var(--r-sm);
+  font-size: var(--type-xs);
   color: var(--muted);
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -634,7 +636,7 @@ kbd {
 .tag-wrap {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--s1);
 }
 
 .kv {
@@ -1969,12 +1971,12 @@ kbd {
 .ref-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
+  gap: var(--s1);
+  padding: var(--s1) var(--s2);
   border-radius: 999px;
   background: var(--surface-2);
   border: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--type-xs);
   font-weight: 600;
 }
 

@@ -18,7 +18,6 @@ function customProperty(block: string, name: string) {
   if (!match) throw new Error(`Missing ${name}`);
   return match[1].trim();
 }
-
 function declaration(block: string, property: string) {
   const match = block.match(new RegExp(`\\s${property}:\\s*([^;]+);`));
   if (!match) throw new Error(`Missing ${property}`);
@@ -27,6 +26,7 @@ function declaration(block: string, property: string) {
 function expectCustomProperties(block: string, expected: Record<string, string>) {
   for (const [name, value] of Object.entries(expected)) {
     expect(customProperty(block, name), name).toBe(value);
+    expect(block.match(new RegExp(`\\s${name}:`, "g")), `${name} must not be redefined`).toHaveLength(1);
   }
 }
 
@@ -248,5 +248,36 @@ describe("production typography boundary", () => {
     expect(declaration(map, "--map-panel")).toBe("rgba(14, 17, 22, 0.9)");
     expect(declaration(root, "--s-healthy")).toBe("#50df95");
     expect(declaration(root, "--s-offline")).toBe("#ff6b6b");
+  });
+
+  it("keeps neutral metadata capsules on the public Hearth scale", () => {
+    const root = cssBlock(styles, ":root");
+    const tag = cssBlock(styles, ".tag");
+    const tagWrap = cssBlock(styles, ".tag-wrap");
+    const reference = cssBlock(styles, ".ref-chip");
+
+    for (const rule of [tag, reference]) {
+      expect(rule).toContain("gap: var(--s1)");
+      expect(rule).toContain("font-size: var(--type-xs)");
+    }
+    expect(tag).toContain("padding: 2px var(--s2)");
+    expect(tag).toContain("border-radius: var(--r-sm)");
+    expect(tagWrap).toContain("gap: var(--s1)");
+    expect(reference).toContain("padding: var(--s1) var(--s2)");
+    expect(reference).toContain("border-radius: 999px");
+    expect(customProperty(root, "--s1")).toBe("var(--hearth-space-1)");
+    expect(customProperty(root, "--s2")).toBe("var(--hearth-space-2)");
+    expect(customProperty(root, "--r-sm")).toBe("var(--hearth-radius-sm)");
+    expect(customProperty(root, "--type-xs")).toBe("var(--hearth-type-xs)");
+  });
+
+  it("keeps state, topology selection, and AI suggestion capsules distinct", () => {
+    const state = cssBlock(styles, ".state-pill");
+    const filter = cssBlock(styles, ".filter-chip");
+    const suggestion = cssBlock(styles, ".suggest-chip");
+
+    expect(state).toContain("color: var(--c, var(--s-unknown))");
+    expect(filter).toContain("text-transform: capitalize");
+    expect(suggestion).toContain("border-radius: 999px");
   });
 });
