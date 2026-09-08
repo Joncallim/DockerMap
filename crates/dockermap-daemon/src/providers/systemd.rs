@@ -76,7 +76,7 @@ pub(crate) fn collect_systemd_services(
     nodes: &mut Vec<RuntimeMapNode>,
     edges: &mut Vec<RuntimeMapEdge>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
-) {
+) -> bool {
     let system_uptime = system_uptime_seconds_from_proc();
     let output = match run_command_with_timeout(
         {
@@ -101,7 +101,7 @@ pub(crate) fn collect_systemd_services(
                 DiagnosticSeverity::Info,
                 format!("systemd discovery skipped: {error}"),
             );
-            return;
+            return false;
         }
     };
 
@@ -112,7 +112,7 @@ pub(crate) fn collect_systemd_services(
             DiagnosticSeverity::Warning,
             "systemd discovery command failed".into(),
         );
-        return;
+        return false;
     }
 
     let mut summaries = parse_systemd_list_units(&String::from_utf8_lossy(&output.stdout));
@@ -154,18 +154,24 @@ pub(crate) fn collect_systemd_services(
                     }
                 }
             }
-            Ok(_) => push_provider_diagnostic(
-                diagnostics,
-                RuntimeProviderKind::Systemd,
-                DiagnosticSeverity::Warning,
-                "systemd show command failed; dependency edges omitted".into(),
-            ),
-            Err(error) => push_provider_diagnostic(
-                diagnostics,
-                RuntimeProviderKind::Systemd,
-                DiagnosticSeverity::Info,
-                format!("systemd dependency discovery skipped: {error}"),
-            ),
+            Ok(_) => {
+                push_provider_diagnostic(
+                    diagnostics,
+                    RuntimeProviderKind::Systemd,
+                    DiagnosticSeverity::Warning,
+                    "systemd show command failed; dependency edges omitted".into(),
+                );
+                return false;
+            }
+            Err(error) => {
+                push_provider_diagnostic(
+                    diagnostics,
+                    RuntimeProviderKind::Systemd,
+                    DiagnosticSeverity::Info,
+                    format!("systemd dependency discovery skipped: {error}"),
+                );
+                return false;
+            }
         }
     }
 
@@ -210,6 +216,8 @@ pub(crate) fn collect_systemd_services(
             evidence_refs: Vec::new(),
         });
     }
+
+    true
 }
 
 fn parse_systemd_list_units(value: &str) -> Vec<SystemdUnitSummary> {

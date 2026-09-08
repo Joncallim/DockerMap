@@ -44,13 +44,22 @@ RUN npm run check:version && npm run check:contracts && npm run build
 # Build and assert the entire package artifact, rather than relying on a
 # source-tree module that happened to be copied into the image.
 RUN test -f packages/contracts/dist/index.js && test -f packages/contracts/dist/nodeSchemas.js
-# The runtime image needs the API's production dependency closure only. Prune
-# after all builders have finished, so compiler/test tooling never crosses the
-# runtime boundary. npm's workspace resolver may hoist that closure to the
-# repository root, which is the only node_modules tree copied below.
-RUN npm prune --omit=dev \
+# ---- API runtime dependency closure ----------------------------------------
+# Resolve the runtime dependency tree separately from the full monorepo build.
+# The API deliberately needs only itself and @dockermap/contracts; web runtime
+# packages must not cross this boundary merely because npm hoisted them during
+# the builder install.
+FROM node:22-bookworm-slim AS api-runtime-deps
+WORKDIR /runtime
+COPY package.json package-lock.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
+RUN npm ci --omit=dev --workspace @dockermap/api --include-workspace-root=false \
     && test ! -e node_modules/.bin/tsx && test ! -e node_modules/.bin/vite \
-    && test ! -d node_modules/typescript && test ! -e node_modules/@playwright/test/package.json
+    && test ! -d node_modules/typescript && test ! -e node_modules/@playwright/test/package.json \
+    && test ! -e node_modules/react/package.json \
+    && test ! -e node_modules/react-dom/package.json \
+    && test ! -e node_modules/react-router-dom/package.json
 
 # ---- Runtime image ----------------------------------------------------------
 FROM node:22-bookworm-slim AS runtime
@@ -68,7 +77,7 @@ RUN groupadd --gid 10003 dockermap && \
 
 WORKDIR /opt/dockermap
 
-COPY --from=js-builder /src/node_modules ./node_modules
+COPY --from=api-runtime-deps /runtime/node_modules ./node_modules
 COPY --from=js-builder /src/package.json ./package.json
 COPY --from=js-builder /src/apps/api/dist ./apps/api/dist
 COPY --from=js-builder /src/apps/api/package.json ./apps/api/package.json
@@ -92,7 +101,10 @@ RUN rm -rf /usr/local/lib/node_modules/npm \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
     && ! command -v npm && ! command -v npx \
     && test ! -e node_modules/.bin/tsx && test ! -e node_modules/.bin/vite \
-    && test ! -d node_modules/typescript && test ! -e node_modules/@playwright/test/package.json
+    && test ! -d node_modules/typescript && test ! -e node_modules/@playwright/test/package.json \
+    && test ! -e node_modules/react/package.json \
+    && test ! -e node_modules/react-dom/package.json \
+    && test ! -e node_modules/react-router-dom/package.json
 
 ENV NODE_ENV=production \
     PORT=4000 \
