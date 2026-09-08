@@ -1,8 +1,10 @@
+import type { ObservedResourceTelemetryResponse } from "@dockermap/contracts";
 import { hashString, needsAttention, type Service, type SystemModel } from "./model";
 import { identityText, UNAVAILABLE_SERVICE } from "./identity";
 import { demoSample, type Claim, type EvidenceMode, type ModelProvenance } from "./evidence";
 import { CAUSAL_CHAIN_CLAIM, CHANGE_HISTORY_CLAIM } from "./history";
 import { RESOURCE_STATS_CLAIM } from "./resources";
+import { observedResourceFor, type ObservedResourceSample } from "./resourceTelemetry";
 
 /**
  * ──────────────────────────────────────────────────────────────────────────
@@ -25,6 +27,11 @@ export interface ResourceSample {
   cpuSeries: number[];
 }
 
+export type ResourceClaim =
+  | { kind: "demo"; value: ResourceSample }
+  | { kind: "observed"; value: ObservedResourceSample }
+  | { kind: "unavailable"; value: null; detail: string };
+
 type ResourceHasher = (input: string) => number;
 
 function maySynthesizeResourceSample(mode: EvidenceMode | null, modelProvenance: ModelProvenance | null): boolean {
@@ -36,7 +43,7 @@ function resourceForWithHasher(
   mode: EvidenceMode | null,
   modelProvenance: ModelProvenance | null,
   hash: ResourceHasher
-): Claim<ResourceSample> {
+): Extract<ResourceClaim, { kind: "demo" | "unavailable" }> {
   if (!maySynthesizeResourceSample(mode, modelProvenance)) return RESOURCE_STATS_CLAIM;
   const base = hash(service.id);
   const load = service.state === "offline" ? 0 : 0.12 + base * 0.7;
@@ -46,17 +53,31 @@ function resourceForWithHasher(
     const wobble = hash(`${service.id}:${i}`);
     return service.state === "offline" ? 0 : Math.max(0, Math.min(1, load * 0.7 + wobble * 0.5 - 0.1));
   });
-  return demoSample({
+  return { kind: "demo", value: {
     cpuPercent: Math.round(load * 100),
     memoryPercent: Math.round((20 + memSeed * 70) * (service.state === "offline" ? 0 : 1)),
     memoryMb,
     networkKbps: Math.round((service.state === "offline" ? 0 : 1) * (10 + hash(service.id + "net") * 4000)),
     cpuSeries: series
-  });
+  } };
 }
 
-export function resourceFor(service: Service, mode: EvidenceMode | null, modelProvenance: ModelProvenance | null): Claim<ResourceSample> {
-  return resourceForWithHasher(service, mode, modelProvenance, hashString);
+export function resourceFor(
+  service: Service,
+  mode: EvidenceMode | null,
+  modelProvenance: ModelProvenance | null,
+  model?: SystemModel | null,
+  telemetry?: ObservedResourceTelemetryResponse | null,
+  now?: number
+): ResourceClaim {
+  // Demo remains deterministic and visibly tagged.  All other modes need
+  // independently attested current telemetry; there is no live fallback.
+  if (maySynthesizeResourceSample(mode, modelProvenance)) return resourceForWithHasher(service, mode, modelProvenance, hashString);
+  if (mode !== "live" || modelProvenance !== "live") return RESOURCE_STATS_CLAIM;
+  // Preserve the legacy three-argument public seam: it has no model/response
+  // authority and therefore remains the canonical non-collection claim.
+  if (model === undefined && telemetry === undefined) return RESOURCE_STATS_CLAIM;
+  return observedResourceFor(service, model ?? null, telemetry, now);
 }
 
 /** @internal Test-only guard-dominance seam; never import from app code. */

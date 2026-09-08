@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import type { AuthWhoamiResponse, FindingsResponse, ObservedChangeHistoryResponse } from "@dockermap/contracts";
+import type { AuthWhoamiResponse, FindingsResponse, ObservedChangeHistoryResponse, ObservedResourceTelemetryResponse } from "@dockermap/contracts";
 import { useDaemonHeartbeat } from "../hooks/useDaemonHeartbeat";
 import { useSystemModel } from "../hooks/useSystemModel";
 import { useSettings } from "../hooks/useSettings";
@@ -143,6 +143,7 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
   const { model, modelProvenance, loading, error } = useSystemModel(tick, evidenceMode);
   const findingsResource = useApiResource<FindingsResponse>("/api/findings", tick);
   const historyResource = useApiResource<ObservedChangeHistoryResponse>("/api/history", tick);
+  const resourceTelemetryResource = useApiResource<ObservedResourceTelemetryResponse>("/api/resource-telemetry", tick);
   const findings = useMemo(() => {
     if (modelProvenance !== "live" || !model || !findingsResource.data) return null;
     return findingsResource.data.modelRevision === model.modelRevision && findingsResource.data.modelRevision.length > 0
@@ -200,6 +201,7 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
     health,
     findings,
     observedHistory: historyResource.data,
+    resourceTelemetry: resourceTelemetryResource.data,
     tick,
     evidenceMode,
     openCommand: () => setCommandOpen(true)
