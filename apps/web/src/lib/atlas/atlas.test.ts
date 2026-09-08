@@ -5,6 +5,7 @@ import semanticGolden from "./__goldens__/two-container-semantic.json";
 import layoutGolden from "./__goldens__/two-container-layout.json";
 import {
   atlasFixtureMatrix,
+  atlasSyntheticCertificationMatrix,
   collisionFixture,
   crossSourceLookalikeFixture,
   daemonStateAttachmentFixture,
@@ -14,6 +15,7 @@ import {
   opaquePortFixture,
   permutation,
   runtimeFixture,
+  syntheticCertificationFixture,
   unsupportedKindFixture
 } from "./fixtures";
 import { ATLAS_CAMERA_POLICY, focusCamera, initialAtlasCamera, layoutAtlas, layoutJson, pointFor, preserveCamera, rectanglesOverlap } from "./layout";
@@ -54,6 +56,45 @@ describe("Atlas V1 fixture matrix", () => {
 
   it("covers the exact 0..250 stress cardinalities", () => {
     expect(atlasFixtureMatrix.map((scenario) => scenario.subjectCount)).toEqual(expect.arrayContaining([0, 1, 5, 25, 50, 100, 250]));
+  });
+});
+
+describe("Atlas synthetic certification matrix", () => {
+  it("has exactly the three named redacted host classes", () => {
+    expect(atlasSyntheticCertificationMatrix.map((scenario) => scenario.name)).toEqual([
+      "compose-heavy", "mixed-docker-host-native", "sparse-unusual"
+    ]);
+  });
+
+  it("projects each sanitized class deterministically without exposing a raw metadata bag", () => {
+    for (const scenario of atlasSyntheticCertificationMatrix) {
+      const input = syntheticCertificationFixture(scenario);
+      const first = projectRuntimeMap(input).model;
+      const second = projectRuntimeMap({ ...input, nodes: permutation(input.nodes), edges: permutation(input.edges) }).model;
+      expect(semanticJson(second)).toBe(semanticJson(first));
+      expect(semanticJson(first)).not.toContain("metadata");
+      expect(first.groups).toEqual([]);
+    }
+  });
+
+  it("keeps compose context non-causal, host-native declarations source-scoped, and sparse uncertainty fail-closed", () => {
+    const compose = projectRuntimeMap(syntheticCertificationFixture("compose-heavy")).model;
+    expect(compose.relations).toHaveLength(1);
+    expect(compose.attachments.length).toBeGreaterThan(0);
+
+    const mixed = projectRuntimeMap(syntheticCertificationFixture("mixed-docker-host-native")).model;
+    expect(mixed.subjects.filter((subject) => subject.display === "gateway")).toHaveLength(2);
+    expect(mixed.subjects.filter((subject) => subject.display === "gateway").map((subject) => subject.key)).toEqual([
+      "docker_container_synthetic_gateway", "systemd_service_synthetic_gateway"
+    ]);
+    expect(mixed.relations).toHaveLength(1);
+    expect(mixed.relations[0]?.evidence[0]?.evidence.freshness).toBe("stale");
+
+    const sparse = projectRuntimeMap(syntheticCertificationFixture("sparse-unusual")).model;
+    expect(sparse.subjects.some((subject) => subject.ambiguity === "collision" && subject.routability === "non_routable")).toBe(true);
+    expect(sparse.subjects.some((subject) => subject.ambiguity === "unsupported" && subject.routability === "non_routable")).toBe(true);
+    expect(sparse.relations).toEqual([]);
+    expect(sparse.attachments).toHaveLength(1);
   });
 });
 

@@ -1,4 +1,4 @@
-import type { ProviderState, RuntimeMap, RuntimeMapEdge, RuntimeMapNode, RuntimeProviderKind } from "@dockermap/contracts";
+import type { ProviderState, RuntimeEvidenceRef, RuntimeMap, RuntimeMapEdge, RuntimeMapNode, RuntimeProviderKind } from "@dockermap/contracts";
 import type { AtlasRuntimeMapInput } from "./types";
 
 export type FixtureTopology = "none" | "sparse" | "chain" | "star" | "outbound_star" | "dag" | "cycle";
@@ -13,8 +13,25 @@ export interface AtlasFixtureScenario {
   notes: string;
 }
 
+/**
+ * Three deliberately synthetic host classes used only for Atlas certification.
+ * Labels, ids, evidence summaries and metadata are fabricated and safe to put
+ * in browser test artifacts. They are not recordings of a real host.
+ */
+export type AtlasSyntheticCertificationClass = "compose-heavy" | "mixed-docker-host-native" | "sparse-unusual";
+
+export interface AtlasSyntheticCertificationScenario {
+  name: AtlasSyntheticCertificationClass;
+  notes: string;
+}
+
 const PROVIDER_STATES: RuntimeMap["providerStates"] = [
   providerState("network_infrastructure"), providerState("host_scoped"), providerState("cron"), providerState("systemd"),
+  providerState("python_processes"), providerState("native_processes"), providerState("project_npm")
+];
+const MIXED_CERTIFICATION_PROVIDER_STATES: RuntimeMap["providerStates"] = [
+  providerState("network_infrastructure"), providerState("host_scoped"), providerState("cron"),
+  { ...providerState("systemd"), state: "stale", statusReason: "collection_failed" },
   providerState("python_processes"), providerState("native_processes"), providerState("project_npm")
 ];
 
@@ -174,6 +191,111 @@ export function crossSourceLookalikeFixture(): AtlasRuntimeMapInput {
   ];
   fixture.edges = [];
   return fixture;
+}
+
+function certificationEvidence(
+  id: string,
+  provider: RuntimeEvidenceRef["provider"],
+  kind: RuntimeEvidenceRef["kind"],
+  source: string,
+  assertionKind: RuntimeEvidenceRef["assertionKind"] = "observed",
+  freshness: RuntimeEvidenceRef["freshness"] = "fresh",
+  providerSlot?: RuntimeEvidenceRef["providerSlot"]
+): RuntimeEvidenceRef {
+  return {
+    version: provider === "systemd" ? 2 : 1,
+    id: `synthetic-${id}`,
+    provider,
+    kind,
+    assertionKind,
+    freshness,
+    providerRevision: "synthetic-certification-r1",
+    ...(providerSlot ? { providerSlot } : {}),
+    subjectRef: source,
+    summary: "Synthetic certification declaration",
+    collectedAt: 1
+  } as RuntimeEvidenceRef;
+}
+
+function certificationNode(id: string, provider: RuntimeMapNode["provider"], type: RuntimeMapNode["type"], layer: RuntimeMapNode["layer"], label: string, status: string | null = "running"): RuntimeMapNode {
+  return { id, provider, type, layer, label, status, metadata: {} };
+}
+
+/** Docker declarations and recorded context only; no host or reachability claim. */
+function composeHeavyCertificationFixture(): AtlasRuntimeMapInput {
+  const web = "docker_container_synthetic_compose_web";
+  const worker = "docker_container_synthetic_compose_worker";
+  const database = "docker_container_synthetic_compose_database";
+  const network = "docker_network_synthetic_compose";
+  const volume = "docker_volume_synthetic_compose_data";
+  return {
+    nodes: [
+      certificationNode(web, "docker", "container", "container", "compose web"),
+      certificationNode(worker, "docker", "container", "container", "compose worker"),
+      certificationNode(database, "docker", "container", "container", "compose database"),
+      certificationNode(network, "docker", "docker_network", "network", "recorded compose network", null),
+      certificationNode(volume, "docker", "docker_volume", "storage", "recorded compose storage", null)
+    ],
+    edges: [
+      { source: web, target: worker, relationship: "depends_on", metadata: {}, evidenceRefs: [certificationEvidence("compose-depends", "docker", "docker_compose_depends_on", web)] },
+      { source: web, target: network, relationship: "connected_to", metadata: {}, evidenceRefs: [certificationEvidence("compose-network-web", "docker", "docker_network_membership", web)] },
+      { source: database, target: network, relationship: "connected_to", metadata: {}, evidenceRefs: [certificationEvidence("compose-network-db", "docker", "docker_network_membership", database)] },
+      { source: database, target: volume, relationship: "mounts", metadata: {}, evidenceRefs: [certificationEvidence("compose-storage", "docker", "docker_volume_mount", database)] }
+    ] as RuntimeMapEdge[],
+    diagnostics: [], modelRevision: "atlas-synthetic-compose-heavy-r1", lastUpdated: 1, providerStates: PROVIDER_STATES
+  };
+}
+
+/** Same-looking Docker and systemd records remain source-scoped; systemd is intentionally stale. */
+function mixedDockerHostNativeCertificationFixture(): AtlasRuntimeMapInput {
+  const dockerGateway = "docker_container_synthetic_gateway";
+  const systemdGateway = "systemd_service_synthetic_gateway";
+  const systemdTarget = "systemd_service_synthetic_target";
+  return {
+    nodes: [
+      certificationNode(dockerGateway, "docker", "container", "container", "gateway"),
+      certificationNode(systemdGateway, "systemd", "systemd_service", "service", "gateway"),
+      certificationNode(systemdTarget, "systemd", "systemd_service", "service", "host target", "paused")
+    ],
+    edges: [
+      { source: systemdGateway, target: systemdTarget, relationship: "requires", metadata: {}, evidenceRefs: [certificationEvidence("systemd-requires", "systemd", "systemd_requires", systemdGateway, "declared", "stale", "systemd")] }
+    ] as RuntimeMapEdge[],
+    diagnostics: [], modelRevision: "atlas-synthetic-mixed-host-r1", lastUpdated: 1,
+    providerStates: MIXED_CERTIFICATION_PROVIDER_STATES
+  };
+}
+
+/** Collision, unsupported kind and daemon-risk context remain visible but never become a confident merge. */
+function sparseUnusualCertificationFixture(): AtlasRuntimeMapInput {
+  const daemonClient = "docker_container_synthetic_daemon_client";
+  const daemonRisk = "host_risk_docker_daemon_state";
+  return {
+    nodes: [
+      certificationNode("docker_container_synthetic_collision", "docker", "container", "container", "duplicate record"),
+      certificationNode("docker_container_synthetic_collision", "docker", "container", "container", "duplicate record"),
+      certificationNode("runtime_synthetic_unsupported", "other", "future_unpublished_kind" as RuntimeMapNode["type"], "edge", "unsupported synthetic record", null),
+      certificationNode(daemonClient, "docker", "container", "container", "daemon context client"),
+      certificationNode(daemonRisk, "docker", "host_risk", "host", "recorded daemon state context", null)
+    ],
+    edges: [{
+      source: daemonClient, target: daemonRisk, relationship: "exposes_daemon_state", metadata: {},
+      evidenceRefs: [certificationEvidence("daemon-risk", "docker", "docker_daemon_state_bind_mount", daemonClient)]
+    }] as RuntimeMapEdge[],
+    diagnostics: [], modelRevision: "atlas-synthetic-sparse-unusual-r1", lastUpdated: 1, providerStates: PROVIDER_STATES
+  };
+}
+
+export const atlasSyntheticCertificationMatrix: readonly AtlasSyntheticCertificationScenario[] = [
+  { name: "compose-heavy", notes: "Docker declarations and recorded context only" },
+  { name: "mixed-docker-host-native", notes: "stale systemd declaration and no fuzzy cross-provider merge" },
+  { name: "sparse-unusual", notes: "collision, unsupported record and daemon-risk uncertainty" }
+];
+
+export function syntheticCertificationFixture(scenario: AtlasSyntheticCertificationScenario | AtlasSyntheticCertificationClass): AtlasRuntimeMapInput {
+  const name = typeof scenario === "string" ? scenario : scenario.name;
+  if (name === "compose-heavy") return composeHeavyCertificationFixture();
+  if (name === "mixed-docker-host-native") return mixedDockerHostNativeCertificationFixture();
+  return sparseUnusualCertificationFixture();
 }
 
 export function permutation<T>(values: readonly T[]): T[] {
