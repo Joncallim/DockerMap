@@ -17,6 +17,18 @@ export const ATLAS_LAYOUT = {
   maxFocusTranslation: 100_000
 } as const;
 
+/**
+ * Viewport state is deliberately outside the deterministic semantic/layout
+ * payload. The current overview has no pan, zoom, or fit controls, but its
+ * entry framing is still named here so future interaction work cannot turn a
+ * routine coherent revision into an implicit whole-host refit.
+ */
+export const ATLAS_CAMERA_POLICY = {
+  version: "atlas-v1/refresh-camera-1",
+  initial: { x: 0, y: 0, zoom: 1 },
+  preserveOn: ["state", "relation", "attachment", "unrelated_structure", "lens"] as const
+} as const;
+
 const PROVIDERS = [
   "docker", "compose", "host", "systemd", "scheduled_job", "npm", "pm2", "tmux", "tailscale", "headscale",
   "cloudflare", "caddy", "reverse_proxy", "local_dns", "dns_provider", "external_api", "process", "python",
@@ -87,6 +99,11 @@ export function pointFor(layout: AtlasLayout, subject: AtlasKey | string): Atlas
 /** Camera is caller-owned interaction state and is never recalculated by layout. */
 export function preserveCamera(camera: AtlasCamera): AtlasCamera {
   return { ...camera };
+}
+
+/** One deterministic initial framing for a new Atlas entry, never a refresh fit. */
+export function initialAtlasCamera(): AtlasCamera {
+  return { ...ATLAS_CAMERA_POLICY.initial };
 }
 
 /** Explicit focus operation: bounded, deterministic and independent of topology revision. */
