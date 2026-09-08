@@ -144,6 +144,63 @@ flags, and raw configuration never enter the runtime edge, finding, or browser
 response. Missing, stale, duplicate, malformed, or collided facts produce no
 finding.
 
+`docker.daemon_state_bind_mount_publishes_port` emits a warning only when the
+same uniquely identified Docker container has an exact pair of fresh version-1
+Docker observations from the same collection: the path-free daemon-state risk
+fact and a validated nonzero host-to-container port publication. Its canonical
+evidence order is daemon-state first, then port publication. This is a static
+review prompt for the co-occurrence of those facts, not an Internet-reachability,
+traffic, exploitability, compromise, breach, impact, or causal conclusion.
+Private container listeners, zero or malformed bindings, stale or mismatched
+observation timestamps or provider revisions, duplicate or collided facts, and
+non-Docker input produce no finding. The projection is derived from the cached
+runtime map: it adds no collector, host scan, or write capability, and mock
+mode publishes neither evidence nor evidence-derived findings.
+
+`docker.compose_declared_target_not_active` emits an advisory only when one
+fresh, uniquely identified `depends_on` relationship is a Docker-recorded
+Compose declaration from a running Docker container to a uniquely identified
+Docker container whose normalized state is stopped or failed. Its one canonical
+evidence reference is version 1 Docker `docker_compose_depends_on`, with an
+`observed` assertion, the source container as subject, `fresh` freshness, and
+no provider slot. The Docker observation attests the declared Compose edge; it
+does not turn that declaration into a runtime dependency guarantee.
+
+The rule is advisory, rather than a warning or error, because it is a bounded
+configuration state worth an operator review, not evidence of an outage or
+security incident. Its static action is only to review the declared dependency
+and the target container state. The derivation is deterministic (findings are
+ordered by their stable opaque identifiers) and fails closed: stale or timed-out
+evidence, malformed or extra edge metadata, non-Docker entities, non-running
+sources, target states other than stopped/failed, duplicate relationship facts,
+or identity collisions suppress it. It does not claim that the dependency is
+required, that either service is ready or healthy, that traffic flows, that
+Compose start order was applied, that one container caused the other's state,
+or that configuration drift exists.
+
+This rule reads no new host state and makes no new collection call. It is a
+cached, read-only projection of the already-published runtime map; mock mode
+has no runtime evidence and therefore cannot produce it.
+
+The mutual Compose-declaration advisory is even narrower. It emits once for an
+unordered pair only when each direction has exactly one fresh, matching
+Docker-recorded Compose declaration fact between the same two uniquely
+resolved Docker containers. Both version-1 observations must be the closed
+`docker_compose_depends_on` shape, must identify their respective source
+container, and must share the same collection instant and opaque Docker
+observation revision. The static recommendation is to review the declarations
+and remove an unintended mutual dependency. Its two evidence references are
+ordered to match the displayed direction and then its reciprocal direction;
+their identifiers and other provider material remain opaque.
+
+This is an advisory-only, deterministic, cached read-only projection. Missing,
+stale, timed-out, duplicate, malformed, non-Docker, self-referential, collided,
+or mismatched-observation facts suppress it, as does mock mode. It is not
+proof that a Compose file was accepted, that either dependency is required,
+that Compose start order ran, or that either container is ready or healthy. It
+does not establish traffic, deployment failure, causality, Internet
+reachability, compromise, or a security incident.
+
 Each rule carries only its exact triggering evidence references. The API
 validates the fixed vocabulary, static display text, and rule-specific evidence
 shape before publication, and the browser displays findings only when their

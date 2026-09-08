@@ -26,19 +26,21 @@ const findings: FindingsResponse = {
 
 function render(value: Partial<AppContextValue>): string {
   const context: AppContextValue = {
-    model: null, modelProvenance: null, loading: false, error: null, health: null,
-    findings: null, tick: 0, evidenceMode: null, openCommand: () => {}, ...value
+    model: null, loading: false, error: null, health: null,
+    findings: null, tick: 0, evidenceMode: "live", modelProvenance: "live", openCommand: () => {}, ...value
   };
   return renderToStaticMarkup(<AppContext.Provider value={context}><MemoryRouter><Findings /></MemoryRouter></AppContext.Provider>);
 }
 
 describe("Findings screen", () => {
-  it("renders only the bounded declaration conclusion and its static recommendation", () => {
+  it("renders only the static declaration presentation, not server finding text or references", () => {
     const html = render({ findings });
     expect(html).toContain("Declared dependency needs review");
-    expect(html).toContain(findings.findings[0].summary);
     expect(html).toContain(findings.findings[0].recommendation);
     expect(html).toContain("Systemd Requires");
+    expect(html).not.toContain(findings.findings[0].subjectRef);
+    expect(html).not.toContain(findings.findings[0].targetRef);
+    expect(html).not.toContain(findings.findings[0].evidenceRefs[0].id);
     expect(html).toContain("not health, readiness, traffic, Internet-reachability, or security conclusions");
   });
 
@@ -66,7 +68,7 @@ describe("Findings screen", () => {
     const html = render({ findings: internalPort });
     expect(html).toContain("Internal-network port publication needs review");
     expect(html).toContain("Observed Docker facts");
-    expect(html).toContain("2 supporting facts");
+    expect(html).not.toContain("supporting facts");
     expect(html).not.toContain("Internet exposure");
   });
 
@@ -85,7 +87,173 @@ describe("Findings screen", () => {
     const html = render({ findings: daemonState });
     expect(html).toContain("Docker daemon-state access needs review");
     expect(html).toContain("Docker daemon state");
-    expect(html).toContain("may provide Docker daemon API authority");
+    expect(html).toContain("Review whether this container requires Docker daemon API authority.");
     expect(html).not.toContain("/var/run/docker.sock");
+  });
+
+  it("renders the Compose advisory with generic copy and a generic changes inspection link", () => {
+    const compose = structuredClone(findings);
+    compose.findings[0] = {
+      id: "finding_docker_compose_declared_target_not_active_opaque",
+      ruleId: "docker.compose_declared_target_not_active",
+      severity: "advisory",
+      summary: "A running Docker Compose service declares a dependency whose container is not active.",
+      recommendation: "Review the declared dependency and the target container state.",
+      subjectRef: "docker_container_source_secret", targetRef: "docker_container_target_secret",
+      evidenceRefs: [{ version: 1, id: "opaque-evidence", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_source_secret", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }]
+    };
+    const html = render({ findings: compose });
+    expect(html).toContain("Declared Compose dependency needs review");
+    expect(html).toContain("Docker Compose");
+    expect(html).toContain("Review the declared dependency and the target container state.");
+    expect(html).toContain('href="/changes"');
+    expect(html).not.toContain("docker_container_source_secret");
+    expect(html).not.toContain("docker_container_target_secret");
+    expect(html).not.toContain("opaque-evidence");
+    expect(html).toContain("These are not health, readiness, traffic, Internet-reachability, or security conclusions.");
+  });
+
+  it("renders the Compose advisory when the V1 Docker evidence omits its null provider slot", () => {
+    const compose = structuredClone(findings);
+    compose.findings[0] = {
+      id: "finding_docker_compose_declared_target_not_active_opaque",
+      ruleId: "docker.compose_declared_target_not_active",
+      severity: "advisory",
+      summary: "A running Docker Compose service declares a dependency whose container is not active.",
+      recommendation: "Review the declared dependency and the target container state.",
+      subjectRef: "docker_container_source", targetRef: "docker_container_target",
+      evidenceRefs: [{ version: 1, id: "opaque-evidence", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_source", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }]
+    };
+    delete (compose.findings[0].evidenceRefs[0] as { providerSlot?: unknown }).providerSlot;
+    const html = render({ findings: compose });
+    expect(html).toContain("Declared Compose dependency needs review");
+    expect(html).toContain("Review the declared dependency and the target container state.");
+  });
+
+  it("renders daemon-state host-port advice with static generic copy and a changes link", () => {
+    const daemonStatePort = structuredClone(findings);
+    daemonStatePort.findings[0] = {
+      id: "finding_docker_daemon_state_bind_mount_publishes_port_docker_container_redacted",
+      ruleId: "docker.daemon_state_bind_mount_publishes_port",
+      severity: "warning",
+      summary: "A container with Docker daemon state access also has a published host port.",
+      recommendation: "Review whether the daemon-state access and host-port publication are both intended.",
+      subjectRef: "docker_container_redacted", targetRef: "host_risk_docker_daemon_state",
+      evidenceRefs: [
+        { version: 1, id: "mount-path-secret", provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", summary: "provider-text-secret", subjectRef: "docker_container_redacted", collectedAt: 1, providerRevision: "opaque-pair", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "host-port-secret", provider: "docker", kind: "docker_port_publication", assertionKind: "observed", summary: "provider-text-secret", subjectRef: "docker_container_redacted", collectedAt: 1, providerRevision: "opaque-pair", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    const html = render({ findings: daemonStatePort });
+    expect(html).toContain("Docker daemon-state and host-port publication need review");
+    expect(html).toContain("A container with Docker daemon state access also has a published host port.");
+    expect(html).toContain("Review whether the daemon-state access and host-port publication are both intended.");
+    expect(html).toContain('href="/changes"');
+    for (const hidden of ["docker_container_redacted", "mount-path-secret", "host-port-secret", "provider-text-secret", "opaque-pair"]) expect(html).not.toContain(hidden);
+  });
+
+  it("accepts the legacy omitted V1 Docker provider slots for a coherent daemon-state host-port pair", () => {
+    const daemonStatePort = structuredClone(findings);
+    daemonStatePort.findings[0] = {
+      id: "finding_docker_daemon_state_bind_mount_publishes_port_docker_container_legacy",
+      ruleId: "docker.daemon_state_bind_mount_publishes_port", severity: "warning",
+      summary: "A container with Docker daemon state access also has a published host port.",
+      recommendation: "Review whether the daemon-state access and host-port publication are both intended.",
+      subjectRef: "docker_container_legacy", targetRef: "host_risk_docker_daemon_state",
+      evidenceRefs: [
+        { version: 1, id: "opaque-mount", provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_legacy", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "opaque-port", provider: "docker", kind: "docker_port_publication", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_legacy", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    for (const evidence of daemonStatePort.findings[0].evidenceRefs) delete (evidence as { providerSlot?: unknown }).providerSlot;
+    const html = render({ findings: daemonStatePort });
+    expect(html).toContain("Docker daemon-state and host-port publication need review");
+  });
+
+  it("fails closed for malformed or mismatched daemon-state host-port pairs", () => {
+    const daemonStatePort = structuredClone(findings);
+    daemonStatePort.findings[0] = {
+      id: "finding_docker_daemon_state_bind_mount_publishes_port_docker_container_pair",
+      ruleId: "docker.daemon_state_bind_mount_publishes_port", severity: "warning",
+      summary: "A container with Docker daemon state access also has a published host port.",
+      recommendation: "Review whether the daemon-state access and host-port publication are both intended.",
+      subjectRef: "docker_container_pair", targetRef: "host_risk_docker_daemon_state",
+      evidenceRefs: [
+        { version: 1, id: "opaque-mount", provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_pair", collectedAt: 1, providerRevision: "first", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "opaque-port", provider: "docker", kind: "docker_port_publication", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_other", collectedAt: 2, providerRevision: "second", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    const html = render({ findings: daemonStatePort });
+    expect(html).not.toContain("Docker daemon-state and host-port publication need review");
+    expect(html).not.toContain("docker_container_pair");
+    expect(html).not.toContain("docker_container_other");
+  });
+
+  it("renders a mutual Compose advisory with static copy only", () => {
+    const mutual = structuredClone(findings);
+    mutual.findings[0] = {
+      id: "finding_docker_compose_mutual_dependency_opaque",
+      ruleId: "docker.compose_mutual_dependency",
+      severity: "advisory",
+      summary: "Docker recorded mutually declared Compose dependencies between two containers.",
+      recommendation: "Review the declared dependencies and remove any unintended mutual dependency.",
+      subjectRef: "docker_container_alpha_private", targetRef: "docker_container_beta_private",
+      evidenceRefs: [
+        { version: 1, id: "opaque-forward", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_alpha_private", collectedAt: 1, providerRevision: "opaque-revision", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "opaque-reverse", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_beta_private", collectedAt: 1, providerRevision: "opaque-revision", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    const html = render({ findings: mutual });
+    expect(html).toContain("Mutual Compose declarations need review");
+    expect(html).toContain("Review the declared dependencies and remove any unintended mutual dependency.");
+    expect(html).toContain('href="/changes"');
+    for (const privateValue of ["docker_container_alpha_private", "docker_container_beta_private", "opaque-forward", "opaque-reverse", "opaque-revision"]) {
+      expect(html).not.toContain(privateValue);
+    }
+    expect(html).not.toContain("start-order");
+  });
+
+  it("suppresses malformed mutual Compose findings and fixture-mode mutual advice", () => {
+    const mutual = structuredClone(findings);
+    mutual.findings[0] = {
+      id: "finding_docker_compose_mutual_dependency_opaque", ruleId: "docker.compose_mutual_dependency", severity: "advisory",
+      summary: "Docker recorded mutually declared Compose dependencies between two containers.",
+      recommendation: "Review the declared dependencies and remove any unintended mutual dependency.",
+      subjectRef: "docker_container_alpha", targetRef: "docker_container_beta",
+      evidenceRefs: [
+        { version: 1, id: "opaque-forward", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_alpha", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "opaque-reverse", provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", summary: "Docker recorded Compose dependency declaration", subjectRef: "docker_container_beta", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    expect(render({ findings: mutual })).toContain("Mutual Compose declarations need review");
+    const malformed = structuredClone(mutual);
+    malformed.findings[0].evidenceRefs.reverse();
+    expect(render({ findings: malformed })).not.toContain("Mutual Compose declarations need review");
+    expect(render({ findings: mutual, evidenceMode: "demo", modelProvenance: "demo" })).not.toContain("Mutual Compose declarations need review");
+    expect(render({ findings: mutual, evidenceMode: "mock", modelProvenance: "mock" })).not.toContain("Mutual Compose declarations need review");
+  });
+
+  it("suppresses findings in demo and mock contexts even if fixture data is injected", () => {
+    const daemonStatePort = structuredClone(findings);
+    daemonStatePort.findings[0] = {
+      id: "finding_docker_daemon_state_bind_mount_publishes_port_docker_container_fixture",
+      ruleId: "docker.daemon_state_bind_mount_publishes_port", severity: "warning",
+      summary: "A container with Docker daemon state access also has a published host port.",
+      recommendation: "Review whether the daemon-state access and host-port publication are both intended.",
+      subjectRef: "docker_container_fixture", targetRef: "host_risk_docker_daemon_state",
+      evidenceRefs: [
+        { version: 1, id: "opaque-mount", provider: "docker", kind: "docker_daemon_state_bind_mount", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_fixture", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" },
+        { version: 1, id: "opaque-port", provider: "docker", kind: "docker_port_publication", assertionKind: "observed", summary: "opaque", subjectRef: "docker_container_fixture", collectedAt: 1, providerRevision: "opaque", providerSlot: null, freshness: "fresh" }
+      ]
+    };
+    for (const context of [
+      { evidenceMode: "demo" as const, modelProvenance: "demo" as const },
+      { evidenceMode: "mock" as const, modelProvenance: "mock" as const }
+    ]) {
+      const html = render({ findings: daemonStatePort, ...context });
+      expect(html).toContain("Live evidence is not established");
+      expect(html).not.toContain("Docker daemon-state and host-port publication need review");
+      expect(html).not.toContain("docker_container_fixture");
+    }
   });
 });
