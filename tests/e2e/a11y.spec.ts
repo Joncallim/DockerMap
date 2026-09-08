@@ -11,6 +11,7 @@ const coreRoutes = [
   ["home", "/"],
   ["map", "/map"],
   ["runtime", "/runtime"],
+  ["findings", "/findings"],
   ["changes", "/changes"],
   ["copilot", "/copilot"],
   ["networking", "/networking"],
@@ -263,6 +264,12 @@ test.describe("responsive and accessibility matrix", () => {
       // without the shared selectNode handler focus would fall to BODY.
       await runtimeNode.click();
       await expect(runtimeNode).toHaveAttribute("aria-pressed", "true");
+      const edgeEvidence = page.getByRole("button", { name: "Inspect evidence" }).first();
+      if (await edgeEvidence.count() > 0) {
+        await edgeEvidence.click();
+        await expect(edgeEvidence).toHaveAttribute("aria-pressed", "true");
+        await expect(page.getByText("Relationship evidence", { exact: true })).toBeVisible();
+      }
       const edgeTarget = page.locator(".runtime-edge-target").first();
       if (await edgeTarget.count() > 0) {
         const edgeLabel = (await edgeTarget.locator("span").textContent())?.trim() ?? "";

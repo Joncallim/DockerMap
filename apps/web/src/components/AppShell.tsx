@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import type { AuthWhoamiResponse } from "@dockermap/contracts";
+import type { AuthWhoamiResponse, FindingsResponse } from "@dockermap/contracts";
 import { useDaemonHeartbeat } from "../hooks/useDaemonHeartbeat";
 import { useSystemModel } from "../hooks/useSystemModel";
 import { useSettings } from "../hooks/useSettings";
@@ -44,6 +44,7 @@ const SPACES: { heading: string; items: NavItem[] }[] = [
       { to: "/", label: "Home", icon: "home", end: true },
       { to: "/map", label: "Service Map", icon: "map" },
       { to: "/runtime", label: "Runtime", icon: "layers" },
+      { to: "/findings", label: "Findings", icon: "alert" },
       { to: "/changes", label: "Changes", icon: "history" },
       { to: "/copilot", label: "Copilot", icon: "spark" }
     ]
@@ -140,6 +141,13 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
     healthMode: health?.mode ?? null
   });
   const { model, modelProvenance, loading, error } = useSystemModel(tick, evidenceMode);
+  const findingsResource = useApiResource<FindingsResponse>("/api/findings", tick);
+  const findings = useMemo(() => {
+    if (modelProvenance !== "live" || !model || !findingsResource.data) return null;
+    return findingsResource.data.modelRevision === model.modelRevision && findingsResource.data.modelRevision.length > 0
+      ? findingsResource.data
+      : null;
+  }, [findingsResource.data, model, modelProvenance]);
   const [commandOpen, setCommandOpen] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
 
@@ -189,6 +197,7 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
     loading,
     error,
     health,
+    findings,
     tick,
     evidenceMode,
     openCommand: () => setCommandOpen(true)

@@ -8,6 +8,7 @@ import type {
   DiagnosticsEntry,
   DiagnosticsReport,
   DockerSnapshot,
+  FindingsResponse,
   GraphResponse,
   HealthResponse,
   ImageRecord,
@@ -171,6 +172,7 @@ export function createReadHandlers({ fetchDaemon, sendError, port }: ReadHandler
     snapshot: respond<DockerSnapshot>("/daemon/snapshot"),
     graph: respond<GraphResponse>("/daemon/graph"),
     runtimeMap: respond<RuntimeMap>("/daemon/runtime/map"),
+    findings: respond<FindingsResponse>("/daemon/findings"),
     diagnostics: async (_req, res) => {
       try {
         const entries: DiagnosticsEntry[] = [];

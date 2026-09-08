@@ -50,6 +50,96 @@ acceptance work are recorded in [`CONTRACT_AUTHORITY.md`](CONTRACT_AUTHORITY.md)
 
 `GET /daemon/runtime/map` is the backend's provider-neutral JSON graph for visualization. `apps/api` proxies it as `GET /api/runtime/map`.
 
+### Relationship evidence lifecycle
+
+Each runtime edge has a required `evidenceRefs` array. The current Docker and
+Systemd slices emit bounded, versioned records alongside the edge during
+derivation; they are not reconstructed from labels in React:
+
+```text
+collector -> bounded RuntimeEvidenceRef -> RuntimeMapEdge -> daemon publication/redaction -> API contract validation -> Runtime inspector
+```
+
+Version one facts are Docker network membership, volume attachment, port
+publication, and Docker-recorded Compose start-order declarations. They are
+`observed`, carry the Docker collection timestamp and an opaque Docker
+observation revision token (deliberately neither a timestamp nor the cache
+model revision), and declare `fresh` only for that Docker observation.
+
+Version two adds only Systemd `Requires`, `Wants`, and `PartOf` declarations.
+Each fact is `declared`, is tied to the independently scheduled `systemd`
+slot's opaque data revision and last successful collection timestamp, and can
+be `fresh`, retained `stale`, or `timed_out`. It never claims successful start,
+readiness, health, traffic, inverse dependency, or symmetric membership.
+Restricted PID mode emits no Systemd edge evidence. An empty array is explicit
+migration state for a relationship family that has not yet gained provenance;
+it must not be silently presented as an observed fact.
+
+The evidence representation is closed: provider, kind, assertion kind and
+freshness are enums, and there is no free-form metadata/config/command-line
+field. The daemon and browser publication boundaries redact display-hostile
+or secret-like strings before response bytes reach the UI. Identity collisions
+remain visible but non-routable; an edge inspector can still explain the
+selected relationship without joining a collided target.
+
+Current relationship-source matrix:
+
+| Relationship family | Source | Assertion | Evidence status |
+| --- | --- | --- | --- |
+| Docker container -> network | Docker inventory membership | observed | emitted |
+| Docker container -> volume | Docker volume attachment | observed | emitted |
+| Docker container -> listener | Docker published port | observed | emitted |
+| Docker container -> Docker container (`depends_on`) | Docker-recorded Compose start-order label | observed declaration, not health or traffic causality | emitted when both identities resolve uniquely |
+| systemd service -> systemd service (`requires`, `wants`, `part_of`) | Systemd `Requires=`, `Wants=`, `PartOf=` declaration | declared relationship, not start/health/traffic evidence | emitted only with a valid dedicated Systemd-slot observation; retained facts state freshness explicitly |
+| npm, tmux, proxy, DNS, process and cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
+
+### Bounded findings
+
+`GET /daemon/findings` and its authenticated browser aliases expose only a
+cached projection of the same published runtime-map revision. The closed
+`systemd.requires_target_not_active` rule emits one warning only when
+there is exactly one fresh, declared Systemd `Requires` edge from a uniquely
+identified active service to a uniquely identified inactive or failed service.
+It is a dependency configuration condition—not proof of a failed start,
+readiness, traffic, service health, or security impact. Stale, timed-out,
+ambiguous, duplicate, non-Systemd, `Wants`, and `PartOf` evidence produces no
+finding.
+
+`docker.internal_network_member_publishes_port` emits an advisory only when
+one uniquely identified Docker container has both one fresh, validated Docker
+internal-network membership fact and one fresh Docker listener fact whose
+already-sanitized port form proves a nonzero host-to-container publication.
+Container-only ports, malformed or bind-address-like forms, stale evidence,
+duplicate facts, and identity collisions produce no finding. This is not an
+Internet-reachability, vulnerability, or security conclusion.
+
+`docker.daemon_state_bind_mount` emits a warning only when one uniquely
+identified Docker container has exactly one fresh, path-free Docker fact bound
+to the fixed Docker-daemon-state risk target. It means the recorded access may
+provide Docker daemon API authority and should be reviewed; it does not prove a
+breach, compromise, reachability, or impact. Mount paths, mount IDs, read-only
+flags, and raw configuration never enter the runtime edge, finding, or browser
+response. Missing, stale, duplicate, malformed, or collided facts produce no
+finding.
+
+Each rule carries only its exact triggering evidence references. The API
+validates the fixed vocabulary, static display text, and rule-specific evidence
+shape before publication, and the browser displays findings only when their
+nonempty model revision matches the current live model.
+
+#### Current finding policy
+
+`warning` is reserved for a fresh, directly recorded declaration whose current
+service-state endpoints satisfy a closed, fail-closed condition, or for the
+single path-free Docker-daemon-state fact whose recorded access may provide
+Docker daemon API authority. Neither meaning proves a failed start, breach,
+reachability, compromise, or impact. `advisory` is reserved for a fresh
+combination of directly observed Docker facts that merits a configuration
+review but does not establish exposure, reachability, vulnerability, or
+impact. There is no critical severity in the current pack. New rules require
+an explicit contract, fixed evidence budget, deterministic positive and
+benign-negative fixtures, and a review of their exact conclusion language.
+
 The map is organized around a unified service concept. Docker containers, systemd
 services, tmux sessions, npm applications, Python applications, and native processes
 should all expose the same operational shape wherever the provider can safely populate

@@ -153,6 +153,9 @@ pub enum RuntimeMode {
 pub enum ProviderSlot {
     NetworkInfrastructure,
     HostScoped,
+    /// systemd has an independent collector lifecycle.  It must not inherit
+    /// freshness from the broader host-scoped observation slot.
+    Systemd,
     PythonProcesses,
     NativeProcesses,
     ProjectNpm,
@@ -484,6 +487,7 @@ pub enum RuntimeNodeKind {
     DockerNetwork,
     DockerVolume,
     Host,
+    HostRisk,
     Service,
     SystemdService,
     ScheduledJob,
@@ -523,6 +527,7 @@ pub enum RuntimeRelationshipKind {
     Mounts,
     Manages,
     Exposes,
+    ExposesDaemonState,
     RunsOn,
     Uses,
     Calls,
@@ -815,12 +820,370 @@ pub struct RuntimeMapNode {
     pub package: Option<RuntimePackageEntity>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+/// Evidence providers are deliberately closed.  Version two adds systemd only
+/// after it received its own scheduler slot; it cannot inherit a broader host
+/// collection's freshness or revision.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceProvider {
+    Docker,
+    Systemd,
+}
+
+/// Evidence assertion semantics are deliberately closed. A declaration says
+/// what a source configured, never that its target is healthy or was invoked.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceAssertionKind {
+    Observed,
+    Declared,
+}
+
+/// Safe, provider-specific fact families supported by the first provenance
+/// slice.  New sources require an explicit enum addition rather than an
+/// arbitrary source string or metadata map.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceKind {
+    DockerNetworkMembership,
+    DockerVolumeMount,
+    DockerPortPublication,
+    /// Docker's recorded Compose dependency declaration. This is deliberately
+    /// not a health, readiness, or traffic-causality claim.
+    DockerComposeDependsOn,
+    /// A bind mount that matches the closed Docker socket/data-root predicate.
+    /// The public evidence and target intentionally omit the mount path.
+    DockerDaemonStateBindMount,
+    /// A systemd `Requires=` declaration. It is not a successful-start or
+    /// health assertion.
+    SystemdRequires,
+    /// A systemd `Wants=` declaration. It is not a successful-start or
+    /// health assertion.
+    SystemdWants,
+    /// A systemd `PartOf=` declaration. It is not an ordering assertion.
+    SystemdPartOf,
+}
+
+/// A compact, versioned reference to the bounded fact supporting a runtime
+/// relationship.  It intentionally contains no raw command output, config
+/// fragment, path, process arguments, or generic metadata bag.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeEvidenceRef {
+    /// Version of this closed evidence representation, not a provider API
+    /// version.  It lets future additions remain explicit and reviewable.
+    #[schemars(range(min = 1, max = 2))]
+    pub version: u8,
+    #[schemars(length(min = 1, max = 259))]
+    pub id: String,
+    pub provider: RuntimeEvidenceProvider,
+    pub kind: RuntimeEvidenceKind,
+    #[serde(rename = "assertionKind")]
+    pub assertion_kind: RuntimeEvidenceAssertionKind,
+    /// A bounded, curated explanation; it is never copied from a raw source.
+    #[schemars(length(min = 1, max = 259))]
+    pub summary: String,
+    /// The already-public runtime entity whose Docker fact was observed.
+    #[serde(rename = "subjectRef")]
+    pub subject_ref: String,
+    #[serde(rename = "collectedAt")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub collected_at: u64,
+    /// Opaque provider observation token, not a cache-publication revision,
+    /// command output, or source dump.
+    #[serde(rename = "providerRevision")]
+    #[schemars(length(min = 1, max = 259))]
+    pub provider_revision: String,
+    /// Version-two provider evidence is explicitly tied to the finite
+    /// scheduler slot that supplied its revision and freshness. Version one
+    /// Docker evidence intentionally has no host-provider slot.
+    #[serde(rename = "providerSlot", skip_serializing_if = "Option::is_none")]
+    pub provider_slot: Option<ProviderSlot>,
+    pub freshness: RuntimeEvidenceFreshness,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceFreshness {
+    Fresh,
+    Stale,
+    TimedOut,
+}
+
+impl RuntimeEvidenceRef {
+    fn has_valid_versioned_shape(&self) -> bool {
+        matches!(
+            (
+                self.version,
+                self.provider,
+                self.kind,
+                self.assertion_kind,
+                self.freshness,
+                self.provider_slot,
+            ),
+            (
+                1,
+                RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerNetworkMembership
+                    | RuntimeEvidenceKind::DockerVolumeMount
+                    | RuntimeEvidenceKind::DockerPortPublication
+                    | RuntimeEvidenceKind::DockerComposeDependsOn
+                    | RuntimeEvidenceKind::DockerDaemonStateBindMount,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) | (
+                2,
+                RuntimeEvidenceProvider::Systemd,
+                RuntimeEvidenceKind::SystemdRequires
+                    | RuntimeEvidenceKind::SystemdWants
+                    | RuntimeEvidenceKind::SystemdPartOf,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh
+                    | RuntimeEvidenceFreshness::Stale
+                    | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::Systemd),
+            )
+        )
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeEvidenceRefWire {
+    version: u8,
+    id: String,
+    provider: RuntimeEvidenceProvider,
+    kind: RuntimeEvidenceKind,
+    #[serde(rename = "assertionKind")]
+    assertion_kind: RuntimeEvidenceAssertionKind,
+    summary: String,
+    #[serde(rename = "subjectRef")]
+    subject_ref: String,
+    #[serde(rename = "collectedAt")]
+    collected_at: u64,
+    #[serde(rename = "providerRevision")]
+    provider_revision: String,
+    #[serde(rename = "providerSlot")]
+    provider_slot: Option<ProviderSlot>,
+    freshness: RuntimeEvidenceFreshness,
+}
+
+impl<'de> Deserialize<'de> for RuntimeEvidenceRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = RuntimeEvidenceRefWire::deserialize(deserializer)?;
+        let evidence = Self {
+            version: wire.version,
+            id: wire.id,
+            provider: wire.provider,
+            kind: wire.kind,
+            assertion_kind: wire.assertion_kind,
+            summary: wire.summary,
+            subject_ref: wire.subject_ref,
+            collected_at: wire.collected_at,
+            provider_revision: wire.provider_revision,
+            provider_slot: wire.provider_slot,
+            freshness: wire.freshness,
+        };
+        evidence
+            .has_valid_versioned_shape()
+            .then_some(evidence)
+            .ok_or_else(|| {
+                serde::de::Error::custom("runtime evidence has an invalid versioned shape")
+            })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeMapEdge {
     pub source: String,
     pub target: String,
     pub relationship: RuntimeRelationshipKind,
     pub metadata: BTreeMap<String, String>,
+    /// Empty for relationship families that have not yet been migrated to the
+    /// evidence model. It remains present on the wire so API/UI consumers have
+    /// one stable, bounded relationship shape while the migration continues.
+    #[serde(rename = "evidenceRefs")]
+    #[schemars(required, length(max = 8))]
+    pub evidence_refs: Vec<RuntimeEvidenceRef>,
+}
+
+impl RuntimeMapEdge {
+    /// Evidence is attached only to the semantic edge it directly supports.
+    /// Keep this at the canonical model boundary so a structurally valid fact
+    /// cannot be re-used to attest a different relationship.
+    pub fn has_valid_evidence_refs(&self) -> bool {
+        self.evidence_refs
+            .iter()
+            .all(|evidence| self.evidence_ref_matches_edge(evidence))
+    }
+
+    fn evidence_ref_matches_edge(&self, evidence: &RuntimeEvidenceRef) -> bool {
+        const MAX_EVIDENCE_TEXT_CHARS: usize = 259;
+        if evidence.id.is_empty()
+            || evidence.summary.is_empty()
+            || evidence.provider_revision.is_empty()
+            || evidence.id.chars().count() > MAX_EVIDENCE_TEXT_CHARS
+            || evidence.summary.chars().count() > MAX_EVIDENCE_TEXT_CHARS
+            || evidence.provider_revision.chars().count() > MAX_EVIDENCE_TEXT_CHARS
+            || evidence.subject_ref != self.source
+        {
+            return false;
+        }
+
+        if !evidence.has_valid_versioned_shape() {
+            return false;
+        }
+
+        match (
+            evidence.version,
+            evidence.provider,
+            evidence.kind,
+            evidence.assertion_kind,
+            evidence.freshness,
+            evidence.provider_slot,
+        ) {
+            (
+                1,
+                RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerNetworkMembership,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) => {
+                self.relationship == RuntimeRelationshipKind::ConnectedTo
+                    && self.source.starts_with("docker_container_")
+                    && self.target.starts_with("docker_network_")
+            }
+            (
+                1,
+                RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerDaemonStateBindMount,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) => {
+                self.relationship == RuntimeRelationshipKind::ExposesDaemonState
+                    && self.source.starts_with("docker_container_")
+                    && self.target == "host_risk_docker_daemon_state"
+            }
+            (
+                1,
+                RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerVolumeMount,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) => {
+                self.relationship == RuntimeRelationshipKind::Mounts
+                    && self.source.starts_with("docker_container_")
+                    && self.target.starts_with("docker_volume_")
+            }
+            (
+                1,
+                RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerPortPublication,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) => {
+                self.relationship == RuntimeRelationshipKind::Exposes
+                    && self.source.starts_with("docker_container_")
+                    && self.target.starts_with("network_listener_")
+            }
+            (
+                1,
+                RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerComposeDependsOn,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) => {
+                self.relationship == RuntimeRelationshipKind::DependsOn
+                    && self.source.starts_with("docker_container_")
+                    && self.target.starts_with("docker_container_")
+                    && self.source != self.target
+            }
+            (
+                2,
+                RuntimeEvidenceProvider::Systemd,
+                RuntimeEvidenceKind::SystemdRequires,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh
+                | RuntimeEvidenceFreshness::Stale
+                | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::Systemd),
+            ) => {
+                self.relationship == RuntimeRelationshipKind::Requires
+                    && self.source.starts_with("systemd_service_")
+                    && self.target.starts_with("systemd_service_")
+                    && self.source != self.target
+            }
+            (
+                2,
+                RuntimeEvidenceProvider::Systemd,
+                RuntimeEvidenceKind::SystemdWants,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh
+                | RuntimeEvidenceFreshness::Stale
+                | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::Systemd),
+            ) => {
+                self.relationship == RuntimeRelationshipKind::Wants
+                    && self.source.starts_with("systemd_service_")
+                    && self.target.starts_with("systemd_service_")
+                    && self.source != self.target
+            }
+            (
+                2,
+                RuntimeEvidenceProvider::Systemd,
+                RuntimeEvidenceKind::SystemdPartOf,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh
+                | RuntimeEvidenceFreshness::Stale
+                | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::Systemd),
+            ) => {
+                self.relationship == RuntimeRelationshipKind::PartOf
+                    && self.source.starts_with("systemd_service_")
+                    && self.target.starts_with("systemd_service_")
+                    && self.source != self.target
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct RuntimeMapEdgeWire {
+    source: String,
+    target: String,
+    relationship: RuntimeRelationshipKind,
+    metadata: BTreeMap<String, String>,
+    #[serde(rename = "evidenceRefs")]
+    evidence_refs: Vec<RuntimeEvidenceRef>,
+}
+
+impl<'de> Deserialize<'de> for RuntimeMapEdge {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = RuntimeMapEdgeWire::deserialize(deserializer)?;
+        let edge = Self {
+            source: wire.source,
+            target: wire.target,
+            relationship: wire.relationship,
+            metadata: wire.metadata,
+            evidence_refs: wire.evidence_refs,
+        };
+        edge.has_valid_evidence_refs()
+            .then_some(edge)
+            .ok_or_else(|| serde::de::Error::custom("runtime evidence does not attest this edge"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -828,6 +1191,65 @@ pub struct RuntimeMapDiagnostic {
     pub provider: RuntimeProviderKind,
     pub severity: DiagnosticSeverity,
     pub message: String,
+}
+
+/// Findings are intentionally a small, closed advisory vocabulary. They do
+/// not expose provider output or prescribe an automated remediation.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingSeverity {
+    Warning,
+    Advisory,
+}
+
+/// Closed rule identifiers keep clients from treating findings as arbitrary
+/// provider messages. New rules require an explicit contract addition.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingRule {
+    #[serde(rename = "systemd.requires_target_not_active")]
+    SystemdRequiresTargetNotActive,
+    #[serde(rename = "docker.internal_network_member_publishes_port")]
+    DockerInternalNetworkMemberPublishesPort,
+    #[serde(rename = "docker.daemon_state_bind_mount")]
+    DockerDaemonStateBindMount,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Finding {
+    #[schemars(length(min = 1, max = 259))]
+    pub id: String,
+    #[serde(rename = "ruleId")]
+    pub rule_id: FindingRule,
+    pub severity: FindingSeverity,
+    #[schemars(length(min = 1, max = 259))]
+    pub summary: String,
+    #[schemars(length(min = 1, max = 259))]
+    pub recommendation: String,
+    #[serde(rename = "subjectRef")]
+    pub subject_ref: String,
+    #[serde(rename = "targetRef")]
+    pub target_ref: String,
+    /// Canonical, already-sanitized runtime evidence that directly triggered
+    /// this finding. Each closed rule has a fixed, small evidence budget,
+    /// preventing this response from becoming a generic metadata channel.
+    #[serde(rename = "evidenceRefs")]
+    #[schemars(required, length(min = 1, max = 2))]
+    pub evidence_refs: Vec<RuntimeEvidenceRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FindingsResponse {
+    pub findings: Vec<Finding>,
+    #[serde(rename = "modelRevision")]
+    #[schemars(length(min = 1))]
+    pub model_revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
@@ -841,7 +1263,7 @@ pub struct RuntimeMap {
     #[schemars(length(min = 1))]
     pub model_revision: String,
     #[serde(rename = "providerStates")]
-    #[schemars(length(min = 5, max = 5))]
+    #[schemars(length(min = 6, max = 6))]
     pub provider_states: Vec<ProviderState>,
     /// ACTUAL source of these bytes: "docker" or "mock" (#85 A3). Stamped by
     /// the daemon route layer from the cache's runtime mode.

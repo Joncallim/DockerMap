@@ -15,6 +15,37 @@ use std::{
 };
 
 const MAX_SYSTEMD_UNITS: usize = 128;
+/// Private handoff marker consumed by the scheduler once it has a real
+/// collection revision. It is never allowed into the published map.
+pub(crate) const SYSTEMD_EVIDENCE_KIND_MARKER: &str = "__dockermapSystemdEvidenceKind";
+pub(crate) const SYSTEMD_EVIDENCE_REQUIRES: &str = "requires";
+pub(crate) const SYSTEMD_EVIDENCE_WANTS: &str = "wants";
+pub(crate) const SYSTEMD_EVIDENCE_PART_OF: &str = "part_of";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SystemdDependencyKind {
+    Requires,
+    Wants,
+    PartOf,
+}
+
+impl SystemdDependencyKind {
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Requires => SYSTEMD_EVIDENCE_REQUIRES,
+            Self::Wants => SYSTEMD_EVIDENCE_WANTS,
+            Self::PartOf => SYSTEMD_EVIDENCE_PART_OF,
+        }
+    }
+
+    fn relationship(self) -> RuntimeRelationshipKind {
+        match self {
+            Self::Requires => RuntimeRelationshipKind::Requires,
+            Self::Wants => RuntimeRelationshipKind::Wants,
+            Self::PartOf => RuntimeRelationshipKind::PartOf,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SystemdUnitSummary {
@@ -153,35 +184,30 @@ pub(crate) fn collect_systemd_services(
         ));
     }
 
-    let mut dependency_reasons = BTreeMap::<(String, String), BTreeSet<String>>::new();
+    let mut dependencies = BTreeSet::<(String, String, SystemdDependencyKind)>::new();
     for detail in details_by_unit.values() {
-        for (property, dependency) in systemd_dependency_pairs(detail) {
+        for (kind, dependency) in systemd_dependency_pairs(detail) {
             let source = systemd_node_id(&detail.id);
             let target = systemd_node_id(&dependency);
             if source == target {
                 continue;
             }
-            dependency_reasons
-                .entry((source, target))
-                .or_default()
-                .insert(property);
+            dependencies.insert((source, target, kind));
             if !summary_by_unit.contains_key(&dependency) {
                 nodes.push(systemd_runtime_node(&dependency, None, None, system_uptime));
             }
         }
     }
 
-    for ((source, target), reasons) in dependency_reasons {
+    for (source, target, kind) in dependencies {
         let mut metadata = BTreeMap::new();
-        metadata.insert(
-            "systemdProperties".into(),
-            reasons.into_iter().collect::<Vec<_>>().join(","),
-        );
+        metadata.insert(SYSTEMD_EVIDENCE_KIND_MARKER.into(), kind.marker().into());
         edges.push(RuntimeMapEdge {
             source,
             target,
-            relationship: RuntimeRelationshipKind::DependsOn,
+            relationship: kind.relationship(),
             metadata,
+            evidence_refs: Vec::new(),
         });
     }
 }
@@ -264,16 +290,16 @@ fn parse_systemd_unit_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn systemd_dependency_pairs(detail: &SystemdUnitDetails) -> Vec<(String, String)> {
+fn systemd_dependency_pairs(detail: &SystemdUnitDetails) -> Vec<(SystemdDependencyKind, String)> {
     let mut pairs = Vec::new();
     for dependency in &detail.requires {
-        pairs.push(("requires".into(), dependency.clone()));
+        pairs.push((SystemdDependencyKind::Requires, dependency.clone()));
     }
     for dependency in &detail.wants {
-        pairs.push(("wants".into(), dependency.clone()));
+        pairs.push((SystemdDependencyKind::Wants, dependency.clone()));
     }
     for dependency in &detail.part_of {
-        pairs.push(("part_of".into(), dependency.clone()));
+        pairs.push((SystemdDependencyKind::PartOf, dependency.clone()));
     }
     pairs
 }
@@ -443,9 +469,9 @@ mod tests {
         assert_eq!(
             systemd_dependency_pairs(&records[0]),
             vec![
-                ("requires".to_string(), "redis.service".to_string()),
-                ("wants".to_string(), "postgres.service".to_string()),
-                ("part_of".to_string(), "worker.service".to_string())
+                (SystemdDependencyKind::Requires, "redis.service".to_string()),
+                (SystemdDependencyKind::Wants, "postgres.service".to_string()),
+                (SystemdDependencyKind::PartOf, "worker.service".to_string())
             ]
         );
         assert_eq!(

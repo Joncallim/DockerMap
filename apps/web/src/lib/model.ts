@@ -120,6 +120,8 @@ export interface SystemModel {
   volumeNameCollisions: Set<string>;
   imageRefCollisions: Set<string>;
   lastUpdated: number;
+  /** Opaque daemon publication identity shared by the source model envelopes. */
+  modelRevision: string;
 }
 
 export type RuntimeLayerId = NonNullable<RuntimeMapNode["layer"]> | "unassigned";
@@ -451,7 +453,8 @@ export function buildModel(snapshot: DockerSnapshot, runtimeMap: RuntimeMap): Sy
     networkNameCollisions,
     volumeNameCollisions,
     imageRefCollisions,
-    lastUpdated: Math.max(snapshot.lastUpdated, runtime.lastUpdated)
+    lastUpdated: Math.max(snapshot.lastUpdated, runtime.lastUpdated),
+    modelRevision: snapshot.modelRevision
   };
 }
 

@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::path::{Path, PathBuf};
 
+mod findings;
 mod fixtures;
 mod identity;
 mod logs;
@@ -10,6 +11,7 @@ mod models;
 pub mod schema_baseline;
 mod snapshot_runtime;
 
+pub use findings::derive_findings;
 pub use fixtures::{mock_log_entries, mock_logs, mock_snapshot, unix_timestamp_millis};
 pub use identity::collision_resistant_id_component;
 pub use logs::{
@@ -222,6 +224,13 @@ mod tests {
         let graph = derive_graph(&snapshot);
         assert_eq!(graph.nodes.len(), snapshot.containers.len());
         assert!(graph.edges.is_empty());
+
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        assert!(runtime_map.edges.iter().all(|edge| {
+            edge.evidence_refs
+                .iter()
+                .all(|evidence| evidence.kind != RuntimeEvidenceKind::DockerComposeDependsOn)
+        }));
     }
 
     #[test]
@@ -242,6 +251,12 @@ mod tests {
         };
 
         assert!(derive_graph(&snapshot).edges.is_empty());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        assert!(runtime_map.edges.iter().all(|edge| {
+            edge.evidence_refs
+                .iter()
+                .all(|evidence| evidence.kind != RuntimeEvidenceKind::DockerComposeDependsOn)
+        }));
     }
 
     #[test]
@@ -627,7 +642,7 @@ mod tests {
     #[test]
     fn derives_runtime_map_from_docker_snapshot() {
         let snapshot = mock_snapshot();
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
 
         assert!(runtime_map
             .nodes
@@ -643,6 +658,334 @@ mod tests {
             .edges
             .iter()
             .any(|edge| edge.relationship == RuntimeRelationshipKind::ConnectedTo));
+    }
+
+    #[test]
+    fn daemon_state_bind_mount_evidence_is_path_free_and_unique_per_container() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers[0].mounts = vec![
+            ContainerMount {
+                id: "private-one".into(),
+                kind: ComposeMountKind::Bind,
+                source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+                target: "/inside/socket".into(),
+                read_only: true,
+            },
+            ContainerMount {
+                id: "private-two".into(),
+                kind: ComposeMountKind::Bind,
+                source: Some("/var/lib/docker/DOCKERMAP_TEST_DAEMON_STATE".into()),
+                target: "/inside/data".into(),
+                read_only: false,
+            },
+        ];
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        let risk = runtime_map
+            .nodes
+            .iter()
+            .find(|node| node.id == "host_risk_docker_daemon_state")
+            .expect("matching bind mount derives the synthetic risk target");
+        assert_eq!(risk.kind, RuntimeNodeKind::HostRisk);
+        assert!(risk.metadata.is_empty());
+        let edges = runtime_map
+            .edges
+            .iter()
+            .filter(|edge| edge.target == "host_risk_docker_daemon_state")
+            .collect::<Vec<_>>();
+        assert_eq!(edges.len(), 1, "two qualifying mounts retain one safe edge");
+        assert_eq!(
+            edges[0].relationship,
+            RuntimeRelationshipKind::ExposesDaemonState
+        );
+        assert_eq!(edges[0].evidence_refs.len(), 1);
+        assert_eq!(
+            edges[0].evidence_refs[0].kind,
+            RuntimeEvidenceKind::DockerDaemonStateBindMount
+        );
+        let serialized = serde_json::to_string(&runtime_map).unwrap();
+        for forbidden in [
+            "DOCKERMAP_TEST_DAEMON_STATE",
+            "/inside/socket",
+            "/inside/data",
+            "readOnly",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "runtime evidence leaked {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn irrelevant_or_collided_daemon_state_mounts_fail_closed() {
+        let mut irrelevant = mock_snapshot();
+        irrelevant.containers[0].mounts = vec![ContainerMount {
+            id: "not-bind".into(),
+            kind: ComposeMountKind::NamedVolume,
+            source: Some("/var/lib/docker".into()),
+            target: "/inside".into(),
+            read_only: false,
+        }];
+        assert!(
+            derive_runtime_map(&irrelevant, Vec::new(), Vec::new(), Vec::new(), "test")
+                .edges
+                .iter()
+                .all(|edge| edge.target != "host_risk_docker_daemon_state")
+        );
+
+        let mut collided = mock_snapshot();
+        collided.containers[0].mounts = vec![ContainerMount {
+            id: "daemon-bind".into(),
+            kind: ComposeMountKind::Bind,
+            source: Some("/var/run/docker.sock".into()),
+            target: "/inside".into(),
+            read_only: false,
+        }];
+        collided.containers.push(collided.containers[0].clone());
+        assert!(
+            derive_runtime_map(&collided, Vec::new(), Vec::new(), Vec::new(), "test")
+                .edges
+                .iter()
+                .all(|edge| edge.target != "host_risk_docker_daemon_state")
+        );
+    }
+
+    #[test]
+    fn docker_runtime_edges_carry_bounded_observed_evidence_without_confidence() {
+        let snapshot = mock_snapshot();
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        let network = runtime_map
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.relationship == RuntimeRelationshipKind::ConnectedTo
+                    && edge.evidence_refs.iter().any(|evidence| {
+                        evidence.kind == RuntimeEvidenceKind::DockerNetworkMembership
+                    })
+            })
+            .expect("mock snapshot has Docker network membership");
+        let port = runtime_map
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.relationship == RuntimeRelationshipKind::Exposes
+                    && edge
+                        .evidence_refs
+                        .iter()
+                        .any(|evidence| evidence.kind == RuntimeEvidenceKind::DockerPortPublication)
+            })
+            .expect("mock snapshot has Docker port publication");
+        let mount = runtime_map
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.relationship == RuntimeRelationshipKind::Mounts
+                    && edge
+                        .evidence_refs
+                        .iter()
+                        .any(|evidence| evidence.kind == RuntimeEvidenceKind::DockerVolumeMount)
+            })
+            .expect("mock snapshot has Docker volume attachment");
+
+        for edge in [network, port, mount] {
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 1);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Docker);
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Observed
+            );
+            assert_eq!(evidence.freshness, RuntimeEvidenceFreshness::Fresh);
+            assert_eq!(evidence.subject_ref, edge.source);
+            assert_eq!(evidence.collected_at, snapshot.last_updated);
+            assert_eq!(evidence.provider_revision, "test");
+            assert!(!evidence.summary.contains(&snapshot.containers[0].name));
+        }
+
+        let serialized = serde_json::to_string(&runtime_map).expect("runtime map serializes");
+        assert!(serialized.contains("evidenceRefs"));
+        assert!(serialized.contains("assertionKind"));
+        assert!(
+            !serialized.contains("confidence"),
+            "observed Docker facts must not imply numerical confidence"
+        );
+    }
+
+    #[test]
+    fn docker_runtime_compose_dependencies_are_bounded_observed_declarations() {
+        let snapshot = mock_snapshot();
+        let runtime_map = derive_runtime_map(
+            &snapshot,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            "opaque-docker-observation",
+        );
+        let dependencies = runtime_map
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.evidence_refs
+                    .iter()
+                    .any(|evidence| evidence.kind == RuntimeEvidenceKind::DockerComposeDependsOn)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(dependencies.len(), 5);
+        for edge in dependencies {
+            assert_eq!(edge.relationship, RuntimeRelationshipKind::DependsOn);
+            assert!(edge.source.starts_with("docker_container_"));
+            assert!(edge.target.starts_with("docker_container_"));
+            assert_ne!(edge.source, edge.target);
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 1);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Docker);
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Observed
+            );
+            assert_eq!(evidence.freshness, RuntimeEvidenceFreshness::Fresh);
+            assert_eq!(evidence.subject_ref, edge.source);
+            assert_eq!(evidence.collected_at, snapshot.last_updated);
+            assert_eq!(evidence.provider_revision, "opaque-docker-observation");
+            assert_eq!(
+                evidence.summary,
+                "Docker recorded Compose dependency declaration"
+            );
+        }
+    }
+
+    #[test]
+    fn docker_evidence_provider_revision_attests_observation_not_cache_publication() {
+        let mut snapshot = mock_snapshot();
+        snapshot.last_updated = 42;
+        // The daemon assigns this after runtime derivation. Supplying a
+        // plausible publication value here proves it cannot leak backward
+        // into provider evidence.
+        snapshot.model_revision = "daemon-publication-999".into();
+
+        let runtime_map = derive_runtime_map(
+            &snapshot,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            "opaque-docker-observation-17",
+        );
+        let evidence = runtime_map
+            .edges
+            .iter()
+            .flat_map(|edge| &edge.evidence_refs)
+            .next()
+            .expect("mock snapshot emits Docker evidence");
+
+        assert_eq!(evidence.collected_at, 42);
+        assert_eq!(evidence.provider_revision, "opaque-docker-observation-17");
+        assert_ne!(evidence.provider_revision, snapshot.model_revision);
+    }
+
+    #[test]
+    fn runtime_evidence_derivation_rejects_an_empty_observation_token() {
+        let snapshot = mock_snapshot();
+        let result = std::panic::catch_unwind(|| {
+            derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "")
+        });
+        assert!(
+            result.is_err(),
+            "an empty providerRevision must never produce a runtime map"
+        );
+    }
+
+    #[test]
+    fn version_one_evidence_rejects_non_docker_or_non_observed_claims() {
+        let snapshot = mock_snapshot();
+        let evidence = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
+            .edges
+            .into_iter()
+            .flat_map(|edge| edge.evidence_refs)
+            .next()
+            .expect("mock snapshot emits version-one evidence");
+        let valid = serde_json::to_value(evidence).expect("evidence serializes");
+
+        for (field, invalid) in [
+            ("provider", serde_json::json!("systemd")),
+            ("assertionKind", serde_json::json!("inferred")),
+            ("freshness", serde_json::json!("stale")),
+            ("kind", serde_json::json!("systemd_requires")),
+        ] {
+            let mut malformed = valid.clone();
+            malformed[field] = invalid;
+            assert!(
+                serde_json::from_value::<RuntimeEvidenceRef>(malformed).is_err(),
+                "v1 must reject fabricated {field} evidence"
+            );
+        }
+    }
+
+    #[test]
+    fn version_two_systemd_evidence_requires_its_closed_slot_binding() {
+        let valid = serde_json::json!({
+            "version": 2,
+            "id": "systemd_evidence_requires_opaque",
+            "provider": "systemd",
+            "kind": "systemd_requires",
+            "assertionKind": "declared",
+            "summary": "systemd declared a Requires dependency",
+            "subjectRef": "systemd_service_app",
+            "collectedAt": 42,
+            "providerRevision": "opaque-systemd-revision",
+            "providerSlot": "systemd",
+            "freshness": "stale"
+        });
+        assert!(serde_json::from_value::<RuntimeEvidenceRef>(valid.clone()).is_ok());
+        for (field, invalid) in [
+            ("providerSlot", serde_json::json!("host_scoped")),
+            ("assertionKind", serde_json::json!("observed")),
+            ("freshness", serde_json::json!("unavailable")),
+            ("kind", serde_json::json!("docker_network_membership")),
+        ] {
+            let mut malformed = valid.clone();
+            malformed[field] = invalid;
+            assert!(serde_json::from_value::<RuntimeEvidenceRef>(malformed).is_err());
+        }
+        let edge = serde_json::json!({
+            "source": "systemd_service_app",
+            "target": "systemd_service_database",
+            "relationship": "requires",
+            "metadata": {},
+            "evidenceRefs": [valid.clone()]
+        });
+        assert!(serde_json::from_value::<RuntimeMapEdge>(edge.clone()).is_ok());
+        let mut wrong_relationship = edge;
+        wrong_relationship["relationship"] = serde_json::json!("wants");
+        assert!(serde_json::from_value::<RuntimeMapEdge>(wrong_relationship).is_err());
+        let mut missing_binding = valid;
+        missing_binding
+            .as_object_mut()
+            .unwrap()
+            .remove("providerSlot");
+        assert!(serde_json::from_value::<RuntimeEvidenceRef>(missing_binding).is_err());
+    }
+
+    #[test]
+    fn version_one_evidence_cannot_attest_a_different_runtime_edge() {
+        let snapshot = mock_snapshot();
+        let edge = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
+            .edges
+            .into_iter()
+            .find(|edge| {
+                edge.relationship == RuntimeRelationshipKind::ConnectedTo
+                    && !edge.evidence_refs.is_empty()
+            })
+            .expect("mock snapshot emits a Docker network edge");
+        let mut malformed = serde_json::to_value(edge).expect("edge serializes");
+        malformed["relationship"] = serde_json::json!("exposes");
+
+        assert!(
+            serde_json::from_value::<RuntimeMapEdge>(malformed).is_err(),
+            "network membership evidence must not attest a port-publication edge"
+        );
     }
 
     #[test]
@@ -672,7 +1015,7 @@ mod tests {
                 attached_to: Vec::new(),
             })
             .collect();
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
         let volume_ids = runtime_map
             .nodes
             .iter()
@@ -765,7 +1108,7 @@ mod tests {
         snapshot.networks.clear();
         snapshot.volumes.clear();
 
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
         let listeners = runtime_map
             .nodes
             .iter()
@@ -801,8 +1144,9 @@ mod tests {
         reordered.networks.reverse();
         reordered.volumes.reverse();
 
-        let first_map = derive_runtime_map(&first, Vec::new(), Vec::new(), Vec::new());
-        let reordered_map = derive_runtime_map(&reordered, Vec::new(), Vec::new(), Vec::new());
+        let first_map = derive_runtime_map(&first, Vec::new(), Vec::new(), Vec::new(), "test");
+        let reordered_map =
+            derive_runtime_map(&reordered, Vec::new(), Vec::new(), Vec::new(), "test");
 
         assert_eq!(reordered_map.nodes, first_map.nodes);
         assert_eq!(reordered_map.edges, first_map.edges);
@@ -825,7 +1169,7 @@ mod tests {
             },
         ];
 
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
         let duplicated = runtime_map
             .nodes
             .iter()
@@ -850,7 +1194,7 @@ mod tests {
         // JSON → Rust) instead of a hand-written fixture, so the contract test
         // validates output collectors actually produce.
         let snapshot = mock_snapshot();
-        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new());
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
 
         let serialized = serde_json::to_string(&runtime_map).expect("map should serialize");
         let deserialized: RuntimeMap =

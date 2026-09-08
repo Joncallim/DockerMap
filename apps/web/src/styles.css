@@ -983,6 +983,7 @@ kbd {
 .runtime-edge-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--s2);
 }
 
@@ -999,6 +1000,55 @@ kbd {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.runtime-edge-evidence {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  font-size: 12px;
+  padding: 6px 8px;
+  white-space: nowrap;
+}
+
+.runtime-edge-evidence:hover,
+.runtime-edge-evidence.is-active {
+  border-color: var(--border-strong);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.runtime-edge-evidence-heading {
+  color: var(--ink);
+  font-weight: 600;
+  margin: 0 0 var(--s2);
+  overflow-wrap: anywhere;
+}
+
+.runtime-evidence-reference {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  padding: var(--s3);
+}
+
+.runtime-evidence-reference-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.runtime-evidence-reference p {
+  color: var(--ink-soft);
+  margin: var(--s2) 0;
+  overflow-wrap: anywhere;
+}
+
+.runtime-evidence-reference-details {
+  display: grid;
+  gap: var(--s2);
 }
 
 .runtime-evidence-list li {

@@ -3,6 +3,7 @@ import type {
   ContainerRecord,
   DiagnosticsReport,
   DockerSnapshot,
+  FindingsResponse,
   GraphResponse,
   HealthResponse,
   ImageRecord,
@@ -235,6 +236,7 @@ const demoRuntimeMap: RuntimeMap = {
     { slot: "host_scoped", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
     { slot: "python_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
     { slot: "native_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+    { slot: "systemd", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
     { slot: "project_npm", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" }
   ],
   nodes: [
@@ -393,12 +395,12 @@ const demoRuntimeMap: RuntimeMap = {
     }
   ],
   edges: [
-    { source: "runtime_gateway", target: "runtime_api", relationship: "proxies_to", metadata: { port: 80 } },
-    { source: "runtime_api", target: "runtime_postgres", relationship: "depends_on", metadata: { source: "compose" } },
-    { source: "runtime_worker", target: "runtime_api", relationship: "calls", metadata: { queue: "jobs" } },
-    { source: "runtime_worker", target: "runtime_postgres", relationship: "depends_on", metadata: { source: "runtime" } },
-    { source: "runtime_postgres", target: "runtime_postgres_data", relationship: "mounts", metadata: { path: "/var/lib/postgresql/data" } },
-    { source: "runtime_systemd_api", target: "runtime_gateway", relationship: "exposes", metadata: { unit: "dockermap-api.service" } }
+    { source: "runtime_gateway", target: "runtime_api", relationship: "proxies_to", metadata: { port: 80 }, evidenceRefs: [] },
+    { source: "runtime_api", target: "runtime_postgres", relationship: "depends_on", metadata: { source: "compose" }, evidenceRefs: [] },
+    { source: "runtime_worker", target: "runtime_api", relationship: "calls", metadata: { queue: "jobs" }, evidenceRefs: [] },
+    { source: "runtime_worker", target: "runtime_postgres", relationship: "depends_on", metadata: { source: "runtime" }, evidenceRefs: [] },
+    { source: "runtime_postgres", target: "runtime_postgres_data", relationship: "mounts", metadata: { path: "/var/lib/postgresql/data" }, evidenceRefs: [] },
+    { source: "runtime_systemd_api", target: "runtime_gateway", relationship: "exposes", metadata: { unit: "dockermap-api.service" }, evidenceRefs: [] }
   ],
   diagnostics: [
     {
@@ -442,6 +444,7 @@ export function getDemoResponse<T>(path: string): T {
   if (pathname === "/api/snapshot") return demoSnapshot as T;
   if (pathname === "/api/graph") return demoGraph as T;
   if (pathname === "/api/runtime/map") return demoRuntimeMap as T;
+  if (pathname === "/api/findings") return { findings: [], modelRevision: demoSnapshot.modelRevision } as FindingsResponse as T;
   if (pathname === "/api/health") {
     return {
       node: { status: "ok", port: 4000 },

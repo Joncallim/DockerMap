@@ -869,7 +869,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
   const fixture = async (name: string) => JSON.parse(
     await readFile(new URL(`../../../tests/fixtures/contracts/${name}`, import.meta.url), "utf8")
   ) as Record<string, unknown>;
-  const [snapshot, graph, runtimeMap, logs, composeScan, composeGraph, composeEditPlan, health] = await Promise.all([
+  const [snapshot, graph, runtimeMap, logs, composeScan, composeGraph, composeEditPlan, health, findings] = await Promise.all([
     fixture("mock-snapshot.json"),
     fixture("graph-response.json"),
     fixture("runtime-map-daemon-emitted.json"),
@@ -877,7 +877,8 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     fixture("compose-scan.json"),
     fixture("compose-graph.json"),
     fixture("compose-edit-plan.json"),
-    fixture("health-response.json")
+    fixture("health-response.json"),
+    fixture("findings-response.json")
   ]);
   const containers = snapshot.containers as unknown[];
   const container = containers.find((entry) => (entry as { name?: unknown }).name === "api");
@@ -887,6 +888,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     if (req.url === "/daemon/snapshot") return sendJson(res, 200, snapshot);
     if (req.url === "/daemon/graph") return sendJson(res, 200, graph);
     if (req.url === "/daemon/runtime/map") return sendJson(res, 200, runtimeMap);
+    if (req.url === "/daemon/findings") return sendJson(res, 200, findings);
     if (req.url === "/daemon/containers") return sendJson(res, 200, { containers });
     if (req.url === "/daemon/containers/api") return sendJson(res, 200, container);
     if (req.url === "/daemon/images") return sendJson(res, 200, { images: snapshot.images });
@@ -902,7 +904,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
     DOCKERMAP_API_TOKEN: "test-token"
   });
-  const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } });
+  const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint8: true, uint32: true, uint64: true } });
   const validators = new Map<RustResponseSchemaId, ReturnType<Ajv2020["compile"]>>();
   for (const [schemaName, schema] of Object.entries(RUST_RESPONSE_SCHEMAS) as [RustResponseSchemaId, (typeof RUST_RESPONSE_SCHEMAS)[RustResponseSchemaId]][]) {
     validators.set(schemaName, ajv.compile(schema));
@@ -912,6 +914,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     ["/api/snapshot", "DockerSnapshot"],
     ["/api/graph", "GraphResponse"],
     ["/api/runtime/map", "RuntimeMap"],
+    ["/api/findings", "FindingsResponse"],
     ["/api/containers", "ContainersResponse"],
     ["/api/containers/api", "ContainerDetailResponse"],
     ["/api/images", "ImagesResponse"],
@@ -984,6 +987,7 @@ test("daemon model responses require non-empty revision and complete provider st
   ) as Record<string, unknown>;
   const snapshot = await fixture("mock-snapshot.json");
   const runtime = await fixture("runtime-map.json");
+  const findings = await fixture("findings-response.json");
   const invalidResponses = [
     ["/daemon/snapshot", { ...snapshot, modelRevision: "" }],
     ["/daemon/snapshot", (() => { const value = structuredClone(snapshot); delete value.modelRevision; return value; })()],
@@ -1029,7 +1033,14 @@ test("daemon model responses require non-empty revision and complete provider st
         lastSuccessMs: null, lastDurationMs: null, dataRevision: null, consecutiveFailureCount: 0
       });
       return value;
-    })()]
+    })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].summary = "DOCKERMAP_TEST_FORGED_FINDING"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].subjectRef = value.findings[0].targetRef; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); delete value.findings[0].evidenceRefs; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[2].targetRef = "host_risk_untrusted"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[1].kind = "docker_volume_mount"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()]
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
@@ -1112,6 +1123,165 @@ test("daemon response validator maps every generated Rust response root and reje
   assert.throws(() => validateDaemonResponse("/daemon/not-documented", {}));
 });
 
+test("runtime evidence is required and fails closed before browser publication", async () => {
+  const { validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json", import.meta.url),
+    "utf8"
+  ));
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
+
+  const missing = structuredClone(fixture);
+  delete missing.edges[0].evidenceRefs;
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", missing));
+
+  const malformed = structuredClone(fixture);
+  malformed.edges[0].evidenceRefs[0].summary = { unexpected: "object" };
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", malformed));
+
+  const extra = structuredClone(fixture);
+  extra.edges[0].evidenceRefs[0].rawConfig = "must never become a public field";
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", extra));
+
+  for (const [field, value] of [
+    ["provider", "systemd"],
+    ["kind", "systemd_requires"],
+    ["assertionKind", "inferred"],
+    ["freshness", "stale"],
+    ["version", 2]
+  ] as const) {
+    const fabricated = structuredClone(fixture);
+    fabricated.edges[0].evidenceRefs[0][field] = value;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", fabricated),
+      `v1 evidence must reject fabricated ${field}`
+    );
+  }
+
+  const evidence = fixture.edges[0].evidenceRefs[0];
+  assert.notEqual(
+    evidence.providerRevision,
+    String(evidence.collectedAt),
+    "providerRevision is an opaque observation token, not a timestamp alias"
+  );
+  const timestampAlias = structuredClone(fixture);
+  timestampAlias.edges[0].evidenceRefs[0].providerRevision = String(timestampAlias.edges[0].evidenceRefs[0].collectedAt);
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", timestampAlias));
+  const wrongSubject = structuredClone(fixture);
+  wrongSubject.edges[0].evidenceRefs[0].subjectRef = "docker_container_not_the_edge_source";
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongSubject));
+  for (const field of ["source", "target"] as const) {
+    const wrongEndpoint = structuredClone(fixture);
+    wrongEndpoint.edges[0][field] = `runtime_${field}_not_docker`;
+    if (field === "source") wrongEndpoint.edges[0].evidenceRefs[0].subjectRef = wrongEndpoint.edges[0].source;
+    assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongEndpoint));
+  }
+  const selfDeclaredDependency = structuredClone(fixture);
+  selfDeclaredDependency.edges[0].target = selfDeclaredDependency.edges[0].source;
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", selfDeclaredDependency),
+    "a Compose declaration cannot attest a self dependency"
+  );
+
+  for (const [kind, relationship] of [
+    ["docker_network_membership", "mounts"],
+    ["docker_volume_mount", "exposes"],
+    ["docker_port_publication", "connected_to"],
+    ["docker_compose_depends_on", "connected_to"]
+  ] as const) {
+    const mismatched = structuredClone(fixture);
+    mismatched.edges[0].evidenceRefs[0].kind = kind;
+    mismatched.edges[0].relationship = relationship;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", mismatched),
+      `${kind} must not support ${relationship}`
+    );
+  }
+
+  const systemd = structuredClone(fixture);
+  Object.assign(systemd.edges[0], {
+    source: "systemd_service_application",
+    target: "systemd_service_database",
+    relationship: "requires"
+  });
+  Object.assign(systemd.edges[0].evidenceRefs[0], {
+    version: 2,
+    provider: "systemd",
+    kind: "systemd_requires",
+    assertionKind: "declared",
+    summary: "systemd declared a Requires dependency",
+    subjectRef: "systemd_service_application",
+    providerRevision: "opaque-systemd-observation",
+    providerSlot: "systemd",
+    freshness: "stale"
+  });
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", systemd));
+  for (const [kind, relationship] of [
+    ["systemd_requires", "wants"],
+    ["systemd_wants", "part_of"],
+    ["systemd_part_of", "requires"]
+  ] as const) {
+    const mismatched = structuredClone(systemd);
+    mismatched.edges[0].evidenceRefs[0].kind = kind;
+    mismatched.edges[0].relationship = relationship;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", mismatched),
+      `${kind} must not support ${relationship}`
+    );
+  }
+  const wrongSlot = structuredClone(systemd);
+  wrongSlot.edges[0].evidenceRefs[0].providerSlot = "host_scoped";
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongSlot));
+
+  const daemonState = structuredClone(fixture);
+  Object.assign(daemonState.edges[0], {
+    source: "docker_container_api",
+    target: "host_risk_docker_daemon_state",
+    relationship: "exposes_daemon_state"
+  });
+  Object.assign(daemonState.edges[0].evidenceRefs[0], {
+    version: 1,
+    provider: "docker",
+    kind: "docker_daemon_state_bind_mount",
+    assertionKind: "observed",
+    summary: "Docker reported a bind mount exposing Docker daemon state",
+    subjectRef: "docker_container_api",
+    providerSlot: null,
+    freshness: "fresh"
+  });
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", daemonState));
+  const daemonStateWrongTarget = structuredClone(daemonState);
+  daemonStateWrongTarget.edges[0].target = "host_risk_docker_daemon_state_untrusted";
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", daemonStateWrongTarget),
+    "Docker daemon-state evidence has one canonical synthetic target"
+  );
+});
+
+test("fabricated runtime evidence is rejected over the authenticated API boundary", async () => {
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json", import.meta.url),
+    "utf8"
+  ));
+  const sentinel = "DOCKERMAP_TEST_FAKE_RUNTIME_EVIDENCE_SECRET";
+  const hostile = structuredClone(fixture);
+  hostile.edges[0].source = `token=${sentinel}`;
+  hostile.edges[0].evidenceRefs[0].subjectRef = hostile.edges[0].source;
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/runtime/map") return sendJson(res, 200, hostile);
+    return sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+  const response = await request(api, "/api/runtime/map", { headers: { Authorization: "Bearer test-token" } });
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.deepEqual(body, {
+    code: "daemon_invalid_response",
+    message: "Daemon response did not match its declared contract"
+  });
+  assert.doesNotMatch(JSON.stringify(body), new RegExp(sentinel));
+});
+
 test("actual canonical and v1 SSE snapshot/error frames use their declared payload schemas", async () => {
   const health = JSON.parse(await readFile(new URL("../../../tests/fixtures/contracts/health-response.json", import.meta.url), "utf8"));
   const healthyDaemon = await startStubDaemon((req, res) => {
@@ -1123,7 +1293,7 @@ test("actual canonical and v1 SSE snapshot/error frames use their declared paylo
     DOCKERMAP_API_TOKEN: "test-token"
   });
   const auth = { Authorization: "Bearer test-token" };
-  const rustValidator = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } })
+  const rustValidator = new Ajv2020({ allErrors: true, strict: true, formats: { uint8: true, uint32: true, uint64: true } })
     .compile(RUST_RESPONSE_SCHEMAS.HealthResponse);
 
   for (const path of ["/api/events/stream", "/api/v1/events/stream"]) {
@@ -1974,13 +2144,31 @@ test("API publishes redacted and normalized daemon data on every response route"
     if (req.url === "/daemon/runtime/map") {
       sendJson(res, 200, {
         nodes: [{ id: hostile, provider: "other", type: "service", label: hostile, status: hostile, metadata: { [hostile]: hostile } }],
-        edges: [{ source: hostile, target: hostile, relationship: "depends_on", metadata: { [hostile]: hostile } }],
+        edges: [{
+          source: `docker_container_${hostile}`,
+          target: `docker_network_${hostile}`,
+          relationship: "connected_to",
+          metadata: { [hostile]: hostile },
+          evidenceRefs: [{
+            version: 1,
+            id: hostile,
+            provider: "docker",
+            kind: "docker_network_membership",
+            assertionKind: "observed",
+            summary: hostile,
+            subjectRef: `docker_container_${hostile}`,
+            collectedAt: 1,
+            providerRevision: hostile,
+            freshness: "fresh"
+          }]
+        }],
         diagnostics: [{ provider: "other", severity: "warning", message: hostile }],
         lastUpdated: 1,
         modelRevision: "revision-1",
         providerStates: [
           { slot: "network_infrastructure", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "host_scoped", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+          { slot: "systemd", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "python_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "native_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "project_npm", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" }
