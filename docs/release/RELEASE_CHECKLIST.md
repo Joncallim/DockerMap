@@ -88,6 +88,20 @@ the separate normal live browser suite has a Service Detail failure outside
 this focused proof, whose cause has not been established, and remains an
 unverified release gate.
 
+- [x] Record the current temporal evidence boundary: Docker event observations
+  are read-only, redacted, daemon-lifetime in-memory data with a 64-row journal,
+  4,096-ID dedupe horizon, and bounded five-minute replay/threshold behavior.
+  There is no DockerMap-owned event store, persistence, or daemon-restart
+  continuity in this slice; this is an explicit current implementation decision,
+  not a claim that the full #70 persistence question is closed.
+- [ ] Run and record an isolated real-host temporal sequence against an exact
+  candidate SHA. Start, stop, and restart only labelled testbed containers;
+  verify one bounded event sequence, reconnect/replay deduplication, unrelated
+  service exclusion, cleanup, and the documented no-persistence/replay behavior.
+  Deterministic local tests and the normal labelled live-Docker suite do not
+  substitute for this evidence. Keep #70 open until the exercise and any
+  longer-term persistence decision are recorded.
+
 - [x] Add provider-specific redaction fixtures for systemd, tmux, npm/package metadata,
   native process inspection, reverse-proxy config, and DNS collectors.
   Current coverage is systemd, tmux, npm/package, native-process-shaped output,

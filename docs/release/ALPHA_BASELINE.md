@@ -61,10 +61,17 @@ clean-host installation or host-reboot recovery evidence below.
   Interactive SSO is deployment-specific evidence, not an alpha blocker.
 - Clean-host installation and host-reboot recovery remain required before a
   broader support claim. This is a private alpha candidate only.
-- DockerMap intentionally has no persistent event or resource-telemetry
-  history, image-update/advisory lookup, or write mode. Current in-memory
-  Docker resource telemetry is an unfiltered-only bounded slice; this baseline
-  does not record its required isolated unfiltered live-Docker evidence.
+- DockerMap intentionally has no DockerMap-owned persistent event or
+  resource-telemetry history, image-update/advisory lookup, or write mode. The
+  current temporal slice does consume a fixed Docker event stream into a
+  daemon-lifetime in-memory journal (64 retained rows, 4,096-ID dedupe horizon,
+  and at most 300 seconds of reconnect replay) and can emit one bounded,
+  redacted repeated-`container_died` advisory. It does not provide persistence
+  or continuity across daemon restarts. Current in-memory Docker resource
+  telemetry is an unfiltered-only bounded slice; this baseline does not record
+  its required isolated unfiltered live-Docker evidence. No isolated real-host
+  temporal event-sequence evidence is recorded here, so this slice does not
+  close #70.
 - Full-host/native inspection is intentionally more trusted than the default
   Docker-only profile. Tailscale and Headscale remain opt-in and do not add
   credentials or control-plane permissions.
