@@ -2722,7 +2722,12 @@ test("API publishes redacted and normalized daemon data on every response route"
             provider: "docker",
             kind: "docker_network_membership",
             assertionKind: "observed",
-            summary: hostile,
+            // This remains an intentionally hostile daemon payload through its
+            // node and edge metadata, identifiers, and labels. The evidence
+            // summary itself must be the daemon-owned canonical text so the
+            // RuntimeMap validation boundary accepts it before this test
+            // verifies publication redaction.
+            summary: "Docker reported container network membership",
             subjectRef: `docker_container_${hostile}`,
             collectedAt: 1,
             providerRevision: hostile,
