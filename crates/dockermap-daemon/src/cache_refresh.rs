@@ -412,6 +412,11 @@ impl DaemonCache {
         self.findings = FindingsResponse {
             findings: derive_findings(&self.runtime_map),
             model_revision: self.runtime_map.model_revision.clone(),
+            // Source is a publication-boundary attestation, never cache
+            // state. Keeping it absent here prevents a reset or a later
+            // refresh from relabeling cached findings before the route reads
+            // the matching runtime mode.
+            source: None,
         };
     }
 

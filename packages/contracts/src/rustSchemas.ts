@@ -1577,6 +1577,13 @@ export const RUST_RESPONSE_SCHEMAS = {
         "freshness"
       ],
       "type": "object"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1591,6 +1598,17 @@ export const RUST_RESPONSE_SCHEMAS = {
     "modelRevision": {
       "minLength": 1,
       "type": "string"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuntimeMode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ACTUAL source of this advisory projection: \"docker\" when it was\nderived from a live daemon publication, or \"mock\" when it was derived\nfrom the daemon's fallback topology. Stamped at the daemon route from\nthe cache mode; this model deliberately cannot infer a requested mode."
     }
   },
   "required": [
@@ -4123,6 +4141,13 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "freshness"
       ],
       "type": "object"
+    },
+    "RuntimeMode": {
+      "enum": [
+        "docker",
+        "mock"
+      ],
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4137,6 +4162,17 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "modelRevision": {
       "minLength": 1,
       "type": "string"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/components/schemas/FindingsResponse/$defs/RuntimeMode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ACTUAL source of this advisory projection: \"docker\" when it was\nderived from a live daemon publication, or \"mock\" when it was derived\nfrom the daemon's fallback topology. Stamped at the daemon route from\nthe cache mode; this model deliberately cannot infer a requested mode."
     }
   },
   "required": [

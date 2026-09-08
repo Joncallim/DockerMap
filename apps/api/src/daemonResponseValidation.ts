@@ -228,7 +228,14 @@ function hasCoherentRuntimeEvidence(payload: unknown): boolean {
 // arbitrary strings through the new endpoint.
 function hasCoherentFindings(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
-  const findings = (payload as { findings?: unknown }).findings;
+  const response = payload as { findings?: unknown; source?: unknown };
+  // `source` is an attestation of where this advisory projection actually
+  // came from. It remains optional during the wire-compatible rollout, but a
+  // daemon that sends it must use the closed runtime-mode vocabulary. Do not
+  // infer it from individual finding/evidence providers: a mock topology can
+  // contain Docker-shaped records too.
+  if (response.source !== undefined && response.source !== "docker" && response.source !== "mock") return false;
+  const findings = response.findings;
   if (!Array.isArray(findings)) return false;
   return findings.every((candidate) => {
     if (!candidate || typeof candidate !== "object") return false;
