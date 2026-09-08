@@ -594,6 +594,13 @@ async fn publish_docker_snapshot_cache(
         mark_network_observation_stale(&mut updated.runtime_providers);
     }
     updated.docker_observation_revision = cache.docker_observation_revision.clone();
+    // The collision aggregate is one stable boolean observation for this
+    // source generation. Replacing the cache for an otherwise identical
+    // Docker refresh must not mint a new V7 evidence token and churn the
+    // public model revision/SSE stream.
+    if same_source {
+        updated.integrity_observation_revision = cache.integrity_observation_revision.clone();
+    }
     updated.rebuild_runtime_map();
     updated.revision = cache.revision.clone();
     updated.assign_revision();
@@ -2627,6 +2634,52 @@ mod scheduler_tests {
             cache.runtime_map.edges.is_empty(),
             "mock never projects the collision aggregate"
         );
+    }
+
+    #[tokio::test]
+    async fn persistent_identity_collision_keeps_aggregate_token_and_model_revision_stable() {
+        let collision_snapshot = |last_updated| {
+            let mut snapshot = mock_snapshot();
+            let duplicate = snapshot.containers[0].clone();
+            snapshot.containers.push(duplicate);
+            snapshot.last_updated = last_updated;
+            snapshot
+        };
+        let first = collision_snapshot(10);
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        publish_docker_snapshot_cache(&state, docker_cache(first)).await;
+        let first_cache = state.cache.read().await;
+        let first_revision = first_cache.snapshot.model_revision.clone();
+        let first_token = first_cache
+            .runtime_map
+            .edges
+            .iter()
+            .flat_map(|edge| edge.evidence_refs.iter())
+            .find(|evidence| evidence.kind == RuntimeEvidenceKind::RuntimeIdentityCollision)
+            .expect("collision aggregate carries one V7 evidence ref")
+            .provider_revision
+            .clone();
+        drop(first_cache);
+
+        publish_docker_snapshot_cache(&state, docker_cache(collision_snapshot(12))).await;
+        let refreshed = state.cache.read().await;
+        let refreshed_token = refreshed
+            .runtime_map
+            .edges
+            .iter()
+            .flat_map(|edge| edge.evidence_refs.iter())
+            .find(|evidence| evidence.kind == RuntimeEvidenceKind::RuntimeIdentityCollision)
+            .expect("persistent collision retains one V7 evidence ref")
+            .provider_revision
+            .clone();
+        assert_eq!(refreshed_token, first_token);
+        assert_eq!(refreshed.snapshot.model_revision, first_revision);
+        assert_eq!(refreshed.runtime_map.model_revision, first_revision);
     }
 
     /// Complete a claimed fixed slot without running a host collector. This is
