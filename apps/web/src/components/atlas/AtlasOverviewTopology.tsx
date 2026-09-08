@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { AtlasCamera, AtlasKey, AtlasLayout, AtlasModel, AtlasSubject } from "../../lib/atlas/types";
 import { pointFor } from "../../lib/atlas/layout";
+import { presentationMarkers, subjectPresentationText } from "../../lib/atlas/presentation";
 
 const DISPLAY_LIMIT = 96;
 const SUBJECT_LIMIT = 250;
@@ -12,18 +13,11 @@ function safeDisplay(value: string): string {
 }
 
 function markerText(subject: AtlasSubject): string {
-  const attention = subject.attention === "warning" ? "warning attention" : subject.attention === "advisory" ? "advisory attention" : "no attention";
-  const ambiguity = subject.ambiguity === "collision" ? "ambiguous collision" : subject.ambiguity === "unresolved" ? "unresolved" : subject.ambiguity === "unsupported" ? "unsupported" : "unambiguous";
-  return `${safeDisplay(subject.display)}, ${attention}, ${ambiguity}, ${subject.operationalState}, ${subject.freshness}`;
+  return subjectPresentationText({ ...subject, display: safeDisplay(subject.display) });
 }
 
 function MarkerRow({ subject }: { subject: AtlasSubject }) {
-  return <span className="atlas-marker-row" aria-hidden="true">
-    {subject.attention !== "none" && <i className={`atlas-marker attention-${subject.attention}`}>▲</i>}
-    {subject.ambiguity !== "none" && <i className={`atlas-marker ambiguity-${subject.ambiguity}`}>◇</i>}
-    <i className={`atlas-marker state-${subject.operationalState}`}>{({ healthy: "✓", warning: "◯", degraded: "◆", offline: "■", updating: "◌", unknown: "?" } as const)[subject.operationalState]}</i>
-    <i className={`atlas-marker fresh-${subject.freshness}`}>{({ fresh: "◷", stale: "◴", timed_out: "⌛", unavailable: "⊘", disabled: "−", unknown: "?" } as const)[subject.freshness]}</i>
-  </span>;
+  return <span className="atlas-marker-row" aria-hidden="true">{presentationMarkers(subject).map((entry) => <i key={entry.channel} className={`atlas-marker ${entry.className}`}>{entry.glyph}</i>)}</span>;
 }
 
 export interface AtlasOverviewTopologyProps {

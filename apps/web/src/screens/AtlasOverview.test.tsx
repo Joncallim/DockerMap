@@ -54,7 +54,7 @@ describe("AtlasOverview", () => {
       model: { ...atlas.model, subjects: atlas.model.subjects.map((subject) => ({ ...subject, attention: "warning" as const, freshness: "stale" as const, ambiguity: "unsupported" as const })) }
     };
     const html = markup(context(marked));
-    expect(html).toContain("warning attention, unsupported, healthy, stale");
+    expect(html).toContain("warning attention, unsupported identity, healthy, stale observation");
     expect(html).not.toContain("runtime_subject_");
   });
 
@@ -86,6 +86,24 @@ describe("AtlasOverview", () => {
     host.remove();
   });
 
+  it("keeps attention, ambiguity, operational state, and freshness visible as four independent inspector labels", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root: Root = createRoot(host);
+    const atlas = envelope(1);
+    const orthogonal = {
+      ...atlas,
+      model: { ...atlas.model, subjects: atlas.model.subjects.map((subject) => ({ ...subject, attention: "advisory" as const, ambiguity: "unresolved" as const, operationalState: "updating" as const, freshness: "unavailable" as const })) }
+    };
+    await act(async () => root.render(<AppContext.Provider value={context(orthogonal)}><AtlasOverview /></AppContext.Provider>));
+    await act(async () => host.querySelector<HTMLButtonElement>(".atlas-directory button:not(:disabled)")!.click());
+    const inspector = host.querySelector(".atlas-inspector")?.textContent ?? "";
+    expect(inspector).toContain("advisory attention, unresolved identity, updating, unavailable observation");
+    expect(inspector).not.toContain("degraded");
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
   it("discloses only selected evidence-backed non-causal local context to keyboard selection", async () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -98,6 +116,26 @@ describe("AtlasOverview", () => {
     expect(inspector.textContent).toContain("Recorded network membership");
     expect(inspector.textContent).toContain("do not establish communication, data direction, host exposure, reachability, or ownership");
     expect(inspector.textContent).not.toContain("0.0.0.0");
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it("keeps attention, operational state, and freshness independent in selected local-rail item text", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root: Root = createRoot(host);
+    const atlas = projectRuntimeMap(runtimeFixture(2, "outbound_star", "network"));
+    const contextKey = atlas.model.attachments[0]!.context;
+    const marked = {
+      ...atlas,
+      model: { ...atlas.model, subjects: atlas.model.subjects.map((subject) => subject.key === contextKey
+        ? { ...subject, attention: "advisory" as const, operationalState: "updating" as const, freshness: "unavailable" as const }
+        : subject) }
+    };
+    await act(async () => root.render(<AppContext.Provider value={context(marked)}><AtlasOverview /></AppContext.Provider>));
+    await act(async () => host.querySelector<HTMLButtonElement>(".atlas-directory button:not(:disabled)")!.click());
+    const rail = host.querySelector(".atlas-local-context")?.textContent ?? "";
+    expect(rail).toContain("advisory attention, unambiguous identity, updating, unavailable observation");
     await act(async () => root.unmount());
     host.remove();
   });
