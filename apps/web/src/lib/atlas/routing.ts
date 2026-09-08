@@ -106,7 +106,9 @@ function lensAccepts(lens: AtlasRoutingLens, routeClass: AtlasRouteClass): boole
   if (lens === "dependencies") return routeClass === "declaration";
   if (lens === "connectivity") return routeClass === "network_attachment" || routeClass === "port_attachment" || routeClass === "daemon_state_attachment";
   if (lens === "storage") return routeClass === "storage_attachment";
-  return true;
+  // Runtime and attention are state/marker views. They never reclassify a
+  // structural record as a connector.
+  return false;
 }
 
 function caps(subjects: number): Budget {
