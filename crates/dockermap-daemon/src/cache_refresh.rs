@@ -63,6 +63,10 @@ pub(crate) struct DaemonCache {
     /// match this generation as well as evidence, so Docker→mock→Docker can
     /// never accept a completion from the earlier live generation.
     source_generation: u64,
+    /// Opaque source-observation token attached to Docker-native evidence.
+    /// This is intentionally distinct from the broader publication revision:
+    /// provider slot state may change without changing Docker facts.
+    docker_observation_revision: DockerObservationRevision,
     revision: PublicationRevision,
 }
 
@@ -129,6 +133,54 @@ impl PublicationRevision {
     }
 }
 
+/// Per-process opaque identity for the current sanitized Docker observation.
+/// It advances only when bounded Docker semantics (or source mode) change,
+/// never for the two-second observation timestamp tick.
+#[derive(Clone)]
+struct DockerObservationRevision {
+    boot: String,
+    sequence: u64,
+    last_observable: Option<String>,
+}
+
+impl DockerObservationRevision {
+    fn new() -> Self {
+        Self {
+            boot: opaque_revision_boot_component(),
+            sequence: 0,
+            last_observable: None,
+        }
+    }
+
+    fn current(&self) -> String {
+        format!("{}-{}", self.boot, self.sequence)
+    }
+
+    fn assign(&mut self, snapshot: &DockerSnapshot, mode: &RuntimeMode) {
+        let mut published = publish_docker_snapshot(snapshot);
+        // Observation time and the publication revision do not describe a
+        // Docker fact. Clearing them prevents a healthy refresh ticker from
+        // fabricating a new evidence revision every two seconds.
+        published.last_updated = 0;
+        published.model_revision.clear();
+        let observable = serde_json::to_string(&(mode, published))
+            .expect("public Docker observation is serializable");
+        if self.last_observable.as_deref() != Some(observable.as_str()) {
+            self.sequence = self
+                .sequence
+                .checked_add(1)
+                .expect("Docker observation revision sequence overflow");
+            self.last_observable = Some(observable);
+        }
+    }
+}
+
+fn opaque_revision_boot_component() -> String {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).expect("OS CSPRNG for opaque revision boot component");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// Remove only fields which record when Docker was observed from the cloned,
 /// already-public model used to decide whether a semantic publication changed.
 /// The cache and HTTP responses retain the original values. In particular,
@@ -146,6 +198,15 @@ fn clear_volatile_observation_markers(
     health.last_updated = 0;
     health.snapshot_version.clear();
     runtime_map.last_updated = 0;
+    // Docker evidence retains its real collection time for clients, but it is
+    // not semantic topology. The stable opaque provider token remains in the
+    // comparison so a genuine sanitized Docker observation still advances the
+    // model revision exactly once.
+    for edge in &mut runtime_map.edges {
+        for evidence in &mut edge.evidence_refs {
+            evidence.collected_at = 0;
+        }
+    }
 }
 
 fn boot_instance_component() -> String {
@@ -314,8 +375,10 @@ impl DaemonCache {
             },
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
+            docker_observation_revision: DockerObservationRevision::new(),
             revision: PublicationRevision::new(),
         };
+        cache.assign_docker_observation_revision();
         cache.assign_revision();
         cache
     }
@@ -325,6 +388,25 @@ impl DaemonCache {
         // publication. Provider state is runtime-topology evidence only.
         self.revision
             .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
+    }
+
+    fn assign_docker_observation_revision(&mut self) {
+        self.docker_observation_revision
+            .assign(&self.snapshot, &self.health.mode);
+    }
+
+    fn docker_observation_token(&self) -> String {
+        self.docker_observation_revision.current()
+    }
+
+    fn rebuild_runtime_map(&mut self) {
+        self.assign_docker_observation_revision();
+        let docker_observation_token = self.docker_observation_token();
+        self.runtime_map = runtime_map_for_snapshot(
+            &self.snapshot,
+            &self.runtime_providers,
+            &docker_observation_token,
+        );
     }
 }
 
@@ -407,7 +489,8 @@ async fn publish_docker_snapshot_cache(
     if same_source && !same_collection_evidence(&cache.snapshot, &updated.snapshot) {
         mark_network_observation_stale(&mut updated.runtime_providers);
     }
-    updated.runtime_map = runtime_map_for_snapshot(&updated.snapshot, &updated.runtime_providers);
+    updated.docker_observation_revision = cache.docker_observation_revision.clone();
+    updated.rebuild_runtime_map();
     updated.revision = cache.revision.clone();
     updated.assign_revision();
     *cache = updated;
@@ -467,6 +550,7 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     runtime_map: empty_runtime_map(0),
                     runtime_providers: unavailable_provider_slots(),
                     source_generation: 0,
+                    docker_observation_revision: DockerObservationRevision::new(),
                     revision: PublicationRevision::new(),
                 }
             }
@@ -599,7 +683,7 @@ async fn claim_due_provider_slots(state: &AppState, now: Duration) -> Vec<Provid
         state.provider_slot_in_flight.active_count(),
     );
     if !due.is_empty() {
-        cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
+        cache.rebuild_runtime_map();
         cache.assign_revision();
     }
     due
@@ -698,7 +782,7 @@ async fn apply_provider_slot_outcome(
             slot_state.completed_at = Some(completed_at);
         }
     }
-    cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
+    cache.rebuild_runtime_map();
     cache.assign_revision();
     let current_snapshot = cache.snapshot.clone();
     let current_mode = cache.health.mode.clone();
@@ -758,7 +842,11 @@ fn same_collection_evidence(left: &DockerSnapshot, right: &DockerSnapshot) -> bo
     left == right
 }
 
-fn runtime_map_for_snapshot(snapshot: &DockerSnapshot, slots: &RuntimeProviderSlots) -> RuntimeMap {
+fn runtime_map_for_snapshot(
+    snapshot: &DockerSnapshot,
+    slots: &RuntimeProviderSlots,
+    docker_observation_revision: &str,
+) -> RuntimeMap {
     let mut combined = ProviderCollection::default();
     let mut extra_diagnostics = Vec::new();
     for slot in STATIC_PROVIDER_SLOTS.iter().copied() {
@@ -778,7 +866,8 @@ fn runtime_map_for_snapshot(snapshot: &DockerSnapshot, slots: &RuntimeProviderSl
             });
         }
     }
-    let mut runtime_map = runtime_map_from_collection(snapshot, &combined);
+    let mut runtime_map =
+        runtime_map_from_collection(snapshot, &combined, docker_observation_revision);
     runtime_map.provider_states = provider_states_for(slots);
     runtime_map.diagnostics.extend(extra_diagnostics);
     runtime_map
@@ -958,7 +1047,7 @@ mod scheduler_tests {
 
     fn docker_cache(snapshot: DockerSnapshot) -> DaemonCache {
         let last_updated = snapshot.last_updated;
-        DaemonCache {
+        let mut cache = DaemonCache {
             snapshot,
             health: HealthResponse {
                 status: HealthState::Ok,
@@ -972,8 +1061,23 @@ mod scheduler_tests {
             runtime_map: empty_runtime_map(last_updated),
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
+            docker_observation_revision: DockerObservationRevision::new(),
             revision: PublicationRevision::new(),
-        }
+        };
+        cache.assign_docker_observation_revision();
+        cache
+    }
+
+    fn first_docker_evidence_revision(cache: &DaemonCache) -> String {
+        cache
+            .runtime_map
+            .edges
+            .iter()
+            .flat_map(|edge| &edge.evidence_refs)
+            .next()
+            .expect("Docker runtime map carries evidence")
+            .provider_revision
+            .clone()
     }
 
     /// Complete a claimed fixed slot without running a host collector. This is
@@ -1003,7 +1107,7 @@ mod scheduler_tests {
         for slot in claimed {
             complete_synthetic_slot(&mut cache.runtime_providers, *slot, completed_at);
         }
-        cache.runtime_map = runtime_map_for_snapshot(&cache.snapshot, &cache.runtime_providers);
+        cache.rebuild_runtime_map();
         cache.assign_revision();
     }
 
@@ -1441,8 +1545,7 @@ mod scheduler_tests {
             .expect("fixed python slot exists");
         python.observation =
             RuntimeProviderState::Collecting(retained_collection(&python.observation));
-        initial.runtime_map =
-            runtime_map_for_snapshot(&initial.snapshot, &initial.runtime_providers);
+        initial.rebuild_runtime_map();
         initial.assign_revision();
         let state = AppState {
             cache: Arc::new(RwLock::new(initial)),
@@ -1531,7 +1634,7 @@ mod scheduler_tests {
         collection.set_state(slot, ProviderStateKind::Fresh);
         slots.get_mut(&slot).unwrap().observation =
             RuntimeProviderState::TimedOut(Some(collection));
-        let map = runtime_map_for_snapshot(&snapshot, &slots);
+        let map = runtime_map_for_snapshot(&snapshot, &slots, "test-observation");
         assert!(map
             .provider_states
             .iter()
@@ -1657,7 +1760,7 @@ mod scheduler_tests {
         collection.set_state(slot, ProviderStateKind::Fresh);
         slots.get_mut(&slot).unwrap().observation =
             RuntimeProviderState::Degraded(Some(collection));
-        let map = runtime_map_for_snapshot(&snapshot, &slots);
+        let map = runtime_map_for_snapshot(&snapshot, &slots, "test-observation");
         assert!(map
             .nodes
             .iter()
@@ -1739,7 +1842,7 @@ mod scheduler_tests {
             entry.freshness.status_reason = Some(ProviderStatusReason::Refreshing);
             retained
         };
-        let refreshing = runtime_map_for_snapshot(&snapshot, &slots)
+        let refreshing = runtime_map_for_snapshot(&snapshot, &slots, "test-observation")
             .provider_states
             .into_iter()
             .find(|state| state.slot == slot)
@@ -1757,7 +1860,7 @@ mod scheduler_tests {
         entry.observation = RuntimeProviderState::TimedOut(retained);
         entry.freshness.consecutive_failure_count = 1;
         entry.freshness.status_reason = Some(ProviderStatusReason::CollectionTimedOut);
-        let timed_out = runtime_map_for_snapshot(&snapshot, &slots)
+        let timed_out = runtime_map_for_snapshot(&snapshot, &slots, "test-observation")
             .provider_states
             .into_iter()
             .find(|state| state.slot == slot)
@@ -1937,5 +2040,47 @@ mod scheduler_tests {
             cache.runtime_providers[&ProviderSlot::NetworkInfrastructure].observation,
             RuntimeProviderState::Fresh(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn docker_evidence_token_tracks_sanitized_source_semantics_not_refresh_ticks() {
+        let mut first = mock_snapshot();
+        first.last_updated = 10;
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        publish_docker_snapshot_cache(&state, docker_cache(first.clone())).await;
+        let first_cache = state.cache.read().await;
+        let first_token = first_docker_evidence_revision(&first_cache);
+        let first_model_revision = first_cache.snapshot.model_revision.clone();
+        assert_ne!(first_token, first.last_updated.to_string());
+        drop(first_cache);
+
+        let mut ticker_only = first.clone();
+        ticker_only.last_updated = 12;
+        publish_docker_snapshot_cache(&state, docker_cache(ticker_only.clone())).await;
+        let ticker_cache = state.cache.read().await;
+        assert_eq!(first_docker_evidence_revision(&ticker_cache), first_token);
+        assert_eq!(ticker_cache.snapshot.model_revision, first_model_revision);
+        drop(ticker_cache);
+
+        let mut changed = ticker_only.clone();
+        changed.containers[0].name = "semantic-container-change".into();
+        changed.last_updated = 14;
+        publish_docker_snapshot_cache(&state, docker_cache(changed.clone())).await;
+        let changed_cache = state.cache.read().await;
+        let changed_token = first_docker_evidence_revision(&changed_cache);
+        assert_ne!(changed_token, first_token);
+        assert_ne!(changed_token, changed.last_updated.to_string());
+        drop(changed_cache);
+
+        // A Docker/mock source transition is semantic evidence even when the
+        // bounded inventory happens to have the same visible entities.
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let mock_cache = state.cache.read().await;
+        assert_ne!(first_docker_evidence_revision(&mock_cache), changed_token);
     }
 }

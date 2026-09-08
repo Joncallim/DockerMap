@@ -137,6 +137,7 @@ pub(crate) fn collect_npm_projects(
                 target: "host_local".into(),
                 relationship: RuntimeRelationshipKind::RunsOn,
                 metadata: BTreeMap::new(),
+                evidence_refs: Vec::new(),
             });
         }
         for (index, dependency) in project.dependencies.into_iter().enumerate() {
@@ -182,6 +183,7 @@ pub(crate) fn collect_npm_projects(
                 target: package_id,
                 relationship: RuntimeRelationshipKind::DependsOn,
                 metadata: dependency_metadata,
+                evidence_refs: Vec::new(),
             });
         }
     }

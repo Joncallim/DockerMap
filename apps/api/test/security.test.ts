@@ -902,7 +902,7 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
     DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
     DOCKERMAP_API_TOKEN: "test-token"
   });
-  const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } });
+  const ajv = new Ajv2020({ allErrors: true, strict: true, formats: { uint8: true, uint32: true, uint64: true } });
   const validators = new Map<RustResponseSchemaId, ReturnType<Ajv2020["compile"]>>();
   for (const [schemaName, schema] of Object.entries(RUST_RESPONSE_SCHEMAS) as [RustResponseSchemaId, (typeof RUST_RESPONSE_SCHEMAS)[RustResponseSchemaId]][]) {
     validators.set(schemaName, ajv.compile(schema));
@@ -1112,6 +1112,99 @@ test("daemon response validator maps every generated Rust response root and reje
   assert.throws(() => validateDaemonResponse("/daemon/not-documented", {}));
 });
 
+test("runtime evidence is required and fails closed before browser publication", async () => {
+  const { validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json", import.meta.url),
+    "utf8"
+  ));
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
+
+  const missing = structuredClone(fixture);
+  delete missing.edges[0].evidenceRefs;
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", missing));
+
+  const malformed = structuredClone(fixture);
+  malformed.edges[0].evidenceRefs[0].summary = { unexpected: "object" };
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", malformed));
+
+  const extra = structuredClone(fixture);
+  extra.edges[0].evidenceRefs[0].rawConfig = "must never become a public field";
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", extra));
+
+  for (const [field, value] of [
+    ["provider", "systemd"],
+    ["kind", "systemd_requires"],
+    ["assertionKind", "inferred"],
+    ["freshness", "stale"],
+    ["version", 2]
+  ] as const) {
+    const fabricated = structuredClone(fixture);
+    fabricated.edges[0].evidenceRefs[0][field] = value;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", fabricated),
+      `v1 evidence must reject fabricated ${field}`
+    );
+  }
+
+  const evidence = fixture.edges[0].evidenceRefs[0];
+  assert.notEqual(
+    evidence.providerRevision,
+    String(evidence.collectedAt),
+    "providerRevision is an opaque observation token, not a timestamp alias"
+  );
+  const timestampAlias = structuredClone(fixture);
+  timestampAlias.edges[0].evidenceRefs[0].providerRevision = String(timestampAlias.edges[0].evidenceRefs[0].collectedAt);
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", timestampAlias));
+  const wrongSubject = structuredClone(fixture);
+  wrongSubject.edges[0].evidenceRefs[0].subjectRef = "docker_container_not_the_edge_source";
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongSubject));
+  for (const field of ["source", "target"] as const) {
+    const wrongEndpoint = structuredClone(fixture);
+    wrongEndpoint.edges[0][field] = `runtime_${field}_not_docker`;
+    if (field === "source") wrongEndpoint.edges[0].evidenceRefs[0].subjectRef = wrongEndpoint.edges[0].source;
+    assert.throws(() => validateDaemonResponse("/daemon/runtime/map", wrongEndpoint));
+  }
+
+  for (const [kind, relationship] of [
+    ["docker_network_membership", "mounts"],
+    ["docker_volume_mount", "exposes"],
+    ["docker_port_publication", "connected_to"]
+  ] as const) {
+    const mismatched = structuredClone(fixture);
+    mismatched.edges[0].evidenceRefs[0].kind = kind;
+    mismatched.edges[0].relationship = relationship;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", mismatched),
+      `${kind} must not support ${relationship}`
+    );
+  }
+});
+
+test("fabricated runtime evidence is rejected over the authenticated API boundary", async () => {
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json", import.meta.url),
+    "utf8"
+  ));
+  const sentinel = "DOCKERMAP_TEST_FAKE_RUNTIME_EVIDENCE_SECRET";
+  const hostile = structuredClone(fixture);
+  hostile.edges[0].source = `token=${sentinel}`;
+  hostile.edges[0].evidenceRefs[0].subjectRef = hostile.edges[0].source;
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/runtime/map") return sendJson(res, 200, hostile);
+    return sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+  const response = await request(api, "/api/runtime/map", { headers: { Authorization: "Bearer test-token" } });
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.deepEqual(body, {
+    code: "daemon_invalid_response",
+    message: "Daemon response did not match its declared contract"
+  });
+  assert.doesNotMatch(JSON.stringify(body), new RegExp(sentinel));
+});
+
 test("actual canonical and v1 SSE snapshot/error frames use their declared payload schemas", async () => {
   const health = JSON.parse(await readFile(new URL("../../../tests/fixtures/contracts/health-response.json", import.meta.url), "utf8"));
   const healthyDaemon = await startStubDaemon((req, res) => {
@@ -1123,7 +1216,7 @@ test("actual canonical and v1 SSE snapshot/error frames use their declared paylo
     DOCKERMAP_API_TOKEN: "test-token"
   });
   const auth = { Authorization: "Bearer test-token" };
-  const rustValidator = new Ajv2020({ allErrors: true, strict: true, formats: { uint32: true, uint64: true } })
+  const rustValidator = new Ajv2020({ allErrors: true, strict: true, formats: { uint8: true, uint32: true, uint64: true } })
     .compile(RUST_RESPONSE_SCHEMAS.HealthResponse);
 
   for (const path of ["/api/events/stream", "/api/v1/events/stream"]) {
@@ -1974,7 +2067,24 @@ test("API publishes redacted and normalized daemon data on every response route"
     if (req.url === "/daemon/runtime/map") {
       sendJson(res, 200, {
         nodes: [{ id: hostile, provider: "other", type: "service", label: hostile, status: hostile, metadata: { [hostile]: hostile } }],
-        edges: [{ source: hostile, target: hostile, relationship: "depends_on", metadata: { [hostile]: hostile } }],
+        edges: [{
+          source: `docker_container_${hostile}`,
+          target: `docker_network_${hostile}`,
+          relationship: "connected_to",
+          metadata: { [hostile]: hostile },
+          evidenceRefs: [{
+            version: 1,
+            id: hostile,
+            provider: "docker",
+            kind: "docker_network_membership",
+            assertionKind: "observed",
+            summary: hostile,
+            subjectRef: `docker_container_${hostile}`,
+            collectedAt: 1,
+            providerRevision: hostile,
+            freshness: "fresh"
+          }]
+        }],
         diagnostics: [{ provider: "other", severity: "warning", message: hostile }],
         lastUpdated: 1,
         modelRevision: "revision-1",

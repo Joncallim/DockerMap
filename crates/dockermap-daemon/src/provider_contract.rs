@@ -183,6 +183,7 @@ mod tests {
             target: "docker_container_target".into(),
             relationship: RuntimeRelationshipKind::RelatedTo,
             metadata: edge_metadata,
+            evidence_refs: Vec::new(),
         });
         collection.diagnostics.push(RuntimeMapDiagnostic {
             provider: RuntimeProviderKind::Process,

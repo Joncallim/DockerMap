@@ -42,6 +42,24 @@ export type RuntimeProviderKind =
   | 'kubernetes'
   | 'other';
 export type DiagnosticSeverity = 'info' | 'warning' | 'error' | 'blocked';
+/**
+ * Version-one evidence is a direct Docker observation. Derived and inferred
+ * claims need a later, deliberately versioned evidence contract rather than
+ * a permissive enum value in this first slice.
+ */
+export type RuntimeEvidenceAssertionKind = 'observed';
+/**
+ * Safe, provider-specific fact families supported by the first provenance
+ * slice.  New sources require an explicit enum addition rather than an
+ * arbitrary source string or metadata map.
+ */
+export type RuntimeEvidenceKind = 'docker_network_membership' | 'docker_volume_mount' | 'docker_port_publication';
+/**
+ * Evidence provider for the version-one Docker-only evidence shape. New
+ * providers require a new versioned evidence representation; they cannot be
+ * passed off as v1 through the broad runtime-provider enum.
+ */
+export type RuntimeEvidenceProvider = 'docker';
 export type RuntimeRelationshipKind =
   | 'connected_to'
   | 'depends_on'
@@ -212,12 +230,88 @@ export interface RuntimeMapDiagnostic {
   severity: DiagnosticSeverity;
 }
 export interface RuntimeMapEdge {
+  /**
+   * Empty for relationship families that have not yet been migrated to the
+   * evidence model. It remains present on the wire so API/UI consumers have
+   * one stable, bounded relationship shape while the migration continues.
+   *
+   * @maxItems 8
+   */
+  evidenceRefs:
+    | []
+    | [RuntimeEvidenceRef]
+    | [RuntimeEvidenceRef, RuntimeEvidenceRef]
+    | [RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef]
+    | [RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef]
+    | [RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef, RuntimeEvidenceRef]
+    | [
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef
+      ]
+    | [
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef
+      ]
+    | [
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef,
+        RuntimeEvidenceRef
+      ];
   metadata: {
     [k: string]: string;
   };
   relationship: RuntimeRelationshipKind;
   source: string;
   target: string;
+}
+/**
+ * A compact, versioned reference to the bounded fact supporting a runtime
+ * relationship.  It intentionally contains no raw command output, config
+ * fragment, path, process arguments, or generic metadata bag.
+ */
+export interface RuntimeEvidenceRef {
+  assertionKind: RuntimeEvidenceAssertionKind;
+  collectedAt: number;
+  /**
+   * The Docker snapshot is observed as a single current publication. Host
+   * provider freshness remains represented by `providerStates` (#66).
+   */
+  freshness: 'fresh';
+  id: string;
+  kind: RuntimeEvidenceKind;
+  provider: RuntimeEvidenceProvider;
+  /**
+   * Opaque Docker observation token, not a cache-publication revision or
+   * source dump.
+   */
+  providerRevision: string;
+  /**
+   * The already-public runtime entity whose Docker fact was observed.
+   */
+  subjectRef: string;
+  /**
+   * A bounded, curated explanation; it is never copied from a raw source.
+   */
+  summary: string;
+  /**
+   * Version of this closed evidence representation, not a provider API
+   * version.  It lets future additions remain explicit and reviewable.
+   */
+  version: number;
 }
 export interface RuntimeMapNode {
   id: string;

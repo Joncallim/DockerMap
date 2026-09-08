@@ -815,12 +815,160 @@ pub struct RuntimeMapNode {
     pub package: Option<RuntimePackageEntity>,
 }
 
+/// Evidence provider for the version-one Docker-only evidence shape. New
+/// providers require a new versioned evidence representation; they cannot be
+/// passed off as v1 through the broad runtime-provider enum.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceProvider {
+    Docker,
+}
+
+/// Version-one evidence is a direct Docker observation. Derived and inferred
+/// claims need a later, deliberately versioned evidence contract rather than
+/// a permissive enum value in this first slice.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceAssertionKind {
+    Observed,
+}
+
+/// Safe, provider-specific fact families supported by the first provenance
+/// slice.  New sources require an explicit enum addition rather than an
+/// arbitrary source string or metadata map.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceKind {
+    DockerNetworkMembership,
+    DockerVolumeMount,
+    DockerPortPublication,
+}
+
+/// A compact, versioned reference to the bounded fact supporting a runtime
+/// relationship.  It intentionally contains no raw command output, config
+/// fragment, path, process arguments, or generic metadata bag.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeEvidenceRef {
+    /// Version of this closed evidence representation, not a provider API
+    /// version.  It lets future additions remain explicit and reviewable.
+    #[schemars(range(min = 1, max = 1))]
+    pub version: u8,
+    #[schemars(length(min = 1, max = 259))]
+    pub id: String,
+    pub provider: RuntimeEvidenceProvider,
+    pub kind: RuntimeEvidenceKind,
+    #[serde(rename = "assertionKind")]
+    pub assertion_kind: RuntimeEvidenceAssertionKind,
+    /// A bounded, curated explanation; it is never copied from a raw source.
+    #[schemars(length(min = 1, max = 259))]
+    pub summary: String,
+    /// The already-public runtime entity whose Docker fact was observed.
+    #[serde(rename = "subjectRef")]
+    pub subject_ref: String,
+    #[serde(rename = "collectedAt")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub collected_at: u64,
+    /// Opaque Docker observation token, not a cache-publication revision or
+    /// source dump.
+    #[serde(rename = "providerRevision")]
+    #[schemars(length(min = 1, max = 259))]
+    pub provider_revision: String,
+    /// The Docker snapshot is observed as a single current publication. Host
+    /// provider freshness remains represented by `providerStates` (#66).
+    pub freshness: RuntimeEvidenceFreshness,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEvidenceFreshness {
+    Fresh,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeMapEdge {
     pub source: String,
     pub target: String,
     pub relationship: RuntimeRelationshipKind,
     pub metadata: BTreeMap<String, String>,
+    /// Empty for relationship families that have not yet been migrated to the
+    /// evidence model. It remains present on the wire so API/UI consumers have
+    /// one stable, bounded relationship shape while the migration continues.
+    #[serde(rename = "evidenceRefs")]
+    #[schemars(required, length(max = 8))]
+    pub evidence_refs: Vec<RuntimeEvidenceRef>,
+}
+
+impl RuntimeMapEdge {
+    /// Version-one evidence is attached only to the semantic edge it directly
+    /// observes. Keep this at the canonical model boundary so a structurally
+    /// valid Docker fact cannot be re-used to attest a different relationship.
+    pub fn has_valid_evidence_refs(&self) -> bool {
+        self.evidence_refs
+            .iter()
+            .all(|evidence| self.evidence_ref_matches_edge(evidence))
+    }
+
+    fn evidence_ref_matches_edge(&self, evidence: &RuntimeEvidenceRef) -> bool {
+        const MAX_EVIDENCE_TEXT_CHARS: usize = 259;
+        if evidence.version != 1
+            || evidence.id.is_empty()
+            || evidence.summary.is_empty()
+            || evidence.provider_revision.is_empty()
+            || evidence.id.chars().count() > MAX_EVIDENCE_TEXT_CHARS
+            || evidence.summary.chars().count() > MAX_EVIDENCE_TEXT_CHARS
+            || evidence.provider_revision.chars().count() > MAX_EVIDENCE_TEXT_CHARS
+            || evidence.subject_ref != self.source
+        {
+            return false;
+        }
+
+        match evidence.kind {
+            RuntimeEvidenceKind::DockerNetworkMembership => {
+                self.relationship == RuntimeRelationshipKind::ConnectedTo
+                    && self.source.starts_with("docker_container_")
+                    && self.target.starts_with("docker_network_")
+            }
+            RuntimeEvidenceKind::DockerVolumeMount => {
+                self.relationship == RuntimeRelationshipKind::Mounts
+                    && self.source.starts_with("docker_container_")
+                    && self.target.starts_with("docker_volume_")
+            }
+            RuntimeEvidenceKind::DockerPortPublication => {
+                self.relationship == RuntimeRelationshipKind::Exposes
+                    && self.source.starts_with("docker_container_")
+                    && self.target.starts_with("network_listener_")
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct RuntimeMapEdgeWire {
+    source: String,
+    target: String,
+    relationship: RuntimeRelationshipKind,
+    metadata: BTreeMap<String, String>,
+    #[serde(rename = "evidenceRefs")]
+    evidence_refs: Vec<RuntimeEvidenceRef>,
+}
+
+impl<'de> Deserialize<'de> for RuntimeMapEdge {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = RuntimeMapEdgeWire::deserialize(deserializer)?;
+        let edge = Self {
+            source: wire.source,
+            target: wire.target,
+            relationship: wire.relationship,
+            metadata: wire.metadata,
+            evidence_refs: wire.evidence_refs,
+        };
+        edge.has_valid_evidence_refs()
+            .then_some(edge)
+            .ok_or_else(|| serde::de::Error::custom("runtime evidence does not attest this edge"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

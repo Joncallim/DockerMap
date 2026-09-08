@@ -495,7 +495,8 @@
       "relationship": "related_to",
       "metadata": {
         "path": "443/tcp"
-      }
+      },
+      "evidenceRefs": []
     },
     {
       "source": "runtime_caddy_proxy",
@@ -503,7 +504,8 @@
       "relationship": "manages",
       "metadata": {
         "unit": "caddy.service"
-      }
+      },
+      "evidenceRefs": []
     },
     {
       "source": "runtime_systemd_caddy",
@@ -511,7 +513,8 @@
       "relationship": "exposes",
       "metadata": {
         "port": "443"
-      }
+      },
+      "evidenceRefs": []
     },
     {
       "source": "runtime_docker_network_app",
@@ -519,7 +522,8 @@
       "relationship": "connected_to",
       "metadata": {
         "scope": "app-net"
-      }
+      },
+      "evidenceRefs": []
     },
     {
       "source": "runtime_container_api",
@@ -527,7 +531,8 @@
       "relationship": "connected_to",
       "metadata": {
         "role": "primary"
-      }
+      },
+      "evidenceRefs": []
     },
     {
       "source": "runtime_database_db",
@@ -535,7 +540,8 @@
       "relationship": "mounts",
       "metadata": {
         "mountPoint": "/var/lib/postgresql/data"
-      }
+      },
+      "evidenceRefs": []
     },
     {
       "source": "runtime_npm_app",
@@ -543,7 +549,8 @@
       "relationship": "depends_on",
       "metadata": {
         "kind": "deployment"
-      }
+      },
+      "evidenceRefs": []
     },
     {
       "source": "runtime_systemd_worker",
@@ -551,7 +558,8 @@
       "relationship": "wants",
       "metadata": {
         "ordering": "after-login"
-      }
+      },
+      "evidenceRefs": []
     },
     {
       "source": "runtime_tmux_worker",
@@ -559,7 +567,8 @@
       "relationship": "owns",
       "metadata": {
         "command": "node worker.js"
-      }
+      },
+      "evidenceRefs": []
     },
     {
       "source": "runtime_npm_app",
@@ -567,7 +576,8 @@
       "relationship": "depends_on",
       "metadata": {
         "manager": "npm"
-      }
+      },
+      "evidenceRefs": []
     },
     {
       "source": "runtime_npm_app",
@@ -575,7 +585,8 @@
       "relationship": "depends_on",
       "metadata": {
         "manager": "npm"
-      }
+      },
+      "evidenceRefs": []
     },
     {
       "source": "runtime_systemd_caddy",
@@ -583,7 +594,8 @@
       "relationship": "after",
       "metadata": {
         "ordering": "proxy"
-      }
+      },
+      "evidenceRefs": []
     }
   ],
   "diagnostics": [],

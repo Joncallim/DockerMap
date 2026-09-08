@@ -8,9 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     collision_resistant_id_component, service_entity_kind_name, ContainerRecord,
     DiagnosticSeverity, DockerSnapshot, GraphEdge, GraphNode, GraphResponse, ImageRecord, NodeKind,
-    RelationshipKind, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMapNode,
-    RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind, RuntimeRelationshipKind,
-    RuntimeServiceEntity, RuntimeServiceStatus,
+    RelationshipKind, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
+    RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
+    RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
+    RuntimeRelationshipKind, RuntimeServiceEntity, RuntimeServiceStatus,
 };
 
 pub fn derive_images(snapshot: &DockerSnapshot) -> Vec<ImageRecord> {
@@ -307,12 +308,61 @@ fn runtime_edge_sort_key(edge: &RuntimeMapEdge) -> String {
     serde_json::to_string(edge).expect("runtime edges must serialize")
 }
 
+/// Construct evidence only from already-derived runtime identities and a
+/// closed fact family. No raw Docker value is copied into the evidence record:
+/// labels and detail stay on their existing, independently redacted entities.
+fn docker_runtime_evidence(
+    snapshot: &DockerSnapshot,
+    source: &str,
+    target: &str,
+    kind: RuntimeEvidenceKind,
+    provider_revision: &str,
+) -> RuntimeEvidenceRef {
+    let kind_id = match kind {
+        RuntimeEvidenceKind::DockerNetworkMembership => "network-membership",
+        RuntimeEvidenceKind::DockerVolumeMount => "volume-mount",
+        RuntimeEvidenceKind::DockerPortPublication => "port-publication",
+    };
+    let summary = match kind {
+        RuntimeEvidenceKind::DockerNetworkMembership => {
+            "Docker reported container network membership"
+        }
+        RuntimeEvidenceKind::DockerVolumeMount => "Docker reported volume attachment",
+        RuntimeEvidenceKind::DockerPortPublication => "Docker reported container port publication",
+    };
+    RuntimeEvidenceRef {
+        version: 1,
+        id: format!(
+            "docker_evidence_{}_{}",
+            kind_id,
+            collision_resistant_id_component(&format!("{source}\u{1f}{target}"))
+        ),
+        provider: RuntimeEvidenceProvider::Docker,
+        kind,
+        assertion_kind: RuntimeEvidenceAssertionKind::Observed,
+        summary: summary.into(),
+        subject_ref: source.into(),
+        collected_at: snapshot.last_updated,
+        provider_revision: provider_revision.into(),
+        freshness: RuntimeEvidenceFreshness::Fresh,
+    }
+}
+
+/// Derive runtime topology with the daemon-owned opaque Docker observation
+/// token that attests the bounded snapshot used for this map. Callers must
+/// supply a nonempty opaque token; a timestamp fallback would falsely claim a
+/// provider revision and is intentionally not exposed.
 pub fn derive_runtime_map(
     snapshot: &DockerSnapshot,
     mut nodes: Vec<RuntimeMapNode>,
     mut edges: Vec<RuntimeMapEdge>,
     mut diagnostics: Vec<RuntimeMapDiagnostic>,
+    evidence_provider_revision: &str,
 ) -> RuntimeMap {
+    assert!(
+        !evidence_provider_revision.is_empty(),
+        "runtime evidence requires a nonempty opaque Docker observation token"
+    );
     for container in &snapshot.containers {
         let mut metadata = BTreeMap::new();
         metadata.insert("image".into(), container.image.clone());
@@ -344,15 +394,24 @@ pub fn derive_runtime_map(
         });
 
         for network_id in &container.networks {
+            let source = format!(
+                "docker_container_{}",
+                collision_resistant_id_component(&container.id)
+            );
+            let target = format!(
+                "docker_network_{}",
+                collision_resistant_id_component(network_id)
+            );
             edges.push(RuntimeMapEdge {
-                source: format!(
-                    "docker_container_{}",
-                    collision_resistant_id_component(&container.id)
-                ),
-                target: format!(
-                    "docker_network_{}",
-                    collision_resistant_id_component(network_id)
-                ),
+                evidence_refs: vec![docker_runtime_evidence(
+                    snapshot,
+                    &source,
+                    &target,
+                    RuntimeEvidenceKind::DockerNetworkMembership,
+                    evidence_provider_revision,
+                )],
+                source,
+                target,
                 relationship: RuntimeRelationshipKind::ConnectedTo,
                 metadata: BTreeMap::new(),
             });
@@ -381,11 +440,19 @@ pub fn derive_runtime_map(
                 service: None,
                 package: None,
             });
+            let source = format!(
+                "docker_container_{}",
+                collision_resistant_id_component(&container.id)
+            );
             edges.push(RuntimeMapEdge {
-                source: format!(
-                    "docker_container_{}",
-                    collision_resistant_id_component(&container.id)
-                ),
+                evidence_refs: vec![docker_runtime_evidence(
+                    snapshot,
+                    &source,
+                    &listener_id,
+                    RuntimeEvidenceKind::DockerPortPublication,
+                    evidence_provider_revision,
+                )],
+                source,
                 target: listener_id,
                 relationship: RuntimeRelationshipKind::Exposes,
                 metadata: BTreeMap::new(),
@@ -440,15 +507,24 @@ pub fn derive_runtime_map(
                 .iter()
                 .find(|container| container.name == *attached)
             {
+                let source = format!(
+                    "docker_container_{}",
+                    collision_resistant_id_component(&container.id)
+                );
+                let target = format!(
+                    "docker_volume_{}",
+                    collision_resistant_id_component(&volume.id)
+                );
                 edges.push(RuntimeMapEdge {
-                    source: format!(
-                        "docker_container_{}",
-                        collision_resistant_id_component(&container.id)
-                    ),
-                    target: format!(
-                        "docker_volume_{}",
-                        collision_resistant_id_component(&volume.id)
-                    ),
+                    evidence_refs: vec![docker_runtime_evidence(
+                        snapshot,
+                        &source,
+                        &target,
+                        RuntimeEvidenceKind::DockerVolumeMount,
+                        evidence_provider_revision,
+                    )],
+                    source,
+                    target,
                     relationship: RuntimeRelationshipKind::Mounts,
                     metadata: BTreeMap::new(),
                 });
