@@ -242,6 +242,31 @@ describe("Findings screen", () => {
     expect(render({ findings: mutual, evidenceMode: "mock", modelProvenance: "mock" })).not.toContain("Mutual Compose declarations need review");
   });
 
+  it("renders only static mount-drift advice and never opaque binding or path-like evidence", () => {
+    const mount = structuredClone(findings);
+    const digest = "a".repeat(64);
+    const binding = `compose_runtime_binding_${"b".repeat(64)}`;
+    mount.findings[0] = {
+      id: `finding_compose_declared_mount_missing_at_bound_container_${digest}`,
+      ruleId: "compose.declared_mount_missing_at_bound_container", severity: "warning",
+      summary: "A Compose-declared mount is absent from its exactly bound runtime container",
+      recommendation: "Inspect the Compose mount declaration and the bound container's current mount configuration.",
+      subjectRef: binding, targetRef: binding,
+      evidenceRefs: [
+        { version: 6, id: `compose_declared_mount_${digest}`, provider: "compose", kind: "compose_declared_mount", assertionKind: "declared", summary: "Compose declared a mount for the bound service", subjectRef: binding, collectedAt: 1, providerRevision: "opaque-observation", freshness: "fresh" },
+        { version: 6, id: `docker_compose_runtime_binding_${digest}`, provider: "docker", kind: "docker_compose_runtime_binding", assertionKind: "observed", summary: "Docker confirmed an exact Compose project, service, and config binding", subjectRef: binding, collectedAt: 1, providerRevision: "opaque-observation", freshness: "fresh" }
+      ]
+    };
+    mount.findings.splice(1);
+    mount.summary = { warningCount: 1, advisoryCount: 0, declaredDependencyCount: 1, dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0 };
+    const html = render({ findings: mount });
+    expect(html).toContain("Declared Compose mount needs review");
+    expect(html).toContain("Compose runtime drift");
+    expect(html).toContain("Does not expose mount paths, names, labels, or container identity");
+    for (const hidden of [binding, digest, "/private/compose.yaml", "compose_declared_mount", "docker_compose_runtime_binding", "opaque-observation"]) expect(html).not.toContain(hidden);
+    expect(render({ findings: mount, evidenceMode: "mock", modelProvenance: "mock" })).not.toContain("Declared Compose mount needs review");
+  });
+
   it("suppresses findings in demo and mock contexts even if fixture data is injected", () => {
     const daemonStatePort = structuredClone(findings);
     daemonStatePort.findings[0] = {
