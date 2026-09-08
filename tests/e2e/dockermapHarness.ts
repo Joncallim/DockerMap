@@ -21,6 +21,10 @@ export type Stack = {
    * to prove source-reset handling; callers never receive Docker access.
    */
   stopDockerGateway?: () => Promise<void>;
+  /** Restart only the fixture's filtered read gateway to exercise stream recovery. */
+  restartDockerGateway?: () => Promise<void>;
+  /** Restart only the fixture's labelled worker; no caller receives Docker access. */
+  restartFixtureWorker?: () => Promise<void>;
   /**
    * Sends the one fixed finite stats shape to this fixture's private gateway
    * for an owned container and returns only its HTTP status. It never exposes
@@ -281,6 +285,7 @@ export async function startLiveDockerStack(options: {
   let gateway: ProcessHandle | null = startGateway({ socket: gatewaySocket, labelFilter });
   processes.push(gateway);
   await waitForSocket(gatewaySocket);
+  await waitForGatewayReady(gatewaySocket, labelFilter);
   processes.push(startDaemon({
     port: ports.daemon,
     cwd: fixture.dir,
@@ -316,6 +321,21 @@ export async function startLiveDockerStack(options: {
       if (!gateway) return;
       await stopProcess(gateway);
       gateway = null;
+    },
+    restartDockerGateway: async () => {
+      if (gateway) await stopProcess(gateway);
+      gateway = startGateway({ socket: gatewaySocket, labelFilter });
+      processes.push(gateway);
+      await waitForSocket(gatewaySocket);
+      await waitForGatewayReady(gatewaySocket, labelFilter);
+    },
+    restartFixtureWorker: async () => {
+      runDocker(
+        docker,
+        ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "restart", "worker"],
+        fixture.dir,
+      );
+      await waitForFixtureServiceRunning(docker, fixture, "worker");
     },
     requestOwnedFixtureStats: async () => {
       const containerId = dockerOutput(
@@ -634,6 +654,17 @@ async function waitForFixtureSnapshot(url: string, projectName: string, init?: R
   }, `fixture containers in ${url}`);
 }
 
+async function waitForFixtureServiceRunning(docker: string[], fixture: Fixture, service: string) {
+  await waitForCondition(async () => {
+    const services = dockerOutput(
+      docker,
+      ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "ps", "--status", "running", "--services"],
+      fixture.dir,
+    ).split(/\s+/).filter(Boolean);
+    return services.includes(service);
+  }, `running fixture service ${service}`);
+}
+
 async function waitForFixtureSnapshotThroughNginx(url: string, token: string, projectName: string) {
   await waitForCondition(async () => {
     const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
@@ -667,6 +698,20 @@ async function waitForSocket(path: string) {
       return false;
     }
   }, `Docker read gateway socket at ${path}`);
+}
+
+async function waitForGatewayReady(socketPath: string, labelFilter?: string) {
+  const filters = labelFilter ? encodeURIComponent(JSON.stringify({ label: [labelFilter] })) : null;
+  const target = filters
+    ? `/containers/json?all=true&size=false&filters=${filters}`
+    : "/containers/json?all=true&size=false";
+  await waitForCondition(async () => {
+    try {
+      return (await requestFixedGatewayStatus(socketPath, target)) === 200;
+    } catch {
+      return false;
+    }
+  }, "ready filtered Docker gateway");
 }
 
 /**
@@ -1079,6 +1124,16 @@ function cleanupLiveDocker(docker: string[], fixture: Fixture) {
   } catch {
     // Best-effort cleanup should not hide the original test result.
   }
+  // Compose can leave project networks behind when a prior teardown was
+  // interrupted. These names are derived only from this fixture's generated
+  // project name; never broaden cleanup to a host-wide network scan.
+  for (const network of [`${fixture.projectName}_front`, `${fixture.projectName}_back`]) {
+    try {
+      runDocker(docker, ["network", "rm", network], repoRoot);
+    } catch {
+      // The normal Compose teardown may already have removed it.
+    }
+  }
   const resourcesAbsent = ownedFixtureResourcesAbsent(docker, fixture);
   rmSync(fixture.dir, { recursive: true, force: true });
   if (!resourcesAbsent) {
@@ -1108,6 +1163,14 @@ function ownedFixtureResourcesAbsent(docker: string[], fixture: Fixture): boolea
       ? ["container", "ls", "--all", "--quiet", "--filter", `label=${fixture.labelFilter}`]
       : [kind, "ls", "--quiet", "--filter", `label=${fixture.labelFilter}`];
     const output = dockerQuiet(docker, args, fixture.dir);
+    if (output === null || output.trim() !== "") return false;
+  }
+  for (const network of [`${fixture.projectName}_front`, `${fixture.projectName}_back`]) {
+    const output = dockerQuiet(
+      docker,
+      ["network", "ls", "--quiet", "--filter", `name=^${network}$`],
+      fixture.dir,
+    );
     if (output === null || output.trim() !== "") return false;
   }
   return true;
