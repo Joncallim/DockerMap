@@ -185,6 +185,52 @@ code,
 .s-warning-text { color: var(--s-warning); }
 .s-offline-text { color: var(--s-offline); }
 
+/* Atlas Overview -----------------------------------------------------------
+   The parallel route has a deliberately small, scoped grammar. Its lanes are
+   whitespace/alignment in the logical SVG only: no lane box, label, colour or
+   count is rendered here. */
+.atlas-screen { display: grid; gap: var(--s4); }
+.atlas-revision { margin: 0; color: var(--muted); font-size: 12px; }
+.atlas-topology { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(250px, .7fr); gap: var(--s3); min-width: 0; }
+.atlas-canvas-wrap { min-width: 0; padding: var(--s3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); overflow: auto; }
+.atlas-canvas { display: block; min-width: 640px; width: 100%; min-height: 330px; color: var(--ink); }
+.atlas-subject rect { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1; }
+.atlas-subject text { fill: currentColor; font: 10px var(--font); pointer-events: none; }
+.atlas-subject.is-selected rect { stroke: var(--focus-ring); stroke-width: 2; }
+.atlas-subject.is-nonroutable rect { stroke-dasharray: 3 2; fill: var(--bg-2); }
+.atlas-canvas-note { margin: var(--s2) 0 0; color: var(--muted); font-size: 12px; }
+.atlas-directory, .atlas-inspector, .atlas-text-alternative { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
+.atlas-directory { min-width: 0; max-height: 420px; overflow: auto; padding: var(--s3); }
+.atlas-directory h2, .atlas-inspector h2, .atlas-text-alternative h2 { font-size: 14px; }
+.atlas-directory ol, .atlas-text-alternative ol { display: grid; gap: 2px; margin: var(--s2) 0 0; padding: 0; list-style: none; }
+.atlas-directory button { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s2); width: 100%; min-height: 38px; padding: 6px 8px; color: var(--ink); border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; text-align: left; }
+.atlas-directory button:hover:not(:disabled), .atlas-directory button[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); background: var(--accent-soft); }
+.atlas-directory button:disabled { cursor: not-allowed; color: var(--muted); }
+.atlas-directory-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.atlas-marker-row { display: inline-flex; align-items: center; gap: 3px; color: var(--muted-deep); font-family: var(--mono); font-size: 12px; font-style: normal; }
+.atlas-marker { display: inline-grid; width: 12px; place-items: center; font-style: normal; }
+.atlas-marker.attention-warning, .atlas-marker.state-offline { color: var(--s-offline); }
+.atlas-marker.attention-advisory, .atlas-marker.state-warning { color: var(--s-warning); }
+.atlas-marker.ambiguity-collision, .atlas-marker.ambiguity-unresolved, .atlas-marker.ambiguity-unsupported { color: var(--accent-text); }
+.atlas-disabled-note { grid-column: 1 / -1; color: var(--muted-deep); font-size: 11px; }
+.atlas-inspector, .atlas-text-alternative { padding: var(--s3); }
+.atlas-inspector p, .atlas-text-alternative p { margin: var(--s2) 0 0; color: var(--muted); }
+.atlas-text-alternative { display: none; }
+
+@media (max-width: 760px) {
+  .atlas-topology { grid-template-columns: 1fr; }
+  .atlas-canvas-wrap { overflow: hidden; }
+  .atlas-canvas { display: none; }
+  .atlas-canvas-note { margin: 0; }
+  .atlas-directory { max-height: none; }
+  .atlas-directory button { min-height: 44px; }
+  .atlas-text-alternative { display: block; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .atlas-directory button { transition: none; }
+}
+
 /* ===========================================================================
    Shell
    =========================================================================== */

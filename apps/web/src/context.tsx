@@ -1,10 +1,13 @@
 import { createContext, useContext } from "react";
 import type { FindingsResponse, HealthResponse } from "@dockermap/contracts";
 import type { SystemModel } from "./lib/model";
+import type { AtlasEnvelope } from "./lib/atlas/types";
 import type { EvidenceMode, ModelProvenance } from "./lib/evidence";
 
 export interface AppContextValue {
   model: SystemModel | null;
+  /** A coherent, route-ready Atlas publication; raw topology is never exposed here. */
+  atlas?: AtlasEnvelope | null;
   /** Where the current model's bytes came from — travels WITH the model (§9). */
   modelProvenance: ModelProvenance | null;
   loading: boolean;
