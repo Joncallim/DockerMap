@@ -54,9 +54,9 @@ pub use compose_runtime_binding::{
 mod tests {
     use super::*;
     use crate::compose::{
-        coalesce_compose_services, display_path, parse_compose_file, resolve_source,
-        split_short_volume, unsafe_bind_source_diagnostic, validate_compose_scan,
-        MAX_COMPOSE_FILE_BYTES,
+        coalesce_compose_services, display_path, is_docker_daemon_state_bind_source,
+        parse_compose_file, resolve_source, split_short_volume, unsafe_bind_source_diagnostic,
+        validate_compose_scan, MAX_COMPOSE_FILE_BYTES,
     };
 
     fn repo_fixture_path(parts: &[&str]) -> PathBuf {
@@ -681,7 +681,7 @@ mod tests {
             ContainerMount {
                 id: "private-one".into(),
                 kind: ComposeMountKind::Bind,
-                source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+                source: Some("/var/run/docker.sock".into()),
                 target: "/inside/socket".into(),
                 read_only: true,
             },
@@ -728,6 +728,48 @@ mod tests {
                 "runtime evidence leaked {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn daemon_state_authority_sources_are_closed_and_reject_socket_lookalikes() {
+        for source in [
+            "/var/run/docker.sock",
+            "/run/docker.sock",
+            "/var/lib/docker",
+            "/var/lib/docker/containers",
+        ] {
+            assert!(
+                is_docker_daemon_state_bind_source(source),
+                "canonical daemon authority source must be recognized: {source}"
+            );
+        }
+        for source in [
+            "/srv/docker.sock/archive",
+            "/tmp/docker.sock",
+            "/var/lib/dockerish",
+            "/var/lib/docker.sock",
+        ] {
+            assert!(
+                !is_docker_daemon_state_bind_source(source),
+                "lookalike must not become a Docker daemon authority claim: {source}"
+            );
+        }
+
+        let mut snapshot = mock_snapshot();
+        snapshot.containers[0].mounts = vec![ContainerMount {
+            id: "lookalike-bind".into(),
+            kind: ComposeMountKind::Bind,
+            source: Some("/srv/docker.sock/archive".into()),
+            target: "/inside".into(),
+            read_only: true,
+        }];
+        assert!(
+            derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
+                .edges
+                .iter()
+                .all(|edge| edge.target != "host_risk_docker_daemon_state"),
+            "runtime derivation must share the closed authority predicate"
+        );
     }
 
     #[test]

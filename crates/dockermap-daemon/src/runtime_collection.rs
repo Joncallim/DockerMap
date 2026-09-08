@@ -104,7 +104,8 @@ pub(crate) async fn collect_provider_slot_bounded(
         })
     };
     match tokio::time::timeout(RUNTIME_MAP_COLLECTION_TIMEOUT, work).await {
-        Ok(Ok(collection)) => ProviderCollectionOutcome::Collected(collection),
+        Ok(Ok(Ok(collection))) => ProviderCollectionOutcome::Collected(collection),
+        Ok(Ok(Err(()))) => ProviderCollectionOutcome::Failed,
         Ok(Err(join_error)) => {
             eprintln!("runtime map collection task failed: {join_error}");
             ProviderCollectionOutcome::Failed
@@ -147,7 +148,7 @@ pub(crate) fn runtime_map_from_collection(
 fn collect_provider_slot(
     slot: StaticProviderSlot,
     snapshot: &DockerSnapshot,
-) -> ProviderCollection {
+) -> Result<ProviderCollection, ()> {
     let mut collection = ProviderCollection::default();
     let project_root = project_root().ok();
     let pid_namespace = daemon_pid_namespace_scope();
@@ -207,7 +208,9 @@ fn collect_provider_slot(
             );
         }
         StaticProviderSlot::Systemd => {
-            collect_systemd_runtime_provider(pid_namespace, &mut collection);
+            if !collect_systemd_runtime_provider(pid_namespace, &mut collection) {
+                return Err(());
+            }
             collection.set_state(
                 slot,
                 if pid_namespace.is_restricted() {
@@ -256,7 +259,7 @@ fn collect_provider_slot(
             }
         }
     }
-    collection
+    Ok(collection)
 }
 
 fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapNode>) {
@@ -360,18 +363,18 @@ fn collect_cron_runtime_provider(
 fn collect_systemd_runtime_provider(
     pid_namespace: PidNamespaceScope,
     collection: &mut ProviderCollection,
-) {
+) -> bool {
     if pid_namespace.is_restricted() {
         collection.push_diagnostic(ProviderDiagnostic::new(
             RuntimeProviderKind::Systemd,
             DiagnosticSeverity::Info,
             "systemd discovery omitted because the daemon runs in a restricted PID namespace",
         ));
-        return;
+        return true;
     }
 
     let (nodes, edges, diagnostics) = collection.parts_mut();
-    collect_systemd_services(nodes, edges, diagnostics);
+    collect_systemd_services(nodes, edges, diagnostics)
 }
 
 fn local_hostname() -> String {

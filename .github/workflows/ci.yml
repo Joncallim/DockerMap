@@ -164,9 +164,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
-      # The runtime stage copies the pruned workspace dependency closure from
-      # the resolver's root. Build on every PR so hoisting or closure drift
-      # cannot ship unnoticed.
+      # The runtime stage resolves an API-only production dependency closure.
+      # Build on every PR so workspace hoisting cannot pull web dependencies
+      # across that boundary unnoticed.
       - name: Build image
         run: docker build -t dockermap:ci .
 
@@ -195,6 +195,18 @@ jobs:
           fi
           if test -e /opt/dockermap/node_modules/@playwright/test/package.json; then
             echo '@playwright/test must not be present in the runtime image' >&2
+            exit 1
+          fi
+          if test -e /opt/dockermap/node_modules/react/package.json; then
+            echo 'react must not be present in the runtime image' >&2
+            exit 1
+          fi
+          if test -e /opt/dockermap/node_modules/react-dom/package.json; then
+            echo 'react-dom must not be present in the runtime image' >&2
+            exit 1
+          fi
+          if test -e /opt/dockermap/node_modules/react-router-dom/package.json; then
+            echo 'react-router-dom must not be present in the runtime image' >&2
             exit 1
           fi
           node -e 'import("express").then(() => import("@dockermap/contracts"))'
