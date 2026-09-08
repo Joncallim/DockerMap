@@ -33,8 +33,10 @@ Before beginning, the operator confirms all of the following:
   edit-plan execution is used.
 - [ ] The Atlas preview route is enabled only for this controlled review and
   its default-off production behavior is preserved elsewhere.
-- [ ] A rollback owner and a safe way to disable the preview route are known
-  before testing begins.
+- [ ] A rollback owner and an approved deployment procedure for replacing the
+  preview-enabled artifact with a verified default-off artifact are known before
+  testing begins. The Atlas gate is build-time only; disabling it requires a
+  controlled image/deployment change, not a browser setting or runtime toggle.
 - [ ] The review packet will contain sanitized attestations and references,
   never copied host output.
 
@@ -97,8 +99,11 @@ environment. The reviewer signs only after all applicable checks pass:
 
 - [ ] Atlas cards, directory, inspector, local-context rail, status text, and
   accessible names contain only safe display material approved for the packet.
-- [ ] Browser URL, page title, downloaded files, devtools, screenshots, logs,
-  traces, and test reports contain no raw host identifiers or sensitive values.
+- [ ] A browser URL may contain only the closed Atlas route state: an exact,
+  opaque published `subject` key and the permitted `lens` or `expand` fields.
+  It contains no raw host identifiers, source references, or other sensitive
+  values. Treat a selected URL as controlled working material; do not copy it
+  into this repository or the sanitized record.
 - [ ] No raw runtime record, Compose file, evidence key, source reference,
   provider revision, provider metadata, label, image reference, mount/path,
   port, environment value, command argument, token, cookie, or credential is
@@ -140,10 +145,13 @@ default network, Docker, daemon, or browser automation command.
 - [ ] The selected subject, semantic lens, directory/text alternative, and
   bounded local context agree after navigation and refresh where the coherent
   revision remains valid.
-- [ ] Unsupported, unresolved, ambiguous, omitted, or stale material remains
-  visibly bounded and non-routable as designed.
-- [ ] No observation changed host state. Any Compose edit plan inspected still
-  reported `willWrite: false`; it was not executed.
+- [ ] Unsupported, unresolved, ambiguous, and omitted material remains visibly
+  bounded and non-routable as designed. Freshness is assessed independently:
+  a stale subject with a current exact published key may remain routable, while
+  a non-routable subject never gains a route merely because its evidence is
+  fresh.
+- [ ] No Atlas observation changed non-DockerMap host state. Any Compose edit
+  plan inspected still reported `willWrite: false`; it was not executed.
 
 ### Manual 200% zoom and human acceptance rubric
 
@@ -171,16 +179,22 @@ or approval.
 ## 6. Rollback exercise
 
 Before a class can be marked approved, the operator must demonstrate a safe
-preview rollback in the controlled environment. This is a feature-availability
-check, never a host mutation.
+preview rollback in the controlled environment. The Atlas preview flag is
+build-time only, so this is a feature-availability check performed through an
+approved deployment change, not a runtime toggle or a host-observation action.
+It must not change non-DockerMap host workloads that DockerMap observes.
 
-- [ ] Disable the controlled Atlas-preview enablement using the approved
-  deployment/configuration procedure.
+- [ ] Replace the preview-enabled artifact using the approved deployment
+  procedure with a verified default-off artifact. Record the deployment change
+  as rollback evidence; it is expected for this build-time gate.
 - [ ] Confirm the legacy Service Map route and normal production build behavior
   remain available as documented, with Atlas no longer exposed by the preview
   route.
-- [ ] Confirm no host files, containers, services, images, networks, or volumes
-  were changed by the Atlas review or rollback.
+- [ ] Confirm Atlas observation did not change non-DockerMap host files,
+  containers, services, images, networks, or volumes. The approved rollback
+  deployment may replace only the DockerMap application artifact/workload needed
+  to restore the default-off route; record that controlled app change separately
+  from host-observation evidence.
 - [ ] Record the result and an opaque evidence reference below. A failed or
   unperformed rollback keeps certification and cutover pending.
 
