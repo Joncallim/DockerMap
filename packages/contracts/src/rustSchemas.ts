@@ -1406,6 +1406,45 @@ export const RUST_RESPONSE_SCHEMAS = {
       ],
       "type": "string"
     },
+    "FindingSummary": {
+      "additionalProperties": false,
+      "description": "A fixed, response-level count projection. It is calculated from the\nclosed rule and severity of each finding, never from provider output.",
+      "properties": {
+        "advisoryCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "declaredDependencyCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dockerDaemonAuthorityCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hostPortPublicationCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warningCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "warningCount",
+        "advisoryCount",
+        "declaredDependencyCount",
+        "dockerDaemonAuthorityCount",
+        "hostPortPublicationCount"
+      ],
+      "type": "object"
+    },
     "ProviderSlot": {
       "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
       "oneOf": [
@@ -1594,10 +1633,14 @@ export const RUST_RESPONSE_SCHEMAS = {
     "modelRevision": {
       "minLength": 1,
       "type": "string"
+    },
+    "summary": {
+      "$ref": "#/$defs/FindingSummary"
     }
   },
   "required": [
     "findings",
+    "summary",
     "modelRevision"
   ],
   "title": "FindingsResponse",
@@ -3955,6 +3998,45 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       ],
       "type": "string"
     },
+    "FindingSummary": {
+      "additionalProperties": false,
+      "description": "A fixed, response-level count projection. It is calculated from the\nclosed rule and severity of each finding, never from provider output.",
+      "properties": {
+        "advisoryCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "declaredDependencyCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dockerDaemonAuthorityCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hostPortPublicationCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warningCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "warningCount",
+        "advisoryCount",
+        "declaredDependencyCount",
+        "dockerDaemonAuthorityCount",
+        "hostPortPublicationCount"
+      ],
+      "type": "object"
+    },
     "ProviderSlot": {
       "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
       "oneOf": [
@@ -4143,10 +4225,14 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "modelRevision": {
       "minLength": 1,
       "type": "string"
+    },
+    "summary": {
+      "$ref": "#/components/schemas/FindingsResponse/$defs/FindingSummary"
     }
   },
   "required": [
     "findings",
+    "summary",
     "modelRevision"
   ],
   "title": "FindingsResponse",

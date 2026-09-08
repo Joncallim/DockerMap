@@ -434,6 +434,13 @@ function getMockResponse<T>(path: string): T {
   if (path === "/daemon/findings") {
     return {
       findings: [],
+      summary: {
+        warningCount: 0,
+        advisoryCount: 0,
+        declaredDependencyCount: 0,
+        dockerDaemonAuthorityCount: 0,
+        hostPortPublicationCount: 0,
+      },
       modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1"
     } as T;
   }

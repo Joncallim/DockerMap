@@ -1322,6 +1322,46 @@ mod tests {
     }
 
     #[test]
+    fn finding_summary_is_a_closed_rule_and_severity_projection() {
+        let mut findings = derive_findings(&map(edge(RuntimeEvidenceFreshness::Fresh)));
+        findings.extend(derive_findings(&internal_network_port_map()));
+        findings.extend(derive_findings(&daemon_state_map()));
+        findings.extend(derive_findings(&daemon_state_port_map()));
+        findings.extend(derive_findings(&compose_dependency_map("up", "exited")));
+        findings.extend(derive_findings(&mutual_compose_dependency_map()));
+
+        assert_eq!(
+            findings.len(),
+            7,
+            "the representative maps exercise all closed rules"
+        );
+        assert_eq!(
+            crate::FindingSummary::from_findings(&findings),
+            crate::FindingSummary {
+                warning_count: 4,
+                advisory_count: 3,
+                declared_dependency_count: 3,
+                docker_daemon_authority_count: 2,
+                host_port_publication_count: 2,
+            }
+        );
+
+        // The response projection counts the finding's closed severity, not
+        // provider text or evidence. A mutated closed severity changes only
+        // the severity partition, never its rule category.
+        findings[0].severity = FindingSeverity::Advisory;
+        let mutated = crate::FindingSummary::from_findings(&findings);
+        assert_eq!(mutated.warning_count, 3);
+        assert_eq!(mutated.advisory_count, 4);
+        assert_eq!(
+            mutated.declared_dependency_count
+                + mutated.docker_daemon_authority_count
+                + mutated.host_port_publication_count,
+            7
+        );
+    }
+
+    #[test]
     fn host_publication_discriminant_accepts_only_bounded_collector_port_syntax() {
         for port in ["8080:80/tcp", "53:53/udp", "443:443/sctp"] {
             assert!(
