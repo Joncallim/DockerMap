@@ -177,6 +177,10 @@ pub(crate) struct DockerEventJournal {
     dedupe_order: VecDeque<String>,
     dedupe_ids: BTreeSet<String>,
     last_source_timestamp_nanos: Option<u64>,
+    /// High-water mark captured only across a source transition. Events at or
+    /// below it are ambiguous replay in the new source epoch and fail closed,
+    /// including identities older than the bounded ID FIFO.
+    source_reset_replay_floor_nanos: Option<u64>,
     collection_state: ObservedDockerEventCollectionState,
     continuity_epoch: u64,
 }
@@ -188,6 +192,7 @@ impl Default for DockerEventJournal {
             dedupe_order: VecDeque::new(),
             dedupe_ids: BTreeSet::new(),
             last_source_timestamp_nanos: None,
+            source_reset_replay_floor_nanos: None,
             collection_state: ObservedDockerEventCollectionState::Unavailable,
             continuity_epoch: 0,
         }
@@ -195,6 +200,25 @@ impl Default for DockerEventJournal {
 }
 
 impl DockerEventJournal {
+    /// Start a new source/continuity epoch without reopening the bounded replay
+    /// window. Public rows and collection state are reset, while only opaque
+    /// event IDs and the latest source timestamp survive as private process
+    /// memory. This prevents a gateway replay after Docker recovery from
+    /// turning pre-fallback events into fresh evidence.
+    pub(crate) fn source_reset(&self) -> Self {
+        Self {
+            events: VecDeque::new(),
+            dedupe_order: self.dedupe_order.clone(),
+            dedupe_ids: self.dedupe_ids.clone(),
+            last_source_timestamp_nanos: self.last_source_timestamp_nanos,
+            source_reset_replay_floor_nanos: self
+                .source_reset_replay_floor_nanos
+                .max(self.last_source_timestamp_nanos),
+            collection_state: ObservedDockerEventCollectionState::Unavailable,
+            continuity_epoch: 0,
+        }
+    }
+
     pub(crate) fn retain(
         &mut self,
         event: ParsedDockerEvent,
@@ -204,6 +228,12 @@ impl DockerEventJournal {
     ) -> DockerEventRetention {
         if anchor_model_revision.is_empty() || anchor_observation_revision.is_empty() {
             return DockerEventRetention::Rejected;
+        }
+        if self
+            .source_reset_replay_floor_nanos
+            .is_some_and(|floor| event.source_timestamp_nanos <= floor)
+        {
+            return DockerEventRetention::Duplicate;
         }
         self.last_source_timestamp_nanos = Some(
             self.last_source_timestamp_nanos
@@ -782,6 +812,45 @@ mod tests {
         );
         assert_eq!(journal.dedupe_order.len(), MAX_DOCKER_EVENT_DEDUPE_IDS);
         assert_eq!(journal.dedupe_ids.len(), MAX_DOCKER_EVENT_DEDUPE_IDS);
+    }
+
+    #[test]
+    fn source_reset_timestamp_floor_fences_events_evicted_from_id_horizon() {
+        let mut journal = DockerEventJournal::default();
+        let evicted = parsed("start", 0);
+        for index in 0..=MAX_DOCKER_EVENT_DEDUPE_IDS {
+            assert_eq!(
+                journal.retain(
+                    parsed("start", index as u64),
+                    1,
+                    "model-revision",
+                    "observation-revision"
+                ),
+                DockerEventRetention::Retained
+            );
+        }
+        assert!(!journal.dedupe_ids.contains(&evicted.id));
+
+        let mut reset = journal.source_reset();
+        assert!(reset.retained().is_empty());
+        assert_eq!(reset.dedupe_order.len(), MAX_DOCKER_EVENT_DEDUPE_IDS);
+        assert_eq!(reset.dedupe_ids.len(), MAX_DOCKER_EVENT_DEDUPE_IDS);
+        assert_eq!(
+            reset.retain(evicted, 2, "new-model", "new-observation"),
+            DockerEventRetention::Duplicate,
+            "the timestamp floor covers old identities outside the bounded ID FIFO"
+        );
+        assert!(reset.retained().is_empty());
+        assert_eq!(
+            reset.retain(
+                parsed("start", (MAX_DOCKER_EVENT_DEDUPE_IDS + 1) as u64),
+                2,
+                "new-model",
+                "new-observation"
+            ),
+            DockerEventRetention::Retained,
+            "strictly newer source time remains eligible in the new epoch"
+        );
     }
 
     #[test]
