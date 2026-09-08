@@ -77,6 +77,12 @@ These tasks must be complete before tagging `v0.1.0-alpha`.
 
 ## Follow-up evidence and product work
 
+- [ ] Capture isolated unfiltered live-Docker evidence for current resource
+  telemetry. It must demonstrate the exact finite stats authority, current-only
+  expiry, bounded request/concurrency behavior, and fixture cleanup/resource
+  budget. The normal labelled live-Docker harness cannot supply this evidence:
+  its label scope correctly denies every stats request.
+
 - [x] Add provider-specific redaction fixtures for systemd, tmux, npm/package metadata,
   native process inspection, reverse-proxy config, and DNS collectors.
   Current coverage is systemd, tmux, npm/package, native-process-shaped output,
