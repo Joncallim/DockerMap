@@ -438,6 +438,18 @@ function getMockResponse<T>(path: string): T {
     } as T;
   }
 
+  if (path === "/daemon/history") {
+    // Mock fallback deliberately claims neither a Docker baseline nor observed
+    // events. It must never manufacture a live history timeline.
+    return {
+      source: "mock",
+      baselineEstablished: false,
+      currentModelRevision: null,
+      observedRevision: null,
+      events: []
+    } as T;
+  }
+
   if (path === "/daemon/containers") {
     return { containers: mockContainers } as T;
   }
@@ -585,6 +597,7 @@ registerRoute("snapshot", readHandlers.snapshot);
 registerRoute("graph", readHandlers.graph);
 registerRoute("runtime-map", readHandlers.runtimeMap);
 registerRoute("findings", readHandlers.findings);
+registerRoute("history", readHandlers.history);
 registerRoute("diagnostics", readHandlers.diagnostics);
 registerRoute("containers", readHandlers.containers);
 registerRoute("container", readHandlers.container);

@@ -10,6 +10,7 @@ export const RUST_ROUTE_RESPONSE_SCHEMAS = {
   graph: "GraphResponse",
   "runtime-map": "RuntimeMap",
   findings: "FindingsResponse",
+  history: "ObservedChangeHistoryResponse",
   containers: "ContainersResponse",
   container: "ContainerDetailResponse",
   images: "ImagesResponse",

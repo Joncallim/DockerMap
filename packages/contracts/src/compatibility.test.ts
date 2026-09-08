@@ -4,12 +4,14 @@ import type {
   ComposeScan,
   DiagnosticsReport,
   DockerSnapshot,
+  ObservedChangeHistoryResponse,
   RuntimeMap,
   StatusResponse
 } from "./index";
 import composeGraphFixture from "../../../tests/fixtures/contracts/compose-graph.json";
 import composeScanFixture from "../../../tests/fixtures/contracts/compose-scan.json";
 import diagnosticsFixture from "../../../tests/fixtures/contracts/diagnostics.json";
+import observedHistoryFixture from "../../../tests/fixtures/contracts/observed-change-history-response.json";
 import snapshotFixture from "../../../tests/fixtures/contracts/mock-snapshot.json";
 import runtimeMapDaemonFixture from "../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json";
 import runtimeMapFixture from "../../../tests/fixtures/contracts/runtime-map-expanded.json";
@@ -27,6 +29,7 @@ describe("contract fixtures", () => {
     const runtimeMapDaemon = runtimeMapDaemonFixture as unknown as RuntimeMap;
     const status = statusFixture as StatusResponse;
     const diagnostics = diagnosticsFixture as DiagnosticsReport;
+    const observedHistory = observedHistoryFixture as ObservedChangeHistoryResponse;
 
     expect(snapshot.containers[0]?.mounts[0]?.kind).toBe("bind");
     expect(composeScan.correlations[0]?.status).toBe("matched");
@@ -41,6 +44,8 @@ describe("contract fixtures", () => {
     expect(diagnostics.generatedAt).toBeGreaterThan(0);
     expect(diagnostics.entries.some((entry) => entry.source === "compose")).toBe(true);
     expect(diagnostics.entries.some((entry) => entry.source === "runtime")).toBe(true);
+    expect(observedHistory.source).toBe("docker");
+    expect(observedHistory.events[0]?.kind).toBe("container_status_changed");
   });
 
   it("daemon-emitted runtime map fixture matches the contract and real collector shape", () => {

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import { needsAttention, summarize, type Service } from "../lib/model";
 import { changeFeed, causalChain } from "../lib/stubs";
+import { observedChangeFeed, observedChangeKindLabel } from "../lib/observedHistory";
 import { formatPercent, formatRelative } from "../lib/format";
 import { evidenceLabel } from "../lib/evidence";
 import {
@@ -19,10 +20,14 @@ import { resourceFor } from "../lib/stubs";
 import { UPDATE_STATUS_CLAIM, UPDATE_STATUS_LABEL } from "../lib/updates";
 
 export default function Home() {
-  const { model, modelProvenance, loading, error, evidenceMode, findings } = useApp();
+  const { model, modelProvenance, loading, error, evidenceMode, findings, observedHistory } = useApp();
   const history = useMemo(
-    () => (model ? changeFeed(model, evidenceMode, modelProvenance) : CHANGE_HISTORY_CLAIM),
-    [model, evidenceMode, modelProvenance]
+    () => {
+      if (!model) return CHANGE_HISTORY_CLAIM;
+      const observed = observedChangeFeed(model, evidenceMode, modelProvenance, observedHistory);
+      return observed.kind === "observed" ? observed : changeFeed(model, evidenceMode, modelProvenance);
+    },
+    [model, evidenceMode, modelProvenance, observedHistory]
   );
   const chain = useMemo(
     () => (model ? causalChain(model, evidenceMode, modelProvenance) : CAUSAL_CHAIN_CLAIM),
@@ -137,7 +142,7 @@ export default function Home() {
               <ul className="feed">
                 {changes.map((change, index) => (
                   <li key={`${change.id}-${index}`} className="feed-row">
-                    <span className={`feed-kind k-${change.kind}`}>{change.kind}</span>
+                    <span className={`feed-kind k-${change.kind}`}>{observedChangeKindLabel(change.kind)}</span>
                     {change.routeName !== null ? (
                       <Link className="feed-text" to={`/services/${encodeURIComponent(change.routeName)}`}>
                         {change.summary}
