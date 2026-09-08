@@ -46,6 +46,16 @@ changes them:
   redaction and control-character publication boundary as all other daemon response text.
   A malformed evidence record is rejected at the API schema boundary rather than
   partially published.
+- Tmux provenance is a closed version-five observed fact from a fixed read-only
+  `tmux list-sessions` invocation. It can attest only a uniquely identified
+  `tmux_session_* -> host_local` `runs_on` relationship. Its independent,
+  private 15-second collector slot owns its revision, freshness, timeout, and
+  single-flight lifecycle; it cannot borrow freshness from host, Cron, listener,
+  or PM2 collection. DockerMap suppresses this evidence in mock mode, across a
+  Docker/mock reset, without a usable tmux-slot revision, in a restricted PID
+  namespace, or when its host or session identity is ambiguous. The
+  producer/publication boundary and UI must not disclose raw tmux session names,
+  IDs, or metadata.
 - Mock fallback may show representative topology, but never attests it as Docker or retained
   host-provider evidence: every runtime edge has an empty evidence array and evidence-derived
   findings are absent. A live/mock source change drops retained observations rather than
@@ -117,6 +127,11 @@ package metadata can expose secrets or trigger accidental host-wide scanning.
 Protections:
 
 - Provider commands stay fixed and read-only, such as list/status/introspection calls.
+- Tmux session provenance uses only the fixed `tmux list-sessions` form. The
+  producer/publication boundary and UI suppress raw session listing names, IDs,
+  and metadata. The resulting fact does not claim that a session is attached,
+  active, owns a process, is healthy or reachable, persists, or is a complete
+  host-session inventory.
 - Provider discovery stays bounded to explicit request parameters, known config locations, or
   capped fixture-like scans instead of recursive host crawling.
 - Python/native-process collection must not read `/proc/<pid>/environ`, process memory,
