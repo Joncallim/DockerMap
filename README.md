@@ -44,9 +44,11 @@ token fallback); its routes, including health, require that bearer credential.
 
 That Docker socket mount is passed to the Docker Read Gateway. A read-only
 mount does not make the Docker API read-only, so the gateway independently
-limits it to the reviewed inventory and bounded-log reads. Plain Docker is a
-local compatibility profile; use the split Compose deployment for component
-isolation.
+limits it to reviewed inventory, bounded non-following logs, bounded Docker
+events, and an exact finite per-container stats request. Stats are denied when
+`DOCKERMAP_DOCKER_LABEL_FILTER` is configured because Docker's stats endpoint
+cannot carry the inventory label scope. Plain Docker is a local compatibility
+profile; use the split Compose deployment for component isolation.
 
 ## Run From Source
 

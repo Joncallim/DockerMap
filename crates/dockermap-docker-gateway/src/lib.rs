@@ -24,6 +24,9 @@ use serde::de::{self, MapAccess, Visitor};
 use tokio::net::{UnixListener, UnixStream};
 
 pub const LOG_TAIL: &str = "4096";
+/// Exact bounded one-shot request emitted by Bollard 0.19.4 for a container
+/// stats sample. Streaming stats remain outside the gateway authority.
+pub const STATS_QUERY: &str = "stream=false&one-shot=false";
 /// Event replay and live-tail starts may inspect at most this recent window.
 pub const EVENT_MAX_LOOKBACK_SECONDS: u64 = 300;
 
@@ -135,6 +138,9 @@ impl Policy {
             "/networks" => self.inventory(target, "/networks?"),
             "/volumes" => self.inventory(target, "/volumes?"),
             "/events" => self.events(target, query, now),
+            _ if path.starts_with("/containers/") && path.ends_with("/stats") => {
+                self.stats(target, path, query)
+            }
             _ if path.starts_with("/containers/") && path.ends_with("/logs") => {
                 self.logs(target, path, query)
             }
@@ -189,6 +195,30 @@ impl Policy {
             return Err(Deny::Query);
         }
         if until.is_empty() || query.matches('&').count() != 6 || query.contains('%') {
+            return Err(Deny::Query);
+        }
+        Ok(target.into())
+    }
+
+    fn stats(&self, target: &str, path: &str, query: &str) -> Result<String, Deny> {
+        // Docker's per-container stats API has no label filter. Permitting a
+        // caller-selected name while an inventory label scope is active would
+        // let a compromised collector read outside that scope, so this route
+        // is intentionally unavailable for scoped deployments.
+        if self.label_filter.is_some() {
+            return Err(Deny::Query);
+        }
+        let name = path
+            .strip_prefix("/containers/")
+            .and_then(|value| value.strip_suffix("/stats"))
+            .ok_or(Deny::Target)?;
+        if !valid_container_name(name) {
+            return Err(Deny::Target);
+        }
+        // This is the exact query order measured from Bollard 0.19.4. A
+        // finite response is required: live stats streaming is never a
+        // gateway capability.
+        if query != STATS_QUERY {
             return Err(Deny::Query);
         }
         Ok(target.into())
@@ -480,7 +510,10 @@ fn empty_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bollard::{query_parameters::EventsOptionsBuilder, Docker, API_DEFAULT_VERSION};
+    use bollard::{
+        query_parameters::{EventsOptionsBuilder, StatsOptionsBuilder},
+        Docker, API_DEFAULT_VERSION,
+    };
     use futures_util::StreamExt;
     use std::{
         collections::HashMap,
@@ -530,8 +563,48 @@ mod tests {
     #[test]
     fn only_measured_unfiltered_requests_pass() {
         let policy = Policy::new(None);
-        for target in ["/containers/json?all=true&size=false", "/networks?", "/volumes?", "/containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096"] { assert!(policy.allow(&req(target)).is_ok(), "{target}"); }
+        for target in ["/containers/json?all=true&size=false", "/networks?", "/volumes?", "/containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096", "/containers/api/stats?stream=false&one-shot=false"] { assert!(policy.allow(&req(target)).is_ok(), "{target}"); }
         for target in ["/containers/json?all=true", "/events", "/v1.44/containers/json?all=true&size=false", "/containers/api/json", "/containers/api/logs?follow=true&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096", "/containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4097"] { assert!(policy.allow(&req(target)).is_err(), "{target}"); }
+    }
+
+    #[test]
+    fn stats_allow_only_the_measured_finite_request() {
+        let policy = Policy::new(None);
+        let valid = "/containers/api/stats?stream=false&one-shot=false";
+        assert_eq!(policy.allow(&req(valid)), Ok(valid.into()));
+        for target in [
+            "/containers/stats?stream=false&one-shot=false",
+            "/containers//stats?stream=false&one-shot=false",
+            "/containers/api/stats",
+            "/containers/api/stats?",
+            "/containers/api/stats?stream=true&one-shot=false",
+            "/containers/api/stats?stream=false&one-shot=true",
+            "/containers/api/stats?one-shot=false&stream=false",
+            "/containers/api/stats?stream=false",
+            "/containers/api/stats?stream=false&one-shot=false&one-shot=false",
+            "/containers/api/stats?stream=false&one-shot=false&x=1",
+            "/containers/%61pi/stats?stream=false&one-shot=false",
+            "/containers/api%2fstats?stream=false&one-shot=false",
+            "/v1.44/containers/api/stats?stream=false&one-shot=false",
+        ] {
+            assert!(policy.allow(&req(target)).is_err(), "{target}");
+        }
+        let with_body = Request::builder()
+            .method("GET")
+            .uri(valid)
+            .header(header::CONTENT_LENGTH, "1")
+            .body(())
+            .unwrap();
+        assert_eq!(policy.allow(&with_body), Err(Deny::Framing));
+    }
+
+    #[test]
+    fn stats_fail_closed_when_a_gateway_label_scope_is_configured() {
+        let policy = Policy::new(Some("com.dockermap.fixture=trace-123".into()));
+        assert_eq!(
+            policy.allow(&req("/containers/api/stats?stream=false&one-shot=false")),
+            Err(Deny::Query)
+        );
     }
 
     #[test]
@@ -935,6 +1008,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bollard_0_19_one_shot_stats_request_traverses_the_real_gateway_verbatim() {
+        let raw_socket = socket("bollard-stats-wire");
+        let gateway_socket = socket("bollard-stats-filtered");
+        let listener = UnixListener::bind(&raw_socket).unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut bytes = [0; 1_024];
+            loop {
+                let read = stream.read(&mut bytes).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&bytes[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}")
+                .await
+                .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        let gateway = tokio::spawn(serve(GatewayConfig::new(
+            &gateway_socket,
+            &raw_socket,
+            None,
+        )));
+        for _ in 0..40 {
+            if gateway_socket.exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        let docker =
+            Docker::connect_with_unix(gateway_socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
+                .unwrap();
+        let options = StatsOptionsBuilder::new()
+            .stream(false)
+            .one_shot(false)
+            .build();
+        let mut stream = Box::pin(docker.stats("api", Some(options)));
+        let received = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("approved one-shot stats request reaches Docker through the gateway");
+        assert!(received.is_some_and(|result| result.is_ok()));
+        let request = upstream.await.unwrap();
+        let (head, body) = request
+            .split_once("\r\n\r\n")
+            .expect("gateway emits a complete HTTP request head");
+        assert!(body.is_empty(), "gateway added a stats request body");
+        let mut lines = head.lines();
+        assert_eq!(
+            lines.next(),
+            Some("GET /containers/api/stats?stream=false&one-shot=false HTTP/1.1")
+        );
+        let headers = lines.collect::<Vec<_>>();
+        assert!(headers
+            .iter()
+            .any(|line| line.eq_ignore_ascii_case("host: docker")));
+        assert!(!headers.iter().any(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.starts_with("content-length:")
+                || lower.starts_with("transfer-encoding:")
+                || lower.starts_with("connection:")
+                || lower.starts_with("upgrade:")
+        }));
+        let _ = std::fs::remove_file(raw_socket);
+        gateway.abort();
+        let _ = std::fs::remove_file(gateway_socket);
+    }
+
+    #[tokio::test]
+    async fn configured_label_scope_denies_stats_before_the_raw_docker_socket() {
+        let raw_socket = socket("raw-scoped-stats-denied");
+        let gateway_socket = socket("filtered-scoped-stats-denied");
+        let listener = UnixListener::bind(&raw_socket).unwrap();
+        let upstream_hits = Arc::new(AtomicUsize::new(0));
+        let hits = Arc::clone(&upstream_hits);
+        let upstream = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                hits.fetch_add(1, Ordering::SeqCst);
+                let mut bytes = [0; 1_024];
+                let _ = stream.read(&mut bytes).await.unwrap();
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                    .await
+                    .unwrap();
+            }
+        });
+        let gateway = tokio::spawn(serve(GatewayConfig::new(
+            &gateway_socket,
+            &raw_socket,
+            Some("com.dockermap.fixture=trace-123".into()),
+        )));
+        for _ in 0..40 {
+            if gateway_socket.exists() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        let response = request(
+            &gateway_socket,
+            "GET /containers/api/stats?stream=false&one-shot=false HTTP/1.1\r\nHost: docker\r\n\r\n",
+        )
+        .await;
+        assert!(!response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(upstream_hits.load(Ordering::SeqCst), 0);
+        gateway.abort();
+        upstream.abort();
+        let _ = std::fs::remove_file(raw_socket);
+        let _ = std::fs::remove_file(gateway_socket);
+    }
+
+    #[tokio::test]
     async fn denied_requests_never_reach_the_raw_docker_socket() {
         let raw_socket = socket("raw");
         let gateway_socket = socket("filtered");
@@ -988,6 +1177,13 @@ mod tests {
             "GET /containers/json?all=true&size=%GG HTTP/1.1\r\nHost: docker\r\n\r\n",
             "GET /containers/api/logs?follow=true&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096 HTTP/1.1\r\nHost: docker\r\n\r\n",
             "GET /containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096&tail=4096 HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api/stats?stream=true&one-shot=false HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api/stats?stream=false&one-shot=true HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api/stats?one-shot=false&stream=false HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api/stats?stream=false&one-shot=false&x=1 HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api%2fstats?stream=false&one-shot=false HTTP/1.1\r\nHost: docker\r\n\r\n",
+            "GET /containers/api/stats?stream=false&one-shot=false HTTP/1.1\r\nHost: docker\r\nContent-Length: 1\r\n\r\nx",
+            "GET /containers/api/stats?stream=false&one-shot=false HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
             "GET /networks? HTTP/1.1\r\nHost: docker\r\nContent-Length: 0\r\n\r\n",
             "GET /networks? HTTP/1.1\r\nHost: docker\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
             "GET /networks? HTTP/1.1\r\nHost: docker\r\nUpgrade: h2c\r\n\r\n",
