@@ -154,8 +154,9 @@ before a broader beta.
 - [ ] Add a clean-host install test for systemd units and Nginx/Caddy proxy config.
 - [x] Add tag-triggered release automation for deploy artifacts and SHA-256
   checksums. [`.github/workflows/release.yml`](../../.github/workflows/release.yml)
-  validates the tag/version, builds, packages, checksums, and publishes the
-  prerelease assets (PR #98).
+  validates the tag/version, builds, packages, checksums, and retains candidate
+  artifacts for maintainer review. It does not publish prerelease assets
+  automatically.
 - [x] Add a documented support policy for Linux distro, Node, Rust, Docker, and browser versions.
   See [SUPPORT_POLICY.md](SUPPORT_POLICY.md); each release must still rerun the
   relevant gates against its exact candidate.

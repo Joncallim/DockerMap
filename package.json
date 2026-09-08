@@ -30,7 +30,7 @@
     "test:web": "npm run test --workspace @dockermap/web --if-present",
     "test:contracts": "npm run test --workspace @dockermap/contracts --if-present",
     "test:version": "node --test scripts/check-version-authority.test.mjs",
-    "test:deployment": "node --test scripts/check-systemd-profile.test.mjs",
+    "test:deployment": "node --test scripts/check-systemd-profile.test.mjs scripts/check-supply-chain-baseline.test.mjs",
     "generate:contracts": "cargo run -p dockermap-core --bin generate-contract-schemas --manifest-path crates/Cargo.toml -- && node scripts/generate-rust-contract-types.mjs",
     "check:contracts": "node scripts/check-rust-contract-schemas.mjs && node scripts/generate-rust-contract-types.mjs --check && node --test scripts/generate-rust-contract-types.test.mjs && npm run test:contracts",
     "generate:version": "node scripts/check-version-authority.mjs --write",
