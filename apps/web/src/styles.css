@@ -181,7 +181,7 @@ code,
 
 .muted-line {
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--type-sm);
   margin: 0;
 }
 
@@ -425,7 +425,7 @@ kbd {
 }
 
 .screen-title {
-  font-size: 26px;
+  font-size: var(--type-title);
   margin-top: 2px;
 }
 
