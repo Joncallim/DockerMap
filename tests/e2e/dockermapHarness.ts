@@ -326,7 +326,7 @@ export async function startLiveDockerStack(options: {
       }
       return requestFixedGatewayStatus(
         gatewaySocket,
-        `/containers/${containerId}/stats?stream=false&one-shot=false`,
+        `/containers/${containerId}/stats?stream=false&one-shot=true`,
       );
     },
     stop: async () => {

@@ -46,7 +46,7 @@ port on the interface of your choice, e.g. `-p 3233:3233`.
 - Gateway only: `/var/run/docker.sock` read-only. The gateway independently
   permits only reviewed inventory, bounded non-following logs, bounded Docker
   events, and the exact finite per-container stats request
-  `stream=false&one-shot=false` on an unfiltered profile. It denies all stats
+  `stream=false&one-shot=true` on an unfiltered profile. It denies all stats
   requests when `DOCKERMAP_DOCKER_LABEL_FILTER` is set because that Docker
   endpoint cannot express the inventory label scope.
 - Collector only: `/opt/dockermap/project` read-only plus the filtered gateway
