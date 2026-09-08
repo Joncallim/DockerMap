@@ -1,6 +1,6 @@
 import { testProviderStates } from "./testProviderStates";
 import { describe, expect, it } from "vitest";
-import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
+import type { DockerSnapshot, ObservedDockerEventHistoryResponse, RuntimeMap } from "@dockermap/contracts";
 import { answer } from "./copilot";
 import { getDemoResponse } from "./demoData";
 import { buildModel } from "./model";
@@ -9,6 +9,10 @@ const runtime: RuntimeMap = { nodes: [], edges: [], diagnostics: [], modelRevisi
 const liveSnapshot: DockerSnapshot = { containers: [{ id: "live-api", name: "api", image: "nginx:1", status: "running", role: "api", networks: [], ports: ["443:443"], mounts: [], dependsOn: [] }], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 };
 
 const demoSnapshot = (): DockerSnapshot => getDemoResponse<DockerSnapshot>("/api/snapshot");
+const observedEvents: ObservedDockerEventHistoryResponse = {
+  source: "docker", collectionState: "collecting", currentModelRevision: "test-revision", currentObservationRevision: "event-r7",
+  events: [{ id: `docker_event_${"a".repeat(64)}`, containerId: `docker_container_${"b".repeat(64)}`, evidenceSource: "docker_event_stream", kind: "container_health_healthy", observedAtMs: 2, sourceOccurredAtMs: 2, anchorModelRevision: "test-revision", anchorObservationRevision: "event-r7" }]
+};
 
 describe("Copilot evidence vocabulary", () => {
   it("labels live answers with the claim's evidence kind", () => {
@@ -49,6 +53,24 @@ describe("Copilot update-status responses", () => {
       expect(response.references).toEqual([]);
       expect(response.evidence).toBe("unavailable");
     }
+  });
+
+  it("uses only a coherent live stream observation and never exposes its opaque identities", () => {
+    const response = answer(buildModel(liveSnapshot, runtime), "what changed recently", "live", "live", observedEvents);
+    const text = `${response.headline} ${response.body.join(" ")}`;
+    expect(response.evidence).toBe("observed");
+    expect(response.references).toEqual([]);
+    expect(text).toContain("container_health_healthy");
+    expect(text).toContain("not a complete historical record or a current telemetry value");
+    expect(text).not.toContain(observedEvents.events[0]!.id);
+    expect(text).not.toContain(observedEvents.events[0]!.containerId);
+    expect(text).not.toMatch(/current state|service|cause|deploy|failure/i);
+  });
+
+  it("fails closed when retained stream anchors do not match the coherent model", () => {
+    const response = answer(buildModel(liveSnapshot, runtime), "what changed recently", "live", "live", { ...observedEvents, currentModelRevision: "other" });
+    expect(response.evidence).toBe("unavailable");
+    expect(response.headline).toBe("Recent and pending change");
   });
 
   it("preserves the unrelated port-answer dispatch", () => {

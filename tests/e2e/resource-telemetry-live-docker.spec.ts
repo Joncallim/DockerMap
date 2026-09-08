@@ -17,6 +17,11 @@ type Telemetry = {
   currentObservationRevision: string | null;
   samples: TelemetrySample[];
 };
+type RuntimeMap = {
+  source: string;
+  modelRevision: string;
+  nodes: Array<{ id: string; type: string }>;
+};
 
 const telemetryPaths = ["/api/resource-telemetry", "/api/v1/resource-telemetry"] as const;
 const token = "dockermap-unfiltered-telemetry-e2e-token";
@@ -28,6 +33,7 @@ test("collects bounded opaque Docker telemetry through the unfiltered fixture ga
   );
 
   let stack: Stack | undefined;
+  let testFailure: unknown;
   try {
     try {
       stack = await startLiveDockerStack({ apiToken: token, fixtureProfile: "unfiltered-telemetry" });
@@ -52,28 +58,24 @@ test("collects bounded opaque Docker telemetry through the unfiltered fixture ga
     // Docker response body.
     expect(await stack.requestOwnedFixtureStats?.(), "fixed finite gateway stats request").toBe(200);
 
-    const current = await pollTelemetry(stack, telemetryPaths[0], headers);
+    // Fetch telemetry and the public runtime map as one retryable evidence
+    // pair. A cache refresh may land between two independent read-only calls,
+    // so reject a mismatched pair and retry rather than accepting a stale
+    // telemetry sample merely because its opaque ID has the right shape.
+    const { telemetry: current, runtimeMap } = await pollCoherentTelemetry(stack, telemetryPaths[0], headers);
     assertBoundedOpaqueTelemetry(current);
+    assertTelemetryBelongsToCurrentRuntimeModel(current, runtimeMap);
 
-    const v1 = await getJson<Telemetry>(`${stack.apiUrl}${telemetryPaths[1]}`, headers);
+    const { telemetry: v1, runtimeMap: v1RuntimeMap } = await pollCoherentTelemetry(stack, telemetryPaths[1], headers);
     assertBoundedOpaqueTelemetry(v1);
-
-    // Every public sample must still be attached to the current live model;
-    // only opaque node IDs cross this assertion boundary.
-    const runtimeMap = await getJson<{ source: string; nodes: Array<{ id: string }> }>(
-      `${stack.apiUrl}/api/runtime/map`,
-      headers,
-    );
-    expect(runtimeMap.source).toBe("docker");
-    const publicNodeIds = new Set(runtimeMap.nodes.map((node) => node.id));
-    for (const sample of current.samples) expect(publicNodeIds.has(sample.containerId)).toBe(true);
+    assertTelemetryBelongsToCurrentRuntimeModel(v1, v1RuntimeMap);
 
     // Closing only this fixture's gateway forces Docker -> mock fallback.
     // The response must clear retained samples and revision anchors instead of
     // relabeling live observations as mock data.
     await stack.stopDockerGateway?.();
     await expect.poll(
-      async () => (await getJson<{ mode: string }>(`${stack.apiUrl}/api/health`, headers)).mode,
+      async () => (await getJson<{ daemon: { mode: string } }>(`${stack.apiUrl}/api/health`, headers)).daemon.mode,
       { timeout: 15_000 },
     ).toBe("mock");
     for (const path of telemetryPaths) {
@@ -95,22 +97,80 @@ test("collects bounded opaque Docker telemetry through the unfiltered fixture ga
           && reset.samples.length === 0,
       ).toBe(true);
     }
+  } catch (error) {
+    testFailure = error;
+    throw error;
   } finally {
-    await stack?.stop();
+    if (stack) {
+      try {
+        await stack.stop();
+        // Cleanup inspection is limited to the fixture's generated control name
+        // and exact fixture label; it never enumerates unrelated resources.
+        expect(stack.ownedFixtureResourcesAbsent?.()).toBe(true);
+      } catch (cleanupFailure) {
+        if (testFailure) {
+          throw new AggregateError(
+            [testFailure, cleanupFailure],
+            "Live telemetry assertion and owned fixture cleanup both failed.",
+          );
+        }
+        throw cleanupFailure;
+      }
+    }
   }
 });
 
-async function pollTelemetry(stack: Stack, path: string, headers: HeadersInit): Promise<Telemetry> {
-  let value: Telemetry | undefined;
+async function pollCoherentTelemetry(
+  stack: Stack,
+  path: string,
+  headers: HeadersInit,
+): Promise<{ telemetry: Telemetry; runtimeMap: RuntimeMap }> {
+  let telemetry: Telemetry | undefined;
+  let lastCoherence = "not_checked";
   const started = Date.now();
   while (Date.now() - started < 30_000) {
-    value = await getJson<Telemetry>(`${stack.apiUrl}${path}`, headers);
-    if (value.collectionState === "fresh" && value.samples.length > 0) return value;
+    telemetry = await getJson<Telemetry>(`${stack.apiUrl}${path}`, headers);
+    if (telemetry.collectionState === "fresh" && telemetry.samples.length > 0) {
+      const runtimeMap = await getJson<RuntimeMap>(`${stack.apiUrl}/api/runtime/map`, headers);
+      if (isCurrentRuntimeModel(telemetry, runtimeMap)) return { telemetry, runtimeMap };
+      lastCoherence = coherenceState(telemetry, runtimeMap);
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   // These closed state facts are safe in a failure report; never attach or
   // serialize the telemetry payload, Docker snapshot, names, or raw IDs.
-  throw new Error(`Timed out waiting for fresh telemetry (state=${value?.collectionState ?? "missing"}, samples=${value?.samples.length ?? 0}).`);
+  throw new Error(`Timed out waiting for telemetry attached to the current runtime model (state=${telemetry?.collectionState ?? "missing"}, samples=${telemetry?.samples.length ?? 0}, coherence=${lastCoherence}).`);
+}
+
+function isCurrentRuntimeModel(telemetry: Telemetry, runtimeMap: RuntimeMap): boolean {
+  return coherenceState(telemetry, runtimeMap) === "current";
+}
+
+function coherenceState(telemetry: Telemetry, runtimeMap: RuntimeMap): "current" | "source" | "revision" | "membership" {
+  if (runtimeMap.source !== "docker") return "source";
+  if (runtimeMap.modelRevision !== telemetry.currentModelRevision) return "revision";
+  return telemetry.samples.every((sample) => runtimeMap.nodes.some((node) => runtimeNodeMatchesTelemetryId(node, sample.containerId)))
+    ? "current"
+    : "membership";
+}
+
+function runtimeNodeMatchesTelemetryId(node: RuntimeMap["nodes"][number], telemetryId: string): boolean {
+  const digest = telemetryId.startsWith("docker_container_")
+    ? telemetryId.slice("docker_container_".length)
+    : "";
+  // Runtime-map IDs preserve a readable slug plus the same complete-ID hash
+  // suffix. Telemetry intentionally exposes only that hash, so this join
+  // proves model membership without reintroducing a raw Docker identifier.
+  return /^[0-9a-f]{64}$/.test(digest)
+    && node.type === "container"
+    && node.id.startsWith("docker_container_")
+    && node.id.endsWith(`--${digest}`);
+}
+
+function assertTelemetryBelongsToCurrentRuntimeModel(telemetry: Telemetry, runtimeMap: RuntimeMap) {
+  // Keep failed evidence value-free: the boolean proves the public relation
+  // without causing a test reporter to render node IDs or model revisions.
+  expect(isCurrentRuntimeModel(telemetry, runtimeMap)).toBe(true);
 }
 
 function assertBoundedOpaqueTelemetry(value: Telemetry) {
@@ -127,6 +187,7 @@ function assertBoundedOpaqueTelemetry(value: Telemetry) {
   expect(/^\S{1,64}$/.test(value.currentObservationRevision ?? "")).toBe(true);
   expect(value.samples.length).toBeGreaterThan(0);
   expect(value.samples.length).toBeLessThanOrEqual(16);
+  const sampleIds = new Set<string>();
   for (const sample of value.samples) {
     expect(hasExactKeys(sample, [
       "containerId",
@@ -137,6 +198,8 @@ function assertBoundedOpaqueTelemetry(value: Telemetry) {
       "networkTxBytesPerSecond",
     ])).toBe(true);
     expect(/^docker_container_[0-9a-f]{64}$/.test(sample.containerId)).toBe(true);
+    expect(sampleIds.has(sample.containerId)).toBe(false);
+    sampleIds.add(sample.containerId);
     const metrics = [
       sample.cpuPercent,
       sample.memoryUsedBytes,
