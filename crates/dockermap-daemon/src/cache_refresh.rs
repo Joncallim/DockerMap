@@ -4124,7 +4124,7 @@ mod scheduler_tests {
         // gateway. This regression therefore proves the explicit forced-mock
         // path, rather than merely constructing a sample cache by hand.
         std::env::set_var("DOCKERMAP_FORCE_MOCK", "true");
-        let collected = collect_snapshot(&AppState::new()).await;
+        let collected = collect_snapshot(&AppState::new(), DOCKER_SNAPSHOT_COLLECTION_TIMEOUT).await;
         std::env::remove_var("DOCKERMAP_FORCE_MOCK");
         assert_eq!(collected.health.mode, RuntimeMode::Mock);
 
