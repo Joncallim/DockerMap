@@ -17,7 +17,7 @@ use crate::{
         pm2::collect_pm2_apps,
         processes::{collect_native_processes_with_scope, collect_python_processes},
         systemd::collect_systemd_services,
-        tmux::collect_tmux_sessions,
+        tmux::collect_tmux_sessions_with_runner,
     },
     publication::redact_runtime_map,
 };
@@ -212,7 +212,8 @@ fn collect_provider_slot(
             );
         }
         StaticProviderSlot::Tmux => {
-            collect_tmux_runtime_provider(pid_namespace, &mut collection);
+            collect_tmux_runtime_provider(pid_namespace, &mut collection)
+                .map_err(ProviderCollectionError::from)?;
             collection.set_state(
                 slot,
                 if pid_namespace.is_restricted() {
@@ -350,17 +351,35 @@ pub(crate) fn collect_host_scoped_runtime_providers(
 fn collect_tmux_runtime_provider(
     pid_namespace: PidNamespaceScope,
     collection: &mut ProviderCollection,
-) {
+) -> Result<(), ProviderCommandError> {
+    collect_tmux_runtime_provider_with_runner(
+        pid_namespace,
+        collection,
+        crate::process_runner::run_command_with_timeout,
+    )
+}
+
+fn collect_tmux_runtime_provider_with_runner<F>(
+    pid_namespace: PidNamespaceScope,
+    collection: &mut ProviderCollection,
+    run_command: F,
+) -> Result<(), ProviderCommandError>
+where
+    F: FnMut(
+        std::process::Command,
+        std::time::Duration,
+    ) -> Result<crate::process_runner::ProviderCommandOutput, ProviderCommandError>,
+{
     if pid_namespace.is_restricted() {
         collection.push_diagnostic(ProviderDiagnostic::new(
             RuntimeProviderKind::Tmux,
             DiagnosticSeverity::Info,
             "tmux discovery omitted because the daemon runs in a restricted PID namespace",
         ));
-        return;
+        return Ok(());
     }
     let (nodes, edges, diagnostics) = collection.parts_mut();
-    collect_tmux_sessions(nodes, edges, diagnostics);
+    collect_tmux_sessions_with_runner(nodes, edges, diagnostics, run_command)
 }
 
 /// Cron is independently scheduled so declaration evidence has its own
@@ -470,7 +489,8 @@ mod tests {
     #[test]
     fn restricted_namespace_keeps_tmux_as_a_distinct_disabled_slot() {
         let mut tmux = ProviderCollection::default();
-        collect_tmux_runtime_provider(PidNamespaceScope::Restricted, &mut tmux);
+        collect_tmux_runtime_provider(PidNamespaceScope::Restricted, &mut tmux)
+            .expect("restricted tmux collection is intentionally disabled, not failed");
         tmux.set_state(StaticProviderSlot::Tmux, ProviderStateKind::Disabled);
         assert!(tmux.states().iter().any(|state| {
             state.slot == StaticProviderSlot::Tmux && state.state == ProviderStateKind::Disabled
@@ -524,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn systemd_timeout_and_failure_map_to_distinct_provider_outcomes() {
+    fn provider_timeout_and_failure_map_to_distinct_provider_outcomes() {
         let timeout = provider_collection_outcome(Err(ProviderCollectionError::from(
             ProviderCommandError::TimedOut(Duration::from_secs(3)),
         )));
@@ -534,6 +554,35 @@ mod tests {
 
         assert!(matches!(timeout, ProviderCollectionOutcome::TimedOut));
         assert!(matches!(failure, ProviderCollectionOutcome::Failed));
+    }
+
+    #[test]
+    fn tmux_command_errors_produce_distinct_nonfresh_outcomes() {
+        for expected in [
+            ProviderCommandError::TimedOut(Duration::from_secs(3)),
+            ProviderCommandError::Wait,
+        ] {
+            let mut collection = ProviderCollection::default();
+            let result = collect_tmux_runtime_provider_with_runner(
+                PidNamespaceScope::Host { diagnostic: None },
+                &mut collection,
+                |_command, _timeout| Err(expected),
+            );
+            let outcome = provider_collection_outcome(
+                result
+                    .map(|_| collection)
+                    .map_err(ProviderCollectionError::from),
+            );
+            match expected {
+                ProviderCommandError::TimedOut(_) => {
+                    assert!(matches!(outcome, ProviderCollectionOutcome::TimedOut));
+                }
+                ProviderCommandError::Wait => {
+                    assert!(matches!(outcome, ProviderCollectionOutcome::Failed));
+                }
+                _ => unreachable!("test cases are explicit"),
+            }
+        }
     }
 
     #[test]

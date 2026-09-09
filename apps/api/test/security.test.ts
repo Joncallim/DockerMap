@@ -95,6 +95,23 @@ test("every browser API route is bearer-gated except CORS preflight", async () =
   assert.ok(Array.isArray((await runtimeAuthenticated.json()).nodes));
 });
 
+test("mock findings retain the complete closed summary contract", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true", DOCKERMAP_API_TOKEN: "test-token" });
+  const response = await request(api, "/api/findings", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json() as { summary?: Record<string, unknown> };
+  assert.deepEqual(body.summary, {
+    warningCount: 0,
+    advisoryCount: 0,
+    declaredDependencyCount: 0,
+    dockerDaemonAuthorityCount: 0,
+    hostPortPublicationCount: 0,
+    evidenceIntegrityCount: 0
+  });
+});
+
 test("bearer mode exchanges the API token for a strict HttpOnly session cookie and can log out", async () => {
   const api = await startApi({
     DOCKERMAP_ALLOW_MOCK: "true",

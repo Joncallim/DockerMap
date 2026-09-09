@@ -4,7 +4,9 @@
 //! is used solely to derive opaque session identity; names, attachment state,
 //! window counts, and raw session IDs never enter the public runtime model.
 
-use crate::process_runner::{run_command_with_timeout, PROVIDER_COMMAND_TIMEOUT};
+use crate::process_runner::{
+    ProviderCommandError, ProviderCommandOutput, PROVIDER_COMMAND_TIMEOUT,
+};
 use crate::{opaque_runtime_id_component, push_provider_diagnostic};
 use dockermap_core::{
     service_entity_kind_name, DiagnosticSeverity, RuntimeMapDiagnostic, RuntimeMapEdge,
@@ -20,13 +22,19 @@ pub(crate) const TMUX_EVIDENCE_SESSION_LISTING_MARKER: &str = "__dockermapTmuxSe
 /// runtime node or marker edge is allocated from provider output.
 pub(crate) const MAX_TMUX_SESSIONS: usize = 64;
 
-/// Collect tmux sessions using its documented, fixed read-only listing form.
-pub(crate) fn collect_tmux_sessions(
+pub(crate) fn collect_tmux_sessions_with_runner<F>(
     nodes: &mut Vec<RuntimeMapNode>,
     edges: &mut Vec<RuntimeMapEdge>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
-) {
-    let output = match run_command_with_timeout(
+    mut run_command: F,
+) -> Result<(), ProviderCommandError>
+where
+    F: FnMut(
+        std::process::Command,
+        std::time::Duration,
+    ) -> Result<ProviderCommandOutput, ProviderCommandError>,
+{
+    let output = match run_command(
         {
             let mut command = Command::new("tmux");
             command.args([
@@ -46,17 +54,24 @@ pub(crate) fn collect_tmux_sessions(
                 DiagnosticSeverity::Info,
                 format!("tmux discovery skipped: {error}"),
             );
-            return;
+            return Err(error);
         }
     };
 
     if !output.status.success() {
-        return;
+        push_provider_diagnostic(
+            diagnostics,
+            RuntimeProviderKind::Tmux,
+            DiagnosticSeverity::Warning,
+            "tmux discovery command failed".into(),
+        );
+        return Err(ProviderCommandError::Wait);
     }
 
     let sessions = tmux_session_nodes_from_output(&String::from_utf8_lossy(&output.stdout));
     edges.extend(tmux_session_listing_edges(&sessions));
     nodes.extend(sessions);
+    Ok(())
 }
 
 fn tmux_session_listing_edges(sessions: &[RuntimeMapNode]) -> Vec<RuntimeMapEdge> {
@@ -121,10 +136,12 @@ fn tmux_session_nodes_from_output(value: &str) -> Vec<RuntimeMapNode> {
 #[cfg(test)]
 mod tests {
     use super::{
-        tmux_session_listing_edges, tmux_session_nodes_from_output, MAX_TMUX_SESSIONS,
-        TMUX_EVIDENCE_SESSION_LISTING_MARKER,
+        collect_tmux_sessions_with_runner, tmux_session_listing_edges,
+        tmux_session_nodes_from_output, MAX_TMUX_SESSIONS, TMUX_EVIDENCE_SESSION_LISTING_MARKER,
     };
-    use dockermap_core::RuntimeNodeLayer;
+    use crate::process_runner::ProviderCommandError;
+    use dockermap_core::{RuntimeNodeLayer, RuntimeProviderKind};
+    use std::time::Duration;
 
     fn assert_no_raw_secrets<T: serde::Serialize>(value: &T, secrets: &[&str]) {
         let serialized = serde_json::to_string(value).expect("test value serializes");
@@ -210,5 +227,35 @@ mod tests {
         }));
         assert_no_raw_secrets(&nodes, &["private-0", "name-0"]);
         assert_no_raw_secrets(&edges, &["private-0", "name-0"]);
+    }
+
+    #[test]
+    fn command_timeout_and_ordinary_failure_remain_distinct() {
+        for expected in [
+            ProviderCommandError::TimedOut(Duration::from_secs(3)),
+            ProviderCommandError::Wait,
+        ] {
+            let mut nodes = Vec::new();
+            let mut edges = Vec::new();
+            let mut diagnostics = Vec::new();
+            let result = collect_tmux_sessions_with_runner(
+                &mut nodes,
+                &mut edges,
+                &mut diagnostics,
+                |_command, _timeout| Err(expected),
+            );
+
+            assert!(matches!(
+                (result, expected),
+                (
+                    Err(ProviderCommandError::TimedOut(_)),
+                    ProviderCommandError::TimedOut(_)
+                ) | (Err(ProviderCommandError::Wait), ProviderCommandError::Wait)
+            ));
+            assert!(nodes.is_empty() && edges.is_empty());
+            assert!(diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.provider == RuntimeProviderKind::Tmux }));
+        }
     }
 }

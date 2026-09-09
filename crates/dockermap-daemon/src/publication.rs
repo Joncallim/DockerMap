@@ -11,7 +11,11 @@ use dockermap_core::{
     RuntimeMapEdge, RuntimeMapNode, RuntimeNodeKind, RuntimeNodeLayer, RuntimeOwnership,
     RuntimePackageEntity, RuntimeProviderKind, RuntimeRelationshipKind, RuntimeServiceEntity,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::OnceLock,
+};
 
 pub(crate) const REDACTED_VALUE: &str = "[redacted]";
 /// Evidence is a compact explanation reference, not an alternate raw-source
@@ -650,11 +654,27 @@ pub(crate) fn safe_runtime_id_component(value: &str, fallback: &str) -> String {
 /// value. Unlike `safe_runtime_id_component`, this is intentionally opaque for
 /// both ordinary and redacted inputs.
 pub(crate) fn opaque_runtime_id_component(value: &str, fallback: &str) -> String {
-    let generated = collision_resistant_id_component(value);
-    let hash = generated
-        .rsplit_once("--")
-        .map_or("identity", |(_, hash)| hash);
+    let mut digest = Sha256::new();
+    digest.update(opaque_runtime_id_key());
+    digest.update(value.as_bytes());
+    let hash = digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     format!("{fallback}--{hash}")
+}
+
+/// Keep low-entropy provider identifiers (notably tmux's `$0`/`$1`) from
+/// becoming enumerable public digests. The key exists only for this daemon
+/// process and is never serialized, logged, or derived from provider output.
+fn opaque_runtime_id_key() -> &'static [u8; 32] {
+    static KEY: OnceLock<[u8; 32]> = OnceLock::new();
+    KEY.get_or_init(|| {
+        let mut key = [0_u8; 32];
+        getrandom::fill(&mut key).expect("OS CSPRNG for opaque runtime identifiers");
+        key
+    })
 }
 
 pub(crate) fn push_provider_diagnostic(
@@ -688,9 +708,13 @@ pub(crate) fn write_provider_diagnostic(
 #[cfg(test)]
 mod shared_helper_tests {
     use super::{
-        append_runtime_identity_collision_fact, runtime_map_has_identity_collision, truncate_chars,
+        append_runtime_identity_collision_fact, opaque_runtime_id_component,
+        runtime_map_has_identity_collision, truncate_chars,
     };
-    use dockermap_core::{RuntimeMap, RuntimeMapNode, RuntimeNodeKind, RuntimeProviderKind};
+    use dockermap_core::{
+        collision_resistant_id_component, RuntimeMap, RuntimeMapNode, RuntimeNodeKind,
+        RuntimeProviderKind,
+    };
     use std::collections::BTreeMap;
 
     fn collision_map(ids: &[&str]) -> RuntimeMap {
@@ -722,6 +746,18 @@ mod shared_helper_tests {
     fn truncates_log_messages_on_character_boundaries() {
         assert_eq!(truncate_chars("abcdef", 3), "abc...");
         assert_eq!(truncate_chars("ok", 3), "ok");
+    }
+
+    #[test]
+    fn opaque_runtime_ids_are_boot_scoped_and_not_plain_sha256_digests() {
+        let opaque = opaque_runtime_id_component("$0", "session");
+        assert_eq!(opaque, opaque_runtime_id_component("$0", "session"));
+        assert_ne!(
+            opaque,
+            collision_resistant_id_component("$0"),
+            "low-entropy tmux identifiers must not use an enumerable public digest"
+        );
+        assert!(opaque.starts_with("session--"));
     }
 
     #[test]
