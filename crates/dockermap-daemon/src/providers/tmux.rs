@@ -58,6 +58,13 @@ where
         }
     };
 
+    // `tmux list-sessions` exits 1 when no server exists. For this fixed
+    // inventory command that is a normal, fresh empty result—not a failed
+    // provider pass that should retain sessions which have already ended.
+    if output.status.code() == Some(1) {
+        return Ok(());
+    }
+
     if !output.status.success() {
         push_provider_diagnostic(
             diagnostics,
@@ -141,7 +148,15 @@ mod tests {
     };
     use crate::process_runner::ProviderCommandError;
     use dockermap_core::{RuntimeNodeLayer, RuntimeProviderKind};
-    use std::time::Duration;
+    use std::{os::unix::process::ExitStatusExt, process::ExitStatus, time::Duration};
+
+    fn tmux_output(exit_code: i32) -> crate::process_runner::ProviderCommandOutput {
+        crate::process_runner::ProviderCommandOutput {
+            status: ExitStatus::from_raw(exit_code << 8),
+            stdout: Vec::new(),
+            stdout_truncated: false,
+        }
+    }
 
     fn assert_no_raw_secrets<T: serde::Serialize>(value: &T, secrets: &[&str]) {
         let serialized = serde_json::to_string(value).expect("test value serializes");
@@ -257,5 +272,21 @@ mod tests {
                 .iter()
                 .any(|diagnostic| { diagnostic.provider == RuntimeProviderKind::Tmux }));
         }
+    }
+
+    #[test]
+    fn normal_no_server_exit_is_a_fresh_empty_listing() {
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut diagnostics = Vec::new();
+        let result = collect_tmux_sessions_with_runner(
+            &mut nodes,
+            &mut edges,
+            &mut diagnostics,
+            |_command, _timeout| Ok(tmux_output(1)),
+        );
+
+        assert!(result.is_ok());
+        assert!(nodes.is_empty() && edges.is_empty() && diagnostics.is_empty());
     }
 }

@@ -752,9 +752,11 @@ mod shared_helper_tests {
     fn opaque_runtime_ids_are_boot_scoped_and_not_plain_sha256_digests() {
         let opaque = opaque_runtime_id_component("$0", "session");
         assert_eq!(opaque, opaque_runtime_id_component("$0", "session"));
+        let opaque_digest = opaque.rsplit_once("--").expect("opaque ID has digest").1;
+        let plain = collision_resistant_id_component("$0");
+        let plain_digest = plain.rsplit_once("--").expect("plain ID has digest").1;
         assert_ne!(
-            opaque,
-            collision_resistant_id_component("$0"),
+            opaque_digest, plain_digest,
             "low-entropy tmux identifiers must not use an enumerable public digest"
         );
         assert!(opaque.starts_with("session--"));
