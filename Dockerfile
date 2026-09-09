@@ -56,7 +56,7 @@ RUN test -f packages/contracts/dist/index.js && test -f packages/contracts/dist/
 # The API deliberately needs only itself and @dockermap/contracts; web runtime
 # packages must not cross this boundary merely because npm hoisted them during
 # the builder install.
-FROM node:22-bookworm-slim AS api-runtime-deps
+FROM node:22-trixie-slim@sha256:7b8a0c89c54499bee567618f96578e1a12a800f062fbdbfd1fb6a443fa6f6284 AS api-runtime-deps
 WORKDIR /runtime
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
