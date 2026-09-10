@@ -616,7 +616,6 @@ export interface VolumesResponse {
 export interface FindingsResponse {
   findings: Finding[];
   modelRevision: string;
-  summary: FindingSummary;
   /**
    * ACTUAL source of this advisory projection: "docker" when it was
    * derived from a live daemon publication, or "mock" when it was derived
@@ -624,6 +623,7 @@ export interface FindingsResponse {
    * the cache mode; this model deliberately cannot infer a requested mode.
    */
   source?: RuntimeMode | null;
+  summary: FindingSummary;
 }
 export interface Finding {
   /**

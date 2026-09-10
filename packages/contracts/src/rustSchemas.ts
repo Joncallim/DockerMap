@@ -1746,9 +1746,6 @@ export const RUST_RESPONSE_SCHEMAS = {
       "minLength": 1,
       "type": "string"
     },
-    "summary": {
-      "$ref": "#/$defs/FindingSummary"
-    },
     "source": {
       "anyOf": [
         {
@@ -1759,6 +1756,9 @@ export const RUST_RESPONSE_SCHEMAS = {
         }
       ],
       "description": "ACTUAL source of this advisory projection: \"docker\" when it was\nderived from a live daemon publication, or \"mock\" when it was derived\nfrom the daemon's fallback topology. Stamped at the daemon route from\nthe cache mode; this model deliberately cannot infer a requested mode."
+    },
+    "summary": {
+      "$ref": "#/$defs/FindingSummary"
     }
   },
   "required": [
@@ -4471,9 +4471,6 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "minLength": 1,
       "type": "string"
     },
-    "summary": {
-      "$ref": "#/components/schemas/FindingsResponse/$defs/FindingSummary"
-    },
     "source": {
       "anyOf": [
         {
@@ -4484,6 +4481,9 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         }
       ],
       "description": "ACTUAL source of this advisory projection: \"docker\" when it was\nderived from a live daemon publication, or \"mock\" when it was derived\nfrom the daemon's fallback topology. Stamped at the daemon route from\nthe cache mode; this model deliberately cannot infer a requested mode."
+    },
+    "summary": {
+      "$ref": "#/components/schemas/FindingsResponse/$defs/FindingSummary"
     }
   },
   "required": [
