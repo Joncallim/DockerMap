@@ -2256,6 +2256,82 @@ mod scheduler_tests {
     }
 
     #[tokio::test]
+    async fn tmux_failure_retains_sessions_but_no_server_clears_them_freshly() {
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        {
+            let mut cache = state.cache.write().await;
+            let slot = cache
+                .runtime_providers
+                .get_mut(&ProviderSlot::Tmux)
+                .unwrap();
+            slot.observation = RuntimeProviderState::Fresh(marked_tmux_session());
+            slot.freshness.data_revision = Some(SlotDataRevision::first());
+            slot.freshness.last_success_ms = Some(42);
+            cache.rebuild_runtime_map();
+        }
+
+        let snapshot = state.cache.read().await.snapshot.clone();
+        apply_provider_slot_outcome(
+            &state,
+            ProviderSlot::Tmux,
+            snapshot.clone(),
+            RuntimeMode::Docker,
+            0,
+            ProviderCollectionOutcome::Failed,
+            Duration::from_secs(1),
+        )
+        .await;
+        let cache = state.cache.read().await;
+        assert!(matches!(
+            cache.runtime_providers[&ProviderSlot::Tmux].observation,
+            RuntimeProviderState::Degraded(Some(_))
+        ));
+        assert!(cache
+            .runtime_map
+            .nodes
+            .iter()
+            .any(|node| node.id == "tmux_session_opaque"));
+        assert!(cache.runtime_map.provider_states.iter().any(|provider| {
+            provider.slot == ProviderSlot::Tmux
+                && provider.state == ProviderStateKind::Stale
+                && provider.status_reason == Some(ProviderStatusReason::CollectionFailed)
+        }));
+        drop(cache);
+
+        let mut empty = ProviderCollection::default();
+        empty.set_state(ProviderSlot::Tmux, ProviderStateKind::Fresh);
+        apply_provider_slot_outcome(
+            &state,
+            ProviderSlot::Tmux,
+            snapshot,
+            RuntimeMode::Docker,
+            0,
+            ProviderCollectionOutcome::Collected(empty),
+            Duration::from_secs(2),
+        )
+        .await;
+        let cache = state.cache.read().await;
+        assert!(matches!(
+            cache.runtime_providers[&ProviderSlot::Tmux].observation,
+            RuntimeProviderState::Fresh(_)
+        ));
+        assert!(cache
+            .runtime_map
+            .nodes
+            .iter()
+            .all(|node| node.id != "tmux_session_opaque"));
+        assert!(cache.runtime_map.provider_states.iter().any(|provider| {
+            provider.slot == ProviderSlot::Tmux
+                && provider.state == ProviderStateKind::Fresh
+                && provider.status_reason.is_none()
+        }));
+    }
+
+    #[tokio::test]
     async fn timed_out_systemd_collection_publishes_collection_timed_out_not_failed() {
         let state = AppState {
             cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),

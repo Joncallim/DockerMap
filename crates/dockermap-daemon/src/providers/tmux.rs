@@ -58,10 +58,12 @@ where
         }
     };
 
-    // `tmux list-sessions` exits 1 when no server exists. For this fixed
-    // inventory command that is a normal, fresh empty result—not a failed
-    // provider pass that should retain sessions which have already ended.
-    if output.status.code() == Some(1) {
+    // `tmux list-sessions` exits 1 both for no server and for real failures.
+    // Accept only tmux's closed, bounded no-server diagnostic as a fresh empty
+    // inventory; all other nonzero results retain the normal failure path.
+    if output.status.code() == Some(1)
+        && is_tmux_no_server_diagnostic(&output.stderr, output.stderr_truncated)
+    {
         return Ok(());
     }
 
@@ -79,6 +81,19 @@ where
     edges.extend(tmux_session_listing_edges(&sessions));
     nodes.extend(sessions);
     Ok(())
+}
+
+fn is_tmux_no_server_diagnostic(stderr: &[u8], truncated: bool) -> bool {
+    if truncated {
+        return false;
+    }
+    let Ok(stderr) = std::str::from_utf8(stderr) else {
+        return false;
+    };
+    let diagnostic = stderr.strip_suffix('\n').unwrap_or(stderr);
+    diagnostic
+        .strip_prefix("no server running on ")
+        .is_some_and(|location| !location.is_empty() && !location.contains(['\n', '\r']))
 }
 
 fn tmux_session_listing_edges(sessions: &[RuntimeMapNode]) -> Vec<RuntimeMapEdge> {
@@ -150,11 +165,17 @@ mod tests {
     use dockermap_core::{RuntimeNodeLayer, RuntimeProviderKind};
     use std::{os::unix::process::ExitStatusExt, process::ExitStatus, time::Duration};
 
-    fn tmux_output(exit_code: i32) -> crate::process_runner::ProviderCommandOutput {
+    fn tmux_output(
+        exit_code: i32,
+        stdout: &str,
+        stderr: &str,
+    ) -> crate::process_runner::ProviderCommandOutput {
         crate::process_runner::ProviderCommandOutput {
             status: ExitStatus::from_raw(exit_code << 8),
-            stdout: Vec::new(),
+            stdout: stdout.as_bytes().to_vec(),
             stdout_truncated: false,
+            stderr: stderr.as_bytes().to_vec(),
+            stderr_truncated: false,
         }
     }
 
@@ -283,10 +304,57 @@ mod tests {
             &mut nodes,
             &mut edges,
             &mut diagnostics,
-            |_command, _timeout| Ok(tmux_output(1)),
+            |_command, _timeout| {
+                Ok(tmux_output(
+                    1,
+                    "",
+                    "no server running on /tmp/tmux-1000/default\n",
+                ))
+            },
         );
 
         assert!(result.is_ok());
         assert!(nodes.is_empty() && edges.is_empty() && diagnostics.is_empty());
+    }
+
+    #[test]
+    fn nonzero_tmux_error_is_not_misclassified_as_no_server_or_published() {
+        let private_error = "permission denied opening private tmux socket";
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut diagnostics = Vec::new();
+        let result = collect_tmux_sessions_with_runner(
+            &mut nodes,
+            &mut edges,
+            &mut diagnostics,
+            |_command, _timeout| Ok(tmux_output(1, "", private_error)),
+        );
+
+        assert!(matches!(result, Err(ProviderCommandError::Wait)));
+        assert!(nodes.is_empty() && edges.is_empty());
+        assert!(diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains(private_error)));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].message, "tmux discovery command failed");
+    }
+
+    #[test]
+    fn successful_tmux_listing_remains_fresh_and_parsed() {
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut diagnostics = Vec::new();
+        let result = collect_tmux_sessions_with_runner(
+            &mut nodes,
+            &mut edges,
+            &mut diagnostics,
+            |_command, _timeout| Ok(tmux_output(0, "$0\tprivate-name\t0\t1\n", "")),
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(edges.len(), 1);
+        assert!(diagnostics.is_empty());
+        assert_no_raw_secrets(&nodes, &["$0", "private-name"]);
     }
 }
