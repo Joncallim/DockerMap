@@ -27,12 +27,12 @@ export interface AtlasSyntheticCertificationScenario {
 
 const PROVIDER_STATES: RuntimeMap["providerStates"] = [
   providerState("network_infrastructure"), providerState("host_scoped"), providerState("cron"), providerState("systemd"),
-  providerState("python_processes"), providerState("native_processes"), providerState("project_npm")
+  providerState("python_processes"), providerState("native_processes"), providerState("project_npm"), providerState("tmux")
 ];
 const MIXED_CERTIFICATION_PROVIDER_STATES: RuntimeMap["providerStates"] = [
   providerState("network_infrastructure"), providerState("host_scoped"), providerState("cron"),
   { ...providerState("systemd"), state: "stale", statusReason: "collection_failed" },
-  providerState("python_processes"), providerState("native_processes"), providerState("project_npm")
+  providerState("python_processes"), providerState("native_processes"), providerState("project_npm"), providerState("tmux")
 ];
 
 function providerState(slot: ProviderState["slot"]): ProviderState {

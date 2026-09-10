@@ -64,6 +64,7 @@ function overlayFindings(modelRevision: string): FindingsResponse {
   return {
     source: "docker",
     modelRevision,
+    summary: { warningCount: 1, advisoryCount: 0, declaredDependencyCount: 0, dockerDaemonAuthorityCount: 1, hostPortPublicationCount: 0, evidenceIntegrityCount: 0 },
     findings: [{
       id: "finding", ruleId: "docker.daemon_state_bind_mount", severity: "warning", subjectRef: "docker_container_container_overlay",
       targetRef: "host_risk_docker_daemon_state", summary: "safe", recommendation: "safe", evidenceRefs: [overlayEvidence]

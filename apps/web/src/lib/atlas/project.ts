@@ -45,7 +45,7 @@ const EVIDENCE_KINDS = [
 const EVIDENCE_PROVIDERS = ["docker", "systemd", "npm", "cron"] as const;
 const EVIDENCE_FRESHNESS = ["fresh", "stale", "timed_out"] as const;
 const ASSERTION_KINDS = ["observed", "declared"] as const;
-const PROVIDER_SLOTS = ["network_infrastructure", "host_scoped", "cron", "systemd", "python_processes", "native_processes", "project_npm"] as const;
+const PROVIDER_SLOTS = ["network_infrastructure", "host_scoped", "cron", "systemd", "python_processes", "native_processes", "project_npm", "tmux"] as const;
 // Kept below the per-subject attachment cap so aggregate coverage has an
 // executable fixture path while the rendered expansion budget remains eight.
 const HIGH_DEGREE_THRESHOLD = 6;
@@ -117,6 +117,8 @@ function roleForKind(kind: RuntimeNodeKind): AtlasRole {
       return "attachment";
     case "scheduled_job": case "tmux_session": case "process": case "package":
     case "package_dependency": case "ai_agent": case "host_risk": case "service":
+      return "inspector_only";
+    default:
       return "inspector_only";
   }
 }

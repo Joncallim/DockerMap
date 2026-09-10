@@ -286,6 +286,7 @@ describe("Atlas truth and collision properties", () => {
       ) as typeof input.providerStates;
       const findings: FindingsResponse = {
         modelRevision: input.modelRevision,
+        summary: { warningCount: 1, advisoryCount: 0, declaredDependencyCount: 1, dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0, evidenceIntegrityCount: 0 },
         findings: [{
           id: `finding-${state}`, ruleId: "systemd.requires_target_not_active", severity: "warning",
           summary: "safe finding", recommendation: "inspect safely", subjectRef: source, targetRef: "systemd_service_target", evidenceRefs: [evidence]
@@ -295,7 +296,7 @@ describe("Atlas truth and collision properties", () => {
       expect(subject).toMatchObject({ freshness: state, attention: "warning", operationalState: "healthy" });
     }
     const mismatch = crossSourceLookalikeFixture();
-    const subject = projectRuntimeMap(mismatch, { findings: { modelRevision: "different", findings: [] } }).model.subjects.find((entry) => entry.key === source);
+    const subject = projectRuntimeMap(mismatch, { findings: { modelRevision: "different", summary: { warningCount: 0, advisoryCount: 0, declaredDependencyCount: 0, dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0, evidenceIntegrityCount: 0 }, findings: [] } }).model.subjects.find((entry) => entry.key === source);
     expect(subject).toMatchObject({ attention: "none" });
 
     const oversizedInput = crossSourceLookalikeFixture();
@@ -304,7 +305,7 @@ describe("Atlas truth and collision properties", () => {
       summary: "safe finding", recommendation: "inspect safely", subjectRef: source, targetRef: "systemd_service_target", evidenceRefs: [evidence] as [RuntimeEvidenceRef]
     };
     const oversized = projectRuntimeMap(oversizedInput, {
-      findings: { modelRevision: oversizedInput.modelRevision, findings: Array.from({ length: 251 }, (_, index) => ({ ...oversizedFinding, id: `oversized-${index}` })) }
+      findings: { modelRevision: oversizedInput.modelRevision, summary: { warningCount: 251, advisoryCount: 0, declaredDependencyCount: 251, dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0, evidenceIntegrityCount: 0 }, findings: Array.from({ length: 251 }, (_, index) => ({ ...oversizedFinding, id: `oversized-${index}` })) }
     }).model;
     expect(oversized.subjects.find((entry) => entry.key === source)).toMatchObject({ attention: "none" });
     expect(oversized.stats.boundedOmissions).toBe(251);
@@ -347,7 +348,7 @@ describe("Atlas truth and collision properties", () => {
   it("rejects oversized provider-state arrays before inspecting members while retaining safe unknown freshness", () => {
     const input = crossSourceLookalikeFixture();
     let inspected = 0;
-    const hostileStates = new Array(8);
+    const hostileStates = new Array(9);
     for (let index = 0; index < hostileStates.length; index += 1) {
       Object.defineProperty(hostileStates, index, {
         enumerable: true,
