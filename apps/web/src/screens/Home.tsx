@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../context";
-import { atlasSubjectHref } from "../lib/atlas/interaction";
 import { needsAttention, summarize, type Service } from "../lib/model";
 import { changeFeed, causalChain } from "../lib/stubs";
 import { formatPercent, formatRelative } from "../lib/format";
@@ -20,7 +19,7 @@ import { resourceFor } from "../lib/stubs";
 import { UPDATE_STATUS_CLAIM, UPDATE_STATUS_LABEL } from "../lib/updates";
 
 export default function Home() {
-  const { model, atlas, modelProvenance, loading, error, evidenceMode, findings } = useApp();
+  const { model, modelProvenance, loading, error, evidenceMode, findings } = useApp();
   const history = useMemo(
     () => (model ? changeFeed(model, evidenceMode, modelProvenance) : CHANGE_HISTORY_CLAIM),
     [model, evidenceMode, modelProvenance]
@@ -73,7 +72,7 @@ export default function Home() {
             ) : (
               <ul className="svc-list">
                 {attention.map((service, index) => (
-                  <ServiceRow key={`${service.id}-${index}`} model={model} atlasHref={atlasSubjectHref(atlas, service.id)} service={service} evidenceMode={evidenceMode} modelProvenance={modelProvenance} />
+                  <ServiceRow key={`${service.id}-${index}`} model={model} service={service} evidenceMode={evidenceMode} modelProvenance={modelProvenance} />
                 ))}
               </ul>
             )}
@@ -158,7 +157,7 @@ export default function Home() {
   );
 }
 
-function ServiceRow({ model, atlasHref, service, evidenceMode, modelProvenance }: { model: ReturnType<typeof useApp>["model"]; atlasHref: string | null; service: Service; evidenceMode: ReturnType<typeof useApp>["evidenceMode"]; modelProvenance: ReturnType<typeof useApp>["modelProvenance"] }) {
+function ServiceRow({ model, service, evidenceMode, modelProvenance }: { model: ReturnType<typeof useApp>["model"]; service: Service; evidenceMode: ReturnType<typeof useApp>["evidenceMode"]; modelProvenance: ReturnType<typeof useApp>["modelProvenance"] }) {
   if (!model) return null;
   const resources = resourceFor(service, evidenceMode, modelProvenance);
   const resourceLabel = evidenceLabel(resources.kind).label;
@@ -174,7 +173,6 @@ function ServiceRow({ model, atlasHref, service, evidenceMode, modelProvenance }
         <span className="svc-name">{identityText(service.name, UNAVAILABLE_SERVICE)}</span>
       )}
       <StatePill state={service.state} />
-      {atlasHref && <Link className="ghost-link atlas-handoff-link" to={atlasHref}>Open in Atlas</Link>}
       <span className="svc-meta">{dependents > 0 ? `${dependents} downstream declaration${dependents === 1 ? "" : "s"}` : "no downstream declarations"}</span>
       <span className="svc-res">
         {resources.kind === "unavailable" ? (

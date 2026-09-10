@@ -2,7 +2,6 @@ import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { LogsResponse } from "@dockermap/contracts";
 import { useApp } from "../context";
-import { atlasSubjectHref } from "../lib/atlas/interaction";
 import { useApiResource } from "../hooks/useApiResource";
 import { computeImpact, type DependencyOccurrence, type Service, type SystemModel } from "../lib/model";
 import { resourceFor } from "../lib/stubs";
@@ -26,7 +25,7 @@ const TABS: { id: Tab; label: string; icon: Parameters<typeof Icon>[0]["name"] }
 
 export default function ServiceDetail({ defaultTab = "overview", defaultOpen = false }: { defaultTab?: Tab; defaultOpen?: boolean }) {
   const { name = "" } = useParams();
-  const { model, atlas, modelProvenance, loading, error, tick, evidenceMode } = useApp();
+  const { model, modelProvenance, loading, error, tick, evidenceMode } = useApp();
   const [tab, setTab] = useState<Tab>(defaultTab);
   const [focusedTab, setFocusedTab] = useState<Tab>(defaultTab);
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
@@ -55,7 +54,6 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
   }
 
   const impact = computeImpact(model, service.id);
-  const atlasHref = atlasSubjectHref(atlas, service.id);
   const moveFocus = (index: number) => {
     const next = TABS[(index + TABS.length) % TABS.length].id;
     setFocusedTab(next);
@@ -84,7 +82,6 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
         </div>
         <div className="filter-row">
           <Link className="ghost-link" to="/map"><Icon name="map" size={14} /> View on map</Link>
-          {atlasHref && <Link className="ghost-link atlas-handoff-link" to={atlasHref}>Open in Atlas</Link>}
         </div>
       </header>
 
