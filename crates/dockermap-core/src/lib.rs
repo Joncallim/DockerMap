@@ -39,17 +39,24 @@ pub fn service_entity_kind_name(kind: &ServiceEntityKind) -> &'static str {
 
 mod compose;
 pub use compose::{
-    correlate_compose_runtime, derive_compose_graph, discover_compose_files,
-    plan_compose_mount_edit, scan_compose_files,
+    compose_files_fingerprint, correlate_compose_runtime, derive_compose_graph,
+    discover_compose_files, explicit_compose_project_name, plan_compose_mount_edit,
+    scan_compose_binding_snapshot, scan_compose_files,
+};
+mod compose_runtime_binding;
+pub use compose_runtime_binding::{
+    derive_compose_runtime_mount_findings, ComposeRuntimeBinding, ComposeRuntimeContainer,
+    MAX_COMPOSE_RUNTIME_BINDING_CONFIG_FILES, MAX_COMPOSE_RUNTIME_BINDING_CONTAINERS,
+    MAX_RUNTIME_MOUNTS_PER_BOUND_CONTAINER,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::compose::{
-        coalesce_compose_services, display_path, parse_compose_file, resolve_source,
-        split_short_volume, unsafe_bind_source_diagnostic, validate_compose_scan,
-        MAX_COMPOSE_FILE_BYTES,
+        coalesce_compose_services, display_path, is_docker_daemon_state_bind_source,
+        parse_compose_file, resolve_source, split_short_volume, unsafe_bind_source_diagnostic,
+        validate_compose_scan, MAX_COMPOSE_FILE_BYTES,
     };
 
     fn repo_fixture_path(parts: &[&str]) -> PathBuf {
@@ -133,6 +140,7 @@ mod tests {
                     role: "api".into(),
                     networks: vec![],
                     ports: vec![],
+                    publishes_on_unspecified_address: false,
                     mounts: vec![],
                     depends_on: vec!["container_redis".into(), "container_database".into()],
                 },
@@ -144,6 +152,7 @@ mod tests {
                     role: "redis".into(),
                     networks: vec![],
                     ports: vec![],
+                    publishes_on_unspecified_address: false,
                     mounts: vec![],
                     depends_on: vec![],
                 },
@@ -155,6 +164,7 @@ mod tests {
                     role: "database".into(),
                     networks: vec![],
                     ports: vec![],
+                    publishes_on_unspecified_address: false,
                     mounts: vec![],
                     depends_on: vec![],
                 },
@@ -195,6 +205,7 @@ mod tests {
             role: role.into(),
             networks: vec![],
             ports: vec![],
+            publishes_on_unspecified_address: false,
             mounts: vec![],
             depends_on: depends_on.into_iter().map(str::to_string).collect(),
         };
@@ -244,6 +255,7 @@ mod tests {
                 role: "self".into(),
                 networks: vec![],
                 ports: vec![],
+                publishes_on_unspecified_address: false,
                 mounts: vec![],
                 depends_on: vec!["container_self".into()],
             }],
@@ -269,6 +281,7 @@ mod tests {
             role: name.into(),
             networks: networks.into_iter().map(str::to_string).collect(),
             ports: vec![],
+            publishes_on_unspecified_address: false,
             mounts: vec![],
             depends_on: vec![],
         };
@@ -385,6 +398,7 @@ mod tests {
                 role: "container".into(),
                 networks: vec!["shared-id".into()],
                 ports: vec![],
+                publishes_on_unspecified_address: false,
                 mounts: vec![],
                 depends_on: vec![],
             }],
@@ -667,7 +681,7 @@ mod tests {
             ContainerMount {
                 id: "private-one".into(),
                 kind: ComposeMountKind::Bind,
-                source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+                source: Some("/var/run/docker.sock".into()),
                 target: "/inside/socket".into(),
                 read_only: true,
             },
@@ -714,6 +728,48 @@ mod tests {
                 "runtime evidence leaked {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn daemon_state_authority_sources_are_closed_and_reject_socket_lookalikes() {
+        for source in [
+            "/var/run/docker.sock",
+            "/run/docker.sock",
+            "/var/lib/docker",
+            "/var/lib/docker/containers",
+        ] {
+            assert!(
+                is_docker_daemon_state_bind_source(source),
+                "canonical daemon authority source must be recognized: {source}"
+            );
+        }
+        for source in [
+            "/srv/docker.sock/archive",
+            "/tmp/docker.sock",
+            "/var/lib/dockerish",
+            "/var/lib/docker.sock",
+        ] {
+            assert!(
+                !is_docker_daemon_state_bind_source(source),
+                "lookalike must not become a Docker daemon authority claim: {source}"
+            );
+        }
+
+        let mut snapshot = mock_snapshot();
+        snapshot.containers[0].mounts = vec![ContainerMount {
+            id: "lookalike-bind".into(),
+            kind: ComposeMountKind::Bind,
+            source: Some("/srv/docker.sock/archive".into()),
+            target: "/inside".into(),
+            read_only: true,
+        }];
+        assert!(
+            derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
+                .edges
+                .iter()
+                .all(|edge| edge.target != "host_risk_docker_daemon_state"),
+            "runtime derivation must share the closed authority predicate"
+        );
     }
 
     #[test]
@@ -1044,6 +1100,42 @@ mod tests {
     }
 
     #[test]
+    fn version_five_tmux_evidence_requires_its_closed_slot_and_canonical_edge() {
+        let valid = serde_json::json!({
+            "version": 5,
+            "id": "tmux_evidence_session_listing_opaque",
+            "provider": "tmux",
+            "kind": "tmux_session_listing",
+            "assertionKind": "observed",
+            "summary": "tmux listed a local session",
+            "subjectRef": "tmux_session_opaque",
+            "collectedAt": 42,
+            "providerRevision": "opaque-tmux-revision",
+            "providerSlot": "tmux",
+            "freshness": "stale"
+        });
+        assert!(serde_json::from_value::<RuntimeEvidenceRef>(valid.clone()).is_ok());
+        for (field, invalid) in [
+            ("providerSlot", serde_json::json!("host_scoped")),
+            ("provider", serde_json::json!("cron")),
+            ("assertionKind", serde_json::json!("declared")),
+            ("kind", serde_json::json!("cron_schedule_declaration")),
+        ] {
+            let mut malformed = valid.clone();
+            malformed[field] = invalid;
+            assert!(serde_json::from_value::<RuntimeEvidenceRef>(malformed).is_err());
+        }
+        let edge = serde_json::json!({
+            "source": "tmux_session_opaque", "target": "host_local", "relationship": "runs_on",
+            "metadata": {}, "evidenceRefs": [valid]
+        });
+        assert!(serde_json::from_value::<RuntimeMapEdge>(edge.clone()).is_ok());
+        let mut wrong_target = edge;
+        wrong_target["target"] = serde_json::json!("host_other");
+        assert!(serde_json::from_value::<RuntimeMapEdge>(wrong_target).is_err());
+    }
+
+    #[test]
     fn version_one_evidence_cannot_attest_a_different_runtime_edge() {
         let snapshot = mock_snapshot();
         let edge = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
@@ -1222,6 +1314,7 @@ mod tests {
             role: "service".into(),
             networks: Vec::new(),
             ports: vec!["80/tcp".into()],
+            publishes_on_unspecified_address: false,
             mounts: Vec::new(),
             depends_on: Vec::new(),
         }];
@@ -1264,6 +1357,7 @@ mod tests {
             role: "service".into(),
             networks: Vec::new(),
             ports: vec!["8443:443/tcp".into(), "0:53/udp".into(), "53/udp".into()],
+            publishes_on_unspecified_address: false,
             mounts: Vec::new(),
             depends_on: Vec::new(),
         }];
@@ -1292,6 +1386,78 @@ mod tests {
             !serialized.contains("8443:443/tcp"),
             "evidence itself never copies port data"
         );
+    }
+
+    #[test]
+    fn unspecified_address_publication_is_a_path_and_port_free_structural_fact() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers.truncate(1);
+        snapshot.containers[0].ports = vec!["8443:443/tcp".into()];
+        snapshot.containers[0].publishes_on_unspecified_address = true;
+        snapshot.networks.clear();
+        snapshot.volumes.clear();
+
+        let runtime_map = derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test");
+        let risk = runtime_map
+            .nodes
+            .iter()
+            .find(|node| node.id == "host_risk_docker_unspecified_address_port")
+            .expect("closed unspecified-address risk target is present");
+        assert_eq!(risk.kind, RuntimeNodeKind::HostRisk);
+        assert!(risk.metadata.is_empty());
+        let edge = runtime_map
+            .edges
+            .iter()
+            .find(|edge| edge.target == risk.id)
+            .expect("one structural edge attests the closed fact");
+        assert_eq!(edge.relationship, RuntimeRelationshipKind::Exposes);
+        assert_eq!(edge.evidence_refs.len(), 1);
+        assert_eq!(
+            edge.evidence_refs[0].kind,
+            RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication
+        );
+        assert_eq!(
+            edge.evidence_refs[0].summary,
+            "Docker reported a container port published on an unspecified host address"
+        );
+        assert!(edge.has_valid_evidence_refs());
+        let serialized = serde_json::to_string(edge).expect("structural edge serializes");
+        for forbidden in ["8443:443/tcp", "0.0.0.0", "[::]", "127.0.0.1"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "structural evidence must omit raw bind details: {forbidden}"
+            );
+        }
+
+        snapshot.containers[0].publishes_on_unspecified_address = false;
+        assert!(
+            derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
+                .nodes
+                .iter()
+                .all(|node| node.id != "host_risk_docker_unspecified_address_port")
+        );
+        snapshot.containers[0].publishes_on_unspecified_address = true;
+        snapshot.containers[0].ports = vec!["443/tcp".into()];
+        assert!(
+            derive_runtime_map(&snapshot, Vec::new(), Vec::new(), Vec::new(), "test")
+                .edges
+                .iter()
+                .all(|edge| edge.target != "host_risk_docker_unspecified_address_port"),
+            "a bare boolean cannot attest an unspecified-address publication without a valid host port"
+        );
+    }
+
+    #[test]
+    fn omitted_unspecified_address_fact_defaults_closed() {
+        let mut encoded =
+            serde_json::to_value(&mock_snapshot().containers[0]).expect("container serializes");
+        encoded
+            .as_object_mut()
+            .expect("container is an object")
+            .remove("publishesOnUnspecifiedAddress");
+        let decoded: ContainerRecord =
+            serde_json::from_value(encoded).expect("older container shape remains compatible");
+        assert!(!decoded.publishes_on_unspecified_address);
     }
 
     #[test]
@@ -1629,6 +1795,30 @@ services:
                 && diagnostic.severity == DiagnosticSeverity::Warning));
     }
 
+    #[test]
+    fn explicit_project_name_rejects_a_file_over_the_compose_byte_limit() {
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let file = root.path().join("compose.yaml");
+        std::fs::write(
+            &file,
+            vec![b'x'; compose::MAX_COMPOSE_FILE_BYTES as usize + 1],
+        )
+        .expect("oversized fixture");
+        assert!(explicit_compose_project_name(&[file]).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binding_snapshot_rejects_a_symlink_swap_at_the_open_boundary() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::TempDir::new().expect("temporary root");
+        let outside = tempfile::NamedTempFile::new().expect("outside file");
+        std::fs::write(outside.path(), "name: outside\nservices: {}\n").unwrap();
+        let file = root.path().join("compose.yaml");
+        symlink(outside.path(), &file).unwrap();
+        assert!(scan_compose_binding_snapshot(root.path(), &[file]).is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn reports_symlink_bind_sources_without_following() {
@@ -1765,6 +1955,7 @@ services:
                 role: "api".into(),
                 networks: Vec::new(),
                 ports: Vec::new(),
+                publishes_on_unspecified_address: false,
                 mounts: vec![
                     ContainerMount {
                         id: "runtime-api:/app/src".into(),

@@ -2,8 +2,8 @@ use crate::snapshot_runtime::is_host_published_docker_port;
 use crate::{
     collision_resistant_id_component, Finding, FindingRule, FindingSeverity,
     RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
-    RuntimeEvidenceProvider, RuntimeMap, RuntimeNodeKind, RuntimeProviderKind,
-    RuntimeRelationshipKind,
+    RuntimeEvidenceProvider, RuntimeMap, RuntimeMode, RuntimeNodeKind, RuntimeProviderKind,
+    RuntimeRelationshipKind, RuntimeServiceStatus,
 };
 use std::collections::BTreeMap;
 
@@ -14,19 +14,54 @@ const INTERNAL_NETWORK_PORT_SUMMARY: &str =
     "A container on an internal Docker network also has a published host port.";
 const INTERNAL_NETWORK_PORT_RECOMMENDATION: &str =
     "Review whether the host-port publication is intended for this internal-network service.";
+const UNSPECIFIED_ADDRESS_PORT_SUMMARY: &str =
+    "Docker reported a container port published on an unspecified host address.";
+const UNSPECIFIED_ADDRESS_PORT_RECOMMENDATION: &str =
+    "Review whether publishing this container port beyond loopback is intended.";
+const UNSPECIFIED_ADDRESS_PORT_EVIDENCE_SUMMARY: &str =
+    "Docker reported a container port published on an unspecified host address";
+const UNSPECIFIED_ADDRESS_PORT_RISK_ID: &str = "host_risk_docker_unspecified_address_port";
 const DOCKER_DAEMON_STATE_SUMMARY: &str =
     "A container has Docker daemon state access that may provide Docker daemon API authority.";
 const DOCKER_DAEMON_STATE_RECOMMENDATION: &str =
     "Review whether this container requires Docker daemon API authority.";
+const DOCKER_DAEMON_STATE_PUBLISHED_PORT_SUMMARY: &str =
+    "A container with Docker daemon state access also has a published host port.";
+const DOCKER_DAEMON_STATE_PUBLISHED_PORT_RECOMMENDATION: &str =
+    "Review whether the daemon-state access and host-port publication are both intended.";
 const DOCKER_DAEMON_STATE_RISK_ID: &str = "host_risk_docker_daemon_state";
 const DOCKER_DAEMON_STATE_EVIDENCE_SUMMARY: &str =
     "Docker reported a bind mount exposing Docker daemon state";
+const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_SUMMARY: &str =
+    "A running Docker Compose service declares a dependency whose container is not active.";
+const COMPOSE_DECLARED_TARGET_NOT_ACTIVE_RECOMMENDATION: &str =
+    "Review the declared dependency and the target container state.";
+const COMPOSE_DEPENDENCY_EVIDENCE_SUMMARY: &str = "Docker recorded Compose dependency declaration";
+const COMPOSE_MUTUAL_DEPENDENCY_SUMMARY: &str =
+    "Docker recorded mutually declared Compose dependencies between two containers.";
+const COMPOSE_MUTUAL_DEPENDENCY_RECOMMENDATION: &str =
+    "Review the declared dependencies and remove any unintended mutual dependency.";
+const RUNTIME_IDENTITY_COLLISION_SUMMARY: &str =
+    "DockerMap detected duplicate runtime identities after publication normalization.";
+const RUNTIME_IDENTITY_COLLISION_RECOMMENDATION: &str =
+    "Review the duplicate identity condition before relying on topology relationships.";
+const RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY: &str =
+    "DockerMap detected duplicate runtime identities after publication normalization";
+const RUNTIME_INTEGRITY_SCOPE_ID: &str = "runtime_integrity_scope";
+const RUNTIME_IDENTITY_COLLISION_RISK_ID: &str = "runtime_integrity_risk_identity_collision";
 
 /// Derive bounded, deterministic advisory findings from the already-public
-/// runtime topology. The rule intentionally fails closed: it acts only on one
-/// fresh V2 systemd `Requires=` declaration between uniquely identified
-/// systemd services. Raw provider material is never copied into a finding.
+/// runtime topology. Every rule intentionally fails closed on its own closed
+/// evidence shape and uniquely identified entities. Raw provider material is
+/// never copied into a finding.
 pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
+    // Findings are production observations only. A structurally valid mock
+    // topology must never become an advisory if it reaches this pure
+    // derivation boundary directly, rather than through cache publication.
+    if matches!(runtime_map.source.as_ref(), Some(RuntimeMode::Mock)) {
+        return Vec::new();
+    }
+
     let node_counts = runtime_map
         .nodes
         .iter()
@@ -59,20 +94,108 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
         }
     }
 
+    // This stricter rule considers every daemon-state-shaped and port-shaped
+    // edge, including malformed ones. A second edge must make the combined
+    // assertion ambiguous instead of being silently ignored.
+    let mut daemon_state_source_counts = BTreeMap::<&str, usize>::new();
+    let mut daemon_state_port_source_counts = BTreeMap::<&str, usize>::new();
+    for edge in &runtime_map.edges {
+        if is_docker_daemon_state_pair_shape(edge, &nodes) {
+            *daemon_state_source_counts
+                .entry(edge.source.as_str())
+                .or_default() += 1;
+        }
+        if is_docker_port_publication_pair_shape(edge, &nodes) {
+            *daemon_state_port_source_counts
+                .entry(edge.source.as_str())
+                .or_default() += 1;
+        }
+    }
+
     let mut membership_counts = BTreeMap::<(&str, &str), usize>::new();
-    let mut port_counts = BTreeMap::<&str, usize>::new();
+    // A service may deliberately publish more than one distinct port. Count
+    // each source/listener pair instead of flattening all listener facts into
+    // one source-wide ambiguity bucket: duplicated or conflicting evidence
+    // for a listener still fails closed, while distinct listeners remain
+    // independently explainable.
+    let mut port_counts = BTreeMap::<(&str, &str), usize>::new();
+    let mut unspecified_address_port_counts = BTreeMap::<&str, usize>::new();
     for edge in &runtime_map.edges {
         if is_docker_membership_shape(edge, &nodes) {
             *membership_counts
                 .entry((edge.source.as_str(), edge.target.as_str()))
                 .or_default() += 1;
         }
-        if is_docker_port_shape(edge, &nodes) {
-            *port_counts.entry(edge.source.as_str()).or_default() += 1;
+        if is_docker_port_publication_pair_shape(edge, &nodes) {
+            *port_counts
+                .entry((edge.source.as_str(), edge.target.as_str()))
+                .or_default() += 1;
+        }
+        if is_unspecified_address_port_shape(edge, &nodes) {
+            *unspecified_address_port_counts
+                .entry(edge.source.as_str())
+                .or_default() += 1;
+        }
+    }
+    let mut compose_dependency_counts = BTreeMap::<(&str, &str), usize>::new();
+    let mut compose_dependency_edge_counts = BTreeMap::<(&str, &str), usize>::new();
+    for edge in &runtime_map.edges {
+        if edge.relationship == RuntimeRelationshipKind::DependsOn {
+            *compose_dependency_edge_counts
+                .entry((edge.source.as_str(), edge.target.as_str()))
+                .or_default() += 1;
+        }
+        if is_candidate_compose_dependency(edge, &nodes) {
+            *compose_dependency_counts
+                .entry((edge.source.as_str(), edge.target.as_str()))
+                .or_default() += 1;
         }
     }
 
     let mut findings = Vec::new();
+    let integrity_edge_count = runtime_map
+        .edges
+        .iter()
+        .filter(|edge| {
+            edge.source == RUNTIME_INTEGRITY_SCOPE_ID
+                && edge.target == RUNTIME_IDENTITY_COLLISION_RISK_ID
+        })
+        .count();
+    for edge in &runtime_map.edges {
+        if integrity_edge_count != 1 || !is_candidate_runtime_identity_collision(edge, &nodes) {
+            continue;
+        }
+        findings.push(Finding {
+            id: "finding_runtime_identity_collision_detected".into(),
+            rule_id: FindingRule::RuntimeIdentityCollisionDetected,
+            severity: FindingSeverity::Advisory,
+            summary: RUNTIME_IDENTITY_COLLISION_SUMMARY.into(),
+            recommendation: RUNTIME_IDENTITY_COLLISION_RECOMMENDATION.into(),
+            subject_ref: edge.source.clone(),
+            target_ref: edge.target.clone(),
+            evidence_refs: vec![edge.evidence_refs[0].clone()],
+        });
+    }
+    for edge in &runtime_map.edges {
+        if unspecified_address_port_counts.get(edge.source.as_str()) != Some(&1)
+            || !is_candidate_unspecified_address_port(edge, &nodes)
+        {
+            continue;
+        }
+        findings.push(Finding {
+            id: format!(
+                "finding_docker_port_published_on_unspecified_address_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            rule_id: FindingRule::DockerPortPublishedOnUnspecifiedAddress,
+            severity: FindingSeverity::Advisory,
+            summary: UNSPECIFIED_ADDRESS_PORT_SUMMARY.into(),
+            recommendation: UNSPECIFIED_ADDRESS_PORT_RECOMMENDATION.into(),
+            subject_ref: edge.source.clone(),
+            target_ref: edge.target.clone(),
+            evidence_refs: vec![edge.evidence_refs[0].clone()],
+        });
+    }
     for edge in &runtime_map.edges {
         let pair = (edge.source.as_str(), edge.target.as_str());
         if candidate_counts.get(&pair) != Some(&1) || !is_candidate_requires(edge) {
@@ -105,6 +228,133 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
             evidence_refs: vec![evidence],
         });
     }
+    for daemon_edge in &runtime_map.edges {
+        if daemon_state_source_counts.get(daemon_edge.source.as_str()) != Some(&1)
+            || daemon_state_port_source_counts.get(daemon_edge.source.as_str()) != Some(&1)
+            || !is_candidate_docker_daemon_state_bind_mount(daemon_edge, &nodes)
+        {
+            continue;
+        }
+        let Some(port_edge) = runtime_map.edges.iter().find(|candidate| {
+            candidate.source == daemon_edge.source
+                && is_candidate_docker_daemon_state_port_publication(candidate, &nodes)
+        }) else {
+            continue;
+        };
+        let daemon_evidence = &daemon_edge.evidence_refs[0];
+        let port_evidence = &port_edge.evidence_refs[0];
+        if daemon_evidence.collected_at != port_evidence.collected_at
+            || daemon_evidence.provider_revision != port_evidence.provider_revision
+        {
+            continue;
+        }
+        findings.push(Finding {
+            id: format!(
+                "finding_docker_daemon_state_bind_mount_publishes_port_{}",
+                collision_resistant_id_component(&format!(
+                    "{}\u{1f}{}",
+                    daemon_edge.source, daemon_edge.target
+                ))
+            ),
+            rule_id: FindingRule::DockerDaemonStateBindMountPublishesPort,
+            severity: FindingSeverity::Warning,
+            summary: DOCKER_DAEMON_STATE_PUBLISHED_PORT_SUMMARY.into(),
+            recommendation: DOCKER_DAEMON_STATE_PUBLISHED_PORT_RECOMMENDATION.into(),
+            subject_ref: daemon_edge.source.clone(),
+            target_ref: daemon_edge.target.clone(),
+            evidence_refs: vec![daemon_evidence.clone(), port_evidence.clone()],
+        });
+    }
+    // A mutual declaration is one closed, unordered pair. Iterate only the
+    // lexicographically first direction so the emitted subject/target and
+    // evidence order do not depend on collector edge ordering.
+    for edge in &runtime_map.edges {
+        let pair = (edge.source.as_str(), edge.target.as_str());
+        if pair.0 >= pair.1
+            || compose_dependency_edge_counts.get(&pair) != Some(&1)
+            || compose_dependency_counts.get(&pair) != Some(&1)
+            || !is_candidate_compose_dependency(edge, &nodes)
+        {
+            continue;
+        }
+        let reverse = (pair.1, pair.0);
+        if compose_dependency_edge_counts.get(&reverse) != Some(&1)
+            || compose_dependency_counts.get(&reverse) != Some(&1)
+        {
+            continue;
+        }
+        let Some(reverse_edge) = runtime_map.edges.iter().find(|candidate| {
+            candidate.source == edge.target
+                && candidate.target == edge.source
+                && is_candidate_compose_dependency(candidate, &nodes)
+        }) else {
+            continue;
+        };
+        let evidence = &edge.evidence_refs[0];
+        let reverse_evidence = &reverse_edge.evidence_refs[0];
+        if evidence.collected_at != reverse_evidence.collected_at
+            || evidence.provider_revision != reverse_evidence.provider_revision
+        {
+            continue;
+        }
+        findings.push(Finding {
+            id: format!(
+                "finding_docker_compose_mutual_dependency_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            rule_id: FindingRule::DockerComposeMutualDependency,
+            severity: FindingSeverity::Advisory,
+            summary: COMPOSE_MUTUAL_DEPENDENCY_SUMMARY.into(),
+            recommendation: COMPOSE_MUTUAL_DEPENDENCY_RECOMMENDATION.into(),
+            subject_ref: edge.source.clone(),
+            target_ref: edge.target.clone(),
+            evidence_refs: vec![evidence.clone(), reverse_evidence.clone()],
+        });
+    }
+    for edge in &runtime_map.edges {
+        let pair = (edge.source.as_str(), edge.target.as_str());
+        if compose_dependency_edge_counts.get(&pair) != Some(&1)
+            || compose_dependency_counts.get(&pair) != Some(&1)
+            || !is_candidate_compose_dependency(edge, &nodes)
+        {
+            continue;
+        }
+        let (Some(source), Some(target)) = (nodes.get(pair.0), nodes.get(pair.1)) else {
+            continue;
+        };
+        if !is_docker_container(source)
+            || !is_docker_container(target)
+            || !matches!(
+                source
+                    .status
+                    .as_deref()
+                    .map(RuntimeServiceStatus::from_status_text),
+                Some(RuntimeServiceStatus::Running)
+            )
+            || !matches!(
+                target
+                    .status
+                    .as_deref()
+                    .map(RuntimeServiceStatus::from_status_text),
+                Some(RuntimeServiceStatus::Stopped | RuntimeServiceStatus::Failed)
+            )
+        {
+            continue;
+        }
+        findings.push(Finding {
+            id: format!(
+                "finding_docker_compose_declared_target_not_active_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            rule_id: FindingRule::DockerComposeDeclaredTargetNotActive,
+            severity: FindingSeverity::Advisory,
+            summary: COMPOSE_DECLARED_TARGET_NOT_ACTIVE_SUMMARY.into(),
+            recommendation: COMPOSE_DECLARED_TARGET_NOT_ACTIVE_RECOMMENDATION.into(),
+            subject_ref: edge.source.clone(),
+            target_ref: edge.target.clone(),
+            evidence_refs: vec![edge.evidence_refs[0].clone()],
+        });
+    }
     for edge in &runtime_map.edges {
         let pair = (edge.source.as_str(), edge.target.as_str());
         if daemon_state_counts.get(&pair) != Some(&1)
@@ -129,31 +379,35 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
     for edge in &runtime_map.edges {
         let pair = (edge.source.as_str(), edge.target.as_str());
         if membership_counts.get(&pair) != Some(&1)
-            || port_counts.get(edge.source.as_str()) != Some(&1)
             || !is_candidate_internal_network_membership(edge, &nodes)
         {
             continue;
         }
-        let Some(port_edge) = runtime_map.edges.iter().find(|candidate| {
-            candidate.source == edge.source && is_candidate_port_publication(candidate, &nodes)
-        }) else {
-            continue;
-        };
-        let network_evidence = edge.evidence_refs[0].clone();
-        let port_evidence = port_edge.evidence_refs[0].clone();
-        findings.push(Finding {
-            id: format!(
-                "finding_docker_internal_network_member_publishes_port_{}",
-                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
-            ),
-            rule_id: FindingRule::DockerInternalNetworkMemberPublishesPort,
-            severity: FindingSeverity::Advisory,
-            summary: INTERNAL_NETWORK_PORT_SUMMARY.into(),
-            recommendation: INTERNAL_NETWORK_PORT_RECOMMENDATION.into(),
-            subject_ref: edge.source.clone(),
-            target_ref: edge.target.clone(),
-            evidence_refs: vec![network_evidence, port_evidence],
-        });
+        for port_edge in runtime_map.edges.iter().filter(|candidate| {
+            candidate.source == edge.source
+                && port_counts.get(&(candidate.source.as_str(), candidate.target.as_str()))
+                    == Some(&1)
+                && is_candidate_port_publication(candidate, &nodes)
+        }) {
+            let network_evidence = edge.evidence_refs[0].clone();
+            let port_evidence = port_edge.evidence_refs[0].clone();
+            findings.push(Finding {
+                id: format!(
+                    "finding_docker_internal_network_member_publishes_port_{}",
+                    collision_resistant_id_component(&format!(
+                        "{}\u{1f}{}\u{1f}{}",
+                        edge.source, edge.target, port_edge.target
+                    ))
+                ),
+                rule_id: FindingRule::DockerInternalNetworkMemberPublishesPort,
+                severity: FindingSeverity::Advisory,
+                summary: INTERNAL_NETWORK_PORT_SUMMARY.into(),
+                recommendation: INTERNAL_NETWORK_PORT_RECOMMENDATION.into(),
+                subject_ref: edge.source.clone(),
+                target_ref: edge.target.clone(),
+                evidence_refs: vec![network_evidence, port_evidence],
+            });
+        }
     }
     findings.sort_by(|left, right| {
         left.id
@@ -181,6 +435,18 @@ fn is_docker_daemon_state_shape<'a>(
 ) -> bool {
     edge.metadata.is_empty()
         && edge.relationship == RuntimeRelationshipKind::ExposesDaemonState
+        && matches!(
+            (nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
+            (Some(source), Some(target))
+                if is_docker_container(source) && is_docker_daemon_state_risk(target)
+        )
+}
+
+fn is_docker_daemon_state_pair_shape<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.relationship == RuntimeRelationshipKind::ExposesDaemonState
         && matches!(
             (nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
             (Some(source), Some(target))
@@ -230,6 +496,111 @@ fn is_docker_port_shape<'a>(
             (Some(source), Some(target)) if is_docker_container(source) && is_docker_listener(target))
 }
 
+fn is_runtime_integrity_scope(node: &crate::RuntimeMapNode) -> bool {
+    node.id == RUNTIME_INTEGRITY_SCOPE_ID
+        && node.provider == RuntimeProviderKind::Other
+        && node.kind == RuntimeNodeKind::IntegrityScope
+        && node.label == "Runtime identity integrity"
+        && node.status.is_none()
+        && node.layer == Some(crate::RuntimeNodeLayer::Advisory)
+        && node.metadata.is_empty()
+        && node.service.is_none()
+        && node.package.is_none()
+}
+
+fn is_runtime_identity_collision_risk(node: &crate::RuntimeMapNode) -> bool {
+    node.id == RUNTIME_IDENTITY_COLLISION_RISK_ID
+        && node.provider == RuntimeProviderKind::Other
+        && node.kind == RuntimeNodeKind::HostRisk
+        && node.label == "Duplicate runtime topology identity"
+        && node.status.is_none()
+        && node.layer == Some(crate::RuntimeNodeLayer::Advisory)
+        && node.metadata.is_empty()
+        && node.service.is_none()
+        && node.package.is_none()
+}
+
+fn is_candidate_runtime_identity_collision<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.metadata.is_empty()
+        && edge.relationship == RuntimeRelationshipKind::RelatedTo
+        && matches!(
+            (nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
+            (Some(source), Some(target))
+                if is_runtime_integrity_scope(source) && is_runtime_identity_collision_risk(target)
+        )
+        && edge.has_valid_evidence_refs()
+        && edge.evidence_refs.len() == 1
+        && matches!(edge.evidence_refs.first(), Some(evidence)
+            if evidence.version == 7
+                && evidence.id == "dockermap_evidence_runtime_identity_collision"
+                && evidence.provider == RuntimeEvidenceProvider::Dockermap
+                && evidence.kind == RuntimeEvidenceKind::RuntimeIdentityCollision
+                && evidence.assertion_kind == RuntimeEvidenceAssertionKind::Observed
+                && evidence.summary == RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY
+                && evidence.subject_ref == edge.source
+                && evidence.freshness == RuntimeEvidenceFreshness::Fresh
+                && evidence.provider_slot.is_none()
+                && !evidence.provider_revision.is_empty()
+                && evidence.provider_revision != evidence.collected_at.to_string())
+}
+
+fn is_unspecified_address_port_risk(node: &crate::RuntimeMapNode) -> bool {
+    node.id == UNSPECIFIED_ADDRESS_PORT_RISK_ID
+        && node.provider == RuntimeProviderKind::Docker
+        && node.kind == RuntimeNodeKind::HostRisk
+        && node.label == "Unspecified-address Docker port publication"
+        && node.status.is_none()
+        && node.layer == Some(crate::RuntimeNodeLayer::Host)
+        && node.metadata.is_empty()
+        && node.service.is_none()
+        && node.package.is_none()
+}
+
+fn is_unspecified_address_port_shape<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.relationship == RuntimeRelationshipKind::Exposes
+        && matches!(
+            (nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
+            (Some(source), Some(target))
+                if is_docker_container(source) && is_unspecified_address_port_risk(target)
+        )
+}
+
+fn is_candidate_unspecified_address_port<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.metadata.is_empty()
+        && is_unspecified_address_port_shape(edge, nodes)
+        && is_fresh_docker_evidence(
+            edge,
+            RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication,
+        )
+        && matches!(
+            edge.evidence_refs.first(),
+            Some(evidence) if evidence.summary == UNSPECIFIED_ADDRESS_PORT_EVIDENCE_SUMMARY
+        )
+}
+
+fn is_docker_port_publication_pair_shape<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.relationship == RuntimeRelationshipKind::Exposes
+        && matches!(
+            (nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
+            (Some(source), Some(target))
+                if is_docker_container(source)
+                    && target.provider == RuntimeProviderKind::Network
+                    && target.kind == RuntimeNodeKind::NetworkListener
+        )
+}
+
 fn is_candidate_internal_network_membership<'a>(
     edge: &crate::RuntimeMapEdge,
     nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
@@ -243,6 +614,19 @@ fn is_candidate_port_publication<'a>(
     nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
 ) -> bool {
     is_docker_port_shape(edge, nodes)
+        && is_fresh_docker_evidence(edge, RuntimeEvidenceKind::DockerPortPublication)
+}
+
+fn is_candidate_docker_daemon_state_port_publication<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.metadata.is_empty()
+        && is_docker_port_publication_pair_shape(edge, nodes)
+        && matches!(
+            nodes.get(edge.target.as_str()),
+            Some(target) if target.metadata.get("port").is_some_and(|port| is_host_published_docker_port(port))
+        )
         && is_fresh_docker_evidence(edge, RuntimeEvidenceKind::DockerPortPublication)
 }
 
@@ -275,6 +659,21 @@ fn is_candidate_requires(edge: &crate::RuntimeMapEdge) -> bool {
                     && evidence.subject_ref == edge.source
                     && evidence.provider_slot == Some(crate::ProviderSlot::Systemd)
         )
+}
+
+fn is_candidate_compose_dependency<'a>(
+    edge: &crate::RuntimeMapEdge,
+    nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
+) -> bool {
+    edge.metadata.is_empty()
+        && edge.relationship == RuntimeRelationshipKind::DependsOn
+        && edge.source != edge.target
+        && matches!(
+            (nodes.get(edge.source.as_str()), nodes.get(edge.target.as_str())),
+            (Some(source), Some(target)) if is_docker_container(source) && is_docker_container(target)
+        )
+        && is_fresh_docker_evidence(edge, RuntimeEvidenceKind::DockerComposeDependsOn)
+        && matches!(edge.evidence_refs.first(), Some(evidence) if evidence.summary == COMPOSE_DEPENDENCY_EVIDENCE_SUMMARY)
 }
 
 #[cfg(test)]
@@ -423,13 +822,20 @@ mod tests {
     }
 
     fn docker_evidence(kind: RuntimeEvidenceKind, source: &str) -> RuntimeEvidenceRef {
+        let summary = match kind {
+            RuntimeEvidenceKind::DockerComposeDependsOn => COMPOSE_DEPENDENCY_EVIDENCE_SUMMARY,
+            RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication => {
+                UNSPECIFIED_ADDRESS_PORT_EVIDENCE_SUMMARY
+            }
+            _ => "Docker reported a bounded runtime fact",
+        };
         RuntimeEvidenceRef {
             version: 1,
             id: format!("docker_evidence_{source}"),
             provider: RuntimeEvidenceProvider::Docker,
             kind,
             assertion_kind: RuntimeEvidenceAssertionKind::Observed,
-            summary: "Docker reported a bounded runtime fact".into(),
+            summary: summary.into(),
             subject_ref: source.into(),
             collected_at: 1,
             provider_revision: "opaque-docker-observation".into(),
@@ -517,6 +923,177 @@ mod tests {
         assert!(derive_findings(&raw_metadata).is_empty());
     }
 
+    fn daemon_state_port_map() -> RuntimeMap {
+        let container = "docker_container_daemon_state_port";
+        let risk = DOCKER_DAEMON_STATE_RISK_ID;
+        let listener = "network_listener_daemon_state_port";
+        RuntimeMap {
+            nodes: vec![
+                docker_node(
+                    container,
+                    RuntimeProviderKind::Docker,
+                    RuntimeNodeKind::Container,
+                    BTreeMap::new(),
+                ),
+                docker_node(
+                    risk,
+                    RuntimeProviderKind::Docker,
+                    RuntimeNodeKind::HostRisk,
+                    BTreeMap::new(),
+                ),
+                docker_node(
+                    listener,
+                    RuntimeProviderKind::Network,
+                    RuntimeNodeKind::NetworkListener,
+                    BTreeMap::from([("port".into(), "2375:2375/tcp".into())]),
+                ),
+            ],
+            edges: vec![
+                RuntimeMapEdge {
+                    source: container.into(),
+                    target: risk.into(),
+                    relationship: RuntimeRelationshipKind::ExposesDaemonState,
+                    metadata: BTreeMap::new(),
+                    evidence_refs: vec![RuntimeEvidenceRef {
+                        summary: DOCKER_DAEMON_STATE_EVIDENCE_SUMMARY.into(),
+                        ..docker_evidence(
+                            RuntimeEvidenceKind::DockerDaemonStateBindMount,
+                            container,
+                        )
+                    }],
+                },
+                RuntimeMapEdge {
+                    source: container.into(),
+                    target: listener.into(),
+                    relationship: RuntimeRelationshipKind::Exposes,
+                    metadata: BTreeMap::new(),
+                    evidence_refs: vec![docker_evidence(
+                        RuntimeEvidenceKind::DockerPortPublication,
+                        container,
+                    )],
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn daemon_state_port_finding(findings: &[Finding]) -> Option<&Finding> {
+        findings
+            .iter()
+            .find(|finding| finding.rule_id == FindingRule::DockerDaemonStateBindMountPublishesPort)
+    }
+
+    #[test]
+    fn daemon_state_port_warning_requires_one_coherent_pair_and_preserves_evidence_order() {
+        let input = daemon_state_port_map();
+        let findings = derive_findings(&input);
+        let finding = daemon_state_port_finding(&findings)
+            .expect("one coherent Docker daemon-state and host-port pair warns");
+        assert_eq!(finding.severity, FindingSeverity::Warning);
+        assert_eq!(finding.summary, DOCKER_DAEMON_STATE_PUBLISHED_PORT_SUMMARY);
+        assert_eq!(
+            finding.recommendation,
+            DOCKER_DAEMON_STATE_PUBLISHED_PORT_RECOMMENDATION
+        );
+        assert_eq!(finding.subject_ref, "docker_container_daemon_state_port");
+        assert_eq!(finding.target_ref, DOCKER_DAEMON_STATE_RISK_ID);
+        assert_eq!(
+            finding.evidence_refs,
+            vec![
+                input.edges[0].evidence_refs[0].clone(),
+                input.edges[1].evidence_refs[0].clone(),
+            ]
+        );
+        assert!(finding
+            .id
+            .starts_with("finding_docker_daemon_state_bind_mount_publishes_port_"));
+        let encoded = serde_json::to_string(finding).unwrap();
+        for forbidden in ["2375", "tcp", "network_listener", "exploit", "breach"] {
+            assert!(
+                !encoded.contains(forbidden),
+                "finding leaked or overstated {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn daemon_state_port_warning_fails_closed_for_ambiguous_malformed_or_unmatched_inputs() {
+        let mut stale_daemon = daemon_state_port_map();
+        stale_daemon.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
+        assert!(daemon_state_port_finding(&derive_findings(&stale_daemon)).is_none());
+
+        let mut stale_port = daemon_state_port_map();
+        stale_port.edges[1].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
+        assert!(daemon_state_port_finding(&derive_findings(&stale_port)).is_none());
+
+        let mut duplicate_daemon = daemon_state_port_map();
+        duplicate_daemon
+            .edges
+            .push(duplicate_daemon.edges[0].clone());
+        assert!(daemon_state_port_finding(&derive_findings(&duplicate_daemon)).is_none());
+
+        let mut duplicate_port = daemon_state_port_map();
+        duplicate_port.edges.push(duplicate_port.edges[1].clone());
+        assert!(daemon_state_port_finding(&derive_findings(&duplicate_port)).is_none());
+
+        let mut malformed_daemon = daemon_state_port_map();
+        let mut extra_daemon = malformed_daemon.edges[0].clone();
+        extra_daemon.evidence_refs.clear();
+        malformed_daemon.edges.push(extra_daemon);
+        assert!(daemon_state_port_finding(&derive_findings(&malformed_daemon)).is_none());
+
+        let mut malformed_port = daemon_state_port_map();
+        let mut extra_port = malformed_port.edges[1].clone();
+        extra_port.metadata.insert("unsafe".into(), "value".into());
+        malformed_port.edges.push(extra_port);
+        assert!(daemon_state_port_finding(&derive_findings(&malformed_port)).is_none());
+
+        let mut mismatched_collected_at = daemon_state_port_map();
+        mismatched_collected_at.edges[1].evidence_refs[0].collected_at = 2;
+        assert!(daemon_state_port_finding(&derive_findings(&mismatched_collected_at)).is_none());
+
+        let mut mismatched_revision = daemon_state_port_map();
+        mismatched_revision.edges[1].evidence_refs[0].provider_revision = "other".into();
+        assert!(daemon_state_port_finding(&derive_findings(&mismatched_revision)).is_none());
+
+        let mut wrong_kind = daemon_state_port_map();
+        wrong_kind.edges[1].evidence_refs[0].kind = RuntimeEvidenceKind::DockerNetworkMembership;
+        assert!(daemon_state_port_finding(&derive_findings(&wrong_kind)).is_none());
+
+        let mut wrong_source = daemon_state_port_map();
+        wrong_source.edges[1].source = "docker_container_other".into();
+        assert!(daemon_state_port_finding(&derive_findings(&wrong_source)).is_none());
+
+        let mut wrong_target = daemon_state_port_map();
+        wrong_target.edges[0].target = "host_risk_other".into();
+        assert!(daemon_state_port_finding(&derive_findings(&wrong_target)).is_none());
+
+        let mut private_port = daemon_state_port_map();
+        private_port.nodes[2]
+            .metadata
+            .insert("port".into(), "2375/tcp".into());
+        assert!(daemon_state_port_finding(&derive_findings(&private_port)).is_none());
+
+        let mut invalid_port = daemon_state_port_map();
+        invalid_port.nodes[2]
+            .metadata
+            .insert("port".into(), "0:2375/tcp".into());
+        assert!(daemon_state_port_finding(&derive_findings(&invalid_port)).is_none());
+
+        let mut node_collision = daemon_state_port_map();
+        node_collision.nodes.push(node_collision.nodes[2].clone());
+        assert!(daemon_state_port_finding(&derive_findings(&node_collision)).is_none());
+
+        let mut wrong_slot = daemon_state_port_map();
+        wrong_slot.edges[1].evidence_refs[0].provider_slot = Some(ProviderSlot::Systemd);
+        assert!(daemon_state_port_finding(&derive_findings(&wrong_slot)).is_none());
+
+        let mut mock_like = daemon_state_port_map();
+        mock_like.edges[0].evidence_refs.clear();
+        mock_like.edges[1].evidence_refs.clear();
+        assert!(daemon_state_port_finding(&derive_findings(&mock_like)).is_none());
+    }
+
     fn internal_network_port_map() -> RuntimeMap {
         let container = "docker_container_safe";
         let network = "docker_network_internal";
@@ -568,6 +1145,214 @@ mod tests {
         }
     }
 
+    fn unspecified_address_port_map() -> RuntimeMap {
+        let container = "docker_container_unspecified_address";
+        let risk = UNSPECIFIED_ADDRESS_PORT_RISK_ID;
+        let mut risk_node = docker_node(
+            risk,
+            RuntimeProviderKind::Docker,
+            RuntimeNodeKind::HostRisk,
+            BTreeMap::new(),
+        );
+        risk_node.label = "Unspecified-address Docker port publication".into();
+        risk_node.layer = Some(RuntimeNodeLayer::Host);
+        RuntimeMap {
+            nodes: vec![
+                docker_node(
+                    container,
+                    RuntimeProviderKind::Docker,
+                    RuntimeNodeKind::Container,
+                    BTreeMap::new(),
+                ),
+                risk_node,
+            ],
+            edges: vec![RuntimeMapEdge {
+                source: container.into(),
+                target: risk.into(),
+                relationship: RuntimeRelationshipKind::Exposes,
+                metadata: BTreeMap::new(),
+                evidence_refs: vec![docker_evidence(
+                    RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication,
+                    container,
+                )],
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn runtime_identity_collision_map() -> RuntimeMap {
+        let scope = RUNTIME_INTEGRITY_SCOPE_ID;
+        let risk = RUNTIME_IDENTITY_COLLISION_RISK_ID;
+        RuntimeMap {
+            nodes: vec![
+                RuntimeMapNode {
+                    id: scope.into(),
+                    provider: RuntimeProviderKind::Other,
+                    kind: RuntimeNodeKind::IntegrityScope,
+                    label: "Runtime identity integrity".into(),
+                    status: None,
+                    layer: Some(RuntimeNodeLayer::Advisory),
+                    metadata: BTreeMap::new(),
+                    service: None,
+                    package: None,
+                },
+                RuntimeMapNode {
+                    id: risk.into(),
+                    provider: RuntimeProviderKind::Other,
+                    kind: RuntimeNodeKind::HostRisk,
+                    label: "Duplicate runtime topology identity".into(),
+                    status: None,
+                    layer: Some(RuntimeNodeLayer::Advisory),
+                    metadata: BTreeMap::new(),
+                    service: None,
+                    package: None,
+                },
+            ],
+            edges: vec![RuntimeMapEdge {
+                source: scope.into(),
+                target: risk.into(),
+                relationship: RuntimeRelationshipKind::RelatedTo,
+                metadata: BTreeMap::new(),
+                evidence_refs: vec![RuntimeEvidenceRef {
+                    version: 7,
+                    id: "dockermap_evidence_runtime_identity_collision".into(),
+                    provider: RuntimeEvidenceProvider::Dockermap,
+                    kind: RuntimeEvidenceKind::RuntimeIdentityCollision,
+                    assertion_kind: RuntimeEvidenceAssertionKind::Observed,
+                    summary: RUNTIME_IDENTITY_COLLISION_EVIDENCE_SUMMARY.into(),
+                    subject_ref: scope.into(),
+                    collected_at: 1,
+                    provider_revision: "0123456789abcdef0123456789abcdef-1".into(),
+                    provider_slot: None,
+                    freshness: RuntimeEvidenceFreshness::Fresh,
+                }],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn runtime_identity_collision_rule_is_aggregate_deterministic_and_fail_closed() {
+        let input = runtime_identity_collision_map();
+        let findings = derive_findings(&input);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].id,
+            "finding_runtime_identity_collision_detected"
+        );
+        assert_eq!(
+            findings[0].rule_id,
+            FindingRule::RuntimeIdentityCollisionDetected
+        );
+        assert_eq!(findings[0].severity, FindingSeverity::Advisory);
+        assert_eq!(findings[0].summary, RUNTIME_IDENTITY_COLLISION_SUMMARY);
+        assert_eq!(
+            findings[0].recommendation,
+            RUNTIME_IDENTITY_COLLISION_RECOMMENDATION
+        );
+        assert_eq!(findings[0].subject_ref, RUNTIME_INTEGRITY_SCOPE_ID);
+        assert_eq!(findings[0].target_ref, RUNTIME_IDENTITY_COLLISION_RISK_ID);
+
+        let mut reordered = input.clone();
+        reordered.nodes.reverse();
+        assert_eq!(derive_findings(&reordered), findings);
+
+        let mut duplicate = input.clone();
+        duplicate.edges.push(duplicate.edges[0].clone());
+        assert!(derive_findings(&duplicate).is_empty());
+
+        let mut stale = input.clone();
+        stale.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
+        assert!(derive_findings(&stale).is_empty());
+
+        let mut wrong_summary = input.clone();
+        wrong_summary.edges[0].evidence_refs[0].summary = "collision: raw-id".into();
+        assert!(derive_findings(&wrong_summary).is_empty());
+
+        let mut mock = input;
+        mock.source = Some(RuntimeMode::Mock);
+        assert!(derive_findings(&mock).is_empty());
+    }
+
+    #[test]
+    fn unspecified_address_port_rule_is_unique_deterministic_and_redacted() {
+        let input = unspecified_address_port_map();
+        let finding = derive_findings(&input);
+        assert_eq!(finding.len(), 1);
+        assert_eq!(
+            finding[0].rule_id,
+            FindingRule::DockerPortPublishedOnUnspecifiedAddress
+        );
+        assert_eq!(finding[0].severity, FindingSeverity::Advisory);
+        assert_eq!(finding[0].summary, UNSPECIFIED_ADDRESS_PORT_SUMMARY);
+        assert_eq!(
+            finding[0].recommendation,
+            UNSPECIFIED_ADDRESS_PORT_RECOMMENDATION
+        );
+        assert_eq!(finding[0].target_ref, UNSPECIFIED_ADDRESS_PORT_RISK_ID);
+        assert_eq!(finding[0].evidence_refs, input.edges[0].evidence_refs);
+
+        let mut reordered = input.clone();
+        reordered.nodes.reverse();
+        reordered.edges.reverse();
+        assert_eq!(derive_findings(&reordered), finding);
+
+        let encoded = serde_json::to_string(&finding).expect("finding serializes");
+        for forbidden in ["0.0.0.0", "127.0.0.1", "[::]", "8443:443/tcp"] {
+            assert!(!encoded.contains(forbidden), "finding leaked {forbidden}");
+        }
+        assert!(!encoded.to_ascii_lowercase().contains("internet"));
+    }
+
+    #[test]
+    fn unspecified_address_port_rule_fails_closed() {
+        let mut duplicate = unspecified_address_port_map();
+        let mut malformed = duplicate.edges[0].clone();
+        malformed.evidence_refs.clear();
+        duplicate.edges.push(malformed);
+        assert!(derive_findings(&duplicate).is_empty());
+
+        let mut collision = unspecified_address_port_map();
+        collision.nodes.push(collision.nodes[1].clone());
+        assert!(derive_findings(&collision).is_empty());
+
+        let mut wrong_risk = unspecified_address_port_map();
+        wrong_risk.nodes[1].label = "almost the risk".into();
+        assert!(derive_findings(&wrong_risk).is_empty());
+
+        let mut metadata = unspecified_address_port_map();
+        metadata.edges[0]
+            .metadata
+            .insert("hostIp".into(), "redacted".into());
+        assert!(derive_findings(&metadata).is_empty());
+
+        let mut stale = unspecified_address_port_map();
+        stale.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
+        assert!(derive_findings(&stale).is_empty());
+
+        let mut wrong_kind = unspecified_address_port_map();
+        wrong_kind.edges[0].evidence_refs[0].kind = RuntimeEvidenceKind::DockerPortPublication;
+        assert!(derive_findings(&wrong_kind).is_empty());
+
+        let mut wrong_summary = unspecified_address_port_map();
+        wrong_summary.edges[0].evidence_refs[0].summary = "almost the fact".into();
+        assert!(derive_findings(&wrong_summary).is_empty());
+
+        let mut wrong_subject = unspecified_address_port_map();
+        wrong_subject.edges[0].evidence_refs[0].subject_ref = "docker_container_other".into();
+        assert!(derive_findings(&wrong_subject).is_empty());
+
+        let mut invalid_revision = unspecified_address_port_map();
+        invalid_revision.edges[0].evidence_refs[0]
+            .provider_revision
+            .clear();
+        assert!(derive_findings(&invalid_revision).is_empty());
+
+        let mut wrong_slot = unspecified_address_port_map();
+        wrong_slot.edges[0].evidence_refs[0].provider_slot = Some(ProviderSlot::Systemd);
+        assert!(derive_findings(&wrong_slot).is_empty());
+    }
+
     #[test]
     fn emits_a_deterministic_advisory_with_exact_docker_evidence_pair() {
         let input = internal_network_port_map();
@@ -596,6 +1381,40 @@ mod tests {
     }
 
     #[test]
+    fn internal_network_ports_emit_one_advisory_per_distinct_listener() {
+        let mut input = internal_network_port_map();
+        input.nodes.push(docker_node(
+            "network_listener_second",
+            RuntimeProviderKind::Network,
+            RuntimeNodeKind::NetworkListener,
+            BTreeMap::from([("port".into(), "8443:443/tcp".into())]),
+        ));
+        input.edges.push(RuntimeMapEdge {
+            source: "docker_container_safe".into(),
+            target: "network_listener_second".into(),
+            relationship: RuntimeRelationshipKind::Exposes,
+            metadata: BTreeMap::new(),
+            evidence_refs: vec![docker_evidence(
+                RuntimeEvidenceKind::DockerPortPublication,
+                "docker_container_safe",
+            )],
+        });
+
+        let findings = derive_findings(&input);
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().all(|finding| {
+            finding.rule_id == FindingRule::DockerInternalNetworkMemberPublishesPort
+                && finding.evidence_refs.len() == 2
+                && finding.evidence_refs[1].kind == RuntimeEvidenceKind::DockerPortPublication
+        }));
+        assert_ne!(findings[0].id, findings[1].id);
+
+        let mut reordered = input;
+        reordered.edges.reverse();
+        assert_eq!(derive_findings(&reordered), findings);
+    }
+
+    #[test]
     fn docker_internal_network_port_rule_fails_closed() {
         let mut stale_membership = internal_network_port_map();
         stale_membership.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
@@ -608,6 +1427,15 @@ mod tests {
         let mut duplicate_port = internal_network_port_map();
         duplicate_port.edges.push(duplicate_port.edges[1].clone());
         assert!(derive_findings(&duplicate_port).is_empty());
+
+        let mut conflicting_port = internal_network_port_map();
+        let mut conflicting_edge = conflicting_port.edges[1].clone();
+        conflicting_edge.evidence_refs.clear();
+        conflicting_port.edges.push(conflicting_edge);
+        assert!(
+            derive_findings(&conflicting_port).is_empty(),
+            "a conflicting assertion for the same listener must not be ignored"
+        );
 
         let mut duplicate_membership = internal_network_port_map();
         duplicate_membership
@@ -638,6 +1466,325 @@ mod tests {
             .metadata
             .insert("port".into(), "80/tcp".into());
         assert!(derive_findings(&private_only_port).is_empty());
+    }
+
+    fn compose_dependency_map(source_status: &str, target_status: &str) -> RuntimeMap {
+        let source = "docker_container_compose_source";
+        let target = "docker_container_compose_target";
+        let mut source_node = docker_node(
+            source,
+            RuntimeProviderKind::Docker,
+            RuntimeNodeKind::Container,
+            BTreeMap::new(),
+        );
+        source_node.status = Some(source_status.into());
+        let mut target_node = docker_node(
+            target,
+            RuntimeProviderKind::Docker,
+            RuntimeNodeKind::Container,
+            BTreeMap::new(),
+        );
+        target_node.status = Some(target_status.into());
+        RuntimeMap {
+            nodes: vec![source_node, target_node],
+            edges: vec![RuntimeMapEdge {
+                source: source.into(),
+                target: target.into(),
+                relationship: RuntimeRelationshipKind::DependsOn,
+                metadata: BTreeMap::new(),
+                evidence_refs: vec![docker_evidence(
+                    RuntimeEvidenceKind::DockerComposeDependsOn,
+                    source,
+                )],
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn compose_declared_target_rule_is_bounded_and_normalizes_docker_statuses() {
+        for (source_status, target_status) in [
+            ("Up 3 hours", "Exited (1) 2 seconds ago"),
+            ("running", "stopped"),
+            ("UP", "failed"),
+        ] {
+            let input = compose_dependency_map(source_status, target_status);
+            let findings = derive_findings(&input);
+            assert_eq!(findings.len(), 1, "{source_status} -> {target_status}");
+            let finding = &findings[0];
+            assert_eq!(
+                finding.rule_id,
+                FindingRule::DockerComposeDeclaredTargetNotActive
+            );
+            assert_eq!(finding.severity, FindingSeverity::Advisory);
+            assert_eq!(finding.summary, COMPOSE_DECLARED_TARGET_NOT_ACTIVE_SUMMARY);
+            assert_eq!(
+                finding.recommendation,
+                COMPOSE_DECLARED_TARGET_NOT_ACTIVE_RECOMMENDATION
+            );
+            assert_eq!(finding.subject_ref, "docker_container_compose_source");
+            assert_eq!(finding.target_ref, "docker_container_compose_target");
+            assert_eq!(
+                finding.evidence_refs,
+                vec![input.edges[0].evidence_refs[0].clone()]
+            );
+            assert!(finding
+                .id
+                .starts_with("finding_docker_compose_declared_target_not_active_"));
+        }
+    }
+
+    #[test]
+    fn compose_declared_target_rule_fails_closed_for_ambiguous_or_non_advisory_inputs() {
+        for (source, target) in [
+            ("created", "exited"),
+            ("stopping", "exited"),
+            ("up", "up 1 hour"),
+            ("up", "starting"),
+            ("up", "unknown"),
+        ] {
+            assert!(derive_findings(&compose_dependency_map(source, target)).is_empty());
+        }
+        let mut stale = compose_dependency_map("up", "exited");
+        stale.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::Stale;
+        assert!(derive_findings(&stale).is_empty());
+        let mut timed_out = compose_dependency_map("up", "failed");
+        timed_out.edges[0].evidence_refs[0].freshness = RuntimeEvidenceFreshness::TimedOut;
+        assert!(derive_findings(&timed_out).is_empty());
+        let mut missing = compose_dependency_map("up", "exited");
+        missing.edges[0].evidence_refs.clear();
+        assert!(derive_findings(&missing).is_empty());
+        let mut duplicate = compose_dependency_map("up", "exited");
+        duplicate.edges.push(duplicate.edges[0].clone());
+        assert!(derive_findings(&duplicate).is_empty());
+        let mut malformed_duplicate = compose_dependency_map("up", "exited");
+        let mut malformed_edge = malformed_duplicate.edges[0].clone();
+        malformed_edge.evidence_refs.clear();
+        malformed_duplicate.edges.push(malformed_edge);
+        assert!(derive_findings(&malformed_duplicate).is_empty());
+        let mut metadata = compose_dependency_map("up", "exited");
+        metadata.edges[0]
+            .metadata
+            .insert("unsafe".into(), "value".into());
+        assert!(derive_findings(&metadata).is_empty());
+        let mut collision = compose_dependency_map("up", "exited");
+        collision.nodes.push(collision.nodes[0].clone());
+        assert!(derive_findings(&collision).is_empty());
+        let mut non_docker = compose_dependency_map("up", "exited");
+        non_docker.nodes[1].provider = RuntimeProviderKind::Systemd;
+        assert!(derive_findings(&non_docker).is_empty());
+        let mut wrong_evidence = compose_dependency_map("up", "exited");
+        wrong_evidence.edges[0].evidence_refs[0].kind =
+            RuntimeEvidenceKind::DockerNetworkMembership;
+        assert!(derive_findings(&wrong_evidence).is_empty());
+    }
+
+    fn mutual_compose_dependency_map() -> RuntimeMap {
+        let mut map = compose_dependency_map("created", "starting");
+        let reverse_source = map.edges[0].target.clone();
+        let reverse_target = map.edges[0].source.clone();
+        map.edges.push(RuntimeMapEdge {
+            source: reverse_source.clone(),
+            target: reverse_target,
+            relationship: RuntimeRelationshipKind::DependsOn,
+            metadata: BTreeMap::new(),
+            evidence_refs: vec![docker_evidence(
+                RuntimeEvidenceKind::DockerComposeDependsOn,
+                &reverse_source,
+            )],
+        });
+        map
+    }
+
+    fn mutual_compose_finding(findings: &[Finding]) -> Option<&Finding> {
+        findings
+            .iter()
+            .find(|finding| finding.rule_id == FindingRule::DockerComposeMutualDependency)
+    }
+
+    #[test]
+    fn compose_mutual_dependency_is_deterministic_and_contains_only_canonical_evidence() {
+        let input = mutual_compose_dependency_map();
+        let finding = mutual_compose_finding(&derive_findings(&input))
+            .expect("fresh, reciprocal Docker Compose declarations produce an advisory")
+            .clone();
+        assert_eq!(finding.severity, FindingSeverity::Advisory);
+        assert_eq!(finding.summary, COMPOSE_MUTUAL_DEPENDENCY_SUMMARY);
+        assert_eq!(
+            finding.recommendation,
+            COMPOSE_MUTUAL_DEPENDENCY_RECOMMENDATION
+        );
+        assert_eq!(finding.subject_ref, "docker_container_compose_source");
+        assert_eq!(finding.target_ref, "docker_container_compose_target");
+        assert_eq!(
+            finding.id,
+            format!(
+                "finding_docker_compose_mutual_dependency_{}",
+                collision_resistant_id_component(
+                    "docker_container_compose_source\u{1f}docker_container_compose_target"
+                )
+            )
+        );
+        assert_eq!(
+            finding.evidence_refs,
+            vec![
+                input.edges[0].evidence_refs[0].clone(),
+                input.edges[1].evidence_refs[0].clone()
+            ]
+        );
+
+        let mut reversed = input.clone();
+        reversed.edges.reverse();
+        assert_eq!(
+            mutual_compose_finding(&derive_findings(&reversed)),
+            Some(&finding),
+            "edge ordering cannot change a canonical finding"
+        );
+    }
+
+    #[test]
+    fn compose_mutual_dependency_fails_closed_for_ambiguous_malformed_or_stale_inputs() {
+        let mut missing_reverse = mutual_compose_dependency_map();
+        missing_reverse.edges.pop();
+        assert!(mutual_compose_finding(&derive_findings(&missing_reverse)).is_none());
+
+        let mut duplicate_forward = mutual_compose_dependency_map();
+        duplicate_forward
+            .edges
+            .push(duplicate_forward.edges[0].clone());
+        assert!(mutual_compose_finding(&derive_findings(&duplicate_forward)).is_none());
+
+        let mut malformed_reverse = mutual_compose_dependency_map();
+        let mut malformed = malformed_reverse.edges[1].clone();
+        malformed.evidence_refs.clear();
+        malformed_reverse.edges.push(malformed);
+        assert!(mutual_compose_finding(&derive_findings(&malformed_reverse)).is_none());
+
+        for freshness in [
+            RuntimeEvidenceFreshness::Stale,
+            RuntimeEvidenceFreshness::TimedOut,
+        ] {
+            let mut input = mutual_compose_dependency_map();
+            input.edges[1].evidence_refs[0].freshness = freshness;
+            assert!(mutual_compose_finding(&derive_findings(&input)).is_none());
+        }
+
+        let mut metadata = mutual_compose_dependency_map();
+        metadata.edges[0]
+            .metadata
+            .insert("unsafe".into(), "value".into());
+        assert!(mutual_compose_finding(&derive_findings(&metadata)).is_none());
+
+        let mut noncanonical_summary = mutual_compose_dependency_map();
+        noncanonical_summary.edges[0].evidence_refs[0].summary = "untrusted summary".into();
+        assert!(mutual_compose_finding(&derive_findings(&noncanonical_summary)).is_none());
+
+        let mut mismatched_time = mutual_compose_dependency_map();
+        mismatched_time.edges[1].evidence_refs[0].collected_at = 2;
+        assert!(mutual_compose_finding(&derive_findings(&mismatched_time)).is_none());
+
+        let mut mismatched_revision = mutual_compose_dependency_map();
+        mismatched_revision.edges[1].evidence_refs[0].provider_revision = "other".into();
+        assert!(mutual_compose_finding(&derive_findings(&mismatched_revision)).is_none());
+
+        let mut wrong_provider = mutual_compose_dependency_map();
+        wrong_provider.nodes[1].provider = RuntimeProviderKind::Systemd;
+        assert!(mutual_compose_finding(&derive_findings(&wrong_provider)).is_none());
+
+        let mut collision = mutual_compose_dependency_map();
+        collision.nodes.push(collision.nodes[0].clone());
+        assert!(mutual_compose_finding(&derive_findings(&collision)).is_none());
+
+        let mut mock = mutual_compose_dependency_map();
+        mock.source = Some(RuntimeMode::Mock);
+        assert!(mutual_compose_finding(&derive_findings(&mock)).is_none());
+    }
+
+    #[test]
+    fn mock_source_never_derives_any_runtime_finding_family() {
+        let cases = vec![
+            (
+                FindingRule::SystemdRequiresTargetNotActive,
+                map(edge(RuntimeEvidenceFreshness::Fresh)),
+            ),
+            (
+                FindingRule::DockerInternalNetworkMemberPublishesPort,
+                internal_network_port_map(),
+            ),
+            (
+                FindingRule::DockerPortPublishedOnUnspecifiedAddress,
+                unspecified_address_port_map(),
+            ),
+            (FindingRule::DockerDaemonStateBindMount, daemon_state_map()),
+            (
+                FindingRule::DockerDaemonStateBindMountPublishesPort,
+                daemon_state_port_map(),
+            ),
+            (
+                FindingRule::DockerComposeDeclaredTargetNotActive,
+                compose_dependency_map("up", "exited"),
+            ),
+            (
+                FindingRule::DockerComposeMutualDependency,
+                mutual_compose_dependency_map(),
+            ),
+        ];
+
+        for (expected_rule, mut input) in cases {
+            assert!(
+                derive_findings(&input)
+                    .iter()
+                    .any(|finding| finding.rule_id == expected_rule),
+                "representative map must exercise {expected_rule:?} before mock gating"
+            );
+            input.source = Some(RuntimeMode::Mock);
+            assert!(
+                derive_findings(&input).is_empty(),
+                "mock source must suppress {expected_rule:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn finding_summary_is_a_closed_rule_and_severity_projection() {
+        let mut findings = derive_findings(&map(edge(RuntimeEvidenceFreshness::Fresh)));
+        findings.extend(derive_findings(&internal_network_port_map()));
+        findings.extend(derive_findings(&unspecified_address_port_map()));
+        findings.extend(derive_findings(&daemon_state_map()));
+        findings.extend(derive_findings(&daemon_state_port_map()));
+        findings.extend(derive_findings(&compose_dependency_map("up", "exited")));
+        findings.extend(derive_findings(&mutual_compose_dependency_map()));
+
+        assert_eq!(
+            findings.len(),
+            8,
+            "the representative maps exercise all closed rules"
+        );
+        assert_eq!(
+            crate::FindingSummary::from_findings(&findings),
+            crate::FindingSummary {
+                warning_count: 4,
+                advisory_count: 4,
+                declared_dependency_count: 3,
+                docker_daemon_authority_count: 2,
+                host_port_publication_count: 3,
+                evidence_integrity_count: 0,
+            }
+        );
+
+        // The response projection counts the finding's closed severity, not
+        // provider text or evidence. A mutated closed severity changes only
+        // the severity partition, never its rule category.
+        findings[0].severity = FindingSeverity::Advisory;
+        let mutated = crate::FindingSummary::from_findings(&findings);
+        assert_eq!(mutated.warning_count, 3);
+        assert_eq!(mutated.advisory_count, 5);
+        assert_eq!(
+            mutated.declared_dependency_count
+                + mutated.docker_daemon_authority_count
+                + mutated.host_port_publication_count,
+            8
+        );
     }
 
     #[test]

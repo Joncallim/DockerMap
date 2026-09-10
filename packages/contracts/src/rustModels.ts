@@ -56,25 +56,31 @@ export type RuntimeEvidenceFreshness = 'fresh' | 'stale' | 'timed_out';
  */
 export type RuntimeEvidenceKind =
   | ('docker_network_membership' | 'docker_volume_mount' | 'docker_port_publication')
+  | 'docker_unspecified_address_port_publication'
   | 'docker_compose_depends_on'
   | 'docker_daemon_state_bind_mount'
   | 'systemd_requires'
   | 'systemd_wants'
   | 'systemd_part_of'
   | 'npm_package_manifest_dependency'
-  | 'cron_schedule_declaration';
+  | 'cron_schedule_declaration'
+  | 'tmux_session_listing'
+  | 'compose_declared_mount'
+  | 'docker_compose_runtime_binding'
+  | 'runtime_identity_collision';
 /**
- * Evidence providers are deliberately closed.  Version two adds systemd only
- * after it received its own scheduler slot; it cannot inherit a broader host
- * collection's freshness or revision.
+ * Evidence providers are deliberately closed. Every host provider enters only
+ * after it receives its own scheduler slot, so it cannot inherit a broader
+ * host collection's freshness or revision.
  */
-export type RuntimeEvidenceProvider = 'docker' | 'systemd' | 'npm' | 'cron';
+export type RuntimeEvidenceProvider = ('docker' | 'compose' | 'systemd' | 'npm' | 'cron' | 'tmux') | 'dockermap';
 /**
  * Fixed, schema-backed host-provider slots. This is not a plugin or policy
  * interface: the daemon owns the complete finite list.
  */
 export type ProviderSlot =
   | ('network_infrastructure' | 'host_scoped' | 'python_processes' | 'native_processes' | 'project_npm')
+  | 'tmux'
   | 'cron'
   | 'systemd';
 export type RuntimeRelationshipKind =
@@ -110,32 +116,35 @@ export type RuntimeHealthState = 'healthy' | 'degraded' | 'unhealthy' | 'unknown
 export type RuntimeLogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type RuntimeServiceStatus = 'running' | 'starting' | 'stopping' | 'stopped' | 'degraded' | 'failed' | 'unknown';
 export type RuntimeNodeKind =
-  | 'container'
-  | 'docker_network'
-  | 'docker_volume'
-  | 'host'
-  | 'host_risk'
-  | 'service'
-  | 'systemd_service'
-  | 'scheduled_job'
-  | 'pm2_app'
-  | 'tmux_session'
-  | 'tailnet_node'
-  | 'reverse_proxy'
-  | 'local_dns_resolver'
-  | 'dns_provider'
-  | 'node_application'
-  | 'python_application'
-  | 'ai_agent'
-  | 'package'
-  | 'storage'
-  | 'external_api'
-  | 'package_dependency'
-  | 'database'
-  | 'worker'
-  | 'process'
-  | 'network_listener'
-  | 'orchestrator_workload';
+  | (
+      | 'container'
+      | 'docker_network'
+      | 'docker_volume'
+      | 'host'
+      | 'host_risk'
+      | 'service'
+      | 'systemd_service'
+      | 'scheduled_job'
+      | 'pm2_app'
+      | 'tmux_session'
+      | 'tailnet_node'
+      | 'reverse_proxy'
+      | 'local_dns_resolver'
+      | 'dns_provider'
+      | 'node_application'
+      | 'python_application'
+      | 'ai_agent'
+      | 'package'
+      | 'storage'
+      | 'external_api'
+      | 'package_dependency'
+      | 'database'
+      | 'worker'
+      | 'process'
+      | 'network_listener'
+      | 'orchestrator_workload'
+    )
+  | 'integrity_scope';
 export type ProviderStateKind = 'fresh' | 'stale' | 'collecting' | 'unavailable' | 'timed_out' | 'disabled';
 /**
  * A deliberately small, non-diagnostic explanation for a provider slot that
@@ -157,7 +166,13 @@ export type HealthState = 'ok' | 'degraded';
 export type FindingRule =
   | 'systemd.requires_target_not_active'
   | 'docker.internal_network_member_publishes_port'
-  | 'docker.daemon_state_bind_mount';
+  | 'docker.port_published_on_unspecified_address'
+  | 'docker.daemon_state_bind_mount'
+  | 'docker.daemon_state_bind_mount_publishes_port'
+  | 'docker.compose_declared_target_not_active'
+  | 'docker.compose_mutual_dependency'
+  | 'compose.declared_mount_missing_at_bound_container'
+  | 'runtime.identity_collision_detected';
 /**
  * Findings are intentionally a small, closed advisory vocabulary. They do
  * not expose provider output or prescribe an automated remediation.
@@ -192,6 +207,12 @@ export interface ContainerRecord {
   name: string;
   networks: string[];
   ports: string[];
+  /**
+   * Docker reported at least one valid nonzero published port whose host
+   * address is the IPv4 or IPv6 unspecified address. The collector reduces
+   * the raw bind address to this closed fact before snapshot retention.
+   */
+  publishesOnUnspecifiedAddress?: boolean;
   role: string;
   status: string;
 }
@@ -240,10 +261,11 @@ export interface RuntimeMap {
   modelRevision: string;
   nodes: RuntimeMapNode[];
   /**
-   * @minItems 7
-   * @maxItems 7
+   * @minItems 8
+   * @maxItems 8
    */
   providerStates: [
+    ProviderState,
     ProviderState,
     ProviderState,
     ProviderState,
@@ -594,6 +616,7 @@ export interface VolumesResponse {
 export interface FindingsResponse {
   findings: Finding[];
   modelRevision: string;
+  summary: FindingSummary;
 }
 export interface Finding {
   /**
@@ -612,6 +635,18 @@ export interface Finding {
   subjectRef: string;
   summary: string;
   targetRef: string;
+}
+/**
+ * A fixed, response-level count projection. It is calculated from the
+ * closed rule and severity of each finding, never from provider output.
+ */
+export interface FindingSummary {
+  advisoryCount: number;
+  declaredDependencyCount: number;
+  dockerDaemonAuthorityCount: number;
+  evidenceIntegrityCount: number;
+  hostPortPublicationCount: number;
+  warningCount: number;
 }
 
 // Rust's transparent route wrapper serializes as the record itself.

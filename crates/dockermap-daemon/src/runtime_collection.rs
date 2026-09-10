@@ -7,6 +7,7 @@
 use crate::{
     config::project_root,
     pid_namespace::{daemon_pid_namespace_scope, PidNamespaceScope},
+    process_runner::ProviderCommandError,
     provider_contract::{ProviderCollection, ProviderDiagnostic},
     providers::{
         cron::collect_scheduled_jobs,
@@ -16,7 +17,7 @@ use crate::{
         pm2::collect_pm2_apps,
         processes::{collect_native_processes_with_scope, collect_python_processes},
         systemd::collect_systemd_services,
-        tmux::collect_tmux_sessions,
+        tmux::collect_tmux_sessions_with_runner,
     },
     publication::redact_runtime_map,
 };
@@ -48,6 +49,7 @@ pub(crate) type StaticProviderSlot = ProviderSlot;
 pub(crate) const STATIC_PROVIDER_SLOTS: &[StaticProviderSlot] = &[
     StaticProviderSlot::NetworkInfrastructure,
     StaticProviderSlot::HostScoped,
+    StaticProviderSlot::Tmux,
     StaticProviderSlot::Cron,
     StaticProviderSlot::Systemd,
     StaticProviderSlot::PythonProcesses,
@@ -61,6 +63,7 @@ pub(crate) fn slot_interval(slot: StaticProviderSlot) -> Duration {
     match slot {
         StaticProviderSlot::NetworkInfrastructure => Duration::from_secs(10),
         StaticProviderSlot::HostScoped => Duration::from_secs(15),
+        StaticProviderSlot::Tmux => Duration::from_secs(15),
         StaticProviderSlot::Cron => Duration::from_secs(15),
         StaticProviderSlot::Systemd => Duration::from_secs(15),
         StaticProviderSlot::PythonProcesses => Duration::from_secs(10),
@@ -78,6 +81,32 @@ pub(crate) enum ProviderCollectionOutcome {
     InFlight,
     Failed,
     TimedOut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderCollectionError {
+    Failed,
+    TimedOut,
+}
+
+impl From<ProviderCommandError> for ProviderCollectionError {
+    fn from(error: ProviderCommandError) -> Self {
+        if matches!(error, ProviderCommandError::TimedOut(_)) {
+            Self::TimedOut
+        } else {
+            Self::Failed
+        }
+    }
+}
+
+fn provider_collection_outcome(
+    result: Result<ProviderCollection, ProviderCollectionError>,
+) -> ProviderCollectionOutcome {
+    match result {
+        Ok(collection) => ProviderCollectionOutcome::Collected(collection),
+        Err(ProviderCollectionError::Failed) => ProviderCollectionOutcome::Failed,
+        Err(ProviderCollectionError::TimedOut) => ProviderCollectionOutcome::TimedOut,
+    }
 }
 
 /// Collect provider observations off the async runtime: provider commands are
@@ -102,7 +131,7 @@ pub(crate) async fn collect_provider_slot_bounded(
         })
     };
     match tokio::time::timeout(RUNTIME_MAP_COLLECTION_TIMEOUT, work).await {
-        Ok(Ok(collection)) => ProviderCollectionOutcome::Collected(collection),
+        Ok(Ok(result)) => provider_collection_outcome(result),
         Ok(Err(join_error)) => {
             eprintln!("runtime map collection task failed: {join_error}");
             ProviderCollectionOutcome::Failed
@@ -145,7 +174,7 @@ pub(crate) fn runtime_map_from_collection(
 fn collect_provider_slot(
     slot: StaticProviderSlot,
     snapshot: &DockerSnapshot,
-) -> ProviderCollection {
+) -> Result<ProviderCollection, ProviderCollectionError> {
     let mut collection = ProviderCollection::default();
     let project_root = project_root().ok();
     let pid_namespace = daemon_pid_namespace_scope();
@@ -182,6 +211,18 @@ fn collect_provider_slot(
                 },
             );
         }
+        StaticProviderSlot::Tmux => {
+            collect_tmux_runtime_provider(pid_namespace, &mut collection)
+                .map_err(ProviderCollectionError::from)?;
+            collection.set_state(
+                slot,
+                if pid_namespace.is_restricted() {
+                    ProviderStateKind::Disabled
+                } else {
+                    ProviderStateKind::Fresh
+                },
+            );
+        }
         StaticProviderSlot::Cron => {
             collect_cron_runtime_provider(pid_namespace, &mut collection);
             collection.set_state(
@@ -194,7 +235,8 @@ fn collect_provider_slot(
             );
         }
         StaticProviderSlot::Systemd => {
-            collect_systemd_runtime_provider(pid_namespace, &mut collection);
+            collect_systemd_runtime_provider(pid_namespace, &mut collection)
+                .map_err(ProviderCollectionError::from)?;
             collection.set_state(
                 slot,
                 if pid_namespace.is_restricted() {
@@ -243,7 +285,7 @@ fn collect_provider_slot(
             }
         }
     }
-    collection
+    Ok(collection)
 }
 
 fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapNode>) {
@@ -270,7 +312,7 @@ fn collect_host_node(project_root: Option<&StdPath>, nodes: &mut Vec<RuntimeMapN
     });
 }
 
-/// `/proc/net`, schedulers, PM2, and tmux expose only
+/// `/proc/net`, schedulers, and PM2 expose only
 /// the daemon container's view in a restricted PID namespace. Keep them out
 /// of a host topology rather than relabeling container-local evidence.
 pub(crate) fn collect_host_scoped_runtime_providers(
@@ -287,10 +329,6 @@ pub(crate) fn collect_host_scoped_runtime_providers(
                 RuntimeProviderKind::Pm2,
                 "PM2 discovery omitted because the daemon runs in a restricted PID namespace",
             ),
-            (
-                RuntimeProviderKind::Tmux,
-                "tmux discovery omitted because the daemon runs in a restricted PID namespace",
-            ),
         ] {
             collection.push_diagnostic(ProviderDiagnostic::new(
                 provider,
@@ -304,7 +342,44 @@ pub(crate) fn collect_host_scoped_runtime_providers(
     let (nodes, _, diagnostics) = collection.parts_mut();
     collect_network_listeners(nodes, diagnostics);
     collect_pm2_apps(nodes, diagnostics);
-    collect_tmux_sessions(nodes, diagnostics);
+}
+
+/// Tmux is independently scheduled so the fixed read-only session listing has
+/// its own revision, freshness, timeout and single-flight guard. A restricted
+/// PID namespace cannot truthfully describe host sessions, so it produces only
+/// a bounded diagnostic and a disabled slot.
+fn collect_tmux_runtime_provider(
+    pid_namespace: PidNamespaceScope,
+    collection: &mut ProviderCollection,
+) -> Result<(), ProviderCommandError> {
+    collect_tmux_runtime_provider_with_runner(
+        pid_namespace,
+        collection,
+        crate::process_runner::run_command_with_timeout,
+    )
+}
+
+fn collect_tmux_runtime_provider_with_runner<F>(
+    pid_namespace: PidNamespaceScope,
+    collection: &mut ProviderCollection,
+    run_command: F,
+) -> Result<(), ProviderCommandError>
+where
+    F: FnMut(
+        std::process::Command,
+        std::time::Duration,
+    ) -> Result<crate::process_runner::ProviderCommandOutput, ProviderCommandError>,
+{
+    if pid_namespace.is_restricted() {
+        collection.push_diagnostic(ProviderDiagnostic::new(
+            RuntimeProviderKind::Tmux,
+            DiagnosticSeverity::Info,
+            "tmux discovery omitted because the daemon runs in a restricted PID namespace",
+        ));
+        return Ok(());
+    }
+    let (nodes, edges, diagnostics) = collection.parts_mut();
+    collect_tmux_sessions_with_runner(nodes, edges, diagnostics, run_command)
 }
 
 /// Cron is independently scheduled so declaration evidence has its own
@@ -332,18 +407,18 @@ fn collect_cron_runtime_provider(
 fn collect_systemd_runtime_provider(
     pid_namespace: PidNamespaceScope,
     collection: &mut ProviderCollection,
-) {
+) -> Result<(), ProviderCommandError> {
     if pid_namespace.is_restricted() {
         collection.push_diagnostic(ProviderDiagnostic::new(
             RuntimeProviderKind::Systemd,
             DiagnosticSeverity::Info,
             "systemd discovery omitted because the daemon runs in a restricted PID namespace",
         ));
-        return;
+        return Ok(());
     }
 
     let (nodes, edges, diagnostics) = collection.parts_mut();
-    collect_systemd_services(nodes, edges, diagnostics);
+    collect_systemd_services(nodes, edges, diagnostics)
 }
 
 fn local_hostname() -> String {
@@ -388,11 +463,7 @@ mod tests {
 
         assert!(nodes.is_empty());
         assert!(edges.is_empty());
-        for provider in [
-            RuntimeProviderKind::Network,
-            RuntimeProviderKind::Pm2,
-            RuntimeProviderKind::Tmux,
-        ] {
+        for provider in [RuntimeProviderKind::Network, RuntimeProviderKind::Pm2] {
             assert!(diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.provider == provider));
@@ -416,6 +487,24 @@ mod tests {
     }
 
     #[test]
+    fn restricted_namespace_keeps_tmux_as_a_distinct_disabled_slot() {
+        let mut tmux = ProviderCollection::default();
+        collect_tmux_runtime_provider(PidNamespaceScope::Restricted, &mut tmux)
+            .expect("restricted tmux collection is intentionally disabled, not failed");
+        tmux.set_state(StaticProviderSlot::Tmux, ProviderStateKind::Disabled);
+        assert!(tmux.states().iter().any(|state| {
+            state.slot == StaticProviderSlot::Tmux && state.state == ProviderStateKind::Disabled
+        }));
+        let (nodes, edges, diagnostics) = tmux.into_parts();
+        assert!(nodes.is_empty() && edges.is_empty());
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.provider == RuntimeProviderKind::Tmux
+                && diagnostic.message
+                    == "tmux discovery omitted because the daemon runs in a restricted PID namespace"
+        }));
+    }
+
+    #[test]
     fn restricted_namespace_keeps_systemd_as_a_distinct_disabled_slot() {
         let mut host = ProviderCollection::default();
         collect_host_scoped_runtime_providers(PidNamespaceScope::Restricted, &mut host);
@@ -425,7 +514,8 @@ mod tests {
             .all(|diagnostic| diagnostic.provider != RuntimeProviderKind::Systemd));
 
         let mut systemd = ProviderCollection::default();
-        collect_systemd_runtime_provider(PidNamespaceScope::Restricted, &mut systemd);
+        collect_systemd_runtime_provider(PidNamespaceScope::Restricted, &mut systemd)
+            .expect("restricted systemd collection is intentionally disabled, not failed");
         systemd.set_state(StaticProviderSlot::Systemd, ProviderStateKind::Disabled);
         assert!(systemd.states().iter().any(|state| {
             state.slot == StaticProviderSlot::Systemd && state.state == ProviderStateKind::Disabled
@@ -454,12 +544,55 @@ mod tests {
     }
 
     #[test]
+    fn provider_timeout_and_failure_map_to_distinct_provider_outcomes() {
+        let timeout = provider_collection_outcome(Err(ProviderCollectionError::from(
+            ProviderCommandError::TimedOut(Duration::from_secs(3)),
+        )));
+        let failure = provider_collection_outcome(Err(ProviderCollectionError::from(
+            ProviderCommandError::Wait,
+        )));
+
+        assert!(matches!(timeout, ProviderCollectionOutcome::TimedOut));
+        assert!(matches!(failure, ProviderCollectionOutcome::Failed));
+    }
+
+    #[test]
+    fn tmux_command_errors_produce_distinct_nonfresh_outcomes() {
+        for expected in [
+            ProviderCommandError::TimedOut(Duration::from_secs(3)),
+            ProviderCommandError::Wait,
+        ] {
+            let mut collection = ProviderCollection::default();
+            let result = collect_tmux_runtime_provider_with_runner(
+                PidNamespaceScope::Host { diagnostic: None },
+                &mut collection,
+                |_command, _timeout| Err(expected),
+            );
+            let outcome = provider_collection_outcome(
+                result
+                    .map(|_| collection)
+                    .map_err(ProviderCollectionError::from),
+            );
+            match expected {
+                ProviderCommandError::TimedOut(_) => {
+                    assert!(matches!(outcome, ProviderCollectionOutcome::TimedOut));
+                }
+                ProviderCommandError::Wait => {
+                    assert!(matches!(outcome, ProviderCollectionOutcome::Failed));
+                }
+                _ => unreachable!("test cases are explicit"),
+            }
+        }
+    }
+
+    #[test]
     fn static_provider_baseline_has_one_fixed_slot_per_collection_stage() {
         assert_eq!(
             STATIC_PROVIDER_SLOTS,
             [
                 StaticProviderSlot::NetworkInfrastructure,
                 StaticProviderSlot::HostScoped,
+                StaticProviderSlot::Tmux,
                 StaticProviderSlot::Cron,
                 StaticProviderSlot::Systemd,
                 StaticProviderSlot::PythonProcesses,

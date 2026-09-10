@@ -23,8 +23,13 @@
           "type": "string"
         },
         {
+          "const": "tmux",
+          "description": "Tmux has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
+          "type": "string"
+        },
+        {
           "const": "cron",
-          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
           "type": "string"
         },
         {
@@ -201,6 +206,11 @@
           "type": "string"
         },
         {
+          "const": "docker_unspecified_address_port_publication",
+          "description": "Docker reported a valid nonzero port publication on the IPv4 or IPv6\nunspecified host address. No address or port value is retained here.",
+          "type": "string"
+        },
+        {
           "const": "docker_compose_depends_on",
           "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
           "type": "string"
@@ -234,18 +244,49 @@
           "const": "cron_schedule_declaration",
           "description": "A parsed cron declaration. This does not claim the command ran.",
           "type": "string"
+        },
+        {
+          "const": "tmux_session_listing",
+          "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
+          "type": "string"
+        },
+        {
+          "const": "compose_declared_mount",
+          "description": "A bounded Compose declaration used only after an exact private binding\nto one current Docker container has succeeded. Paths and labels are\nintentionally not part of the public evidence.",
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_runtime_binding",
+          "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
+          "type": "string"
+        },
+        {
+          "const": "runtime_identity_collision",
+          "description": "DockerMap detected at least one duplicate runtime node identity after\npublication redaction/normalization. IDs and counts are omitted.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
-      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
-      "enum": [
-        "docker",
-        "systemd",
-        "npm",
-        "cron"
-      ],
-      "type": "string"
+      "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
+      "oneOf": [
+        {
+          "enum": [
+            "docker",
+            "compose",
+            "systemd",
+            "npm",
+            "cron",
+            "tmux"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "dockermap",
+          "description": "DockerMap's own bounded publication-integrity checks. This provider\nnever carries raw provider material or user-controlled text.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeEvidenceRef": {
       "additionalProperties": false,
@@ -304,7 +345,7 @@
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 4,
+          "maximum": 7,
           "minimum": 1,
           "type": "integer"
         }
@@ -565,35 +606,44 @@
       "type": "string"
     },
     "RuntimeNodeKind": {
-      "enum": [
-        "container",
-        "docker_network",
-        "docker_volume",
-        "host",
-        "host_risk",
-        "service",
-        "systemd_service",
-        "scheduled_job",
-        "pm2_app",
-        "tmux_session",
-        "tailnet_node",
-        "reverse_proxy",
-        "local_dns_resolver",
-        "dns_provider",
-        "node_application",
-        "python_application",
-        "ai_agent",
-        "package",
-        "storage",
-        "external_api",
-        "package_dependency",
-        "database",
-        "worker",
-        "process",
-        "network_listener",
-        "orchestrator_workload"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "container",
+            "docker_network",
+            "docker_volume",
+            "host",
+            "host_risk",
+            "service",
+            "systemd_service",
+            "scheduled_job",
+            "pm2_app",
+            "tmux_session",
+            "tailnet_node",
+            "reverse_proxy",
+            "local_dns_resolver",
+            "dns_provider",
+            "node_application",
+            "python_application",
+            "ai_agent",
+            "package",
+            "storage",
+            "external_api",
+            "package_dependency",
+            "database",
+            "worker",
+            "process",
+            "network_listener",
+            "orchestrator_workload"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "integrity_scope",
+          "description": "Fixed synthetic scope for facts about the integrity of the published\nruntime model itself. It never represents a host/provider entity.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeNodeLayer": {
       "enum": [
@@ -977,8 +1027,8 @@
       "items": {
         "$ref": "#/$defs/ProviderState"
       },
-      "maxItems": 7,
-      "minItems": 7,
+      "maxItems": 8,
+      "minItems": 8,
       "type": "array"
     },
     "source": {

@@ -15,6 +15,8 @@ use crate::{
     RuntimeRelationshipKind, RuntimeServiceEntity, RuntimeServiceStatus,
 };
 
+const DOCKER_UNSPECIFIED_ADDRESS_PORT_RISK_ID: &str = "host_risk_docker_unspecified_address_port";
+
 pub fn derive_images(snapshot: &DockerSnapshot) -> Vec<ImageRecord> {
     let mut grouped: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut status_by_image: BTreeMap<String, String> = BTreeMap::new();
@@ -388,13 +390,20 @@ fn docker_runtime_evidence(
         RuntimeEvidenceKind::DockerNetworkMembership => "network-membership",
         RuntimeEvidenceKind::DockerVolumeMount => "volume-mount",
         RuntimeEvidenceKind::DockerPortPublication => "port-publication",
+        RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication => {
+            "unspecified-address-port-publication"
+        }
         RuntimeEvidenceKind::DockerComposeDependsOn => "compose-depends-on",
         RuntimeEvidenceKind::DockerDaemonStateBindMount => "daemon-state-bind-mount",
         RuntimeEvidenceKind::SystemdRequires
         | RuntimeEvidenceKind::SystemdWants
         | RuntimeEvidenceKind::SystemdPartOf
         | RuntimeEvidenceKind::NpmPackageManifestDependency
-        | RuntimeEvidenceKind::CronScheduleDeclaration => {
+        | RuntimeEvidenceKind::CronScheduleDeclaration
+        | RuntimeEvidenceKind::TmuxSessionListing
+        | RuntimeEvidenceKind::ComposeDeclaredMount
+        | RuntimeEvidenceKind::DockerComposeRuntimeBinding
+        | RuntimeEvidenceKind::RuntimeIdentityCollision => {
             unreachable!("Docker evidence helper only accepts Docker evidence kinds")
         }
     };
@@ -404,6 +413,9 @@ fn docker_runtime_evidence(
         }
         RuntimeEvidenceKind::DockerVolumeMount => "Docker reported volume attachment",
         RuntimeEvidenceKind::DockerPortPublication => "Docker reported container port publication",
+        RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication => {
+            "Docker reported a container port published on an unspecified host address"
+        }
         RuntimeEvidenceKind::DockerComposeDependsOn => {
             "Docker recorded Compose dependency declaration"
         }
@@ -414,7 +426,11 @@ fn docker_runtime_evidence(
         | RuntimeEvidenceKind::SystemdWants
         | RuntimeEvidenceKind::SystemdPartOf
         | RuntimeEvidenceKind::NpmPackageManifestDependency
-        | RuntimeEvidenceKind::CronScheduleDeclaration => {
+        | RuntimeEvidenceKind::CronScheduleDeclaration
+        | RuntimeEvidenceKind::TmuxSessionListing
+        | RuntimeEvidenceKind::ComposeDeclaredMount
+        | RuntimeEvidenceKind::DockerComposeRuntimeBinding
+        | RuntimeEvidenceKind::RuntimeIdentityCollision => {
             unreachable!("Docker evidence helper only accepts Docker evidence kinds")
         }
     };
@@ -653,6 +669,55 @@ pub fn derive_runtime_map(
                     metadata: BTreeMap::new(),
                 });
             }
+        }
+    }
+
+    let unspecified_address_sources = snapshot
+        .containers
+        .iter()
+        .filter(|container| {
+            runtime_container_ids.has_unique_id(container)
+                && container.publishes_on_unspecified_address
+                && container
+                    .ports
+                    .iter()
+                    .any(|port| is_host_published_docker_port(port))
+        })
+        .map(runtime_container_id)
+        .collect::<BTreeSet<_>>();
+    if !unspecified_address_sources.is_empty()
+        && !nodes
+            .iter()
+            .any(|node| node.id == DOCKER_UNSPECIFIED_ADDRESS_PORT_RISK_ID)
+    {
+        nodes.push(RuntimeMapNode {
+            id: DOCKER_UNSPECIFIED_ADDRESS_PORT_RISK_ID.into(),
+            provider: RuntimeProviderKind::Docker,
+            kind: RuntimeNodeKind::HostRisk,
+            label: "Unspecified-address Docker port publication".into(),
+            status: None,
+            layer: Some(RuntimeNodeLayer::Host),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        });
+        for source in unspecified_address_sources {
+            if nodes.iter().filter(|node| node.id == source).count() != 1 {
+                continue;
+            }
+            edges.push(RuntimeMapEdge {
+                evidence_refs: vec![docker_runtime_evidence(
+                    snapshot,
+                    &source,
+                    DOCKER_UNSPECIFIED_ADDRESS_PORT_RISK_ID,
+                    RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication,
+                    evidence_provider_revision,
+                )],
+                source,
+                target: DOCKER_UNSPECIFIED_ADDRESS_PORT_RISK_ID.into(),
+                relationship: RuntimeRelationshipKind::Exposes,
+                metadata: BTreeMap::new(),
+            });
         }
     }
 

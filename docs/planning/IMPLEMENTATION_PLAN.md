@@ -17,7 +17,8 @@ collector, contract, and security work for:
 
 - Docker containers, networks, volumes, images, and Compose stacks.
 - systemd services, dependencies, restart metadata, uptime, and bounded logs.
-- tmux sessions and tmux-managed workers.
+- bounded tmux session listings. Any tmux-managed worker or agent relationship
+  is future scope and requires its own explicit evidence contract.
 - npm projects, Node.js services, package dependencies, and lockfiles.
 - Python applications and native Linux processes as follow-on provider peers.
 - Reverse proxies, DNS providers, external APIs, storage pools, databases, and AI agents.
@@ -338,8 +339,9 @@ Remaining:
 - Keep TypeScript runtime-map contracts in sync with Rust.
 - Add fixture examples for:
   `Cloudflare -> Caddy (systemd) -> Docker network -> Immich container -> Postgres container -> Storage volume`.
-- Add fixture examples for:
-  `Forge (npm) -> forge.service -> tmux session -> GPT worker`.
+- Do not model a tmux-session-to-worker or agent edge from V5 session listing
+  data or session metadata. A future relationship requires separately defined,
+  bounded evidence and fixtures.
 
 **A.6.5. Security and alpha evidence**
 - Files: `apps/api/test/security.test.ts`, `docs/security/THREAT_MODEL.md`,

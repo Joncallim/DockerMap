@@ -1,4 +1,6 @@
-use crate::process_runner::{run_command_with_timeout, PROVIDER_COMMAND_TIMEOUT};
+use crate::process_runner::{
+    run_command_with_timeout, ProviderCommandError, ProviderCommandOutput, PROVIDER_COMMAND_TIMEOUT,
+};
 use crate::providers::{looks_like_ai_agent, non_empty_string};
 use crate::{push_provider_diagnostic, safe_runtime_id_component};
 #[cfg(test)]
@@ -76,9 +78,25 @@ pub(crate) fn collect_systemd_services(
     nodes: &mut Vec<RuntimeMapNode>,
     edges: &mut Vec<RuntimeMapEdge>,
     diagnostics: &mut Vec<RuntimeMapDiagnostic>,
-) {
+) -> Result<(), ProviderCommandError> {
+    collect_systemd_services_with_runner(nodes, edges, diagnostics, run_command_with_timeout)
+}
+
+/// Collect the fixed systemd inventory with a caller-owned command runner.
+/// Keeping the provider-command error intact is important: the scheduler must
+/// publish an explicit timeout state rather than collapsing it into an
+/// ordinary failed collection.
+fn collect_systemd_services_with_runner<F>(
+    nodes: &mut Vec<RuntimeMapNode>,
+    edges: &mut Vec<RuntimeMapEdge>,
+    diagnostics: &mut Vec<RuntimeMapDiagnostic>,
+    mut run_command: F,
+) -> Result<(), ProviderCommandError>
+where
+    F: FnMut(Command, std::time::Duration) -> Result<ProviderCommandOutput, ProviderCommandError>,
+{
     let system_uptime = system_uptime_seconds_from_proc();
-    let output = match run_command_with_timeout(
+    let output = match run_command(
         {
             let mut command = Command::new("systemctl");
             command.args([
@@ -101,7 +119,7 @@ pub(crate) fn collect_systemd_services(
                 DiagnosticSeverity::Info,
                 format!("systemd discovery skipped: {error}"),
             );
-            return;
+            return Err(error);
         }
     };
 
@@ -112,7 +130,7 @@ pub(crate) fn collect_systemd_services(
             DiagnosticSeverity::Warning,
             "systemd discovery command failed".into(),
         );
-        return;
+        return Err(ProviderCommandError::Wait);
     }
 
     let mut summaries = parse_systemd_list_units(&String::from_utf8_lossy(&output.stdout));
@@ -132,7 +150,7 @@ pub(crate) fn collect_systemd_services(
             .iter()
             .map(|summary| summary.unit.as_str())
             .collect::<Vec<_>>();
-        match run_command_with_timeout(
+        match run_command(
             {
                 let mut command = Command::new("systemctl");
                 command.arg("show");
@@ -154,18 +172,24 @@ pub(crate) fn collect_systemd_services(
                     }
                 }
             }
-            Ok(_) => push_provider_diagnostic(
-                diagnostics,
-                RuntimeProviderKind::Systemd,
-                DiagnosticSeverity::Warning,
-                "systemd show command failed; dependency edges omitted".into(),
-            ),
-            Err(error) => push_provider_diagnostic(
-                diagnostics,
-                RuntimeProviderKind::Systemd,
-                DiagnosticSeverity::Info,
-                format!("systemd dependency discovery skipped: {error}"),
-            ),
+            Ok(_) => {
+                push_provider_diagnostic(
+                    diagnostics,
+                    RuntimeProviderKind::Systemd,
+                    DiagnosticSeverity::Warning,
+                    "systemd show command failed; dependency edges omitted".into(),
+                );
+                return Err(ProviderCommandError::Wait);
+            }
+            Err(error) => {
+                push_provider_diagnostic(
+                    diagnostics,
+                    RuntimeProviderKind::Systemd,
+                    DiagnosticSeverity::Info,
+                    format!("systemd dependency discovery skipped: {error}"),
+                );
+                return Err(error);
+            }
         }
     }
 
@@ -210,6 +234,8 @@ pub(crate) fn collect_systemd_services(
             evidence_refs: Vec::new(),
         });
     }
+
+    Ok(())
 }
 
 fn parse_systemd_list_units(value: &str) -> Vec<SystemdUnitSummary> {
@@ -443,6 +469,31 @@ mod tests {
         assert_eq!(units[0].unit, "ssh.service");
         assert_eq!(units[0].description, "OpenSSH server daemon");
         assert_eq!(units[1].unit, "docker.service");
+    }
+
+    #[test]
+    fn preserves_timeout_and_ordinary_command_failures_for_the_scheduler() {
+        for error in [
+            ProviderCommandError::TimedOut(std::time::Duration::from_secs(3)),
+            ProviderCommandError::Wait,
+        ] {
+            let mut nodes = Vec::new();
+            let mut edges = Vec::new();
+            let mut diagnostics = Vec::new();
+            let result = collect_systemd_services_with_runner(
+                &mut nodes,
+                &mut edges,
+                &mut diagnostics,
+                |_, _| Err(error),
+            );
+
+            assert_eq!(result, Err(error));
+            assert!(nodes.is_empty() && edges.is_empty());
+            assert!(diagnostics.iter().any(|diagnostic| {
+                diagnostic.provider == RuntimeProviderKind::Systemd
+                    && diagnostic.message.contains("systemd discovery skipped")
+            }));
+        }
     }
 
     #[test]

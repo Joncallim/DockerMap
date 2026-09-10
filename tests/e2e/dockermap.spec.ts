@@ -757,6 +757,16 @@ test.describe("DockerMap GUI", () => {
     })).json();
     expect(snapshot.containers.map((container: { name: string }) => container.name).sort()).toEqual(expectedNames);
 
+    const runtimeResponse = await request.get(`${stack.apiUrl}/api/runtime/map`, {
+      headers: { Authorization: "Bearer dockermap-production-e2e-token" }
+    });
+    if (!runtimeResponse.ok()) {
+      // The harness reports only a closed API-side validation label from the
+      // production container, never raw daemon bytes or general container logs.
+      console.info(`production runtime-map validation diagnostics: ${stack.productionValidationDiagnostics?.().join(",") ?? "unavailable"}`);
+    }
+    expect(runtimeResponse.status()).toBe(200);
+
     await page.goto(stack.webUrl);
     await page.getByRole("textbox", { name: "API token" }).fill("dockermap-production-e2e-token");
     await page.getByRole("button", { name: "Connect" }).click();

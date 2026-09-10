@@ -29,6 +29,11 @@ pub(crate) struct ProviderCommandOutput {
     pub(crate) status: ExitStatus,
     pub(crate) stdout: Vec<u8>,
     pub(crate) stdout_truncated: bool,
+    /// Private, bounded command stderr. Providers may use a closed classifier
+    /// for a documented normal condition, but this field must never cross the
+    /// collection/publication boundary.
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) stderr_truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,12 +151,14 @@ pub(crate) fn run_command_with_timeout_started(
     if stderr_received {
         let _ = stderr_reader.take().expect("stderr reader present").join();
     }
-    if let (Some(stdout), Some(_stderr)) = (stdout, stderr) {
+    if let (Some(stdout), Some(stderr)) = (stdout, stderr) {
         return match status {
             Some(status) => Ok(ProviderCommandOutput {
                 status,
                 stdout: stdout.bytes,
                 stdout_truncated: stdout.truncated,
+                stderr: stderr.bytes,
+                stderr_truncated: stderr.truncated,
             }),
             None => Err(ProviderCommandError::TimedOut(timeout)),
         };

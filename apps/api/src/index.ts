@@ -424,7 +424,7 @@ function getMockResponse<T>(path: string): T {
       providerStates: [
         unavailableProviderState("network_infrastructure"), unavailableProviderState("host_scoped"), unavailableProviderState("systemd"),
         unavailableProviderState("python_processes"), unavailableProviderState("native_processes"),
-        unavailableProviderState("project_npm"), unavailableProviderState("cron")
+        unavailableProviderState("project_npm"), unavailableProviderState("tmux"), unavailableProviderState("cron")
       ],
       source: "mock"
     };
@@ -434,6 +434,14 @@ function getMockResponse<T>(path: string): T {
   if (path === "/daemon/findings") {
     return {
       findings: [],
+      summary: {
+        warningCount: 0,
+        advisoryCount: 0,
+        declaredDependencyCount: 0,
+        dockerDaemonAuthorityCount: 0,
+        hostPortPublicationCount: 0,
+        evidenceIntegrityCount: 0,
+      },
       modelRevision: mockSnapshot.modelRevision ?? "node-mock-v1"
     } as T;
   }

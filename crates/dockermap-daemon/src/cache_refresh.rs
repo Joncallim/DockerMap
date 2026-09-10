@@ -6,6 +6,7 @@
 //! host providers directly.
 
 use crate::{
+    config::project_root,
     docker_collector::DockerCollector,
     provider_contract::ProviderCollection,
     providers::cron::CRON_EVIDENCE_SCHEDULE_MARKER,
@@ -14,22 +15,27 @@ use crate::{
         SYSTEMD_EVIDENCE_KIND_MARKER, SYSTEMD_EVIDENCE_PART_OF, SYSTEMD_EVIDENCE_REQUIRES,
         SYSTEMD_EVIDENCE_WANTS,
     },
-    publication::{publish_docker_snapshot, redact_health_response, redact_runtime_map},
+    providers::tmux::TMUX_EVIDENCE_SESSION_LISTING_MARKER,
+    publication::{
+        append_runtime_identity_collision_fact, publish_docker_snapshot, redact_health_response,
+        redact_runtime_map, runtime_map_has_identity_collision,
+    },
     runtime_collection::{
         collect_provider_slot_bounded, runtime_map_from_collection, slot_interval,
         ProviderCollectionOutcome, STATIC_PROVIDER_SLOTS,
     },
 };
 use dockermap_core::{
-    collision_resistant_id_component, derive_findings, derive_images, mock_snapshot,
-    DiagnosticSeverity, DockerSnapshot, FindingsResponse, HealthResponse, HealthState,
-    ProviderSlot, ProviderState, ProviderStateKind, ProviderStatusReason,
-    RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness, RuntimeEvidenceKind,
-    RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap, RuntimeMapDiagnostic, RuntimeMapEdge,
-    RuntimeMode, RuntimeProviderKind,
+    collision_resistant_id_component, derive_compose_runtime_mount_findings, derive_findings,
+    derive_images, discover_compose_files, mock_snapshot, scan_compose_binding_snapshot,
+    ComposeRuntimeBinding, DiagnosticSeverity, DockerSnapshot, FindingSummary, FindingsResponse,
+    HealthResponse, HealthState, ProviderSlot, ProviderState, ProviderStateKind,
+    ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness,
+    RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap,
+    RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMode, RuntimeProviderKind,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{atomic::AtomicBool, Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -68,6 +74,7 @@ pub(crate) struct DaemonCache {
     pub(crate) health: HealthResponse,
     pub(crate) runtime_map: RuntimeMap,
     pub(crate) findings: FindingsResponse,
+    compose_runtime_binding: Option<(dockermap_core::ComposeScan, ComposeRuntimeBinding)>,
     runtime_providers: RuntimeProviderSlots,
     /// Increments on every Docker/mock source transition. A late worker must
     /// match this generation as well as evidence, so Docker→mock→Docker can
@@ -77,6 +84,10 @@ pub(crate) struct DaemonCache {
     /// This is intentionally distinct from the broader publication revision:
     /// provider slot state may change without changing Docker facts.
     docker_observation_revision: DockerObservationRevision,
+    /// Opaque revision of the one aggregate publication-integrity condition.
+    /// It advances only when the live collision boolean changes; no collided
+    /// identity, count, diagnostic, or provider material participates.
+    integrity_observation_revision: IntegrityObservationRevision,
     revision: PublicationRevision,
 }
 
@@ -182,6 +193,40 @@ impl DockerObservationRevision {
                 .expect("Docker observation revision sequence overflow");
             self.last_observable = Some(observable);
         }
+    }
+}
+
+/// Per-process opaque token for the collision aggregate. Unlike a Docker
+/// observation token, this is keyed only to the already-sanitized boolean
+/// condition that can safely be published as evidence.
+#[derive(Clone)]
+struct IntegrityObservationRevision {
+    boot: String,
+    sequence: u64,
+    last_active: Option<bool>,
+}
+
+impl IntegrityObservationRevision {
+    fn new() -> Self {
+        Self {
+            boot: opaque_revision_boot_component(),
+            sequence: 0,
+            last_active: None,
+        }
+    }
+
+    fn assign(&mut self, active: bool) {
+        if self.last_active != Some(active) {
+            self.sequence = self
+                .sequence
+                .checked_add(1)
+                .expect("integrity observation revision sequence overflow");
+            self.last_active = Some(active);
+        }
+    }
+
+    fn current(&self) -> String {
+        format!("{}-{}", self.boot, self.sequence)
     }
 }
 
@@ -310,6 +355,7 @@ impl SlotDataRevision {
 pub(crate) struct ProviderSlotFlights {
     network: Arc<AtomicBool>,
     host: Arc<AtomicBool>,
+    tmux: Arc<AtomicBool>,
     cron: Arc<AtomicBool>,
     systemd: Arc<AtomicBool>,
     python: Arc<AtomicBool>,
@@ -322,6 +368,7 @@ impl Default for ProviderSlotFlights {
         Self {
             network: Arc::new(AtomicBool::new(false)),
             host: Arc::new(AtomicBool::new(false)),
+            tmux: Arc::new(AtomicBool::new(false)),
             cron: Arc::new(AtomicBool::new(false)),
             systemd: Arc::new(AtomicBool::new(false)),
             python: Arc::new(AtomicBool::new(false)),
@@ -339,6 +386,7 @@ impl ProviderSlotFlights {
         match slot {
             ProviderSlot::NetworkInfrastructure => self.network.clone(),
             ProviderSlot::HostScoped => self.host.clone(),
+            ProviderSlot::Tmux => self.tmux.clone(),
             ProviderSlot::Cron => self.cron.clone(),
             ProviderSlot::Systemd => self.systemd.clone(),
             ProviderSlot::PythonProcesses => self.python.clone(),
@@ -351,6 +399,7 @@ impl ProviderSlotFlights {
         [
             &self.network,
             &self.host,
+            &self.tmux,
             &self.cron,
             &self.systemd,
             &self.python,
@@ -392,9 +441,11 @@ impl DaemonCache {
                 ..Default::default()
             },
             findings: FindingsResponse::default(),
+            compose_runtime_binding: None,
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
+            integrity_observation_revision: IntegrityObservationRevision::new(),
             revision: PublicationRevision::new(),
         };
         cache.assign_docker_observation_revision();
@@ -409,8 +460,18 @@ impl DaemonCache {
             .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
         // Findings are a pure projection of the sanitized runtime map, so
         // calculate and cache them only after the publication revision exists.
+        let mut findings = derive_findings(&self.runtime_map);
+        if self.health.mode == RuntimeMode::Docker {
+            if let Some((scan, binding)) = &self.compose_runtime_binding {
+                let mut binding = binding.clone();
+                binding.provider_revision = self.docker_observation_token();
+                findings.extend(derive_compose_runtime_mount_findings(scan, &binding));
+            }
+        }
+        findings.sort_by(|left, right| left.id.cmp(&right.id));
         self.findings = FindingsResponse {
-            findings: derive_findings(&self.runtime_map),
+            summary: FindingSummary::from_findings(&findings),
+            findings,
             model_revision: self.runtime_map.model_revision.clone(),
         };
     }
@@ -433,6 +494,23 @@ impl DaemonCache {
             &self.runtime_providers,
             &docker_observation_token,
         );
+        self.apply_runtime_identity_collision_fact();
+    }
+
+    /// The map is rebuilt before this gate on every publication, so a prior
+    /// aggregate fact cannot survive a resolved collision or a source reset.
+    fn apply_runtime_identity_collision_fact(&mut self) {
+        let active = self.health.mode == RuntimeMode::Docker
+            && runtime_map_has_identity_collision(&self.runtime_map);
+        self.integrity_observation_revision.assign(active);
+        if active {
+            let token = self.integrity_observation_revision.current();
+            let _ = append_runtime_identity_collision_fact(
+                &mut self.runtime_map,
+                &token,
+                self.snapshot.last_updated,
+            );
+        }
     }
 }
 
@@ -516,6 +594,13 @@ async fn publish_docker_snapshot_cache(
         mark_network_observation_stale(&mut updated.runtime_providers);
     }
     updated.docker_observation_revision = cache.docker_observation_revision.clone();
+    // The collision aggregate is one stable boolean observation for this
+    // source generation. Replacing the cache for an otherwise identical
+    // Docker refresh must not mint a new V7 evidence token and churn the
+    // public model revision/SSE stream.
+    if same_source {
+        updated.integrity_observation_revision = cache.integrity_observation_revision.clone();
+    }
     updated.rebuild_runtime_map();
     updated.revision = cache.revision.clone();
     updated.assign_revision();
@@ -558,9 +643,11 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     }
 
     let mut cache = match docker_collector(state).await {
-        Ok(collector) => match collector.collect_snapshot().await {
-            Ok(mut snapshot) => {
+        Ok(collector) => match collector.collect_observation().await {
+            Ok(observation) => {
+                let mut snapshot = observation.snapshot;
                 snapshot.images = derive_images(&snapshot);
+                let collected_at = snapshot.last_updated;
                 let health = HealthResponse {
                     status: HealthState::Ok,
                     mode: RuntimeMode::Docker,
@@ -575,9 +662,14 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
                     health,
                     runtime_map: empty_runtime_map(0),
                     findings: FindingsResponse::default(),
+                    compose_runtime_binding: bounded_compose_runtime_binding(
+                        observation.compose_containers,
+                        collected_at,
+                    ),
                     runtime_providers: unavailable_provider_slots(),
                     source_generation: 0,
                     docker_observation_revision: DockerObservationRevision::new(),
+                    integrity_observation_revision: IntegrityObservationRevision::new(),
                     revision: PublicationRevision::new(),
                 }
             }
@@ -599,6 +691,51 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     // cache is observable through health, API proxy, or SSE routes.
     redact_health_response(&mut cache.health);
     cache
+}
+
+/// Compose declarations are read only from the configured project root and
+/// only through the existing bounded parser. A symlinked config is rejected
+/// rather than followed, so Docker-provided label text cannot broaden reads.
+fn bounded_compose_runtime_binding(
+    containers: Option<Vec<dockermap_core::ComposeRuntimeContainer>>,
+    collected_at: u64,
+) -> Option<(dockermap_core::ComposeScan, ComposeRuntimeBinding)> {
+    let containers = containers?;
+    let root = project_root().ok()?;
+    let files = discover_compose_files(&root);
+    if files.is_empty()
+        || files.iter().any(|file| {
+            std::fs::symlink_metadata(file)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(true)
+        })
+    {
+        return None;
+    }
+    let canonical_files = files
+        .iter()
+        .map(|file| file.canonicalize().ok())
+        .collect::<Option<Vec<_>>>()?;
+    let root = root.canonicalize().ok()?;
+    if canonical_files.iter().any(|file| !file.starts_with(&root)) {
+        return None;
+    }
+    let (scan, project, _fingerprint) = scan_compose_binding_snapshot(&root, &canonical_files)?;
+    let config_files = canonical_files
+        .iter()
+        .map(|file| file.to_string_lossy().to_string())
+        .collect::<BTreeSet<_>>();
+    Some((
+        scan,
+        ComposeRuntimeBinding {
+            project,
+            config_files,
+            containers,
+            collected_at,
+            provider_revision: String::new(),
+            fresh: true,
+        },
+    ))
 }
 
 const MAX_CONCURRENT_PROVIDER_SLOTS: usize = 2;
@@ -888,6 +1025,8 @@ fn runtime_map_for_snapshot(
                 bind_npm_evidence(&mut edges, slot_state);
             } else if slot == ProviderSlot::Cron {
                 bind_cron_evidence(&mut edges, slot_state);
+            } else if slot == ProviderSlot::Tmux {
+                bind_tmux_evidence(&mut edges, slot_state);
             }
             let (target_nodes, target_edges, target_diagnostics) = combined.parts_mut();
             target_nodes.extend(nodes);
@@ -902,22 +1041,48 @@ fn runtime_map_for_snapshot(
             });
         }
     }
-    // Cron's declaration target is canonical only when the independently
-    // retained HostScoped observation supplied `host_local`. Startup and host
-    // refresh ordering can otherwise leave a dangling relationship; omit it
-    // rather than publishing an unverifiable target or borrowing host state.
-    let has_canonical_host = combined.nodes().iter().any(|node| {
-        node.id == "host_local"
-            && node.provider == RuntimeProviderKind::Host
-            && node.kind == dockermap_core::RuntimeNodeKind::Host
+    // Cron and Tmux target the canonical local host only when the independent
+    // HostScoped observation supplied exactly one such node. Startup, reset,
+    // and collision ordering can otherwise leave a dangling or ambiguous
+    // relationship; omit it rather than borrowing host state. Tmux has the
+    // additional source gate because a duplicate generated session identity
+    // cannot safely attest which listing record produced the relationship.
+    let canonical_host_nodes = combined
+        .nodes()
+        .iter()
+        .filter(|node| node.id == "host_local")
+        .collect::<Vec<_>>();
+    let has_exactly_one_canonical_host = canonical_host_nodes.len() == 1
+        && canonical_host_nodes[0].provider == RuntimeProviderKind::Host
+        && canonical_host_nodes[0].kind == dockermap_core::RuntimeNodeKind::Host;
+    let tmux_source_identities = combined.nodes().iter().fold(
+        BTreeMap::<String, (usize, bool)>::new(),
+        |mut counts, node| {
+            let entry = counts.entry(node.id.clone()).or_insert((0, false));
+            entry.0 += 1;
+            entry.1 |= node.provider == RuntimeProviderKind::Tmux
+                && node.kind == dockermap_core::RuntimeNodeKind::TmuxSession;
+            counts
+        },
+    );
+    combined.parts_mut().1.retain(|edge| {
+        if edge.target != "host_local"
+            || edge.relationship != dockermap_core::RuntimeRelationshipKind::RunsOn
+        {
+            return true;
+        }
+        if edge.source.starts_with("scheduled_job_") {
+            return has_exactly_one_canonical_host;
+        }
+        if edge.source.starts_with("tmux_session_") {
+            return *mode == RuntimeMode::Docker
+                && has_exactly_one_canonical_host
+                && tmux_source_identities
+                    .get(&edge.source)
+                    .is_some_and(|(count, is_tmux_session)| *count == 1 && *is_tmux_session);
+        }
+        true
     });
-    if !has_canonical_host {
-        combined.parts_mut().1.retain(|edge| {
-            !(edge.source.starts_with("scheduled_job_")
-                && edge.target == "host_local"
-                && edge.relationship == dockermap_core::RuntimeRelationshipKind::RunsOn)
-        });
-    }
     let mut runtime_map =
         runtime_map_from_collection(snapshot, &combined, docker_observation_revision, mode);
     runtime_map.provider_states = provider_states_for(slots);
@@ -999,6 +1164,85 @@ fn bind_cron_evidence(edges: &mut [RuntimeMapEdge], state: &SlotRuntimeState) {
 fn clear_cron_evidence(edges: &mut [RuntimeMapEdge]) {
     for edge in edges.iter_mut() {
         edge.metadata.remove(CRON_EVIDENCE_SCHEDULE_MARKER);
+        edge.evidence_refs.clear();
+    }
+}
+
+/// Bind a fixed tmux session listing only to the independently scheduled
+/// Tmux slot. The private marker is removed in every path. The final runtime
+/// map separately verifies that the source session and local-host target are
+/// both unique before it retains the relationship.
+fn bind_tmux_evidence(edges: &mut [RuntimeMapEdge], state: &SlotRuntimeState) {
+    let disabled = retained_collection(&state.observation)
+        .as_ref()
+        .is_some_and(|collection| {
+            collection.states().iter().any(|candidate| {
+                candidate.slot == ProviderSlot::Tmux
+                    && candidate.state == ProviderStateKind::Disabled
+            })
+        });
+    let freshness = match &state.observation {
+        RuntimeProviderState::Fresh(_) => RuntimeEvidenceFreshness::Fresh,
+        RuntimeProviderState::Collecting(Some(_)) | RuntimeProviderState::Degraded(Some(_)) => {
+            RuntimeEvidenceFreshness::Stale
+        }
+        RuntimeProviderState::TimedOut(Some(_)) => RuntimeEvidenceFreshness::TimedOut,
+        RuntimeProviderState::Unavailable
+        | RuntimeProviderState::Collecting(None)
+        | RuntimeProviderState::Degraded(None)
+        | RuntimeProviderState::TimedOut(None) => {
+            clear_tmux_evidence(edges);
+            return;
+        }
+    };
+    let (Some(revision), Some(collected_at)) = (
+        state
+            .freshness
+            .data_revision
+            .as_ref()
+            .map(SlotDataRevision::public),
+        state.freshness.last_success_ms,
+    ) else {
+        clear_tmux_evidence(edges);
+        return;
+    };
+    if disabled {
+        clear_tmux_evidence(edges);
+        return;
+    }
+    for edge in edges.iter_mut() {
+        let marker = edge.metadata.remove(TMUX_EVIDENCE_SESSION_LISTING_MARKER);
+        if marker.as_deref() != Some("observed")
+            || edge.relationship != dockermap_core::RuntimeRelationshipKind::RunsOn
+            || !edge.source.starts_with("tmux_session_")
+            || edge.target != "host_local"
+            || edge.source == edge.target
+        {
+            edge.evidence_refs.clear();
+            continue;
+        }
+        edge.evidence_refs = vec![RuntimeEvidenceRef {
+            version: 5,
+            id: format!(
+                "tmux_evidence_session_listing_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            provider: RuntimeEvidenceProvider::Tmux,
+            kind: RuntimeEvidenceKind::TmuxSessionListing,
+            assertion_kind: RuntimeEvidenceAssertionKind::Observed,
+            summary: "tmux listed a local session".into(),
+            subject_ref: edge.source.clone(),
+            collected_at,
+            provider_revision: revision.clone(),
+            provider_slot: Some(ProviderSlot::Tmux),
+            freshness,
+        }];
+    }
+}
+
+fn clear_tmux_evidence(edges: &mut [RuntimeMapEdge]) {
+    for edge in edges.iter_mut() {
+        edge.metadata.remove(TMUX_EVIDENCE_SESSION_LISTING_MARKER);
         edge.evidence_refs.clear();
     }
 }
@@ -1485,6 +1729,36 @@ mod scheduler_tests {
         collection
     }
 
+    fn marked_tmux_session() -> ProviderCollection {
+        let mut collection = ProviderCollection::default();
+        collection.set_state(ProviderSlot::Tmux, ProviderStateKind::Fresh);
+        collection.nodes_mut().push(RuntimeMapNode {
+            id: "tmux_session_opaque".into(),
+            provider: RuntimeProviderKind::Tmux,
+            kind: RuntimeNodeKind::TmuxSession,
+            label: "DOCKERMAP_TEST_TMUX_SESSION_NAME_SECRET".into(),
+            status: Some("attached".into()),
+            layer: Some(RuntimeNodeLayer::Session),
+            metadata: BTreeMap::from([(
+                "sessionId".into(),
+                "DOCKERMAP_TEST_TMUX_SESSION_METADATA_SECRET".into(),
+            )]),
+            service: None,
+            package: None,
+        });
+        collection.parts_mut().1.push(RuntimeMapEdge {
+            source: "tmux_session_opaque".into(),
+            target: "host_local".into(),
+            relationship: dockermap_core::RuntimeRelationshipKind::RunsOn,
+            metadata: BTreeMap::from([(
+                TMUX_EVIDENCE_SESSION_LISTING_MARKER.into(),
+                "observed".into(),
+            )]),
+            evidence_refs: Vec::new(),
+        });
+        collection
+    }
+
     fn host_collection() -> ProviderCollection {
         let mut collection = ProviderCollection::default();
         collection.set_state(ProviderSlot::HostScoped, ProviderStateKind::Fresh);
@@ -1564,6 +1838,241 @@ mod scheduler_tests {
             assert_eq!(evidence.collected_at, 42);
             assert_eq!(evidence.freshness, expected);
         }
+    }
+
+    #[test]
+    fn tmux_session_listing_evidence_is_slot_bound_target_gated_and_redacted() {
+        for (observation, expected) in [
+            (
+                RuntimeProviderState::Fresh(marked_tmux_session()),
+                RuntimeEvidenceFreshness::Fresh,
+            ),
+            (
+                RuntimeProviderState::Degraded(Some(marked_tmux_session())),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                RuntimeProviderState::TimedOut(Some(marked_tmux_session())),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
+        ] {
+            let mut provider_slots = slots();
+            let tmux = provider_slots.get_mut(&ProviderSlot::Tmux).unwrap();
+            tmux.observation = observation;
+            tmux.freshness.data_revision = Some(SlotDataRevision::first());
+            tmux.freshness.last_success_ms = Some(42);
+            // A completed Tmux pass alone must not publish a dangling edge.
+            let no_host = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &provider_slots,
+                "docker-observation",
+            );
+            assert!(no_host
+                .edges
+                .iter()
+                .all(|edge| edge.source != "tmux_session_opaque"));
+
+            let host = provider_slots.get_mut(&ProviderSlot::HostScoped).unwrap();
+            host.observation = RuntimeProviderState::Fresh(host_collection());
+            host.freshness.data_revision = Some(SlotDataRevision::first());
+            host.freshness.last_success_ms = Some(42);
+            let map = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &provider_slots,
+                "docker-observation",
+            );
+            let edge = map
+                .edges
+                .iter()
+                .find(|edge| edge.source == "tmux_session_opaque")
+                .expect("canonical host admits tmux edge");
+            assert!(edge.metadata.is_empty());
+            assert_eq!(edge.evidence_refs.len(), 1);
+            let evidence = &edge.evidence_refs[0];
+            assert_eq!(evidence.version, 5);
+            assert_eq!(evidence.provider, RuntimeEvidenceProvider::Tmux);
+            assert_eq!(evidence.kind, RuntimeEvidenceKind::TmuxSessionListing);
+            assert_eq!(
+                evidence.assertion_kind,
+                RuntimeEvidenceAssertionKind::Observed
+            );
+            assert_eq!(evidence.summary, "tmux listed a local session");
+            assert_eq!(evidence.provider_slot, Some(ProviderSlot::Tmux));
+            assert_eq!(evidence.collected_at, 42);
+            assert_eq!(evidence.freshness, expected);
+            assert!(!evidence.provider_revision.is_empty());
+            let serialized = serde_json::to_string(evidence).expect("evidence serializes");
+            for sentinel in [
+                "DOCKERMAP_TEST_TMUX_SESSION_NAME_SECRET",
+                "DOCKERMAP_TEST_TMUX_SESSION_METADATA_SECRET",
+            ] {
+                assert!(
+                    !serialized.contains(sentinel),
+                    "session data must never enter tmux evidence"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tmux_evidence_fails_closed_for_ambiguous_source_missing_lifecycle_reset_and_mock() {
+        let mut slots_without_revision = slots();
+        let tmux = slots_without_revision.get_mut(&ProviderSlot::Tmux).unwrap();
+        tmux.observation = RuntimeProviderState::Fresh(marked_tmux_session());
+        slots_without_revision
+            .get_mut(&ProviderSlot::HostScoped)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &slots_without_revision,
+            "docker-observation",
+        );
+        let edge = map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "tmux_session_opaque")
+            .expect("identity is visible without an attesting lifecycle");
+        assert!(edge.evidence_refs.is_empty() && edge.metadata.is_empty());
+
+        let mut disabled = slots();
+        let mut collection = marked_tmux_session();
+        collection.set_state(ProviderSlot::Tmux, ProviderStateKind::Disabled);
+        let tmux = disabled.get_mut(&ProviderSlot::Tmux).unwrap();
+        tmux.observation = RuntimeProviderState::Fresh(collection);
+        tmux.freshness.data_revision = Some(SlotDataRevision::first());
+        tmux.freshness.last_success_ms = Some(42);
+        disabled
+            .get_mut(&ProviderSlot::HostScoped)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &disabled,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .find(|edge| edge.source == "tmux_session_opaque")
+            .expect("disabled tmux identity remains visible without evidence")
+            .evidence_refs
+            .is_empty());
+
+        let mut ambiguous = slots();
+        let mut collection = marked_tmux_session();
+        collection.nodes_mut().push(RuntimeMapNode {
+            id: "tmux_session_opaque".into(),
+            provider: RuntimeProviderKind::Process,
+            kind: RuntimeNodeKind::Process,
+            label: "duplicate".into(),
+            status: None,
+            layer: Some(RuntimeNodeLayer::Session),
+            metadata: BTreeMap::new(),
+            service: None,
+            package: None,
+        });
+        let tmux = ambiguous.get_mut(&ProviderSlot::Tmux).unwrap();
+        tmux.observation = RuntimeProviderState::Fresh(collection);
+        tmux.freshness.data_revision = Some(SlotDataRevision::first());
+        tmux.freshness.last_success_ms = Some(42);
+        ambiguous
+            .get_mut(&ProviderSlot::HostScoped)
+            .unwrap()
+            .observation = RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &ambiguous,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .all(|edge| edge.source != "tmux_session_opaque"));
+
+        // The canonical host target must be unique and have the closed Host shape.
+        // A colliding or misclassified `host_local` must not make the session edge
+        // routable or attestable.
+        for host in [
+            {
+                let mut host = host_collection();
+                host.nodes_mut().push(RuntimeMapNode {
+                    id: "host_local".into(),
+                    provider: RuntimeProviderKind::Host,
+                    kind: RuntimeNodeKind::Host,
+                    label: "duplicate host".into(),
+                    status: Some("online".into()),
+                    layer: Some(RuntimeNodeLayer::Host),
+                    metadata: BTreeMap::new(),
+                    service: None,
+                    package: None,
+                });
+                host
+            },
+            {
+                let mut host = host_collection();
+                let node = host.nodes_mut().first_mut().expect("host node");
+                node.provider = RuntimeProviderKind::Tmux;
+                node.kind = RuntimeNodeKind::TmuxSession;
+                host
+            },
+        ] {
+            let mut invalid_host = slots();
+            let tmux = invalid_host.get_mut(&ProviderSlot::Tmux).unwrap();
+            tmux.observation = RuntimeProviderState::Fresh(marked_tmux_session());
+            tmux.freshness.data_revision = Some(SlotDataRevision::first());
+            tmux.freshness.last_success_ms = Some(42);
+            let host_slot = invalid_host.get_mut(&ProviderSlot::HostScoped).unwrap();
+            host_slot.observation = RuntimeProviderState::Fresh(host);
+            host_slot.freshness.data_revision = Some(SlotDataRevision::first());
+            host_slot.freshness.last_success_ms = Some(42);
+            let map = runtime_map_for_snapshot(
+                &mock_snapshot(),
+                &RuntimeMode::Docker,
+                &invalid_host,
+                "docker-observation",
+            );
+            assert!(map
+                .edges
+                .iter()
+                .all(|edge| edge.source != "tmux_session_opaque"));
+        }
+
+        let mut reset = source_reset_provider_slots();
+        reset.get_mut(&ProviderSlot::Tmux).unwrap().observation = RuntimeProviderState::Unavailable;
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Docker,
+            &reset,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .all(|edge| edge.source != "tmux_session_opaque"));
+
+        let mut mock = slots();
+        let tmux = mock.get_mut(&ProviderSlot::Tmux).unwrap();
+        tmux.observation = RuntimeProviderState::Fresh(marked_tmux_session());
+        tmux.freshness.data_revision = Some(SlotDataRevision::first());
+        tmux.freshness.last_success_ms = Some(42);
+        mock.get_mut(&ProviderSlot::HostScoped).unwrap().observation =
+            RuntimeProviderState::Fresh(host_collection());
+        let map = runtime_map_for_snapshot(
+            &mock_snapshot(),
+            &RuntimeMode::Mock,
+            &mock,
+            "docker-observation",
+        );
+        assert!(map
+            .edges
+            .iter()
+            .all(|edge| edge.source != "tmux_session_opaque"));
     }
 
     #[test]
@@ -1662,6 +2171,205 @@ mod scheduler_tests {
             assert_eq!(evidence.freshness, expected);
             assert!(!evidence.provider_revision.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn failed_systemd_collection_is_unavailable_initially_and_stale_when_retained() {
+        let initial = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        let initial_snapshot = initial.cache.read().await.snapshot.clone();
+        apply_provider_slot_outcome(
+            &initial,
+            ProviderSlot::Systemd,
+            initial_snapshot,
+            RuntimeMode::Docker,
+            0,
+            ProviderCollectionOutcome::Failed,
+            Duration::from_secs(1),
+        )
+        .await;
+        let initial_cache = initial.cache.read().await;
+        assert!(matches!(
+            initial_cache.runtime_providers[&ProviderSlot::Systemd].observation,
+            RuntimeProviderState::Degraded(None)
+        ));
+        assert!(initial_cache
+            .runtime_map
+            .provider_states
+            .iter()
+            .any(|state| {
+                state.slot == ProviderSlot::Systemd
+                    && state.state == ProviderStateKind::Unavailable
+                    && state.status_reason == Some(ProviderStatusReason::CollectionFailed)
+            }));
+        drop(initial_cache);
+
+        let retained = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        {
+            let mut cache = retained.cache.write().await;
+            let state = cache
+                .runtime_providers
+                .get_mut(&ProviderSlot::Systemd)
+                .unwrap();
+            state.observation = RuntimeProviderState::Fresh(marked_systemd_dependency());
+            state.freshness.data_revision = Some(SlotDataRevision::first());
+            state.freshness.last_success_ms = Some(42);
+            cache.rebuild_runtime_map();
+        }
+        let retained_snapshot = retained.cache.read().await.snapshot.clone();
+        apply_provider_slot_outcome(
+            &retained,
+            ProviderSlot::Systemd,
+            retained_snapshot,
+            RuntimeMode::Docker,
+            0,
+            ProviderCollectionOutcome::Failed,
+            Duration::from_secs(2),
+        )
+        .await;
+        let retained_cache = retained.cache.read().await;
+        assert!(matches!(
+            retained_cache.runtime_providers[&ProviderSlot::Systemd].observation,
+            RuntimeProviderState::Degraded(Some(_))
+        ));
+        assert!(retained_cache
+            .runtime_map
+            .provider_states
+            .iter()
+            .any(|state| {
+                state.slot == ProviderSlot::Systemd
+                    && state.state == ProviderStateKind::Stale
+                    && state.status_reason == Some(ProviderStatusReason::CollectionFailed)
+            }));
+        assert!(retained_cache
+            .runtime_map
+            .edges
+            .iter()
+            .any(|edge| edge.source == "systemd_service_application"));
+    }
+
+    #[tokio::test]
+    async fn tmux_failure_retains_sessions_but_no_server_clears_them_freshly() {
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        {
+            let mut cache = state.cache.write().await;
+            let slot = cache
+                .runtime_providers
+                .get_mut(&ProviderSlot::Tmux)
+                .unwrap();
+            slot.observation = RuntimeProviderState::Fresh(marked_tmux_session());
+            slot.freshness.data_revision = Some(SlotDataRevision::first());
+            slot.freshness.last_success_ms = Some(42);
+            cache.rebuild_runtime_map();
+        }
+
+        let snapshot = state.cache.read().await.snapshot.clone();
+        apply_provider_slot_outcome(
+            &state,
+            ProviderSlot::Tmux,
+            snapshot.clone(),
+            RuntimeMode::Docker,
+            0,
+            ProviderCollectionOutcome::Failed,
+            Duration::from_secs(1),
+        )
+        .await;
+        let cache = state.cache.read().await;
+        assert!(matches!(
+            cache.runtime_providers[&ProviderSlot::Tmux].observation,
+            RuntimeProviderState::Degraded(Some(_))
+        ));
+        assert!(cache
+            .runtime_map
+            .nodes
+            .iter()
+            .any(|node| node.id == "tmux_session_opaque"));
+        assert!(cache.runtime_map.provider_states.iter().any(|provider| {
+            provider.slot == ProviderSlot::Tmux
+                && provider.state == ProviderStateKind::Stale
+                && provider.status_reason == Some(ProviderStatusReason::CollectionFailed)
+        }));
+        drop(cache);
+
+        let mut empty = ProviderCollection::default();
+        empty.set_state(ProviderSlot::Tmux, ProviderStateKind::Fresh);
+        apply_provider_slot_outcome(
+            &state,
+            ProviderSlot::Tmux,
+            snapshot,
+            RuntimeMode::Docker,
+            0,
+            ProviderCollectionOutcome::Collected(empty),
+            Duration::from_secs(2),
+        )
+        .await;
+        let cache = state.cache.read().await;
+        assert!(matches!(
+            cache.runtime_providers[&ProviderSlot::Tmux].observation,
+            RuntimeProviderState::Fresh(_)
+        ));
+        assert!(cache
+            .runtime_map
+            .nodes
+            .iter()
+            .all(|node| node.id != "tmux_session_opaque"));
+        assert!(cache.runtime_map.provider_states.iter().any(|provider| {
+            provider.slot == ProviderSlot::Tmux
+                && provider.state == ProviderStateKind::Fresh
+                && provider.status_reason.is_none()
+        }));
+    }
+
+    #[tokio::test]
+    async fn timed_out_systemd_collection_publishes_collection_timed_out_not_failed() {
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        let snapshot = state.cache.read().await.snapshot.clone();
+        apply_provider_slot_outcome(
+            &state,
+            ProviderSlot::Systemd,
+            snapshot,
+            RuntimeMode::Docker,
+            0,
+            ProviderCollectionOutcome::TimedOut,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        let cache = state.cache.read().await;
+        assert!(matches!(
+            cache.runtime_providers[&ProviderSlot::Systemd].observation,
+            RuntimeProviderState::TimedOut(None)
+        ));
+        let systemd = cache
+            .runtime_map
+            .provider_states
+            .iter()
+            .find(|provider| provider.slot == ProviderSlot::Systemd)
+            .expect("the fixed systemd slot is always projected");
+        assert_eq!(systemd.state, ProviderStateKind::TimedOut);
+        assert_eq!(
+            systemd.status_reason,
+            Some(ProviderStatusReason::CollectionTimedOut)
+        );
+        assert_ne!(
+            systemd.status_reason,
+            Some(ProviderStatusReason::CollectionFailed)
+        );
     }
 
     #[test]
@@ -1829,7 +2537,7 @@ mod scheduler_tests {
         snapshot.containers[0].mounts = vec![ContainerMount {
             id: "private-mount-id".into(),
             kind: ComposeMountKind::Bind,
-            source: Some("/private/DOCKERMAP_TEST_DAEMON_STATE/docker.sock".into()),
+            source: Some("/var/run/docker.sock".into()),
             target: "/private/target".into(),
             read_only: true,
         }];
@@ -1861,6 +2569,132 @@ mod scheduler_tests {
                 "cached finding leaked {forbidden}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn daemon_state_host_port_warning_is_docker_only_and_cleared_on_reset() {
+        let mut snapshot = mock_snapshot();
+        snapshot.containers[0].mounts = vec![ContainerMount {
+            id: "private-mount-id".into(),
+            kind: ComposeMountKind::Bind,
+            source: Some("/var/run/docker.sock".into()),
+            target: "/private/target".into(),
+            read_only: true,
+        }];
+        let mut initial = docker_cache(snapshot);
+        initial.rebuild_runtime_map();
+        initial.assign_revision();
+        let finding = initial
+            .findings
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.rule_id
+                    == dockermap_core::FindingRule::DockerDaemonStateBindMountPublishesPort
+            })
+            .expect("fresh Docker daemon-state and host-port evidence produces its warning");
+        assert_eq!(finding.evidence_refs.len(), 2);
+        assert_eq!(
+            finding.evidence_refs[0].kind,
+            RuntimeEvidenceKind::DockerDaemonStateBindMount
+        );
+        assert_eq!(
+            finding.evidence_refs[1].kind,
+            RuntimeEvidenceKind::DockerPortPublication
+        );
+
+        let state = AppState {
+            cache: Arc::new(RwLock::new(initial)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let cache = state.cache.read().await;
+        assert_eq!(cache.health.mode, RuntimeMode::Mock);
+        assert!(cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(cache.findings.findings.iter().all(|finding| {
+            finding.rule_id != dockermap_core::FindingRule::DockerDaemonStateBindMountPublishesPort
+        }));
+    }
+
+    #[tokio::test]
+    async fn compose_target_advisory_is_cached_only_for_docker_source_and_cleared_on_reset() {
+        let mut snapshot = mock_snapshot();
+        snapshot
+            .containers
+            .iter_mut()
+            .find(|container| container.id == "container_api")
+            .expect("fixture supplies Compose dependency target")
+            .status = "Exited (1) 2 seconds ago".into();
+        let mut initial = docker_cache(snapshot);
+        initial.rebuild_runtime_map();
+        initial.assign_revision();
+        assert!(initial.findings.findings.iter().any(|finding| {
+            finding.rule_id == dockermap_core::FindingRule::DockerComposeDeclaredTargetNotActive
+                && finding.evidence_refs.len() == 1
+                && finding.evidence_refs[0].kind == RuntimeEvidenceKind::DockerComposeDependsOn
+        }));
+        let state = AppState {
+            cache: Arc::new(RwLock::new(initial)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let cache = state.cache.read().await;
+        assert_eq!(cache.health.mode, RuntimeMode::Mock);
+        assert!(cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(cache.findings.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn compose_mutual_dependency_advisory_is_cached_only_for_docker_source_and_cleared_on_reset(
+    ) {
+        let mut snapshot = mock_snapshot();
+        snapshot
+            .containers
+            .iter_mut()
+            .find(|container| container.id == "container_db")
+            .expect("fixture supplies reciprocal Compose dependency container")
+            .depends_on
+            .push("container_api".into());
+        let mut initial = docker_cache(snapshot);
+        initial.rebuild_runtime_map();
+        initial.assign_revision();
+        assert!(initial.findings.findings.iter().any(|finding| {
+            finding.rule_id == dockermap_core::FindingRule::DockerComposeMutualDependency
+                && finding.evidence_refs.len() == 2
+                && finding.evidence_refs.iter().all(|evidence| {
+                    evidence.kind == RuntimeEvidenceKind::DockerComposeDependsOn
+                        && evidence.provider_revision == finding.evidence_refs[0].provider_revision
+                        && evidence.collected_at == finding.evidence_refs[0].collected_at
+                })
+        }));
+        let state = AppState {
+            cache: Arc::new(RwLock::new(initial)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let cache = state.cache.read().await;
+        assert_eq!(cache.health.mode, RuntimeMode::Mock);
+        assert!(cache
+            .runtime_map
+            .edges
+            .iter()
+            .all(|edge| edge.evidence_refs.is_empty()));
+        assert!(cache.findings.findings.iter().all(|finding| {
+            finding.rule_id != dockermap_core::FindingRule::DockerComposeMutualDependency
+        }));
     }
 
     #[test]
@@ -1918,9 +2752,11 @@ mod scheduler_tests {
             },
             runtime_map: empty_runtime_map(last_updated),
             findings: FindingsResponse::default(),
+            compose_runtime_binding: None,
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
+            integrity_observation_revision: IntegrityObservationRevision::new(),
             revision: PublicationRevision::new(),
         };
         cache.assign_docker_observation_revision();
@@ -1937,6 +2773,112 @@ mod scheduler_tests {
             .expect("Docker runtime map carries evidence")
             .provider_revision
             .clone()
+    }
+
+    #[test]
+    fn collision_fact_cache_gate_requires_docker_and_clears_on_rebuild_input() {
+        let mut cache = docker_cache(mock_snapshot());
+        cache.runtime_map = empty_runtime_map(cache.snapshot.last_updated);
+        cache.runtime_map.nodes = ["fixture_collision", "fixture_collision"]
+            .into_iter()
+            .map(|id| RuntimeMapNode {
+                id: id.into(),
+                provider: RuntimeProviderKind::Other,
+                kind: RuntimeNodeKind::HostRisk,
+                label: "[redacted]".into(),
+                status: None,
+                layer: None,
+                metadata: TestBTreeMap::new(),
+                service: None,
+                package: None,
+            })
+            .collect();
+        cache.apply_runtime_identity_collision_fact();
+        assert_eq!(
+            cache.runtime_map.edges.len(),
+            1,
+            "live collision injects one aggregate fact"
+        );
+        let active_revision = cache.integrity_observation_revision.current();
+
+        cache.runtime_map = empty_runtime_map(cache.snapshot.last_updated);
+        cache.apply_runtime_identity_collision_fact();
+        assert!(
+            cache.runtime_map.edges.is_empty(),
+            "a rebuilt collision-free map carries no prior aggregate fact"
+        );
+        assert_ne!(
+            cache.integrity_observation_revision.current(),
+            active_revision,
+            "resolved collision advances only the private aggregate token"
+        );
+
+        cache.health.mode = RuntimeMode::Mock;
+        cache.runtime_map.nodes = ["fixture_collision", "fixture_collision"]
+            .into_iter()
+            .map(|id| RuntimeMapNode {
+                id: id.into(),
+                provider: RuntimeProviderKind::Other,
+                kind: RuntimeNodeKind::HostRisk,
+                label: "[redacted]".into(),
+                status: None,
+                layer: None,
+                metadata: TestBTreeMap::new(),
+                service: None,
+                package: None,
+            })
+            .collect();
+        cache.apply_runtime_identity_collision_fact();
+        assert!(
+            cache.runtime_map.edges.is_empty(),
+            "mock never projects the collision aggregate"
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_identity_collision_keeps_aggregate_token_and_model_revision_stable() {
+        let collision_snapshot = |last_updated| {
+            let mut snapshot = mock_snapshot();
+            let duplicate = snapshot.containers[0].clone();
+            snapshot.containers.push(duplicate);
+            snapshot.last_updated = last_updated;
+            snapshot
+        };
+        let first = collision_snapshot(10);
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        publish_docker_snapshot_cache(&state, docker_cache(first)).await;
+        let first_cache = state.cache.read().await;
+        let first_revision = first_cache.snapshot.model_revision.clone();
+        let first_token = first_cache
+            .runtime_map
+            .edges
+            .iter()
+            .flat_map(|edge| edge.evidence_refs.iter())
+            .find(|evidence| evidence.kind == RuntimeEvidenceKind::RuntimeIdentityCollision)
+            .expect("collision aggregate carries one V7 evidence ref")
+            .provider_revision
+            .clone();
+        drop(first_cache);
+
+        publish_docker_snapshot_cache(&state, docker_cache(collision_snapshot(12))).await;
+        let refreshed = state.cache.read().await;
+        let refreshed_token = refreshed
+            .runtime_map
+            .edges
+            .iter()
+            .flat_map(|edge| edge.evidence_refs.iter())
+            .find(|evidence| evidence.kind == RuntimeEvidenceKind::RuntimeIdentityCollision)
+            .expect("persistent collision retains one V7 evidence ref")
+            .provider_revision
+            .clone();
+        assert_eq!(refreshed_token, first_token);
+        assert_eq!(refreshed.snapshot.model_revision, first_revision);
+        assert_eq!(refreshed.runtime_map.model_revision, first_revision);
     }
 
     /// Complete a claimed fixed slot without running a host collector. This is
@@ -2011,6 +2953,7 @@ mod scheduler_tests {
             slot_interval(ProviderSlot::HostScoped),
             Duration::from_secs(15)
         );
+        assert_eq!(slot_interval(ProviderSlot::Tmux), Duration::from_secs(15));
         assert_eq!(slot_interval(ProviderSlot::Cron), Duration::from_secs(15));
         assert_eq!(
             slot_interval(ProviderSlot::Systemd),
@@ -2060,6 +3003,7 @@ mod scheduler_tests {
         let invocations = |slot| 1 + window.as_secs() / slot_interval(slot).as_secs();
         assert_eq!(invocations(ProviderSlot::NetworkInfrastructure), 7);
         assert_eq!(invocations(ProviderSlot::HostScoped), 5);
+        assert_eq!(invocations(ProviderSlot::Tmux), 5);
         assert_eq!(invocations(ProviderSlot::Cron), 5);
         assert_eq!(invocations(ProviderSlot::Systemd), 5);
         assert_eq!(invocations(ProviderSlot::PythonProcesses), 7);
@@ -2127,12 +3071,13 @@ mod scheduler_tests {
         assert_eq!(publications, 31);
         assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
         assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+        assert_eq!(starts[&ProviderSlot::Tmux], 5);
         assert_eq!(starts[&ProviderSlot::Cron], 5);
         assert_eq!(starts[&ProviderSlot::Systemd], 5);
         assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);
         assert_eq!(starts[&ProviderSlot::NativeProcesses], 7);
         assert_eq!(starts[&ProviderSlot::ProjectNpm], 2);
-        assert_eq!(starts.values().sum::<usize>(), 38);
+        assert_eq!(starts.values().sum::<usize>(), 43);
         assert!(maximum_live_workers <= MAX_CONCURRENT_PROVIDER_SLOTS);
         // Before Systemd became independently schedulable, one aggregate
         // host-scoped pass covered it alongside the four other fixed bundles.
@@ -2165,7 +3110,7 @@ mod scheduler_tests {
                 .block_on(run_real_collector_churn_trace(&profile));
             match profile.as_str() {
                 "full-host" => {
-                    assert_eq!(starts.values().sum::<usize>(), 38);
+                    assert_eq!(starts.values().sum::<usize>(), 43);
                     // The old whole-runtime pass had five aggregate bundles;
                     // systemd was part of host-scoped collection, not a sixth
                     // independently scheduled unit.
@@ -2178,8 +3123,9 @@ mod scheduler_tests {
                     );
                 }
                 "restricted" => {
-                    assert_eq!(starts.values().sum::<usize>(), 14);
+                    assert_eq!(starts.values().sum::<usize>(), 15);
                     assert_eq!(starts[&ProviderSlot::HostScoped], 1);
+                    assert_eq!(starts[&ProviderSlot::Tmux], 1);
                     assert_eq!(starts[&ProviderSlot::Cron], 1);
                     assert_eq!(starts[&ProviderSlot::Systemd], 1);
                     assert_eq!(starts[&ProviderSlot::PythonProcesses], 1);
@@ -2389,6 +3335,7 @@ mod scheduler_tests {
         if profile == "restricted" {
             for slot in [
                 ProviderSlot::HostScoped,
+                ProviderSlot::Tmux,
                 ProviderSlot::Cron,
                 ProviderSlot::PythonProcesses,
                 ProviderSlot::NativeProcesses,
@@ -2402,6 +3349,7 @@ mod scheduler_tests {
         } else {
             assert_eq!(starts[&ProviderSlot::NetworkInfrastructure], 7);
             assert_eq!(starts[&ProviderSlot::HostScoped], 5);
+            assert_eq!(starts[&ProviderSlot::Tmux], 5);
             assert_eq!(starts[&ProviderSlot::Cron], 5);
             assert_eq!(starts[&ProviderSlot::Systemd], 5);
             assert_eq!(starts[&ProviderSlot::PythonProcesses], 7);
@@ -2995,13 +3943,28 @@ mod scheduler_tests {
         assert_eq!(ticker_cache.snapshot.model_revision, first_model_revision);
         drop(ticker_cache);
 
-        let mut changed = ticker_only.clone();
+        let mut publication_fact = ticker_only.clone();
+        publication_fact.containers[0].publishes_on_unspecified_address = true;
+        publish_docker_snapshot_cache(&state, docker_cache(publication_fact.clone())).await;
+        let publication_cache = state.cache.read().await;
+        let publication_token = first_docker_evidence_revision(&publication_cache);
+        assert_ne!(publication_token, first_token);
+        assert_ne!(
+            publication_cache.snapshot.model_revision,
+            first_model_revision
+        );
+        assert!(publication_cache.findings.findings.iter().any(|finding| {
+            finding.rule_id == dockermap_core::FindingRule::DockerPortPublishedOnUnspecifiedAddress
+        }));
+        drop(publication_cache);
+
+        let mut changed = publication_fact;
         changed.containers[0].name = "semantic-container-change".into();
         changed.last_updated = 14;
         publish_docker_snapshot_cache(&state, docker_cache(changed.clone())).await;
         let changed_cache = state.cache.read().await;
         let changed_token = first_docker_evidence_revision(&changed_cache);
-        assert_ne!(changed_token, first_token);
+        assert_ne!(changed_token, publication_token);
         assert_ne!(changed_token, changed.last_updated.to_string());
         drop(changed_cache);
 

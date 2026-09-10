@@ -40,6 +40,7 @@ type StubDaemon = {
 
 const apiEntry = "apps/api/src/index.ts";
 const repoRoot = new URL("../../..", import.meta.url);
+const tmuxFixtureSource = "tmux_session_session--49e907719fa53f1b00e43d8721620f42979c31117ed46daa3fadf320aef94b4e";
 const processes: ApiProcess[] = [];
 const servers: Server[] = [];
 
@@ -92,6 +93,23 @@ test("every browser API route is bearer-gated except CORS preflight", async () =
   });
   assert.equal(runtimeAuthenticated.status, 200);
   assert.ok(Array.isArray((await runtimeAuthenticated.json()).nodes));
+});
+
+test("mock findings retain the complete closed summary contract", async () => {
+  const api = await startApi({ DOCKERMAP_ALLOW_MOCK: "true", DOCKERMAP_API_TOKEN: "test-token" });
+  const response = await request(api, "/api/findings", {
+    headers: { Authorization: "Bearer test-token" }
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json() as { summary?: Record<string, unknown> };
+  assert.deepEqual(body.summary, {
+    warningCount: 0,
+    advisoryCount: 0,
+    declaredDependencyCount: 0,
+    dockerDaemonAuthorityCount: 0,
+    hostPortPublicationCount: 0,
+    evidenceIntegrityCount: 0
+  });
 });
 
 test("bearer mode exchanges the API token for a strict HttpOnly session cookie and can log out", async () => {
@@ -883,6 +901,21 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
   const containers = snapshot.containers as unknown[];
   const container = containers.find((entry) => (entry as { name?: unknown }).name === "api");
   assert.ok(container, "serialized Rust snapshot fixture must include the api detail fixture");
+  const tmuxEvidence = (runtimeMap.edges as Array<Record<string, unknown>>)
+    .find((edge) => edge.source === tmuxFixtureSource)?.evidenceRefs;
+  assert.deepEqual(tmuxEvidence, [{
+    version: 5,
+    id: "fixture-tmux-session-listing-worker",
+    provider: "tmux",
+    kind: "tmux_session_listing",
+    assertionKind: "observed",
+    summary: "tmux listed a local session",
+    subjectRef: tmuxFixtureSource,
+    collectedAt: 1787196125766,
+    providerRevision: "fixture-tmux-observation-1",
+    providerSlot: "tmux",
+    freshness: "fresh"
+  }], "canonical daemon fixture must exercise the V5 tmux browser boundary");
   const daemon = await startStubDaemon((req, res) => {
     if (req.url === "/daemon/health") return sendJson(res, 200, health);
     if (req.url === "/daemon/snapshot") return sendJson(res, 200, snapshot);
@@ -934,6 +967,18 @@ test("authenticated browser API pass-through responses preserve Rust schemas acr
       assert.ok(validator, `missing ${schemaName} validator`);
       const body = await response.json();
       assert.equal(validator(body), true, `${path}: ${JSON.stringify(validator.errors)}`);
+      if (canonicalPath === "/api/findings") {
+        const findingList = (body as { findings?: unknown }).findings;
+        assert.ok(Array.isArray(findingList));
+        assert.ok(findingList.some((finding) => (
+          finding && typeof finding === "object"
+          && (finding as { ruleId?: unknown }).ruleId === "docker.compose_declared_target_not_active"
+        )), `${path} must preserve the canonical Compose target finding`);
+        assert.ok(findingList.some((finding) => (
+          finding && typeof finding === "object"
+          && (finding as { ruleId?: unknown }).ruleId === "docker.compose_mutual_dependency"
+        )), `${path} must preserve the canonical mutual Compose finding`);
+      }
     }
   }
   assert.ok(
@@ -979,6 +1024,32 @@ test("authenticated daemon schema violations fail closed instead of reaching bro
     daemon.requests.every((entry) => entry.authorization === "Bearer test-token"),
     "schema validation remains behind the authenticated daemon boundary"
   );
+});
+
+test("internal daemon validation logs use closed schema and reason labels, never request paths", async () => {
+  const { createDaemonClient, HttpError } = await import("../src/daemonClient.js");
+  const sentinel = "DOCKERMAP_TEST_PATH_SENTINEL?token=DOCKERMAP_TEST_QUERY_SENTINEL";
+  const daemon = await startStubDaemon((_req, res) => sendJson(res, 200, { forged: true }));
+  const emitted: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...values: unknown[]) => emitted.push(values.map(String).join(" "));
+  try {
+    const fetchDaemon = createDaemonClient({
+      baseUrl: `http://127.0.0.1:${daemon.port}`,
+      token: null,
+      allowMockFallback: false,
+      exposeErrorDetails: false,
+      mockResponse: () => ({})
+    });
+    await assert.rejects(
+      () => fetchDaemon(`/daemon/snapshot/${sentinel}`),
+      (error: unknown) => error instanceof HttpError && error.status === 502 && error.body.code === "daemon_invalid_response"
+    );
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.deepEqual(emitted, ["[DockerMap] daemon response validation rejected schema=unknown reason=schema"]);
+  assert.ok(emitted.every((line) => !line.includes("DOCKERMAP_TEST_PATH_SENTINEL") && !line.includes("DOCKERMAP_TEST_QUERY_SENTINEL")));
 });
 
 test("daemon model responses require non-empty revision and complete provider state bytes", async () => {
@@ -1035,12 +1106,57 @@ test("daemon model responses require non-empty revision and complete provider st
       return value;
     })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].summary = "DOCKERMAP_TEST_FORGED_FINDING"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.summary.warningCount = 2; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.summary.declaredDependencyCount = 2; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.summary.untrustedCategory = 1; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); delete value.summary.hostPortPublicationCount; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].subjectRef = value.findings[0].targetRef; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); delete value.findings[0].evidenceRefs; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].evidenceRefs[0].freshness = "stale"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[2].targetRef = "host_risk_untrusted"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[1].kind = "docker_volume_mount"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()]
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[3].evidenceRefs[0], value.findings[3].evidenceRefs[1]] = [value.findings[3].evidenceRefs[1], value.findings[3].evidenceRefs[0]]; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].collectedAt += 1; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].providerRevision = "mismatched-revision"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].targetRef = "host_risk_untrusted"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].id = "finding_docker_daemon_state_bind_mount_publishes_port_forged"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].summary = "DOCKERMAP_TEST_FORGED_PORT"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].unsafe = "DOCKERMAP_TEST_EXTRA"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].summary = "DOCKERMAP_TEST_FORGED_COMPOSE_FINDING"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].id = "finding_docker_compose_declared_target_not_active_forged"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[0].kind = "docker_network_membership"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].unsafe = "DOCKERMAP_TEST_EXTRA"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].id = "finding_docker_compose_mutual_dependency_forged"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].summary = "DOCKERMAP_TEST_FORGED_MUTUAL_COMPOSE_FINDING"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[5].subjectRef, value.findings[5].targetRef] = [value.findings[5].targetRef, value.findings[5].subjectRef]; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[5].evidenceRefs[0], value.findings[5].evidenceRefs[1]] = [value.findings[5].evidenceRefs[1], value.findings[5].evidenceRefs[0]]; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[1].collectedAt += 1; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[1].providerRevision = "other-revision"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs.push(structuredClone(value.findings[5].evidenceRefs[0])); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[1].kind = "docker_network_membership"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[6].evidenceRefs[0], value.findings[6].evidenceRefs[1]] = [value.findings[6].evidenceRefs[1], value.findings[6].evidenceRefs[0]]; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].targetRef = "compose_runtime_binding_" + "0".repeat(64); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].id = "/private/path/compose.yaml"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[1].providerRevision = "other-observation"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].summary = "/private/path/compose.yaml"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].targetRef = "host_risk_untrusted"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].summary = "DOCKERMAP_TEST_FORGED_UNSPECIFIED_ADDRESS"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].kind = "docker_port_publication"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].summary = "0.0.0.0:443"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs.push(structuredClone(value.findings[7].evidenceRefs[0])); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].targetRef = "runtime_integrity_risk_other"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].summary = "collision: secret-provider-value"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].providerRevision = "fixture-revision"; return value; })()],
   ] as const;
   for (const [daemonPath, body] of invalidResponses) {
     const daemon = await startStubDaemon((req, res) => {
@@ -1130,6 +1246,35 @@ test("runtime evidence is required and fails closed before browser publication",
     "utf8"
   ));
   assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
+
+  const unspecifiedAddressEdge = fixture.edges.find((edge: { evidenceRefs?: Array<{ kind?: unknown }> }) => (
+    edge.evidenceRefs?.[0]?.kind === "docker_unspecified_address_port_publication"
+  ));
+  assert.ok(unspecifiedAddressEdge, "canonical fixture must exercise the unspecified-address Docker boundary");
+  for (const [field, value] of [
+    ["target", "host_risk_untrusted"],
+    ["relationship", "connected_to"],
+  ] as const) {
+    const malformedUnspecifiedAddress = structuredClone(fixture);
+    const edge = malformedUnspecifiedAddress.edges.find((candidate: { evidenceRefs?: Array<{ kind?: unknown }> }) => (
+      candidate.evidenceRefs?.[0]?.kind === "docker_unspecified_address_port_publication"
+    ));
+    assert.ok(edge);
+    edge[field] = value;
+    assert.throws(() => validateDaemonResponse("/daemon/runtime/map", malformedUnspecifiedAddress));
+  }
+  for (const [field, value] of [
+    ["summary", "0.0.0.0:443"],
+    ["providerSlot", "project_npm"],
+  ] as const) {
+    const malformedUnspecifiedAddress = structuredClone(fixture);
+    const edge = malformedUnspecifiedAddress.edges.find((candidate: { evidenceRefs?: Array<{ kind?: unknown }> }) => (
+      candidate.evidenceRefs?.[0]?.kind === "docker_unspecified_address_port_publication"
+    ));
+    assert.ok(edge);
+    edge.evidenceRefs[0][field] = value;
+    assert.throws(() => validateDaemonResponse("/daemon/runtime/map", malformedUnspecifiedAddress));
+  }
 
   const missing = structuredClone(fixture);
   delete missing.edges[0].evidenceRefs;
@@ -1257,6 +1402,53 @@ test("runtime evidence is required and fails closed before browser publication",
     "Docker daemon-state evidence has one canonical synthetic target"
   );
 
+  const hostPort = structuredClone(fixture);
+  const hostPortEdge = hostPort.edges.find((edge: { evidenceRefs?: Array<{ kind?: unknown }> }) =>
+    edge.evidenceRefs?.[0]?.kind === "docker_port_publication"
+  );
+  assert.ok(hostPortEdge, "canonical daemon fixture carries a Docker host-port publication");
+  const hostPortNode = hostPort.nodes.find((node: { id?: unknown }) => node.id === hostPortEdge.target);
+  assert.ok(hostPortNode, "host-port publication targets a listener node");
+  hostPortNode.metadata.port = "8080/tcp";
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", hostPort),
+    "Docker port-publication evidence requires host:private/protocol listener metadata"
+  );
+
+  const unrelatedDuplicate = structuredClone(fixture);
+  unrelatedDuplicate.nodes.push(structuredClone(unrelatedDuplicate.nodes[0]));
+  assert.doesNotThrow(
+    () => validateDaemonResponse("/daemon/runtime/map", unrelatedDuplicate),
+    "a port-evidence lookup must not turn unrelated provider-node duplication into a publication failure"
+  );
+  const duplicateListener = structuredClone(fixture);
+  const duplicateListenerEdge = duplicateListener.edges.find((edge: { evidenceRefs?: Array<{ kind?: unknown }> }) =>
+    edge.evidenceRefs?.[0]?.kind === "docker_port_publication"
+  );
+  assert.ok(duplicateListenerEdge, "canonical daemon fixture carries a Docker host-port publication");
+  const listener = duplicateListener.nodes.find((node: { id?: unknown }) => node.id === duplicateListenerEdge.target);
+  assert.ok(listener, "host-port publication targets a listener node");
+  duplicateListener.nodes.push(structuredClone(listener));
+  assert.doesNotThrow(
+    () => validateDaemonResponse("/daemon/runtime/map", duplicateListener),
+    "duplicate Docker listener records may support one publication only when their closed listener facts are identical"
+  );
+
+  const conflictingListener = structuredClone(duplicateListener);
+  const duplicate = conflictingListener.nodes[conflictingListener.nodes.length - 1];
+  duplicate.metadata.port = "8081:8080/tcp";
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", conflictingListener),
+    "Docker port-publication evidence must fail closed when duplicate listener records disagree"
+  );
+
+  const malformedDuplicateListener = structuredClone(duplicateListener);
+  malformedDuplicateListener.nodes[malformedDuplicateListener.nodes.length - 1].metadata.extra = "not-a-listener-fact";
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", malformedDuplicateListener),
+    "Docker port-publication evidence must reject duplicate listeners with extra metadata"
+  );
+
   const npmEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "npm_project_dockermap");
   assert.ok(npmEdge, "canonical daemon fixture carries a V3 NPM manifest declaration");
   assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
@@ -1356,6 +1548,218 @@ test("runtime evidence is required and fails closed before browser publication",
       `v4 cron evidence must reject a noncanonical ${field}`
     );
   }
+
+  const identityEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === "runtime_integrity_scope");
+  assert.ok(identityEdge, "canonical daemon fixture carries the V7 aggregate collision boundary");
+  for (const mutate of [
+    (edge: Record<string, unknown>) => { (edge.evidenceRefs as Array<Record<string, unknown>>)[0].id = "secret=collision"; },
+    (edge: Record<string, unknown>) => { edge.metadata = { collisionCount: "secret=2" }; },
+    (edge: Record<string, unknown>) => { (edge.evidenceRefs as Array<Record<string, unknown>>).push(structuredClone((edge.evidenceRefs as Array<Record<string, unknown>>)[0])); },
+  ]) {
+    const malformedIdentity = structuredClone(fixture);
+    const edge = malformedIdentity.edges.find((candidate: { source?: unknown }) => candidate.source === "runtime_integrity_scope");
+    assert.ok(edge);
+    mutate(edge);
+    assert.throws(() => validateDaemonResponse("/daemon/runtime/map", malformedIdentity), "V7 collision evidence must not carry identity or count material");
+  }
+  const prefixedIdentitySource = structuredClone(fixture);
+  const prefixedIdentityEdge = prefixedIdentitySource.edges.find((candidate: { source?: unknown }) => candidate.source === "runtime_integrity_scope");
+  assert.ok(prefixedIdentityEdge);
+  prefixedIdentityEdge.source = "runtime_integrity_scope_provider_controlled_material";
+  prefixedIdentityEdge.evidenceRefs[0].subjectRef = prefixedIdentityEdge.source;
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", prefixedIdentitySource),
+    "V7 collision evidence requires the exact fixed, identity-free source"
+  );
+
+  const noActualCollision = structuredClone(fixture);
+  const collisionNode = noActualCollision.nodes.find((node: { id?: unknown }, index: number, nodes: Array<{ id?: unknown }>) => (
+    typeof node.id === "string"
+      && node.id !== "runtime_integrity_scope"
+      && node.id !== "runtime_integrity_risk_identity_collision"
+      && nodes.filter((candidate) => candidate.id === node.id).length > 1
+  ));
+  assert.ok(collisionNode && typeof collisionNode.id === "string", "canonical fixture includes a real non-synthetic collision");
+  let retainedCollisionNode = false;
+  noActualCollision.nodes = noActualCollision.nodes.filter((node: { id?: unknown }) => {
+    if (node.id !== collisionNode.id) return true;
+    if (!retainedCollisionNode) {
+      retainedCollisionNode = true;
+      return true;
+    }
+    return false;
+  });
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", noActualCollision),
+    "V7 collision evidence requires a duplicate non-synthetic node identity"
+  );
+
+  const repeatedIdentityAggregate = structuredClone(fixture);
+  const repeatedIdentityEdge = repeatedIdentityAggregate.edges.find((candidate: { source?: unknown }) => candidate.source === "runtime_integrity_scope");
+  assert.ok(repeatedIdentityEdge);
+  repeatedIdentityAggregate.edges.push(structuredClone(repeatedIdentityEdge));
+  assert.throws(
+    () => validateDaemonResponse("/daemon/runtime/map", repeatedIdentityAggregate),
+    "V7 collision evidence has a single aggregate budget"
+  );
+
+  const findingsFixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/findings-response.json", import.meta.url),
+    "utf8"
+  ));
+  const repeatedCollisionFinding = structuredClone(findingsFixture);
+  const collisionFinding = repeatedCollisionFinding.findings.find((finding: { ruleId?: unknown }) => (
+    finding.ruleId === "runtime.identity_collision_detected"
+  ));
+  assert.ok(collisionFinding, "canonical findings fixture includes the collision aggregate");
+  repeatedCollisionFinding.findings.push(structuredClone(collisionFinding));
+  repeatedCollisionFinding.summary.advisoryCount += 1;
+  repeatedCollisionFinding.summary.evidenceIntegrityCount += 1;
+  assert.throws(
+    () => validateDaemonResponse("/daemon/findings", repeatedCollisionFinding),
+    "collision findings have a single aggregate budget"
+  );
+
+  const canonicalEvidenceKinds = new Set([
+    "docker_network_membership",
+    "docker_volume_mount",
+    "docker_port_publication",
+    "docker_unspecified_address_port_publication",
+    "docker_compose_depends_on",
+    "npm_package_manifest_dependency",
+    "cron_schedule_declaration",
+    "tmux_session_listing",
+  ]);
+  for (const kind of canonicalEvidenceKinds) {
+    const hostileSummary = structuredClone(fixture);
+    const edge = hostileSummary.edges.find((candidate: { evidenceRefs?: Array<{ kind?: unknown }> }) => (
+      candidate.evidenceRefs?.some((evidence) => evidence.kind === kind)
+    ));
+    assert.ok(edge, `canonical fixture carries ${kind}`);
+    const evidence = edge.evidenceRefs.find((candidate: { kind?: unknown }) => candidate.kind === kind);
+    assert.ok(evidence);
+    evidence.summary = "DOCKERMAP_TEST_HOSTILE_PROVIDER_SUMMARY";
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", hostileSummary),
+      `${kind} must retain its exact daemon-owned summary`
+    );
+  }
+
+  // The canonical fixture intentionally omits daemon-state and Systemd
+  // collection evidence. Add their closed node/edge shapes here so every
+  // remaining V1/V2 producer summary receives the same hostile boundary test.
+  const additionalEvidence = structuredClone(fixture);
+  additionalEvidence.nodes.push(
+    { id: "host_risk_docker_daemon_state", provider: "docker", type: "host_risk", label: "Docker daemon state exposure", status: null, layer: "host", metadata: {} },
+    { id: "systemd_service_fixture_api", provider: "systemd", type: "systemd_service", label: "fixture-api.service", status: "active", layer: "service", metadata: {} },
+    { id: "systemd_service_fixture_database", provider: "systemd", type: "systemd_service", label: "fixture-database.service", status: "active", layer: "service", metadata: {} },
+  );
+  const v1DaemonState = {
+    version: 1, id: "docker_evidence_daemon_state", provider: "docker", kind: "docker_daemon_state_bind_mount",
+    assertionKind: "observed", summary: "Docker reported a bind mount exposing Docker daemon state",
+    subjectRef: "docker_container_container_api", collectedAt: 1, providerRevision: "0123456789abcdef0123456789abcdef-1", freshness: "fresh"
+  };
+  const v2SummaryCases = [
+    ["systemd_requires", "requires", "systemd declared a Requires dependency"],
+    ["systemd_wants", "wants", "systemd declared a Wants dependency"],
+    ["systemd_part_of", "part_of", "systemd declared a PartOf dependency"],
+  ] as const;
+  additionalEvidence.edges.push({
+    source: "docker_container_container_api", target: "host_risk_docker_daemon_state", relationship: "exposes_daemon_state", metadata: {}, evidenceRefs: [v1DaemonState]
+  });
+  for (const [kind, relationship, summary] of v2SummaryCases) {
+    additionalEvidence.edges.push({
+      source: "systemd_service_fixture_api", target: "systemd_service_fixture_database", relationship, metadata: {}, evidenceRefs: [{
+        version: 2, id: `systemd_evidence_${kind}`, provider: "systemd", kind, assertionKind: "declared", summary,
+        subjectRef: "systemd_service_fixture_api", collectedAt: 1, providerRevision: "systemd-observation-1", providerSlot: "systemd", freshness: "fresh"
+      }]
+    });
+  }
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", additionalEvidence));
+  for (const kind of ["docker_daemon_state_bind_mount", ...v2SummaryCases.map(([candidate]) => candidate)]) {
+    const hostileSummary = structuredClone(additionalEvidence);
+    const edge = hostileSummary.edges.find((candidate: { evidenceRefs?: Array<{ kind?: unknown }> }) => (
+      candidate.evidenceRefs?.some((evidence) => evidence.kind === kind)
+    ));
+    assert.ok(edge);
+    const evidence = edge.evidenceRefs.find((candidate: { kind?: unknown }) => candidate.kind === kind);
+    assert.ok(evidence);
+    evidence.summary = "DOCKERMAP_TEST_HOSTILE_PROVIDER_SUMMARY";
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", hostileSummary),
+      `${kind} must retain its exact daemon-owned summary`
+    );
+  }
+
+  const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === tmuxFixtureSource);
+  assert.ok(tmuxEdge, "canonical daemon fixture carries a V5 tmux session listing");
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/runtime/map", fixture));
+  for (const mutate of [
+    (node: Record<string, unknown>) => { node.label = "private session title"; },
+    (node: Record<string, unknown>) => { node.status = "attached"; },
+    (node: Record<string, unknown>) => { node.metadata = { serviceEntityKind: "session", sessionName: "private" }; },
+  ]) {
+    const malformedTmuxNode = structuredClone(fixture);
+    const node = malformedTmuxNode.nodes.find((candidate: { id?: unknown }) => candidate.id === tmuxFixtureSource);
+    assert.ok(node, "canonical fixture must include the tmux source node");
+    mutate(node);
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", malformedTmuxNode),
+      "v5 tmux session nodes must remain a closed redaction-safe public shape",
+    );
+  }
+  for (const freshness of ["stale", "timed_out"] as const) {
+    const retainedTmux = structuredClone(fixture);
+    const edge = retainedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
+    assert.ok(edge);
+    edge.evidenceRefs[0].freshness = freshness;
+    assert.doesNotThrow(
+      () => validateDaemonResponse("/daemon/runtime/map", retainedTmux),
+      `v5 tmux evidence may retain ${freshness} data from its own scheduler slot`
+    );
+  }
+  for (const [field, value] of [
+    ["provider", "cron"],
+    ["kind", "cron_schedule_declaration"],
+    ["assertionKind", "declared"],
+    ["providerSlot", "host_scoped"],
+    ["freshness", "unavailable"],
+    ["version", 4]
+  ] as const) {
+    const malformedTmux = structuredClone(fixture);
+    const edge = malformedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
+    assert.ok(edge);
+    edge.evidenceRefs[0][field] = value;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", malformedTmux),
+      `v5 tmux evidence must reject fabricated ${field}`
+    );
+  }
+  for (const [field, value] of [
+    ["source", "scheduled_job_fixture_not_tmux"],
+    ["target", "host_other"],
+    ["relationship", "depends_on"]
+  ] as const) {
+    const malformedTmux = structuredClone(fixture);
+    const edge = malformedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
+    assert.ok(edge);
+    edge[field] = value;
+    if (field === "source") edge.evidenceRefs[0].subjectRef = value;
+    assert.throws(
+      () => validateDaemonResponse("/daemon/runtime/map", malformedTmux),
+      `v5 tmux evidence must reject a noncanonical ${field}`
+    );
+  }
+  const selfReferentialTmux = structuredClone(fixture);
+  const selfReferentialTmuxEdge = selfReferentialTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
+  assert.ok(selfReferentialTmuxEdge);
+  selfReferentialTmuxEdge.target = selfReferentialTmuxEdge.source;
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", selfReferentialTmux));
+  const timestampAliasedTmux = structuredClone(fixture);
+  const timestampAliasedTmuxEdge = timestampAliasedTmux.edges.find((candidate: { source?: unknown }) => candidate.source === tmuxFixtureSource);
+  assert.ok(timestampAliasedTmuxEdge);
+  timestampAliasedTmuxEdge.evidenceRefs[0].providerRevision = String(timestampAliasedTmuxEdge.evidenceRefs[0].collectedAt);
+  assert.throws(() => validateDaemonResponse("/daemon/runtime/map", timestampAliasedTmux));
 });
 
 test("fabricated runtime evidence is rejected over the authenticated API boundary", async () => {
@@ -1432,6 +1836,34 @@ test("fabricated V4 Cron evidence is rejected neutrally over the authenticated A
     message: "Daemon response did not match its declared contract"
   });
   assert.doesNotMatch(JSON.stringify(body), new RegExp(sentinel));
+});
+
+test("fabricated V5 tmux evidence is rejected neutrally over canonical and v1 API boundaries", async () => {
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/runtime-map-daemon-emitted.json", import.meta.url),
+    "utf8"
+  ));
+  const sentinel = "DOCKERMAP_TEST_FAKE_TMUX_EVIDENCE_SECRET";
+  const tmuxEdge = fixture.edges.find((edge: { source?: unknown }) => edge.source === tmuxFixtureSource);
+  assert.ok(tmuxEdge, "canonical fixture must exercise the V5 browser boundary");
+  tmuxEdge.target = `host_${sentinel}`;
+  tmuxEdge.evidenceRefs[0].subjectRef = tmuxEdge.source;
+  tmuxEdge.evidenceRefs[0].providerSlot = "host_scoped";
+  const daemon = await startStubDaemon((req, res) => {
+    if (req.url === "/daemon/runtime/map") return sendJson(res, 200, fixture);
+    return sendJson(res, 404, { code: "not_found", message: "missing" });
+  });
+  const api = await startApi({ DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemon.port}`, DOCKERMAP_API_TOKEN: "test-token" });
+  for (const path of ["/api/runtime/map", "/api/v1/runtime/map"]) {
+    const response = await request(api, path, { headers: { Authorization: "Bearer test-token" } });
+    assert.equal(response.status, 502, path);
+    const body = await response.json();
+    assert.deepEqual(body, {
+      code: "daemon_invalid_response",
+      message: "Daemon response did not match its declared contract"
+    }, path);
+    assert.doesNotMatch(JSON.stringify(body), new RegExp(sentinel), path);
+  }
 });
 
 test("actual canonical and v1 SSE snapshot/error frames use their declared payload schemas", async () => {
@@ -2307,7 +2739,12 @@ test("API publishes redacted and normalized daemon data on every response route"
             provider: "docker",
             kind: "docker_network_membership",
             assertionKind: "observed",
-            summary: hostile,
+            // This remains an intentionally hostile daemon payload through its
+            // node and edge metadata, identifiers, and labels. The evidence
+            // summary itself must be the daemon-owned canonical text so the
+            // RuntimeMap validation boundary accepts it before this test
+            // verifies publication redaction.
+            summary: "Docker reported container network membership",
             subjectRef: `docker_container_${hostile}`,
             collectedAt: 1,
             providerRevision: hostile,
@@ -2320,6 +2757,7 @@ test("API publishes redacted and normalized daemon data on every response route"
         providerStates: [
           { slot: "network_infrastructure", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "host_scoped", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
+          { slot: "tmux", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "cron", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "systemd", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },
           { slot: "python_processes", state: "unavailable", lastAttemptMs: null, lastSuccessMs: null, lastDurationMs: null, consecutiveFailureCount: 0, dataRevision: null, statusReason: "initial" },

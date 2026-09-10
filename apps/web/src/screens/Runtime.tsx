@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ProviderSlot, ProviderState, ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceRef, RuntimeLocation, RuntimeMapEdge, RuntimeProviderKind } from "@dockermap/contracts";
 import { useApp } from "../context";
-import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord } from "../lib/model";
+import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord, type ServiceState } from "../lib/model";
 import { formatRelative } from "../lib/format";
 import Icon, { type IconName } from "../components/Icon";
 import { EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, StateDot, StatePill, Tag } from "../components/primitives";
@@ -50,6 +50,7 @@ const PROVIDER_SLOT_LABEL: Record<ProviderSlot, string> = {
   network_infrastructure: "Network infrastructure",
   host_scoped: "Host-scoped services",
   cron: "Cron schedule declarations",
+  tmux: "tmux session listings",
   systemd: "systemd services",
   python_processes: "Python processes",
   native_processes: "Native processes",
@@ -74,6 +75,41 @@ const PROVIDER_STATE_TONE: Record<ProviderState["state"], "accent" | "warn" | "e
   disabled: "muted"
 };
 
+const TMUX_SESSION_LABEL = "tmux session";
+
+function isTmuxSession(node: RuntimeNodeRecord | null | undefined): boolean {
+  return node?.provider === "tmux" && node.type === "tmux_session";
+}
+
+function isTmuxSessionId(id: string): boolean {
+  return id.startsWith("tmux_session_");
+}
+
+/**
+ * Tmux session names and identifiers are host-derived. Retain their topology
+ * node, but never expose that identity in the browser.
+ */
+function runtimeNodeLabel(node: RuntimeNodeRecord | null | undefined, fallback = UNAVAILABLE_RUNTIME_NODE): string {
+  if (isTmuxSession(node)) return TMUX_SESSION_LABEL;
+  return identityText(node?.label, fallback);
+}
+
+function runtimeNodeState(node: RuntimeNodeRecord): ServiceState {
+  return isTmuxSession(node) ? "unknown" : node.state;
+}
+
+function runtimeEndpointLabel(node: RuntimeNodeRecord | null | undefined, id: string): string {
+  if (isTmuxSession(node) || isTmuxSessionId(id)) return TMUX_SESSION_LABEL;
+  return runtimeNodeLabel(node, identityText(id, UNAVAILABLE_RUNTIME_ID));
+}
+
+function edgeTouchesTmuxSession(edge: RuntimeMapEdge, model: NonNullable<ReturnType<typeof useApp>["model"]>): boolean {
+  return isTmuxSession(model.runtime.byId.get(edge.source))
+    || isTmuxSession(model.runtime.byId.get(edge.target))
+    || isTmuxSessionId(edge.source)
+    || isTmuxSessionId(edge.target);
+}
+
 // These are daemon-owned closed reasons, deliberately rendered as collection
 // evidence instead of raw provider output or a service-health diagnosis.
 const PROVIDER_REASON_LABEL: Record<ProviderStatusReason, string> = {
@@ -97,7 +133,6 @@ const FRESHNESS_LABEL: Record<RuntimeEvidenceRef["freshness"], string> = {
 };
 
 type SelectedRuntimeEdge = {
-  edge: RuntimeMapEdge;
   key: string;
 };
 
@@ -117,6 +152,9 @@ export default function RuntimeScreen() {
   const [layerFilter, setLayerFilter] = useState<RuntimeLayerId | "all">("all");
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Keep only an edge's stable identity in UI state. Runtime maps refresh as
+  // whole models, so retaining the old edge object would let an inspector
+  // render evidence that no longer belongs to the current topology.
   const [selectedEdge, setSelectedEdge] = useState<SelectedRuntimeEdge | null>(null);
   const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
   /**
@@ -130,6 +168,12 @@ export default function RuntimeScreen() {
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null);
 
   const runtime = model?.runtime;
+  const selected = selectedId && runtime ? runtime.byId.get(selectedId) ?? null : null;
+  const resolvedSelectedEdge = useMemo(() => {
+    if (!selectedEdge || !selected) return null;
+    return [...selected.outgoing, ...selected.incoming]
+      .find((edge) => runtimeEdgeKey(edge) === selectedEdge.key) ?? null;
+  }, [selected, selectedEdge]);
   const filteredNodes = useMemo(() => {
     if (!runtime) return [];
     return runtime.nodes.filter((node) => {
@@ -144,6 +188,10 @@ export default function RuntimeScreen() {
     if (!runtime || !selectedId) return;
     if (!filteredNodes.some((node) => node.id === selectedId && runtime.byId.has(node.id))) setSelectedId(null);
   }, [filteredNodes, runtime, selectedId]);
+
+  useEffect(() => {
+    if (selectedEdge && !resolvedSelectedEdge) setSelectedEdge(null);
+  }, [resolvedSelectedEdge, selectedEdge]);
 
   // Consume a pending focus request in a LAYOUT effect, once its row is
   // actually LIVE in the DOM. Layout effects run synchronously after the
@@ -168,7 +216,7 @@ export default function RuntimeScreen() {
   if (error && !model) return <ErrorState title="Runtime unavailable" body={error} />;
   if (!model || !runtime) return <EmptyState icon="layers" title="No runtime map yet" body="Connect a host or enable Demo Mode to inspect runtime signals." />;
 
-  const selected = selectedId ? runtime.byId.get(selectedId) ?? null : null;
+  const selectedTmuxSession = isTmuxSession(selected);
   const selectedDetail = resolveDockerDetail(model, selected);
   const selectedImage = selected?.provider === "docker" && selected.type === "container" && typeof selected.metadata.image === "string" && selected.metadata.image !== "" ? model.imageByRef.get(selected.metadata.image) ?? null : null;
 
@@ -299,7 +347,7 @@ export default function RuntimeScreen() {
       <Panel
         title="Collection evidence"
         icon="history"
-        hint="Collection state only — it does not describe service health or cron execution"
+        hint="Collection state only — it does not describe service health, session attachment, activity, or process ownership"
         className="provider-state-panel"
       >
         <ul className="provider-state-list" aria-label="Provider collection evidence">
@@ -330,6 +378,7 @@ export default function RuntimeScreen() {
               <ul className="runtime-node-list">
                 {filteredNodes.map((node, index) => {
                   const selectable = runtime.byId.has(node.id);
+                  const nodeLabel = runtimeNodeLabel(node);
                   // Duplicate runtime ids (redaction-collided) stay visible
                   // with the collision tag/hint but are never selectable.
                   const collided = runtime.idCollisions.has(node.id);
@@ -337,11 +386,11 @@ export default function RuntimeScreen() {
                     <span className="runtime-node-main">
                       <Icon name={PROVIDER_ICON[node.provider]} size={15} />
                       <span className="runtime-node-copy">
-                        <span className={`runtime-node-label${collided ? " collision-identity" : ""}`} title={collided ? COLLISION_HINT : undefined}>{identityText(node.label, UNAVAILABLE_RUNTIME_NODE)}</span>
+                        <span className={`runtime-node-label${collided ? " collision-identity" : ""}`} title={collided ? COLLISION_HINT : undefined}>{nodeLabel}</span>
                         <span className="runtime-node-meta">{node.provider} · {node.type.replaceAll("_", " ")} · {LAYER_LABEL[node.layer]}</span>
                       </span>
                     </span>
-                    <StatePill state={node.state} />
+                    <StatePill state={runtimeNodeState(node)} />
                     {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
                   </>;
                   return (
@@ -355,7 +404,7 @@ export default function RuntimeScreen() {
                           else nodeRefs.current.delete(node.id);
                         }}
                         onClick={() => selectNode(node.id)}
-                      >{content}</button> : <div className="runtime-node-btn runtime-node-unresolved" aria-label={`${identityText(node.label, UNAVAILABLE_RUNTIME_NODE)} is unavailable for selection${collided ? ` (${COLLISION_HINT})` : ""}`}>{content}</div>}
+                      >{content}</button> : <div className="runtime-node-btn runtime-node-unresolved" aria-label={`${nodeLabel} is unavailable for selection${collided ? ` (${COLLISION_HINT})` : ""}`}>{content}</div>}
                     </li>
                   );
                 })}
@@ -376,13 +425,13 @@ export default function RuntimeScreen() {
                 <span className="inspector-kind">
                   <Icon name={PROVIDER_ICON[selected.provider]} size={15} /> {selected.provider}
                 </span>
-                <button type="button" className="icon-btn" onClick={() => { setSelectedId(null); setPendingFocusId(selected.id); }} aria-label={`Clear ${identityText(selected.label, UNAVAILABLE_RUNTIME_NODE)} runtime selection`}>
+                <button type="button" className="icon-btn" onClick={() => { setSelectedId(null); setPendingFocusId(selected.id); }} aria-label={`Clear ${runtimeNodeLabel(selected)} runtime selection`}>
                   <Icon name="close" size={15} />
                 </button>
               </div>
-              <h2 className="inspector-title">{identityText(selected.label, UNAVAILABLE_RUNTIME_NODE)}</h2>
+              <h2 className="inspector-title">{runtimeNodeLabel(selected)}</h2>
               <div className="tag-wrap">
-                <StatePill state={selected.state} />
+                <StatePill state={runtimeNodeState(selected)} />
                 <Tag icon="layers">{LAYER_LABEL[selected.layer]}</Tag>
                 <Tag tone="muted">{selected.type.replaceAll("_", " ")}</Tag>
               </div>
@@ -398,7 +447,7 @@ export default function RuntimeScreen() {
                 </div>
               </div>
 
-              {selected.service && (
+              {!selectedTmuxSession && selected.service && (
                 <div className="inspector-section">
                   <h4>Service evidence</h4>
                   <KeyValue label="Service name" value={identityText(selected.service.name, UNAVAILABLE_SERVICE)} />
@@ -420,7 +469,7 @@ export default function RuntimeScreen() {
                 </Link>
               )}
 
-              {selected.package && (
+              {!selectedTmuxSession && selected.package && (
                 <div className="inspector-section">
                   <h4>Package metadata</h4>
                   <KeyValue label="Package" value={identityText(selected.package.name, UNAVAILABLE_PACKAGE)} />
@@ -433,12 +482,12 @@ export default function RuntimeScreen() {
                 </div>
               )}
 
-              <RelationList title="Outgoing relationships" selected={selected} model={model} edges={selected.outgoing} direction="outgoing" onSelect={selectNode} onInspectEdge={(edge) => setSelectedEdge({ edge, key: runtimeEdgeKey(edge) })} selectedEdgeKey={selectedEdge?.key ?? null} />
-              <RelationList title="Incoming relationships" selected={selected} model={model} edges={selected.incoming} direction="incoming" onSelect={selectNode} onInspectEdge={(edge) => setSelectedEdge({ edge, key: runtimeEdgeKey(edge) })} selectedEdgeKey={selectedEdge?.key ?? null} />
+              <RelationList title="Outgoing relationships" selected={selected} model={model} edges={selected.outgoing} direction="outgoing" onSelect={selectNode} onInspectEdge={(edge) => setSelectedEdge({ key: runtimeEdgeKey(edge) })} selectedEdgeKey={selectedEdge?.key ?? null} />
+              <RelationList title="Incoming relationships" selected={selected} model={model} edges={selected.incoming} direction="incoming" onSelect={selectNode} onInspectEdge={(edge) => setSelectedEdge({ key: runtimeEdgeKey(edge) })} selectedEdgeKey={selectedEdge?.key ?? null} />
 
-              {selectedEdge ? <RuntimeEvidenceInspector edge={selectedEdge.edge} model={model} /> : null}
+              {resolvedSelectedEdge ? <RuntimeEvidenceInspector edge={resolvedSelectedEdge} model={model} /> : null}
 
-              {selected.service?.logs.length ? (
+              {!selectedTmuxSession && selected.service?.logs.length ? (
                 <div className="inspector-section">
                   <h4>Recent logs</h4>
                   <ul className="runtime-evidence-list">
@@ -452,7 +501,7 @@ export default function RuntimeScreen() {
                 </div>
               ) : null}
 
-              {selected.service?.events.length ? (
+              {!selectedTmuxSession && selected.service?.events.length ? (
                 <div className="inspector-section">
                   <h4>Recent events</h4>
                   <ul className="runtime-evidence-list">
@@ -467,7 +516,7 @@ export default function RuntimeScreen() {
                 </div>
               ) : null}
 
-              {Object.keys(selected.metadata).length > 0 && (
+              {!selectedTmuxSession && Object.keys(selected.metadata).length > 0 && (
                 <div className="inspector-section">
                   <h4>Metadata</h4>
                   <div className="stack runtime-meta-stack">
@@ -532,16 +581,17 @@ function RelationList({
             const edgeKey = runtimeEdgeKey(edge);
             const targetId = direction === "outgoing" ? edge.target : edge.source;
             const node = model.runtime.byId.get(targetId);
+            const tmuxEdge = edgeTouchesTmuxSession(edge, model);
             if (!node) {
               const collided = model.runtime.idCollisions.has(targetId);
               return (
                 <li key={`${edge.relationship}-${index}`} className="runtime-edge-row">
                   <Tag tone="muted">{edge.relationship.replaceAll("_", " ")}</Tag>
-                  <span className={collided ? "collision-identity" : undefined} title={collided ? COLLISION_HINT : undefined}>{identityText(targetId, UNAVAILABLE_RUNTIME_ID)}</span>
+                  <span className={collided ? "collision-identity" : undefined} title={collided ? COLLISION_HINT : undefined}>{runtimeEndpointLabel(null, targetId)}</span>
                   {collided && <Tag tone="warn">{COLLISION_TAG}</Tag>}
-                  <button type="button" className={`runtime-edge-evidence${selectedEdgeKey === edgeKey ? " is-active" : ""}`} aria-pressed={selectedEdgeKey === edgeKey} onClick={() => onInspectEdge(edge)}>
+                  {!tmuxEdge && <button type="button" className={`runtime-edge-evidence${selectedEdgeKey === edgeKey ? " is-active" : ""}`} aria-pressed={selectedEdgeKey === edgeKey} onClick={() => onInspectEdge(edge)}>
                     Inspect evidence
-                  </button>
+                  </button>}
                 </li>
               );
             }
@@ -550,12 +600,12 @@ function RelationList({
               <li key={`${selected.id}-${direction}-${index}`} className="runtime-edge-row">
                 <button type="button" className="runtime-edge-target" onClick={() => onSelect(node.id)}>
                   <Icon name={PROVIDER_ICON[node.provider]} size={13} />
-                  <span>{identityText(node.label, UNAVAILABLE_RUNTIME_NODE)}</span>
+                  <span>{runtimeNodeLabel(node)}</span>
                 </button>
                 <Tag tone="muted">{edge.relationship.replaceAll("_", " ")}</Tag>
-                <button type="button" className={`runtime-edge-evidence${selectedEdgeKey === edgeKey ? " is-active" : ""}`} aria-pressed={selectedEdgeKey === edgeKey} onClick={() => onInspectEdge(edge)}>
+                {!tmuxEdge && <button type="button" className={`runtime-edge-evidence${selectedEdgeKey === edgeKey ? " is-active" : ""}`} aria-pressed={selectedEdgeKey === edgeKey} onClick={() => onInspectEdge(edge)}>
                   Inspect evidence
-                </button>
+                </button>}
               </li>
             );
           })}
@@ -576,11 +626,13 @@ export function RuntimeEvidenceInspector({
   const target = model.runtime.byId.get(edge.target);
   const relationship = edge.relationship.replaceAll("_", " ");
 
+  if (edgeTouchesTmuxSession(edge, model)) return null;
+
   return (
     <div className="inspector-section runtime-edge-evidence-inspector" aria-live="polite">
       <h4>Relationship evidence</h4>
       <p className="runtime-edge-evidence-heading">
-        {identityText(source?.label ?? edge.source, UNAVAILABLE_RUNTIME_ID)} <span aria-hidden="true">→</span> {identityText(target?.label ?? edge.target, UNAVAILABLE_RUNTIME_ID)}
+        {runtimeEndpointLabel(source, edge.source)} <span aria-hidden="true">→</span> {runtimeEndpointLabel(target, edge.target)}
       </p>
       <KeyValue label="Relationship" value={relationship} />
       {edge.evidenceRefs.length === 0 ? (

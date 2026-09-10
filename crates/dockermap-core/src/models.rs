@@ -49,6 +49,11 @@ pub struct ContainerRecord {
     pub role: String,
     pub networks: Vec<String>,
     pub ports: Vec<String>,
+    /// Docker reported at least one valid nonzero published port whose host
+    /// address is the IPv4 or IPv6 unspecified address. The collector reduces
+    /// the raw bind address to this closed fact before snapshot retention.
+    #[serde(rename = "publishesOnUnspecifiedAddress", default)]
+    pub publishes_on_unspecified_address: bool,
     pub mounts: Vec<ContainerMount>,
     #[serde(rename = "dependsOn")]
     pub depends_on: Vec<String>,
@@ -153,8 +158,11 @@ pub enum RuntimeMode {
 pub enum ProviderSlot {
     NetworkInfrastructure,
     HostScoped,
+    /// Tmux has an independent collector lifecycle. It must not inherit
+    /// host-node, listener, or PM2 freshness.
+    Tmux,
     /// Cron has an independent collector lifecycle. It must not inherit
-    /// host-node, listener, PM2, or tmux freshness.
+    /// host-node, listener, or PM2 freshness.
     Cron,
     /// systemd has an independent collector lifecycle.  It must not inherit
     /// freshness from the broader host-scoped observation slot.
@@ -512,6 +520,9 @@ pub enum RuntimeNodeKind {
     Process,
     NetworkListener,
     OrchestratorWorkload,
+    /// Fixed synthetic scope for facts about the integrity of the published
+    /// runtime model itself. It never represents a host/provider entity.
+    IntegrityScope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -823,16 +834,21 @@ pub struct RuntimeMapNode {
     pub package: Option<RuntimePackageEntity>,
 }
 
-/// Evidence providers are deliberately closed.  Version two adds systemd only
-/// after it received its own scheduler slot; it cannot inherit a broader host
-/// collection's freshness or revision.
+/// Evidence providers are deliberately closed. Every host provider enters only
+/// after it receives its own scheduler slot, so it cannot inherit a broader
+/// host collection's freshness or revision.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeEvidenceProvider {
     Docker,
+    Compose,
     Systemd,
     Npm,
     Cron,
+    Tmux,
+    /// DockerMap's own bounded publication-integrity checks. This provider
+    /// never carries raw provider material or user-controlled text.
+    Dockermap,
 }
 
 /// Evidence assertion semantics are deliberately closed. A declaration says
@@ -853,6 +869,9 @@ pub enum RuntimeEvidenceKind {
     DockerNetworkMembership,
     DockerVolumeMount,
     DockerPortPublication,
+    /// Docker reported a valid nonzero port publication on the IPv4 or IPv6
+    /// unspecified host address. No address or port value is retained here.
+    DockerUnspecifiedAddressPortPublication,
     /// Docker's recorded Compose dependency declaration. This is deliberately
     /// not a health, readiness, or traffic-causality claim.
     DockerComposeDependsOn,
@@ -872,6 +891,19 @@ pub enum RuntimeEvidenceKind {
     NpmPackageManifestDependency,
     /// A parsed cron declaration. This does not claim the command ran.
     CronScheduleDeclaration,
+    /// A fixed tmux session listing. This does not claim that the session is
+    /// attached, active, executing work, or reachable.
+    TmuxSessionListing,
+    /// A bounded Compose declaration used only after an exact private binding
+    /// to one current Docker container has succeeded. Paths and labels are
+    /// intentionally not part of the public evidence.
+    ComposeDeclaredMount,
+    /// Docker attested the exact private Compose project/service/config-file
+    /// binding for the same public container. No label values are published.
+    DockerComposeRuntimeBinding,
+    /// DockerMap detected at least one duplicate runtime node identity after
+    /// publication redaction/normalization. IDs and counts are omitted.
+    RuntimeIdentityCollision,
 }
 
 /// A compact, versioned reference to the bounded fact supporting a runtime
@@ -882,7 +914,7 @@ pub enum RuntimeEvidenceKind {
 pub struct RuntimeEvidenceRef {
     /// Version of this closed evidence representation, not a provider API
     /// version.  It lets future additions remain explicit and reviewable.
-    #[schemars(range(min = 1, max = 4))]
+    #[schemars(range(min = 1, max = 7))]
     pub version: u8,
     #[schemars(length(min = 1, max = 259))]
     pub id: String,
@@ -938,6 +970,7 @@ impl RuntimeEvidenceRef {
                 RuntimeEvidenceKind::DockerNetworkMembership
                     | RuntimeEvidenceKind::DockerVolumeMount
                     | RuntimeEvidenceKind::DockerPortPublication
+                    | RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication
                     | RuntimeEvidenceKind::DockerComposeDependsOn
                     | RuntimeEvidenceKind::DockerDaemonStateBindMount,
                 RuntimeEvidenceAssertionKind::Observed,
@@ -972,6 +1005,36 @@ impl RuntimeEvidenceRef {
                     | RuntimeEvidenceFreshness::Stale
                     | RuntimeEvidenceFreshness::TimedOut,
                 Some(ProviderSlot::Cron),
+            ) | (
+                5,
+                RuntimeEvidenceProvider::Tmux,
+                RuntimeEvidenceKind::TmuxSessionListing,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh
+                    | RuntimeEvidenceFreshness::Stale
+                    | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::Tmux),
+            ) | (
+                6,
+                RuntimeEvidenceProvider::Compose,
+                RuntimeEvidenceKind::ComposeDeclaredMount,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) | (
+                6,
+                RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerComposeRuntimeBinding,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) | (
+                7,
+                RuntimeEvidenceProvider::Dockermap,
+                RuntimeEvidenceKind::RuntimeIdentityCollision,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
             )
         )
     }
@@ -1126,6 +1189,18 @@ impl RuntimeMapEdge {
             (
                 1,
                 RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerUnspecifiedAddressPortPublication,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) => {
+                self.relationship == RuntimeRelationshipKind::Exposes
+                    && self.source.starts_with("docker_container_")
+                    && self.target == "host_risk_docker_unspecified_address_port"
+            }
+            (
+                1,
+                RuntimeEvidenceProvider::Docker,
                 RuntimeEvidenceKind::DockerComposeDependsOn,
                 RuntimeEvidenceAssertionKind::Observed,
                 RuntimeEvidenceFreshness::Fresh,
@@ -1135,6 +1210,18 @@ impl RuntimeMapEdge {
                     && self.source.starts_with("docker_container_")
                     && self.target.starts_with("docker_container_")
                     && self.source != self.target
+            }
+            (
+                7,
+                RuntimeEvidenceProvider::Dockermap,
+                RuntimeEvidenceKind::RuntimeIdentityCollision,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) => {
+                self.relationship == RuntimeRelationshipKind::RelatedTo
+                    && self.source == "runtime_integrity_scope"
+                    && self.target == "runtime_integrity_risk_identity_collision"
             }
             (
                 2,
@@ -1178,6 +1265,37 @@ impl RuntimeMapEdge {
             ) => {
                 self.relationship == RuntimeRelationshipKind::RunsOn
                     && self.source.starts_with("scheduled_job_")
+                    && self.target == "host_local"
+                    && self.source != self.target
+            }
+            (
+                5,
+                RuntimeEvidenceProvider::Tmux,
+                RuntimeEvidenceKind::TmuxSessionListing,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh
+                | RuntimeEvidenceFreshness::Stale
+                | RuntimeEvidenceFreshness::TimedOut,
+                Some(ProviderSlot::Tmux),
+            )
+            | (
+                6,
+                RuntimeEvidenceProvider::Compose,
+                RuntimeEvidenceKind::ComposeDeclaredMount,
+                RuntimeEvidenceAssertionKind::Declared,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            )
+            | (
+                6,
+                RuntimeEvidenceProvider::Docker,
+                RuntimeEvidenceKind::DockerComposeRuntimeBinding,
+                RuntimeEvidenceAssertionKind::Observed,
+                RuntimeEvidenceFreshness::Fresh,
+                None,
+            ) => {
+                self.relationship == RuntimeRelationshipKind::RunsOn
+                    && self.source.starts_with("tmux_session_")
                     && self.target == "host_local"
                     && self.source != self.target
             }
@@ -1274,8 +1392,97 @@ pub enum FindingRule {
     SystemdRequiresTargetNotActive,
     #[serde(rename = "docker.internal_network_member_publishes_port")]
     DockerInternalNetworkMemberPublishesPort,
+    #[serde(rename = "docker.port_published_on_unspecified_address")]
+    DockerPortPublishedOnUnspecifiedAddress,
     #[serde(rename = "docker.daemon_state_bind_mount")]
     DockerDaemonStateBindMount,
+    #[serde(rename = "docker.daemon_state_bind_mount_publishes_port")]
+    DockerDaemonStateBindMountPublishesPort,
+    #[serde(rename = "docker.compose_declared_target_not_active")]
+    DockerComposeDeclaredTargetNotActive,
+    #[serde(rename = "docker.compose_mutual_dependency")]
+    DockerComposeMutualDependency,
+    #[serde(rename = "compose.declared_mount_missing_at_bound_container")]
+    ComposeDeclaredMountMissingAtBoundContainer,
+    #[serde(rename = "runtime.identity_collision_detected")]
+    RuntimeIdentityCollisionDetected,
+}
+
+/// The one mutually-exclusive family assigned to every closed finding rule.
+/// It is intentionally not a free-form tag channel.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingCategory {
+    DeclaredDependency,
+    DockerDaemonAuthority,
+    HostPortPublication,
+    EvidenceIntegrity,
+}
+
+impl FindingRule {
+    pub const fn category(self) -> FindingCategory {
+        match self {
+            Self::SystemdRequiresTargetNotActive
+            | Self::DockerComposeDeclaredTargetNotActive
+            | Self::DockerComposeMutualDependency => FindingCategory::DeclaredDependency,
+            Self::DockerDaemonStateBindMount => FindingCategory::DockerDaemonAuthority,
+            Self::DockerInternalNetworkMemberPublishesPort
+            | Self::DockerDaemonStateBindMountPublishesPort
+            | Self::DockerPortPublishedOnUnspecifiedAddress => FindingCategory::HostPortPublication,
+            Self::ComposeDeclaredMountMissingAtBoundContainer => {
+                FindingCategory::DeclaredDependency
+            }
+            Self::RuntimeIdentityCollisionDetected => FindingCategory::EvidenceIntegrity,
+        }
+    }
+}
+
+/// A fixed, response-level count projection. It is calculated from the
+/// closed rule and severity of each finding, never from provider output.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FindingSummary {
+    pub warning_count: u32,
+    pub advisory_count: u32,
+    pub declared_dependency_count: u32,
+    pub docker_daemon_authority_count: u32,
+    pub host_port_publication_count: u32,
+    pub evidence_integrity_count: u32,
+}
+
+impl FindingSummary {
+    pub fn from_findings(findings: &[Finding]) -> Self {
+        let mut summary = Self::default();
+        for finding in findings {
+            match finding.severity {
+                FindingSeverity::Warning => {
+                    summary.warning_count = summary.warning_count.saturating_add(1)
+                }
+                FindingSeverity::Advisory => {
+                    summary.advisory_count = summary.advisory_count.saturating_add(1)
+                }
+            }
+            match finding.rule_id.category() {
+                FindingCategory::DeclaredDependency => {
+                    summary.declared_dependency_count =
+                        summary.declared_dependency_count.saturating_add(1)
+                }
+                FindingCategory::DockerDaemonAuthority => {
+                    summary.docker_daemon_authority_count =
+                        summary.docker_daemon_authority_count.saturating_add(1)
+                }
+                FindingCategory::HostPortPublication => {
+                    summary.host_port_publication_count =
+                        summary.host_port_publication_count.saturating_add(1)
+                }
+                FindingCategory::EvidenceIntegrity => {
+                    summary.evidence_integrity_count =
+                        summary.evidence_integrity_count.saturating_add(1)
+                }
+            }
+        }
+        summary
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -1306,6 +1513,7 @@ pub struct Finding {
 #[serde(deny_unknown_fields)]
 pub struct FindingsResponse {
     pub findings: Vec<Finding>,
+    pub summary: FindingSummary,
     #[serde(rename = "modelRevision")]
     #[schemars(length(min = 1))]
     pub model_revision: String,
@@ -1322,7 +1530,7 @@ pub struct RuntimeMap {
     #[schemars(length(min = 1))]
     pub model_revision: String,
     #[serde(rename = "providerStates")]
-    #[schemars(length(min = 7, max = 7))]
+    #[schemars(length(min = 8, max = 8))]
     pub provider_states: Vec<ProviderState>,
     /// ACTUAL source of these bytes: "docker" or "mock" (#85 A3). Stamped by
     /// the daemon route layer from the cache's runtime mode.

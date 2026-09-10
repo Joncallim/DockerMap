@@ -254,6 +254,17 @@
       "metadata": {}
     },
     {
+      "id": "tmux_session_session--49e907719fa53f1b00e43d8721620f42979c31117ed46daa3fadf320aef94b4e",
+      "provider": "tmux",
+      "type": "tmux_session",
+      "label": "tmux session",
+      "status": null,
+      "layer": "session",
+      "metadata": {
+        "serviceEntityKind": "session"
+      }
+    },
+    {
       "id": "scheduled_job_fixture_daily_backup",
       "provider": "scheduled_job",
       "type": "scheduled_job",
@@ -265,9 +276,72 @@
         "line": "1",
         "command": "daily backup"
       }
+    },
+    {
+      "id": "host_risk_docker_unspecified_address_port",
+      "provider": "docker",
+      "type": "host_risk",
+      "label": "Unspecified-address Docker port publication",
+      "status": null,
+      "layer": "host",
+      "metadata": {}
+    },
+    {
+      "id": "runtime_integrity_scope",
+      "provider": "other",
+      "type": "integrity_scope",
+      "label": "Runtime identity integrity",
+      "status": null,
+      "layer": "advisory",
+      "metadata": {}
+    },
+    {
+      "id": "fixture_redacted_runtime_collision",
+      "provider": "other",
+      "type": "host_risk",
+      "label": "[redacted]",
+      "status": null,
+      "metadata": {}
+    },
+    {
+      "id": "fixture_redacted_runtime_collision",
+      "provider": "other",
+      "type": "host_risk",
+      "label": "[redacted]",
+      "status": null,
+      "metadata": {}
+    },
+    {
+      "id": "runtime_integrity_risk_identity_collision",
+      "provider": "other",
+      "type": "host_risk",
+      "label": "Duplicate runtime topology identity",
+      "status": null,
+      "layer": "advisory",
+      "metadata": {}
     }
   ],
   "edges": [
+    {
+      "source": "runtime_integrity_scope",
+      "target": "runtime_integrity_risk_identity_collision",
+      "relationship": "related_to",
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 7,
+          "id": "dockermap_evidence_runtime_identity_collision",
+          "provider": "dockermap",
+          "kind": "runtime_identity_collision",
+          "assertionKind": "observed",
+          "summary": "DockerMap detected duplicate runtime identities after publication normalization",
+          "subjectRef": "runtime_integrity_scope",
+          "collectedAt": 1787196125766,
+          "providerRevision": "0123456789abcdef0123456789abcdef-1",
+          "freshness": "fresh"
+        }
+      ]
+    },
     {
       "source": "docker_container_container_api",
       "target": "docker_container_container_db",
@@ -613,6 +687,27 @@
       ]
     },
     {
+      "source": "tmux_session_session--49e907719fa53f1b00e43d8721620f42979c31117ed46daa3fadf320aef94b4e",
+      "target": "host_local",
+      "relationship": "runs_on",
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 5,
+          "id": "fixture-tmux-session-listing-worker",
+          "provider": "tmux",
+          "kind": "tmux_session_listing",
+          "assertionKind": "observed",
+          "summary": "tmux listed a local session",
+          "subjectRef": "tmux_session_session--49e907719fa53f1b00e43d8721620f42979c31117ed46daa3fadf320aef94b4e",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-tmux-observation-1",
+          "providerSlot": "tmux",
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
       "source": "scheduled_job_fixture_daily_backup",
       "target": "host_local",
       "relationship": "runs_on",
@@ -629,6 +724,26 @@
           "collectedAt": 1787196125766,
           "providerRevision": "fixture-cron-observation-1",
           "providerSlot": "cron",
+          "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "source": "docker_container_container_api",
+      "target": "host_risk_docker_unspecified_address_port",
+      "relationship": "exposes",
+      "metadata": {},
+      "evidenceRefs": [
+        {
+          "version": 1,
+          "id": "fixture-docker-unspecified-address-publication-container-api",
+          "provider": "docker",
+          "kind": "docker_unspecified_address_port_publication",
+          "assertionKind": "observed",
+          "summary": "Docker reported a container port published on an unspecified host address",
+          "subjectRef": "docker_container_container_api",
+          "collectedAt": 1787196125766,
+          "providerRevision": "fixture-boot-3",
           "freshness": "fresh"
         }
       ]
@@ -656,6 +771,16 @@
       "lastDurationMs": 10,
       "consecutiveFailureCount": 0,
       "dataRevision": "fixture-provider-2",
+      "statusReason": null
+    },
+    {
+      "slot": "tmux",
+      "state": "fresh",
+      "lastAttemptMs": 1787196125700,
+      "lastSuccessMs": 1787196125710,
+      "lastDurationMs": 10,
+      "consecutiveFailureCount": 0,
+      "dataRevision": "fixture-provider-tmux",
       "statusReason": null
     },
     {

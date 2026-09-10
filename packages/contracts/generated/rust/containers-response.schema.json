@@ -75,6 +75,11 @@
           },
           "type": "array"
         },
+        "publishesOnUnspecifiedAddress": {
+          "default": false,
+          "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+          "type": "boolean"
+        },
         "role": {
           "type": "string"
         },

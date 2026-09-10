@@ -1,6 +1,8 @@
 use bollard::{
     container::LogOutput,
-    models::{ContainerSummary, MountPoint, MountPointTypeEnum, VolumeListResponse},
+    models::{
+        ContainerSummary, MountPoint, MountPointTypeEnum, Port, PortTypeEnum, VolumeListResponse,
+    },
     query_parameters::{
         ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder,
         LogsOptionsBuilder,
@@ -9,11 +11,18 @@ use bollard::{
 };
 use dockermap_core::{
     page_log_entries, parse_rfc3339_nano_millis, unix_timestamp_millis, ComposeMountKind,
-    ContainerMount, ContainerRecord, DockerSnapshot, LogCursor, LogEntry, LogsResponse,
-    NetworkRecord, VolumeRecord, MAX_LOG_PAGE_SIZE,
+    ComposeRuntimeContainer, ContainerMount, ContainerRecord, DockerSnapshot, LogCursor, LogEntry,
+    LogsResponse, NetworkRecord, VolumeRecord, MAX_COMPOSE_RUNTIME_BINDING_CONFIG_FILES,
+    MAX_COMPOSE_RUNTIME_BINDING_CONTAINERS, MAX_LOG_PAGE_SIZE,
+    MAX_RUNTIME_MOUNTS_PER_BOUND_CONTAINER,
 };
 use futures_util::stream::StreamExt;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+pub(crate) struct DockerObservation {
+    pub(crate) snapshot: DockerSnapshot,
+    pub(crate) compose_containers: Option<Vec<ComposeRuntimeContainer>>,
+}
 
 use crate::publication::truncate_chars;
 use crate::{
@@ -47,7 +56,12 @@ impl DockerCollector {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn collect_snapshot(&self) -> Result<DockerSnapshot, String> {
+        Ok(self.collect_observation().await?.snapshot)
+    }
+
+    pub(crate) async fn collect_observation(&self) -> Result<DockerObservation, String> {
         let filters = self.docker_filters();
         let mut container_options = ListContainersOptionsBuilder::new().all(true);
         if let Some(filters) = filters.as_ref() {
@@ -79,7 +93,78 @@ impl DockerCollector {
             .await
             .map_err(|error| format!("list_volumes failed: {error}"))?;
 
-        Ok(build_snapshot(containers, networks, volumes))
+        let snapshot = build_snapshot(containers.clone(), networks, volumes);
+        let mounts_by_id = snapshot
+            .containers
+            .iter()
+            .map(|container| (container.id.as_str(), container.mounts.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut compose_containers = Vec::new();
+        for container in containers {
+            let Some(labels) = container.labels else {
+                continue;
+            };
+            let Some(project) = labels
+                .get("com.docker.compose.project")
+                .map(|value| value.trim())
+            else {
+                continue;
+            };
+            let Some(service) = labels
+                .get("com.docker.compose.service")
+                .map(|value| value.trim())
+            else {
+                continue;
+            };
+            let Some(config_label) = labels.get("com.docker.compose.project.config_files") else {
+                continue;
+            };
+            if config_label.chars().count() > 4096 {
+                continue;
+            }
+            let config_files = config_label
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>();
+            let Some(id) = container.id else {
+                continue;
+            };
+            if project.is_empty()
+                || service.is_empty()
+                || project.chars().count() > 259
+                || service.chars().count() > 259
+                || config_files.is_empty()
+                || config_files.len() > MAX_COMPOSE_RUNTIME_BINDING_CONFIG_FILES
+                || !is_exact_docker_container_id(&id)
+            {
+                continue;
+            }
+            let Some(mounts) = mounts_by_id.get(id.as_str()) else {
+                continue;
+            };
+            if mounts.len() > MAX_RUNTIME_MOUNTS_PER_BOUND_CONTAINER {
+                continue;
+            }
+            compose_containers.push(ComposeRuntimeContainer {
+                mounts: mounts.clone(),
+                container_id: id,
+                project: project.to_string(),
+                service: service.to_string(),
+                config_files,
+            });
+            if compose_containers.len() > MAX_COMPOSE_RUNTIME_BINDING_CONTAINERS {
+                return Ok(DockerObservation {
+                    snapshot,
+                    compose_containers: None,
+                });
+            }
+        }
+        Ok(DockerObservation {
+            snapshot,
+            compose_containers: Some(compose_containers),
+        })
     }
 
     fn docker_filters(&self) -> Option<HashMap<String, Vec<String>>> {
@@ -169,6 +254,13 @@ impl DockerCollector {
             limit,
         ))
     }
+}
+
+fn is_exact_docker_container_id(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 /// Parse one timestamped Docker log line (collected with `--timestamps`) into
@@ -365,6 +457,10 @@ fn build_snapshot(
             .map(|value| parse_depends_on_label(value))
             .unwrap_or_default();
 
+        let ports = container.ports.unwrap_or_default();
+        let publishes_on_unspecified_address =
+            ports.iter().any(is_valid_unspecified_address_publication);
+
         container_records.push(ContainerRecord {
             id,
             name,
@@ -377,9 +473,7 @@ fn build_snapshot(
                 .cloned()
                 .unwrap_or_else(|| "service".into()),
             networks: network_ids,
-            ports: container
-                .ports
-                .unwrap_or_default()
+            ports: ports
                 .into_iter()
                 .map(|port| {
                     let private = port.private_port;
@@ -395,6 +489,7 @@ fn build_snapshot(
                     }
                 })
                 .collect(),
+            publishes_on_unspecified_address,
             mounts,
             depends_on,
         });
@@ -463,6 +558,19 @@ fn build_snapshot(
     }
 }
 
+/// Reduce Docker's raw host bind address to the one closed fact needed by the
+/// finding engine. Missing, malformed, specific, and loopback addresses fail
+/// closed, and the address itself never enters the retained snapshot.
+fn is_valid_unspecified_address_publication(port: &Port) -> bool {
+    matches!(port.ip.as_deref(), Some("0.0.0.0" | "::"))
+        && port.public_port.is_some_and(|value| value > 0)
+        && port.private_port > 0
+        && matches!(
+            port.typ,
+            Some(PortTypeEnum::TCP | PortTypeEnum::UDP | PortTypeEnum::SCTP)
+        )
+}
+
 fn collect_container_mounts(
     container_id: &str,
     mounts: Option<&[MountPoint]>,
@@ -504,4 +612,89 @@ fn collect_container_mounts(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod unspecified_address_tests {
+    use super::*;
+
+    fn port(
+        ip: Option<&str>,
+        public_port: Option<u16>,
+        private_port: u16,
+        typ: Option<PortTypeEnum>,
+    ) -> Port {
+        Port {
+            ip: ip.map(str::to_string),
+            public_port,
+            private_port,
+            typ,
+        }
+    }
+
+    #[test]
+    fn unspecified_address_classifier_requires_an_exact_complete_publication() {
+        for candidate in [
+            port(Some("0.0.0.0"), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some("::"), Some(5353), 53, Some(PortTypeEnum::UDP)),
+            port(Some("::"), Some(443), 443, Some(PortTypeEnum::SCTP)),
+        ] {
+            assert!(is_valid_unspecified_address_publication(&candidate));
+        }
+
+        for candidate in [
+            port(None, Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some(""), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some("127.0.0.1"), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some("::1"), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some("192.0.2.8"), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(Some("0.0.0.0 "), Some(8080), 80, Some(PortTypeEnum::TCP)),
+            port(
+                Some("not-an-address"),
+                Some(8080),
+                80,
+                Some(PortTypeEnum::TCP),
+            ),
+            port(Some("0.0.0.0"), None, 80, Some(PortTypeEnum::TCP)),
+            port(Some("0.0.0.0"), Some(0), 80, Some(PortTypeEnum::TCP)),
+            port(Some("0.0.0.0"), Some(8080), 0, Some(PortTypeEnum::TCP)),
+            port(Some("0.0.0.0"), Some(8080), 80, None),
+            port(Some("0.0.0.0"), Some(8080), 80, Some(PortTypeEnum::EMPTY)),
+        ] {
+            assert!(!is_valid_unspecified_address_publication(&candidate));
+        }
+    }
+
+    #[test]
+    fn snapshot_retains_only_the_closed_boolean_not_docker_bind_addresses() {
+        let snapshot = build_snapshot(
+            vec![ContainerSummary {
+                id: Some("a".repeat(64)),
+                names: Some(vec!["/bounded".into()]),
+                image: Some("example:latest".into()),
+                status: Some("running".into()),
+                ports: Some(vec![
+                    port(Some("0.0.0.0"), Some(8080), 80, Some(PortTypeEnum::TCP)),
+                    port(Some("192.0.2.77"), Some(8443), 443, Some(PortTypeEnum::TCP)),
+                ]),
+                ..Default::default()
+            }],
+            Vec::new(),
+            VolumeListResponse::default(),
+        );
+
+        assert!(snapshot.containers[0].publishes_on_unspecified_address);
+        assert_eq!(
+            snapshot.containers[0].ports,
+            ["8080:80/tcp", "8443:443/tcp"]
+        );
+        let serialized = serde_json::to_string(&snapshot).expect("snapshot serializes");
+        assert!(serialized.contains("\"publishesOnUnspecifiedAddress\":true"));
+        for raw_address in ["0.0.0.0", "192.0.2.77"] {
+            assert!(
+                !serialized.contains(raw_address),
+                "raw Docker bind address must not enter retained snapshot: {raw_address}"
+            );
+        }
+    }
 }

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::{fs, io::Read};
 
 use crate::{
     collision_resistant_id_component, ComposeDiagnostic, ComposeEditPlan, ComposeFileOrigin,
@@ -65,22 +65,191 @@ pub fn scan_compose_files(
     }
 
     for file in files {
-        let metadata = fs::metadata(file)
-            .map_err(|error| format!("failed to inspect {}: {error}", file.display()))?;
-        if metadata.len() > MAX_COMPOSE_FILE_BYTES {
-            return Err(format!(
-                "compose file `{}` is too large; limit is {MAX_COMPOSE_FILE_BYTES} bytes",
-                file.display()
-            ));
-        }
-        let content = fs::read_to_string(file)
-            .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+        let content = read_compose_file_bounded(file)?;
         parse_compose_file(file, &content, &mut scan);
     }
 
     coalesce_compose_services(&mut scan);
     validate_compose_scan(&mut scan);
     Ok(scan)
+}
+
+/// Returns one explicit, non-empty top-level Compose `name` only when every
+/// named document agrees. This is deliberately stricter than Compose's
+/// directory-name fallback: callers use it to bind declarations to Docker
+/// labels, where guessing a project would create false drift findings.
+pub fn explicit_compose_project_name(files: &[PathBuf]) -> Option<String> {
+    let mut names = BTreeSet::new();
+    for file in files {
+        let content = bounded_compose_content(file)?;
+        let document = yaml_serde::from_str::<yaml_serde::Value>(&content).ok()?;
+        if let Some(name) = mapping_get(&document, "name")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            names.insert(name.to_string());
+        }
+    }
+    (names.len() == 1).then(|| names.pop_first()).flatten()
+}
+
+/// Stable digest of the same bounded bytes accepted by the Compose scanner.
+/// Callers can bracket a multi-read binding operation and reject a concurrent
+/// configuration change rather than deriving an incoherent conclusion.
+pub fn compose_files_fingerprint(files: &[PathBuf]) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    for file in files {
+        digest.update(file.as_os_str().as_encoded_bytes());
+        digest.update([0]);
+        digest.update(bounded_compose_content(file)?.as_bytes());
+        digest.update([0]);
+    }
+    Some(
+        digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
+/// Take one bounded in-memory snapshot of every selected Compose document and
+/// derive the project identity and scan from those exact bytes. This is the
+/// binding-only path: it prevents a declaration name, diagnostic and mount
+/// list from being assembled from different file generations.
+pub fn scan_compose_binding_snapshot(
+    project_root: impl AsRef<Path>,
+    files: &[PathBuf],
+) -> Option<(ComposeScan, String, String)> {
+    use sha2::{Digest, Sha256};
+    let project_root = project_root.as_ref();
+    let mut scan = ComposeScan {
+        files: files.iter().map(|path| display_path(path)).collect(),
+        project_root: display_path(project_root),
+        services: Vec::new(),
+        mounts: Vec::new(),
+        correlations: Vec::new(),
+        diagnostics: Vec::new(),
+    };
+    let mut names = BTreeSet::new();
+    let mut digest = Sha256::new();
+    let mut documents = Vec::with_capacity(files.len());
+    for file in files {
+        let content = read_compose_file_bounded_under_root(project_root, file).ok()?;
+        digest.update(file.as_os_str().as_encoded_bytes());
+        digest.update([0]);
+        digest.update(content.as_bytes());
+        digest.update([0]);
+        let document = yaml_serde::from_str::<yaml_serde::Value>(&content).ok()?;
+        if let Some(name) = mapping_get(&document, "name")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            names.insert(name.to_string());
+        }
+        documents.push((file, content));
+    }
+    // The parser below sees only the captured in-memory documents. Re-open
+    // every configured pathname through the same no-follow/root-checked
+    // boundary and require byte-for-byte equality before accepting that
+    // snapshot; a multi-file replacement therefore yields no hybrid binding.
+    if documents.iter().any(|(file, captured)| {
+        read_compose_file_bounded_under_root(project_root, file)
+            .map(|current| current != *captured)
+            .unwrap_or(true)
+    }) {
+        return None;
+    }
+    for (file, content) in documents {
+        parse_compose_file(file, &content, &mut scan);
+    }
+    let project = (names.len() == 1).then(|| names.pop_first()).flatten()?;
+    coalesce_compose_services(&mut scan);
+    validate_compose_scan(&mut scan);
+    let fingerprint = digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Some((scan, project, fingerprint))
+}
+
+fn bounded_compose_content(file: &Path) -> Option<String> {
+    read_compose_file_bounded(file).ok()
+}
+
+/// Read at most the configured maximum plus one byte from the opened file.
+/// Metadata is deliberately not used as a security preflight: it can change
+/// between inspection and a later unbounded read.
+fn read_compose_file_bounded(file: &Path) -> Result<String, String> {
+    let mut handle = fs::File::open(file)
+        .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+    let mut bytes = Vec::with_capacity((MAX_COMPOSE_FILE_BYTES.min(64 * 1024)) as usize);
+    handle
+        .by_ref()
+        .take(MAX_COMPOSE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+    if bytes.len() as u64 > MAX_COMPOSE_FILE_BYTES {
+        return Err(format!(
+            "compose file `{}` is too large; limit is {MAX_COMPOSE_FILE_BYTES} bytes",
+            file.display()
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| format!("failed to read {} as UTF-8: {error}", file.display()))
+}
+
+#[cfg(unix)]
+fn read_compose_file_bounded_under_root(root: &Path, file: &Path) -> Result<String, String> {
+    use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
+    if !file.starts_with(root)
+        || file.strip_prefix(root).ok().is_none_or(|relative| {
+            relative
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+        })
+    {
+        return Err("Compose binding file is outside the configured root".into());
+    }
+    // O_NOFOLLOW closes the final-component swap window. The opened FD is
+    // then checked as a regular file and resolved through /proc/self/fd so a
+    // race cannot make its bytes come from outside the already-canonical root.
+    let mut handle = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(0o400000)
+        .open(file)
+        .map_err(|_| "Compose binding file is unavailable".to_string())?;
+    if !handle
+        .metadata()
+        .map_err(|_| "Compose binding file is unavailable".to_string())?
+        .is_file()
+    {
+        return Err("Compose binding file is not regular".into());
+    }
+    let opened = fs::canonicalize(format!("/proc/self/fd/{}", handle.as_raw_fd()))
+        .map_err(|_| "Compose binding file is unavailable".to_string())?;
+    if !opened.starts_with(root) {
+        return Err("Compose binding file escaped the configured root".into());
+    }
+    let mut bytes = Vec::with_capacity((MAX_COMPOSE_FILE_BYTES.min(64 * 1024)) as usize);
+    handle
+        .by_ref()
+        .take(MAX_COMPOSE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Compose binding file is unavailable".to_string())?;
+    if bytes.len() as u64 > MAX_COMPOSE_FILE_BYTES {
+        return Err("Compose binding file exceeds the byte limit".into());
+    }
+    String::from_utf8(bytes).map_err(|_| "Compose binding file is not UTF-8".into())
+}
+
+#[cfg(not(unix))]
+fn read_compose_file_bounded_under_root(_root: &Path, _file: &Path) -> Result<String, String> {
+    Err("Compose runtime binding is unavailable on this platform".into())
 }
 
 pub fn correlate_compose_runtime(
@@ -811,11 +980,10 @@ pub(crate) fn unsafe_bind_source_diagnostic(
 /// Closed, path-boundary predicate shared by Compose diagnostics and runtime
 /// derivation. Callers must never publish the matching source path.
 pub(crate) fn is_docker_daemon_state_bind_source(resolved: &str) -> bool {
-    let path = Path::new(resolved);
-    path.components()
-        .any(|component| component.as_os_str() == "docker.sock")
-        || resolved == "/var/lib/docker"
-        || resolved.starts_with("/var/lib/docker/")
+    matches!(
+        resolved,
+        "/var/run/docker.sock" | "/run/docker.sock" | "/var/lib/docker"
+    ) || resolved.starts_with("/var/lib/docker/")
 }
 
 fn mounts_match(compose_mount: &ComposeMount, runtime_mount: &ContainerMount) -> bool {

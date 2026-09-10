@@ -79,6 +79,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           },
           "type": "array"
         },
+        "publishesOnUnspecifiedAddress": {
+          "default": false,
+          "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+          "type": "boolean"
+        },
         "role": {
           "type": "string"
         },
@@ -351,8 +356,13 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "tmux",
+          "description": "Tmux has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
+          "type": "string"
+        },
+        {
           "const": "cron",
-          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
           "type": "string"
         },
         {
@@ -529,6 +539,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "docker_unspecified_address_port_publication",
+          "description": "Docker reported a valid nonzero port publication on the IPv4 or IPv6\nunspecified host address. No address or port value is retained here.",
+          "type": "string"
+        },
+        {
           "const": "docker_compose_depends_on",
           "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
           "type": "string"
@@ -562,18 +577,49 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "cron_schedule_declaration",
           "description": "A parsed cron declaration. This does not claim the command ran.",
           "type": "string"
+        },
+        {
+          "const": "tmux_session_listing",
+          "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
+          "type": "string"
+        },
+        {
+          "const": "compose_declared_mount",
+          "description": "A bounded Compose declaration used only after an exact private binding\nto one current Docker container has succeeded. Paths and labels are\nintentionally not part of the public evidence.",
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_runtime_binding",
+          "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
+          "type": "string"
+        },
+        {
+          "const": "runtime_identity_collision",
+          "description": "DockerMap detected at least one duplicate runtime node identity after\npublication redaction/normalization. IDs and counts are omitted.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
-      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
-      "enum": [
-        "docker",
-        "systemd",
-        "npm",
-        "cron"
-      ],
-      "type": "string"
+      "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
+      "oneOf": [
+        {
+          "enum": [
+            "docker",
+            "compose",
+            "systemd",
+            "npm",
+            "cron",
+            "tmux"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "dockermap",
+          "description": "DockerMap's own bounded publication-integrity checks. This provider\nnever carries raw provider material or user-controlled text.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeEvidenceRef": {
       "additionalProperties": false,
@@ -632,7 +678,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 4,
+          "maximum": 7,
           "minimum": 1,
           "type": "integer"
         }
@@ -893,35 +939,44 @@ export const RUST_RESPONSE_SCHEMAS = {
       "type": "string"
     },
     "RuntimeNodeKind": {
-      "enum": [
-        "container",
-        "docker_network",
-        "docker_volume",
-        "host",
-        "host_risk",
-        "service",
-        "systemd_service",
-        "scheduled_job",
-        "pm2_app",
-        "tmux_session",
-        "tailnet_node",
-        "reverse_proxy",
-        "local_dns_resolver",
-        "dns_provider",
-        "node_application",
-        "python_application",
-        "ai_agent",
-        "package",
-        "storage",
-        "external_api",
-        "package_dependency",
-        "database",
-        "worker",
-        "process",
-        "network_listener",
-        "orchestrator_workload"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "container",
+            "docker_network",
+            "docker_volume",
+            "host",
+            "host_risk",
+            "service",
+            "systemd_service",
+            "scheduled_job",
+            "pm2_app",
+            "tmux_session",
+            "tailnet_node",
+            "reverse_proxy",
+            "local_dns_resolver",
+            "dns_provider",
+            "node_application",
+            "python_application",
+            "ai_agent",
+            "package",
+            "storage",
+            "external_api",
+            "package_dependency",
+            "database",
+            "worker",
+            "process",
+            "network_listener",
+            "orchestrator_workload"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "integrity_scope",
+          "description": "Fixed synthetic scope for facts about the integrity of the published\nruntime model itself. It never represents a host/provider entity.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeNodeLayer": {
       "enum": [
@@ -1305,8 +1360,8 @@ export const RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/$defs/ProviderState"
       },
-      "maxItems": 7,
-      "minItems": 7,
+      "maxItems": 8,
+      "minItems": 8,
       "type": "array"
     },
     "source": {
@@ -1391,7 +1446,13 @@ export const RUST_RESPONSE_SCHEMAS = {
       "enum": [
         "systemd.requires_target_not_active",
         "docker.internal_network_member_publishes_port",
-        "docker.daemon_state_bind_mount"
+        "docker.port_published_on_unspecified_address",
+        "docker.daemon_state_bind_mount",
+        "docker.daemon_state_bind_mount_publishes_port",
+        "docker.compose_declared_target_not_active",
+        "docker.compose_mutual_dependency",
+        "compose.declared_mount_missing_at_bound_container",
+        "runtime.identity_collision_detected"
       ],
       "type": "string"
     },
@@ -1402,6 +1463,51 @@ export const RUST_RESPONSE_SCHEMAS = {
         "advisory"
       ],
       "type": "string"
+    },
+    "FindingSummary": {
+      "additionalProperties": false,
+      "description": "A fixed, response-level count projection. It is calculated from the\nclosed rule and severity of each finding, never from provider output.",
+      "properties": {
+        "advisoryCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "declaredDependencyCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dockerDaemonAuthorityCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evidenceIntegrityCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hostPortPublicationCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warningCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "warningCount",
+        "advisoryCount",
+        "declaredDependencyCount",
+        "dockerDaemonAuthorityCount",
+        "hostPortPublicationCount",
+        "evidenceIntegrityCount"
+      ],
+      "type": "object"
     },
     "ProviderSlot": {
       "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
@@ -1417,8 +1523,13 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "tmux",
+          "description": "Tmux has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
+          "type": "string"
+        },
+        {
           "const": "cron",
-          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
           "type": "string"
         },
         {
@@ -1456,6 +1567,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "docker_unspecified_address_port_publication",
+          "description": "Docker reported a valid nonzero port publication on the IPv4 or IPv6\nunspecified host address. No address or port value is retained here.",
+          "type": "string"
+        },
+        {
           "const": "docker_compose_depends_on",
           "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
           "type": "string"
@@ -1489,18 +1605,49 @@ export const RUST_RESPONSE_SCHEMAS = {
           "const": "cron_schedule_declaration",
           "description": "A parsed cron declaration. This does not claim the command ran.",
           "type": "string"
+        },
+        {
+          "const": "tmux_session_listing",
+          "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
+          "type": "string"
+        },
+        {
+          "const": "compose_declared_mount",
+          "description": "A bounded Compose declaration used only after an exact private binding\nto one current Docker container has succeeded. Paths and labels are\nintentionally not part of the public evidence.",
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_runtime_binding",
+          "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
+          "type": "string"
+        },
+        {
+          "const": "runtime_identity_collision",
+          "description": "DockerMap detected at least one duplicate runtime node identity after\npublication redaction/normalization. IDs and counts are omitted.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
-      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
-      "enum": [
-        "docker",
-        "systemd",
-        "npm",
-        "cron"
-      ],
-      "type": "string"
+      "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
+      "oneOf": [
+        {
+          "enum": [
+            "docker",
+            "compose",
+            "systemd",
+            "npm",
+            "cron",
+            "tmux"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "dockermap",
+          "description": "DockerMap's own bounded publication-integrity checks. This provider\nnever carries raw provider material or user-controlled text.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeEvidenceRef": {
       "additionalProperties": false,
@@ -1559,7 +1706,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 4,
+          "maximum": 7,
           "minimum": 1,
           "type": "integer"
         }
@@ -1591,10 +1738,14 @@ export const RUST_RESPONSE_SCHEMAS = {
     "modelRevision": {
       "minLength": 1,
       "type": "string"
+    },
+    "summary": {
+      "$ref": "#/$defs/FindingSummary"
     }
   },
   "required": [
     "findings",
+    "summary",
     "modelRevision"
   ],
   "title": "FindingsResponse",
@@ -2275,6 +2426,11 @@ export const RUST_RESPONSE_SCHEMAS = {
           },
           "type": "array"
         },
+        "publishesOnUnspecifiedAddress": {
+          "default": false,
+          "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+          "type": "boolean"
+        },
         "role": {
           "type": "string"
         },
@@ -2389,6 +2545,11 @@ export const RUST_RESPONSE_SCHEMAS = {
         "type": "string"
       },
       "type": "array"
+    },
+    "publishesOnUnspecifiedAddress": {
+      "default": false,
+      "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+      "type": "boolean"
     },
     "role": {
       "type": "string"
@@ -2624,6 +2785,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
             "type": "string"
           },
           "type": "array"
+        },
+        "publishesOnUnspecifiedAddress": {
+          "default": false,
+          "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+          "type": "boolean"
         },
         "role": {
           "type": "string"
@@ -2897,8 +3063,13 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "tmux",
+          "description": "Tmux has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
+          "type": "string"
+        },
+        {
           "const": "cron",
-          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
           "type": "string"
         },
         {
@@ -3075,6 +3246,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "docker_unspecified_address_port_publication",
+          "description": "Docker reported a valid nonzero port publication on the IPv4 or IPv6\nunspecified host address. No address or port value is retained here.",
+          "type": "string"
+        },
+        {
           "const": "docker_compose_depends_on",
           "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
           "type": "string"
@@ -3108,18 +3284,49 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "cron_schedule_declaration",
           "description": "A parsed cron declaration. This does not claim the command ran.",
           "type": "string"
+        },
+        {
+          "const": "tmux_session_listing",
+          "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
+          "type": "string"
+        },
+        {
+          "const": "compose_declared_mount",
+          "description": "A bounded Compose declaration used only after an exact private binding\nto one current Docker container has succeeded. Paths and labels are\nintentionally not part of the public evidence.",
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_runtime_binding",
+          "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
+          "type": "string"
+        },
+        {
+          "const": "runtime_identity_collision",
+          "description": "DockerMap detected at least one duplicate runtime node identity after\npublication redaction/normalization. IDs and counts are omitted.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
-      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
-      "enum": [
-        "docker",
-        "systemd",
-        "npm",
-        "cron"
-      ],
-      "type": "string"
+      "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
+      "oneOf": [
+        {
+          "enum": [
+            "docker",
+            "compose",
+            "systemd",
+            "npm",
+            "cron",
+            "tmux"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "dockermap",
+          "description": "DockerMap's own bounded publication-integrity checks. This provider\nnever carries raw provider material or user-controlled text.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeEvidenceRef": {
       "additionalProperties": false,
@@ -3178,7 +3385,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 4,
+          "maximum": 7,
           "minimum": 1,
           "type": "integer"
         }
@@ -3439,35 +3646,44 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "type": "string"
     },
     "RuntimeNodeKind": {
-      "enum": [
-        "container",
-        "docker_network",
-        "docker_volume",
-        "host",
-        "host_risk",
-        "service",
-        "systemd_service",
-        "scheduled_job",
-        "pm2_app",
-        "tmux_session",
-        "tailnet_node",
-        "reverse_proxy",
-        "local_dns_resolver",
-        "dns_provider",
-        "node_application",
-        "python_application",
-        "ai_agent",
-        "package",
-        "storage",
-        "external_api",
-        "package_dependency",
-        "database",
-        "worker",
-        "process",
-        "network_listener",
-        "orchestrator_workload"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "container",
+            "docker_network",
+            "docker_volume",
+            "host",
+            "host_risk",
+            "service",
+            "systemd_service",
+            "scheduled_job",
+            "pm2_app",
+            "tmux_session",
+            "tailnet_node",
+            "reverse_proxy",
+            "local_dns_resolver",
+            "dns_provider",
+            "node_application",
+            "python_application",
+            "ai_agent",
+            "package",
+            "storage",
+            "external_api",
+            "package_dependency",
+            "database",
+            "worker",
+            "process",
+            "network_listener",
+            "orchestrator_workload"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "integrity_scope",
+          "description": "Fixed synthetic scope for facts about the integrity of the published\nruntime model itself. It never represents a host/provider entity.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeNodeLayer": {
       "enum": [
@@ -3851,8 +4067,8 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "items": {
         "$ref": "#/components/schemas/RuntimeMap/$defs/ProviderState"
       },
-      "maxItems": 7,
-      "minItems": 7,
+      "maxItems": 8,
+      "minItems": 8,
       "type": "array"
     },
     "source": {
@@ -3937,7 +4153,13 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       "enum": [
         "systemd.requires_target_not_active",
         "docker.internal_network_member_publishes_port",
-        "docker.daemon_state_bind_mount"
+        "docker.port_published_on_unspecified_address",
+        "docker.daemon_state_bind_mount",
+        "docker.daemon_state_bind_mount_publishes_port",
+        "docker.compose_declared_target_not_active",
+        "docker.compose_mutual_dependency",
+        "compose.declared_mount_missing_at_bound_container",
+        "runtime.identity_collision_detected"
       ],
       "type": "string"
     },
@@ -3948,6 +4170,51 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "advisory"
       ],
       "type": "string"
+    },
+    "FindingSummary": {
+      "additionalProperties": false,
+      "description": "A fixed, response-level count projection. It is calculated from the\nclosed rule and severity of each finding, never from provider output.",
+      "properties": {
+        "advisoryCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "declaredDependencyCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dockerDaemonAuthorityCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evidenceIntegrityCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hostPortPublicationCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warningCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "warningCount",
+        "advisoryCount",
+        "declaredDependencyCount",
+        "dockerDaemonAuthorityCount",
+        "hostPortPublicationCount",
+        "evidenceIntegrityCount"
+      ],
+      "type": "object"
     },
     "ProviderSlot": {
       "description": "Fixed, schema-backed host-provider slots. This is not a plugin or policy\ninterface: the daemon owns the complete finite list.",
@@ -3963,8 +4230,13 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "tmux",
+          "description": "Tmux has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
+          "type": "string"
+        },
+        {
           "const": "cron",
-          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, PM2, or tmux freshness.",
+          "description": "Cron has an independent collector lifecycle. It must not inherit\nhost-node, listener, or PM2 freshness.",
           "type": "string"
         },
         {
@@ -4002,6 +4274,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "type": "string"
         },
         {
+          "const": "docker_unspecified_address_port_publication",
+          "description": "Docker reported a valid nonzero port publication on the IPv4 or IPv6\nunspecified host address. No address or port value is retained here.",
+          "type": "string"
+        },
+        {
           "const": "docker_compose_depends_on",
           "description": "Docker's recorded Compose dependency declaration. This is deliberately\nnot a health, readiness, or traffic-causality claim.",
           "type": "string"
@@ -4035,18 +4312,49 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "const": "cron_schedule_declaration",
           "description": "A parsed cron declaration. This does not claim the command ran.",
           "type": "string"
+        },
+        {
+          "const": "tmux_session_listing",
+          "description": "A fixed tmux session listing. This does not claim that the session is\nattached, active, executing work, or reachable.",
+          "type": "string"
+        },
+        {
+          "const": "compose_declared_mount",
+          "description": "A bounded Compose declaration used only after an exact private binding\nto one current Docker container has succeeded. Paths and labels are\nintentionally not part of the public evidence.",
+          "type": "string"
+        },
+        {
+          "const": "docker_compose_runtime_binding",
+          "description": "Docker attested the exact private Compose project/service/config-file\nbinding for the same public container. No label values are published.",
+          "type": "string"
+        },
+        {
+          "const": "runtime_identity_collision",
+          "description": "DockerMap detected at least one duplicate runtime node identity after\npublication redaction/normalization. IDs and counts are omitted.",
+          "type": "string"
         }
       ]
     },
     "RuntimeEvidenceProvider": {
-      "description": "Evidence providers are deliberately closed.  Version two adds systemd only\nafter it received its own scheduler slot; it cannot inherit a broader host\ncollection's freshness or revision.",
-      "enum": [
-        "docker",
-        "systemd",
-        "npm",
-        "cron"
-      ],
-      "type": "string"
+      "description": "Evidence providers are deliberately closed. Every host provider enters only\nafter it receives its own scheduler slot, so it cannot inherit a broader\nhost collection's freshness or revision.",
+      "oneOf": [
+        {
+          "enum": [
+            "docker",
+            "compose",
+            "systemd",
+            "npm",
+            "cron",
+            "tmux"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "dockermap",
+          "description": "DockerMap's own bounded publication-integrity checks. This provider\nnever carries raw provider material or user-controlled text.",
+          "type": "string"
+        }
+      ]
     },
     "RuntimeEvidenceRef": {
       "additionalProperties": false,
@@ -4105,7 +4413,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "version": {
           "description": "Version of this closed evidence representation, not a provider API\nversion.  It lets future additions remain explicit and reviewable.",
           "format": "uint8",
-          "maximum": 4,
+          "maximum": 7,
           "minimum": 1,
           "type": "integer"
         }
@@ -4137,10 +4445,14 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
     "modelRevision": {
       "minLength": 1,
       "type": "string"
+    },
+    "summary": {
+      "$ref": "#/components/schemas/FindingsResponse/$defs/FindingSummary"
     }
   },
   "required": [
     "findings",
+    "summary",
     "modelRevision"
   ],
   "title": "FindingsResponse",
@@ -4821,6 +5133,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           },
           "type": "array"
         },
+        "publishesOnUnspecifiedAddress": {
+          "default": false,
+          "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+          "type": "boolean"
+        },
         "role": {
           "type": "string"
         },
@@ -4935,6 +5252,11 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "type": "string"
       },
       "type": "array"
+    },
+    "publishesOnUnspecifiedAddress": {
+      "default": false,
+      "description": "Docker reported at least one valid nonzero published port whose host\naddress is the IPv4 or IPv6 unspecified address. The collector reduces\nthe raw bind address to this closed fact before snapshot retention.",
+      "type": "boolean"
     },
     "role": {
       "type": "string"

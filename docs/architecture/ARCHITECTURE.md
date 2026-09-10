@@ -2,7 +2,7 @@
 
 DockerMap is a read-first local operational topology app. Docker and Docker Compose are
 deep providers, not the boundary of the product. The runtime map must represent the full
-self-hosted environment: Docker resources, systemd units, tmux-managed agents, package
+self-hosted environment: Docker resources, systemd units, tmux sessions, package
 ecosystems, native processes, reverse proxies, databases, DNS, storage, network edges,
 external APIs, and AI workloads.
 
@@ -53,8 +53,8 @@ acceptance work are recorded in [`CONTRACT_AUTHORITY.md`](CONTRACT_AUTHORITY.md)
 ### Relationship evidence lifecycle
 
 Each runtime edge has a required `evidenceRefs` array. The current Docker,
-Systemd, and npm slices emit bounded, versioned records alongside the edge during
-derivation; they are not reconstructed from labels in React:
+Systemd, npm, Cron, and tmux slices emit bounded, versioned records alongside
+the edge during derivation; they are not reconstructed from labels in React:
 
 ```text
 collector -> bounded RuntimeEvidenceRef -> RuntimeMapEdge -> daemon publication/redaction -> API contract validation -> Runtime inspector
@@ -89,6 +89,26 @@ project-to-package dependency: it is not proof that a package was installed,
 resolved, executed, healthy, safe, or used at runtime. The evidence contains a
 curated summary rather than raw manifest content.
 
+Version four adds parsed Cron schedule declarations. Version five adds a fixed
+tmux session-listing fact. Each uses its own bounded collector slot, opaque data
+revision, last-successful collection timestamp, and the closed
+`fresh`/retained-`stale`/`timed_out` vocabulary. Cron attests only that the
+bounded collector parsed the schedule declaration; it does not say the command
+ran. Tmux version five is `observed` and supports only the canonical
+`tmux_session_* -> host_local` `runs_on` relationship: the fixed read-only
+session listing recorded a local session. Its independent tmux slot has a
+private, non-configurable 15-second completion-relative cadence and its own
+single-flight, timeout, revision, and freshness lifecycle.
+
+The tmux fact is deliberately narrow. It does not establish session attachment
+or activity, process ownership, health, reachability, persistence, or a
+complete list of host sessions. It is suppressed rather than guessed when the
+daemon is in mock mode, after a Docker/mock lifecycle reset, when the tmux slot
+has no usable successful revision, when tmux is disabled in a restricted PID
+namespace, or when either the canonical local host or the tmux-session source
+identity is ambiguous. The producer/publication boundary and UI must not expose
+raw tmux session names, IDs, or metadata.
+
 Mock mode keeps representative topology available for UI and transport testing,
 but it is not a Docker observation. In that mode every runtime edge has an
 empty `evidenceRefs` array and no evidence-derived finding is published. A
@@ -99,8 +119,8 @@ The evidence representation is closed: provider, kind, assertion kind and
 freshness are enums, and there is no free-form metadata/config/command-line
 field. The daemon and browser publication boundaries redact display-hostile
 or secret-like strings before response bytes reach the UI. Identity collisions
-remain visible but non-routable; an edge inspector can still explain the
-selected relationship without joining a collided target.
+remain non-routable and are never emitted as per-collision diagnostics; the
+closed aggregate finding is the only public collision signal.
 
 Current relationship-source matrix:
 
@@ -109,11 +129,14 @@ Current relationship-source matrix:
 | Docker container -> network | Docker inventory membership | observed | emitted |
 | Docker container -> volume | Docker volume attachment | observed | emitted |
 | Docker container -> listener | Docker inventory port with a validated nonzero host binding | observed host publication, not reachability, health, or traffic evidence | emitted only for that host binding; container-only listeners remain topology without publication evidence |
+| Docker container -> unspecified-address port risk target | Docker inventory reduces an exact `0.0.0.0` or `::` nonzero TCP/UDP/SCTP publication to one closed boolean | observed unspecified-address host-publication condition, not Internet reachability, health, traffic, or impact evidence | emitted only for a unique container; raw bind address and port values are not copied into the risk edge or its finding |
 | Docker container -> Docker container (`depends_on`) | Docker-recorded Compose start-order label | observed declaration, not health or traffic causality | emitted when both identities resolve uniquely |
 | Docker container -> Docker daemon state risk target | Docker inventory bind mount matching the closed daemon-state predicate | observed path-free risk condition, not breach, compromise, reachability, or impact evidence | emitted only for a uniquely resolved matching container; no mount path, ID, or options are published |
 | systemd service -> systemd service (`requires`, `wants`, `part_of`) | Systemd `Requires=`, `Wants=`, `PartOf=` declaration | declared relationship, not start/health/traffic evidence | emitted only with a valid dedicated Systemd-slot observation; retained facts state freshness explicitly |
 | npm project -> npm package dependency | bounded `package.json` manifest discovery under the configured project root | declared dependency, not installation, resolution, execution, health, safety, or runtime-use evidence | emitted only with a valid `project_npm` slot observation; retained facts state `fresh`, `stale`, or `timed_out` explicitly; raw manifest content is not evidence |
-| tmux, proxy, DNS, process and cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
+| scheduled job -> local host | bounded Cron declaration collection | declared schedule, not proof that its command ran | emitted with a valid dedicated Cron-slot observation |
+| tmux session -> local host | fixed read-only tmux session listing | observed local-session listing, not attachment, activity, ownership, health, reachability, persistence, or completeness | emitted only for a unique canonical source and `host_local` under a valid dedicated tmux-slot observation; producer and UI expose no raw session name, ID, or metadata |
+| proxy, DNS, process and other cross-provider edges | bounded provider-specific collector facts | varies | explicit empty migration array; no invented provenance |
 
 ### Bounded findings
 
@@ -135,6 +158,24 @@ Container-only ports, malformed or bind-address-like forms, stale evidence,
 duplicate facts, and identity collisions produce no finding. This is not an
 Internet-reachability, vulnerability, or security conclusion.
 
+`docker.port_published_on_unspecified_address` emits one advisory only when a
+unique Docker container has one fresh, version-1 Docker observation bound to
+the fixed unspecified-address port risk target. The collector reduces only an
+exact IPv4 or IPv6 unspecified bind address with a nonzero TCP, UDP, or SCTP
+publication to this closed fact; it retains no bind address for the edge or
+finding. Missing, loopback, specific, malformed, zero, stale, duplicate, or
+collided inputs produce no finding. The advisory asks only whether publishing
+beyond loopback is intended; it does not establish Internet reachability,
+traffic, health, exploitability, compromise, impact, or causality.
+
+`runtime.identity_collision_detected` is one aggregate advisory from the
+post-publication duplicate-identity detector. It is emitted only for one fresh
+fixed DockerMap integrity fact and never identifies a collided node, reports a
+collision count, or copies diagnostic/provider material. It asks for review of
+topology reliability only; it is not a configuration, health, causality,
+reachability, or security conclusion. Mock, stale, malformed, duplicated, or
+reserved-identifier-conflicted facts are suppressed.
+
 `docker.daemon_state_bind_mount` emits a warning only when one uniquely
 identified Docker container has exactly one fresh, path-free Docker fact bound
 to the fixed Docker-daemon-state risk target. It means the recorded access may
@@ -143,6 +184,63 @@ breach, compromise, reachability, or impact. Mount paths, mount IDs, read-only
 flags, and raw configuration never enter the runtime edge, finding, or browser
 response. Missing, stale, duplicate, malformed, or collided facts produce no
 finding.
+
+`docker.daemon_state_bind_mount_publishes_port` emits a warning only when the
+same uniquely identified Docker container has an exact pair of fresh version-1
+Docker observations from the same collection: the path-free daemon-state risk
+fact and a validated nonzero host-to-container port publication. Its canonical
+evidence order is daemon-state first, then port publication. This is a static
+review prompt for the co-occurrence of those facts, not an Internet-reachability,
+traffic, exploitability, compromise, breach, impact, or causal conclusion.
+Private container listeners, zero or malformed bindings, stale or mismatched
+observation timestamps or provider revisions, duplicate or collided facts, and
+non-Docker input produce no finding. The projection is derived from the cached
+runtime map: it adds no collector, host scan, or write capability, and mock
+mode publishes neither evidence nor evidence-derived findings.
+
+`docker.compose_declared_target_not_active` emits an advisory only when one
+fresh, uniquely identified `depends_on` relationship is a Docker-recorded
+Compose declaration from a running Docker container to a uniquely identified
+Docker container whose normalized state is stopped or failed. Its one canonical
+evidence reference is version 1 Docker `docker_compose_depends_on`, with an
+`observed` assertion, the source container as subject, `fresh` freshness, and
+no provider slot. The Docker observation attests the declared Compose edge; it
+does not turn that declaration into a runtime dependency guarantee.
+
+The rule is advisory, rather than a warning or error, because it is a bounded
+configuration state worth an operator review, not evidence of an outage or
+security incident. Its static action is only to review the declared dependency
+and the target container state. The derivation is deterministic (findings are
+ordered by their stable opaque identifiers) and fails closed: stale or timed-out
+evidence, malformed or extra edge metadata, non-Docker entities, non-running
+sources, target states other than stopped/failed, duplicate relationship facts,
+or identity collisions suppress it. It does not claim that the dependency is
+required, that either service is ready or healthy, that traffic flows, that
+Compose start order was applied, that one container caused the other's state,
+or that configuration drift exists.
+
+This rule reads no new host state and makes no new collection call. It is a
+cached, read-only projection of the already-published runtime map; mock mode
+has no runtime evidence and therefore cannot produce it.
+
+The mutual Compose-declaration advisory is even narrower. It emits once for an
+unordered pair only when each direction has exactly one fresh, matching
+Docker-recorded Compose declaration fact between the same two uniquely
+resolved Docker containers. Both version-1 observations must be the closed
+`docker_compose_depends_on` shape, must identify their respective source
+container, and must share the same collection instant and opaque Docker
+observation revision. The static recommendation is to review the declarations
+and remove an unintended mutual dependency. Its two evidence references are
+ordered to match the displayed direction and then its reciprocal direction;
+their identifiers and other provider material remain opaque.
+
+This is an advisory-only, deterministic, cached read-only projection. Missing,
+stale, timed-out, duplicate, malformed, non-Docker, self-referential, collided,
+or mismatched-observation facts suppress it, as does mock mode. It is not
+proof that a Compose file was accepted, that either dependency is required,
+that Compose start order ran, or that either container is ready or healthy. It
+does not establish traffic, deployment failure, causality, Internet
+reachability, compromise, or a security incident.
 
 Each rule carries only its exact triggering evidence references. The API
 validates the fixed vocabulary, static display text, and rule-specific evidence
@@ -189,8 +287,9 @@ The map is read-only and currently contains:
 - systemd services from fixed read-only `systemctl` calls when systemd is available,
   including dependency edges from `Requires=`, `Wants=`, and `PartOf=` where
   safe to collect.
-- tmux sessions and tmux-managed agents where the session metadata exposes a bounded
-  relationship.
+- tmux sessions from the fixed read-only listing. V5 records only the bounded
+  session-to-local-host fact; it does not infer tmux-managed agents or any
+  relationship from session metadata.
 - npm projects discovered from `package.json` and lockfiles under the configured project
   root, with scripts, framework hints, and dependency nodes. The contracts can represent
   package-update/advisory metadata, but no runtime registry or advisory lookup is enabled
@@ -249,9 +348,9 @@ when each hop comes from a different collector:
 Cloudflare -> Caddy (systemd) -> Docker network -> Immich container -> Postgres container -> Storage volume
 ```
 
-```text
-Forge (npm) -> forge.service -> tmux session -> GPT worker
-```
+Tmux V5 deliberately does not supply a session-to-worker edge. A future
+cross-provider agent relationship needs its own explicit, bounded evidence
+contract; a session listing or its metadata cannot establish one.
 
 Relationship discovery should prefer explicit evidence first, such as systemd dependency
 fields, Compose labels, process working directories, package manifests, lockfiles, known
