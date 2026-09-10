@@ -59,13 +59,13 @@ private deployment configuration was copied during this audit.
 
 | Area | DockerMap baseline to inspect | Migration guardrail |
 | --- | --- | --- |
-| Typography | `--font` and `--mono` now resolve through the committed Hearth export | Retain monospace for paths, ports, logs and IDs. |
-| Tokens | `styles.css` consumes the committed Hearth canvas, surface, text, Azure, AI, border, shadow, and font roles | Map remaining screen-local hard-coded values gradually; never bulk-replace arbitrary colors. |
+| Typography | `--font` and `--mono` resolve through the committed Hearth export; its type roles now anchor the normal UI body/title scale | Retain monospace for paths, ports, logs and IDs. |
+| Tokens | `styles.css` consumes the committed Hearth canvas, surface, text, Azure, AI, border, shadow, spacing, radius, and font roles | Map remaining screen-local hard-coded values gradually; never bulk-replace arbitrary colors. |
 | Themes | `data-theme` and Settings override already provide system default and explicit user override | Keep behavior; migrate from cool blue-grey light surfaces and near-black dark surfaces to reviewed warm/graphite roles. |
 | Health state | service/map/runtime state colors | Do not repurpose state colors for brand decoration. |
-| AI | Copilot/evidence presentation is distinct, but the current shared palette has no exported AI-purple role | Add a dedicated AI role only to Copilot/generated-insight context; do not recolor health or topology state. |
-| Primitives | panels, tags, links, controls, empty/error/loading states use DockerMap-local geometry | Consolidate to exported roles while preserving accessible names, focus, keyboard behavior, and evidence labels. |
-| Topology | graph node/edge and inspector rules | Preserve dense-host readability and collision visibility. |
+| AI | Copilot input, answer panel, suggestion chips, and answer references use the exported AI-purple roles | Do not recolor health, generic actions, or topology state. |
+| Primitives | panels, metrics, tags, empty/error/loading states, and common shell spacing/radii consume shared geometry aliases | Consolidate remaining screen-local controls without changing accessible names, focus, keyboard behavior, or evidence labels. |
+| Topology | graph node/edge and inspector rules use a fixed dark dense-workspace canvas | This is a deliberate DockerMap-specific exception: keep its high-contrast local palette and collision visibility in both themes rather than forcing a general surface role. |
 | Runtime egress | HTML/font/network requests | Public production page must load with no font CDN dependency. |
 
 ## Required implementation evidence

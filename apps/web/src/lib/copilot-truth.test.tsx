@@ -155,6 +155,17 @@ describe("B. user-facing copy must be source-neutral", () => {
     expect(html).not.toContain("Reasons over your live map");
     expect(html).toContain("Reasons over your service map");
   });
+
+  it("keeps the themed Copilot control as a labelled, native submit form", () => {
+    const demo = buildModel(getDemoResponse<DockerSnapshot>("/api/snapshot"), runtime);
+    const value: AppContextValue = { model: demo, modelProvenance: "demo", loading: false, error: null, health: null, tick: 0, evidenceMode: "demo", openCommand: () => {} };
+    const html = renderToStaticMarkup(<AppContext.Provider value={value}><MemoryRouter><Copilot /></MemoryRouter></AppContext.Provider>);
+
+    expect(html).toContain('<form class="copilot-input">');
+    expect(html).toContain('<label for="copilot-query" class="sr-only">Ask Copilot</label>');
+    expect(html).toContain('id="copilot-query" aria-label="Ask Copilot"');
+    expect(html).toContain('<button type="submit">Ask</button>');
+  });
 });
 
 describe("C. evidence kinds must be accurate", () => {
