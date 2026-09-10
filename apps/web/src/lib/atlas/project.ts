@@ -34,7 +34,7 @@ const RUNTIME_KINDS = [
   "container", "docker_network", "docker_volume", "host", "host_risk", "service", "systemd_service",
   "scheduled_job", "pm2_app", "tmux_session", "tailnet_node", "reverse_proxy", "local_dns_resolver",
   "dns_provider", "node_application", "python_application", "ai_agent", "package", "storage", "external_api",
-  "package_dependency", "database", "worker", "process", "network_listener", "orchestrator_workload"
+  "package_dependency", "database", "worker", "process", "network_listener", "orchestrator_workload", "integrity_scope"
 ] as const satisfies readonly RuntimeNodeKind[];
 
 const EVIDENCE_KINDS = [
@@ -68,7 +68,7 @@ function safeKey(value: unknown): AtlasKey | null {
   const trimmed = value.trim();
   // Published IDs must already be opaque, bounded routing identities. Do not
   // turn an arbitrary label/path into a key merely because it is non-empty.
-  if (!/^[A-Za-z0-9:_-]{1,180}$/.test(trimmed)) return null;
+  if (!/^[A-Za-z0-9:._-]{1,180}$/.test(trimmed)) return null;
   return trimmed as AtlasKey;
 }
 
@@ -116,7 +116,7 @@ function roleForKind(kind: RuntimeNodeKind): AtlasRole {
     case "docker_network": case "docker_volume": case "storage": case "network_listener":
       return "attachment";
     case "scheduled_job": case "tmux_session": case "process": case "package":
-    case "package_dependency": case "ai_agent": case "host_risk": case "service":
+    case "package_dependency": case "ai_agent": case "host_risk": case "service": case "integrity_scope":
       return "inspector_only";
     default:
       return "inspector_only";
@@ -281,7 +281,7 @@ function providerFreshnessBySlot(input: AtlasRuntimeMapInput): ReadonlyMap<strin
 }
 
 function freshnessForNode(node: RuntimeMapNode, providerFreshness: ReadonlyMap<string, AtlasFreshness>): AtlasFreshness {
-  const slot = node.provider === "systemd" ? "systemd" : node.provider === "npm" ? "project_npm" :
+  const slot = node.provider === "systemd" ? "systemd" : node.provider === "npm" ? "project_npm" : node.provider === "tmux" ? "tmux" :
     node.provider === "scheduled_job" ? "cron" : null;
   if (!slot) return "unknown";
   return providerFreshness.get(slot) ?? "unknown";

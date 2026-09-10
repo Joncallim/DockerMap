@@ -34,7 +34,7 @@ const MAX_SEARCH_LENGTH = 768;
 const MAX_PARAMETERS = 3;
 const MAX_OVERSIZE_SCAN_CHARACTERS = 4096;
 const MAX_OVERSIZE_SCAN_PARAMETERS = 32;
-const SAFE_KEY = /^[A-Za-z0-9_:-]+$/;
+const SAFE_KEY = /^[A-Za-z0-9_.:-]+$/;
 const SAFE_KEY_LENGTH = 360;
 const DEFAULT_STATE: AtlasRouteState = { lens: ATLAS_ROUTE_LENS, selectedKey: null, expandedKey: null, focusTarget: "directory" };
 
