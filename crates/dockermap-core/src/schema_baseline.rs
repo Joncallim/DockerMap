@@ -6,12 +6,12 @@
 use crate::{
     ComposeEditPlan, ComposeGraph, ComposeScan, ContainerDetailResponse, ContainersResponse,
     DockerSnapshot, FindingsResponse, GraphResponse, HealthResponse, ImagesResponse, LogsResponse,
-    NetworksResponse, RuntimeMap, VolumesResponse,
+    NetworksResponse, ObservedChangeHistoryResponse, RuntimeMap, VolumesResponse,
 };
 use schemars::{schema_for, Schema};
 use serde_json::Value;
 
-pub const DAEMON_SCHEMA_NAMES: [&str; 14] = [
+pub const DAEMON_SCHEMA_NAMES: [&str; 15] = [
     "DockerSnapshot",
     "GraphResponse",
     "RuntimeMap",
@@ -26,6 +26,7 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 14] = [
     "ImagesResponse",
     "NetworksResponse",
     "VolumesResponse",
+    "ObservedChangeHistoryResponse",
 ];
 
 /// Largest integer that JavaScript JSON consumers can represent exactly.
@@ -34,7 +35,7 @@ pub const DAEMON_SCHEMA_NAMES: [&str; 14] = [
 /// that standard `JSON.parse` cannot preserve.
 pub const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 
-pub fn daemon_schemas() -> [Schema; 14] {
+pub fn daemon_schemas() -> [Schema; 15] {
     [
         schema_for!(DockerSnapshot),
         schema_for!(GraphResponse),
@@ -50,6 +51,7 @@ pub fn daemon_schemas() -> [Schema; 14] {
         schema_for!(ImagesResponse),
         schema_for!(NetworksResponse),
         schema_for!(VolumesResponse),
+        schema_for!(ObservedChangeHistoryResponse),
     ]
 }
 
@@ -57,7 +59,7 @@ pub fn daemon_schemas() -> [Schema; 14] {
 /// forward-compatible when deserializing, while fixtures reject typoed or
 /// unreviewed response fields rather than silently redefining the contract.
 /// This changes schema validation only, never daemon serialization behavior.
-pub fn daemon_schema_documents() -> [Value; 14] {
+pub fn daemon_schema_documents() -> [Value; 15] {
     daemon_schemas().map(|schema| {
         let mut document = serde_json::to_value(schema).expect("schemars schema serializes");
         deny_unknown_object_properties(&mut document);
