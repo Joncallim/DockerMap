@@ -14,6 +14,7 @@ import type {
   ImageRecord,
   LogsResponse,
   NetworkRecord,
+  ObservedChangeHistoryResponse,
   RuntimeMap,
   StatusResponse,
   VolumeRecord,
@@ -173,6 +174,7 @@ export function createReadHandlers({ fetchDaemon, sendError, port }: ReadHandler
     graph: respond<GraphResponse>("/daemon/graph"),
     runtimeMap: respond<RuntimeMap>("/daemon/runtime/map"),
     findings: respond<FindingsResponse>("/daemon/findings"),
+    history: respond<ObservedChangeHistoryResponse>("/daemon/history"),
     diagnostics: async (_req, res) => {
       try {
         const entries: DiagnosticsEntry[] = [];

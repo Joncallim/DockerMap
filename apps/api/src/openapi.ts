@@ -154,6 +154,7 @@ export const ROUTE_OPERATION_METADATA = {
   "graph": { summary: "Topology graph", tags: ["topology"], responses: withApiErrors(rustJsonResponseFor("graph")) },
   "runtime-map": { summary: "Runtime map across all providers", tags: ["runtime"], responses: withApiErrors(rustJsonResponseFor("runtime-map")) },
   "findings": { summary: "Evidence-backed advisory findings", tags: ["runtime"], responses: withApiErrors(rustJsonResponseFor("findings")) },
+  "history": { summary: "Bounded observed Docker inventory history", tags: ["docker"], responses: withApiErrors(rustJsonResponseFor("history")) },
   "diagnostics": { summary: "Aggregated compose and runtime diagnostics", tags: ["system"], responses: withApiErrors(nodeJsonResponse("Diagnostics")) },
   "containers": { summary: "List containers", tags: ["docker"], responses: withApiErrors(rustJsonResponseFor("containers")) },
   "container": { summary: "Container detail", tags: ["docker"], responses: withApiErrors(rustJsonResponseFor("container")) },

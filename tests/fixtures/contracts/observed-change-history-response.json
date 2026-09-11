@@ -1,0 +1,24 @@
+{
+  "source": "docker",
+  "baselineEstablished": true,
+  "currentModelRevision": "publication-r42",
+  "observedRevision": "docker-observation-r17",
+  "events": [
+    {
+      "id": "history-2",
+      "kind": "container_status_changed",
+      "observedAtMs": 1710000000000,
+      "containerId": "docker_container_a1b2c3d4",
+      "previousStatus": "running",
+      "currentStatus": "stopped"
+    },
+    {
+      "id": "history-1",
+      "kind": "container_appeared",
+      "observedAtMs": 1709999999000,
+      "containerId": "docker_container_a1b2c3d4",
+      "previousStatus": null,
+      "currentStatus": "running"
+    }
+  ]
+}
