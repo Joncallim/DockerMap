@@ -80,9 +80,9 @@ export default function ServiceDetail({ defaultTab = "overview", defaultOpen = f
           </div>
           <StatePill state={service.state} />
         </div>
-        <Link className="ghost-link" to="/map">
-          <Icon name="map" size={14} /> View on map
-        </Link>
+        <div className="filter-row">
+          <Link className="ghost-link" to="/map"><Icon name="map" size={14} /> View on map</Link>
+        </div>
       </header>
 
       <div className="impact-band wide">

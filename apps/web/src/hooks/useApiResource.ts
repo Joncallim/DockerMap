@@ -33,7 +33,8 @@ export type ResourceState<T> = {
 export function useApiResource<T>(
   path: string,
   refreshTick = 0,
-  requestedProvenance?: ModelProvenance | null
+  requestedProvenance?: ModelProvenance | null,
+  enabled = true
 ): ResourceState<T> {
   const { settings } = useSettings();
   const [state, setState] = useState<ResourceState<T>>({
@@ -50,6 +51,10 @@ export function useApiResource<T>(
   const attemptRef = useRef(0);
 
   useEffect(() => {
+    if (!enabled) {
+      setState({ data: null, error: null, loading: false, generation: 0, provenance: null });
+      return;
+    }
     const isModelResource = requestedProvenance !== undefined;
     // Capture at request start.  The source semantics are properties of the
     // bytes requested, not of a later settings render while a response is in
@@ -120,7 +125,7 @@ export function useApiResource<T>(
       });
 
     return () => controller.abort();
-  }, [path, refreshTick, settings.demoMode, requestedProvenance]);
+  }, [path, refreshTick, settings.demoMode, requestedProvenance, enabled]);
 
   return state;
 }

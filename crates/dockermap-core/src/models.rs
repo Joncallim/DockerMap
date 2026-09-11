@@ -1517,6 +1517,12 @@ pub struct FindingsResponse {
     #[serde(rename = "modelRevision")]
     #[schemars(length(min = 1))]
     pub model_revision: String,
+    /// ACTUAL source of this advisory projection: "docker" when it was
+    /// derived from a live daemon publication, or "mock" when it was derived
+    /// from the daemon's fallback topology. Stamped at the daemon route from
+    /// the cache mode; this model deliberately cannot infer a requested mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuntimeMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]

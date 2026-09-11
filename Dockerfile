@@ -19,6 +19,7 @@ RUN cargo build --release --manifest-path crates/Cargo.toml \
 # ---- Node API + React web app ---------------------------------------------
 FROM node:22-trixie-slim@sha256:7b8a0c89c54499bee567618f96578e1a12a800f062fbdbfd1fb6a443fa6f6284 AS js-builder
 WORKDIR /src
+ARG VITE_ENABLE_ATLAS_OVERVIEW=false
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
@@ -41,6 +42,7 @@ COPY --from=rust-builder /src/crates/target/release/generate-contract-schemas /u
 # localhost:4000, which never exists inside this container — an empty string
 # is not nullish, so apiUrl() yields same-origin paths the proxy can serve.
 ENV VITE_API_BASE_URL=""
+ENV VITE_ENABLE_ATLAS_OVERVIEW=${VITE_ENABLE_ATLAS_OVERVIEW}
 ENV DOCKERMAP_CONTRACT_SCHEMA_GENERATOR=/usr/local/bin/generate-contract-schemas
 RUN npm run check:version && npm run check:contracts && npm run build
 # The runtime image needs the compiled artifacts and production dependency

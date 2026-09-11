@@ -1,0 +1,73 @@
+{
+  "projectionVersion": 1,
+  "subjects": [
+    {
+      "key": "docker_container_container_000",
+      "routability": "routable",
+      "source": { "kind": "runtime_node", "provider": "docker", "nodeId": "docker_container_container_000", "runtimeKind": "container" },
+      "runtimeKind": "container",
+      "role": "primary",
+      "display": "container-0",
+      "operationalState": "healthy",
+      "freshness": "fresh",
+      "attention": "none",
+      "ambiguity": "none",
+      "rule": "atlas-v1/runtime-subject"
+    },
+    {
+      "key": "docker_container_container_001",
+      "routability": "routable",
+      "source": { "kind": "runtime_node", "provider": "docker", "nodeId": "docker_container_container_001", "runtimeKind": "container" },
+      "runtimeKind": "container",
+      "role": "primary",
+      "display": "container-1",
+      "operationalState": "warning",
+      "freshness": "fresh",
+      "attention": "none",
+      "ambiguity": "none",
+      "rule": "atlas-v1/runtime-subject"
+    }
+  ],
+  "groups": [],
+  "lanes": [
+    {
+      "key": "atlas:lane:0",
+      "subjectKeys": ["docker_container_container_000", "docker_container_container_001"],
+      "presentationOnly": true,
+      "rule": "atlas-v1/presentation-lane"
+    }
+  ],
+  "relations": [
+    {
+      "source": "docker_container_container_001",
+      "target": "docker_container_container_000",
+      "direction": "forward",
+      "evidence": [
+        {
+          "kind": "runtime_edge_evidence",
+          "source": "docker_container_container_001",
+          "target": "docker_container_container_000",
+          "relationship": "depends_on",
+          "evidence": {
+            "id": "fixture_docker_compose_depends_on_docker_container_container_001_docker_container_container_000",
+            "provider": "docker",
+            "kind": "docker_compose_depends_on",
+            "assertionKind": "observed",
+            "freshness": "fresh",
+            "providerRevision": "fixture-revision",
+            "subjectRef": "docker_container_container_001",
+            "summary": "fixture structural evidence",
+            "collectedAt": 1,
+            "version": 1
+          }
+        }
+      ],
+      "rule": "atlas-v1/evidenced-declaration"
+    }
+  ],
+  "memberships": [],
+  "attachments": [],
+  "aggregates": [],
+  "diagnostics": [],
+  "stats": { "subjects": 2, "relations": 1, "attachments": 0, "unsupported": 0, "boundedOmissions": 0 }
+}
