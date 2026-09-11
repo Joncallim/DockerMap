@@ -42,15 +42,9 @@ export interface AtlasOverviewTopologyProps {
  */
 export default function AtlasOverviewTopology({ model, layout, camera, selectedKey, onSelect, focusSubject = true, focusRecoveryToken = 0, lensView }: AtlasOverviewTopologyProps) {
   const subjects = useMemo(() => model.subjects.slice(0, SUBJECT_LIMIT), [model.subjects]);
-  const viewBox = useMemo(() => {
-    const points = subjects.map((subject) => pointFor(layout, subject.key)).filter((point): point is NonNullable<typeof point> => point !== null);
-    if (points.length === 0) return "-160 -80 1600 800";
-    const minX = Math.min(...points.map((point) => point.x));
-    const maxX = Math.max(...points.map((point) => point.x + point.width));
-    const minY = Math.min(...points.map((point) => point.y));
-    const maxY = Math.max(...points.map((point) => point.y + point.height));
-    return `${minX - 80} ${minY - 80} ${Math.max(1600, maxX - minX + 160)} ${Math.max(800, maxY - minY + 160)}`;
-  }, [layout, subjects]);
+  // The bounded provider×role layout uses fixed lanes. Keep a fixed viewport
+  // covering every lane so refreshes never implicitly zoom or recenter cards.
+  const viewBox = "-160 -80 12000 1200";
   const selectedRef = useRef<HTMLButtonElement | null>(null);
   const directoryRef = useRef<HTMLElement | null>(null);
   useEffect(() => { if (focusSubject) selectedRef.current?.focus(); }, [focusSubject, selectedKey]);

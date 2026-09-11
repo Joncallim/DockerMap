@@ -282,7 +282,10 @@ function providerFreshnessBySlot(input: AtlasRuntimeMapInput): ReadonlyMap<strin
 
 function freshnessForNode(node: RuntimeMapNode, providerFreshness: ReadonlyMap<string, AtlasFreshness>): AtlasFreshness {
   const slot = node.provider === "systemd" ? "systemd" : node.provider === "npm" ? "project_npm" : node.provider === "tmux" ? "tmux" :
-    node.provider === "scheduled_job" ? "cron" : null;
+    node.provider === "scheduled_job" ? "cron" : node.provider === "python" ? "python_processes" :
+    node.provider === "process" ? "native_processes" :
+    ["tailscale", "headscale", "cloudflare", "caddy", "reverse_proxy", "local_dns", "dns_provider", "external_api", "network"].includes(node.provider) ? "network_infrastructure" :
+    ["docker", "compose", "host", "pm2"].includes(node.provider) ? "host_scoped" : null;
   if (!slot) return "unknown";
   return providerFreshness.get(slot) ?? "unknown";
 }

@@ -9,7 +9,7 @@
       "role": "primary",
       "display": "container-0",
       "operationalState": "healthy",
-      "freshness": "unknown",
+      "freshness": "fresh",
       "attention": "none",
       "ambiguity": "none",
       "rule": "atlas-v1/runtime-subject"
@@ -22,7 +22,7 @@
       "role": "primary",
       "display": "container-1",
       "operationalState": "warning",
-      "freshness": "unknown",
+      "freshness": "fresh",
       "attention": "none",
       "ambiguity": "none",
       "rule": "atlas-v1/runtime-subject"
