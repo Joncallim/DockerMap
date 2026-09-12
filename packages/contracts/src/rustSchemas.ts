@@ -2728,11 +2728,10 @@ export const RUST_RESPONSE_SCHEMAS = {
   "$defs": {
     "ObservedChangeEvent": {
       "additionalProperties": false,
-      "description": "One observed inventory delta. `containerId` is the collision-resistant\nDocker runtime-node identity, never a raw Docker ID or container name.",
+      "description": "One observed inventory delta. `containerId` is an opaque digest-derived\nhistory identity, never a raw Docker ID, readable ID fragment, or name.",
       "properties": {
         "containerId": {
-          "maxLength": 192,
-          "minLength": 1,
+          "pattern": "^docker_container_[0-9a-f]{64}$",
           "type": "string"
         },
         "currentStatus": {
@@ -2747,8 +2746,7 @@ export const RUST_RESPONSE_SCHEMAS = {
           "description": "Schema-only union keeps optional status values required on the wire while\naccurately admitting the null state used by appearance/disappearance."
         },
         "id": {
-          "maxLength": 64,
-          "minLength": 1,
+          "pattern": "^[0-9a-f]{32}-[1-9][0-9]{0,19}$",
           "type": "string"
         },
         "kind": {
@@ -5589,11 +5587,10 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
   "$defs": {
     "ObservedChangeEvent": {
       "additionalProperties": false,
-      "description": "One observed inventory delta. `containerId` is the collision-resistant\nDocker runtime-node identity, never a raw Docker ID or container name.",
+      "description": "One observed inventory delta. `containerId` is an opaque digest-derived\nhistory identity, never a raw Docker ID, readable ID fragment, or name.",
       "properties": {
         "containerId": {
-          "maxLength": 192,
-          "minLength": 1,
+          "pattern": "^docker_container_[0-9a-f]{64}$",
           "type": "string"
         },
         "currentStatus": {
@@ -5608,8 +5605,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           "description": "Schema-only union keeps optional status values required on the wire while\naccurately admitting the null state used by appearance/disappearance."
         },
         "id": {
-          "maxLength": 64,
-          "minLength": 1,
+          "pattern": "^[0-9a-f]{32}-[1-9][0-9]{0,19}$",
           "type": "string"
         },
         "kind": {
