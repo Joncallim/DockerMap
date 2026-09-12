@@ -1,6 +1,6 @@
 import { testProviderStates } from "./testProviderStates";
 import { describe, expect, it } from "vitest";
-import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
+import type { DockerSnapshot, ObservedChangeHistoryResponse, RuntimeMap } from "@dockermap/contracts";
 import { answer } from "./copilot";
 import { getDemoResponse } from "./demoData";
 import { buildModel } from "./model";
@@ -53,6 +53,44 @@ describe("Copilot update-status responses", () => {
 
   it("preserves the unrelated port-answer dispatch", () => {
     expect(answer(buildModel(liveSnapshot, runtime), "show everything using port 443", "live", "live").headline).toBe("Port 443");
+  });
+
+  it("answers genuine recent-history questions from coherent retained deltas without identity or causal inference", () => {
+    const observedHistory: ObservedChangeHistoryResponse = {
+      source: "docker", baselineEstablished: true, currentModelRevision: "test-revision", observedRevision: "obs-r1",
+      events: [
+        { id: "0123456789abcdef0123456789abcdef-2", kind: "container_status_changed", observedAtMs: 20, containerId: `docker_container_${"b".repeat(64)}`, previousStatus: "running", currentStatus: "stopped" },
+        { id: "0123456789abcdef0123456789abcdef-1", kind: "container_appeared", observedAtMs: 20, containerId: `docker_container_${"a".repeat(64)}`, previousStatus: null, currentStatus: "running" }
+      ]
+    };
+    const response = answer(buildModel(liveSnapshot, runtime), "what changed recently", "live", "live", observedHistory);
+    expect(response.headline).toBe("Latest retained inventory observation");
+    expect(response.evidence).toBe("derived");
+    expect(response.references).toEqual([]);
+    expect(response.body.join(" ")).toContain("container observation changed status");
+    expect(response.body.join(" ")).toContain("daemon process lifetime");
+    expect(response.body.join(" ")).not.toMatch(/docker_container_|api|deployed|restarted|failed because/i);
+  });
+
+  it("reports a coherent empty journal without turning absence into host state", () => {
+    const observedHistory: ObservedChangeHistoryResponse = {
+      source: "docker", baselineEstablished: true, currentModelRevision: "test-revision", observedRevision: "obs-r1", events: []
+    };
+    const response = answer(buildModel(liveSnapshot, runtime), "show recent change history", "live", "live", observedHistory);
+    expect(response.headline).toBe("No retained inventory deltas");
+    expect(response.evidence).toBe("derived");
+    expect(response.body.join(" ")).toContain("daemon process lifetime");
+  });
+
+  it("preserves update semantics even when coherent history exists", () => {
+    const observedHistory: ObservedChangeHistoryResponse = {
+      source: "docker", baselineEstablished: true, currentModelRevision: "test-revision", observedRevision: "obs-r1", events: [
+        { id: "0123456789abcdef0123456789abcdef-1", kind: "container_appeared", observedAtMs: 20, containerId: `docker_container_${"a".repeat(64)}`, previousStatus: null, currentStatus: "running" }
+      ]
+    };
+    const response = answer(buildModel(liveSnapshot, runtime), "are image updates available", "live", "live", observedHistory);
+    expect(response.headline).toBe("Recent and pending change");
+    expect(response.evidence).toBe("unavailable");
   });
 });
 
