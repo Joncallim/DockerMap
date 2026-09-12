@@ -1,8 +1,7 @@
 //! Safe comparison primitives for the daemon's bounded observed-history cache.
 
-use crate::{
-    collision_resistant_id_component, ContainerRecord, DockerSnapshot, ObservedContainerStatus,
-};
+use crate::{ContainerRecord, DockerSnapshot, ObservedContainerStatus};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The daemon retains at most this many observed deltas for its own lifetime.
@@ -20,10 +19,7 @@ pub struct ObservedContainerInventory {
 pub fn observed_container_inventory(snapshot: &DockerSnapshot) -> ObservedContainerInventory {
     let mut candidates = BTreeMap::<String, Vec<&ContainerRecord>>::new();
     for container in &snapshot.containers {
-        let id = format!(
-            "docker_container_{}",
-            collision_resistant_id_component(&container.id)
-        );
+        let id = observed_container_identity(&container.id);
         candidates.entry(id).or_default().push(container);
     }
 
@@ -42,9 +38,24 @@ pub fn observed_container_inventory(snapshot: &DockerSnapshot) -> ObservedContai
     }
 }
 
+/// A stable, history-only subject. Unlike topology IDs this contains no
+/// readable slug: retaining one would disclose a prefix of a raw Docker ID in
+/// every temporal event.
+fn observed_container_identity(raw_container_id: &str) -> String {
+    let digest = Sha256::digest(raw_container_id.as_bytes());
+    let encoded = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("docker_container_{encoded}")
+}
+
 fn observed_status_class(status: &str) -> ObservedContainerStatus {
     let normalized = status.trim().to_ascii_lowercase();
-    if normalized == "running" || normalized.starts_with("up ") {
+    if normalized == "paused" || (normalized.starts_with("up ") && normalized.contains("(paused)"))
+    {
+        ObservedContainerStatus::Other
+    } else if normalized == "running" || normalized.starts_with("up ") {
         ObservedContainerStatus::Running
     } else if normalized == "exited" || normalized == "dead" || normalized.starts_with("exited ") {
         ObservedContainerStatus::Stopped
@@ -59,9 +70,11 @@ mod tests {
     use crate::{mock_snapshot, DockerSnapshot};
 
     #[test]
-    fn inventory_uses_only_runtime_node_ids_and_closed_statuses() {
+    fn inventory_uses_opaque_container_identities_and_closed_statuses() {
         let mut snapshot = mock_snapshot();
-        snapshot.containers[0].id = "raw-id-token=DOCKERMAP_TEST_FAKE_HISTORY_SECRET".into();
+        const RAW_ID_PREFIX: &str = "history-identity-sentinel";
+        const RAW_ID: &str = "history-identity-sentinel-7f2ac9e481";
+        snapshot.containers[0].id = RAW_ID.into();
         snapshot.containers[0].name = "/srv/private/name".into();
         snapshot.containers[0].status = "Up 12 seconds (healthy)".into();
         let inventory = observed_container_inventory(&snapshot);
@@ -71,12 +84,31 @@ mod tests {
             .next()
             .expect("container identity");
         assert!(id.starts_with("docker_container_"));
+        assert_eq!(id.len(), "docker_container_".len() + 64);
+        assert!(!id.contains(RAW_ID));
+        assert!(!id.contains(RAW_ID_PREFIX));
         assert!(!id.contains("/srv/private/name"));
         assert!(!id.contains("Up 12 seconds"));
         assert!(inventory
             .containers
             .values()
             .any(|status| *status == ObservedContainerStatus::Running));
+    }
+
+    #[test]
+    fn paused_status_is_not_collapsed_into_generic_up() {
+        assert_eq!(
+            observed_status_class("Up 12 seconds (Paused)"),
+            ObservedContainerStatus::Other
+        );
+        assert_eq!(
+            observed_status_class("paused"),
+            ObservedContainerStatus::Other
+        );
+        assert_eq!(
+            observed_status_class("Up 12 seconds (healthy)"),
+            ObservedContainerStatus::Running
+        );
     }
 
     #[test]

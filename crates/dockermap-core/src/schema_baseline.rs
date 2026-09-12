@@ -91,6 +91,7 @@ fn deny_unknown_object_properties(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::{daemon_schema_documents, DAEMON_SCHEMA_NAMES, JSON_SAFE_INTEGER_MAX};
+    use crate::ObservedChangeHistoryResponse;
     use serde_json::Value;
 
     #[test]
@@ -109,7 +110,9 @@ mod tests {
     fn schema_root_inventory_includes_each_declared_response_once() {
         assert_eq!(DAEMON_SCHEMA_NAMES.len(), 15);
         assert_eq!(daemon_schema_documents().len(), DAEMON_SCHEMA_NAMES.len());
-        let unique = DAEMON_SCHEMA_NAMES.iter().collect::<std::collections::BTreeSet<_>>();
+        let unique = DAEMON_SCHEMA_NAMES
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(unique.len(), DAEMON_SCHEMA_NAMES.len());
         assert!(unique.contains(&"ObservedChangeHistoryResponse"));
     }
@@ -123,8 +126,10 @@ mod tests {
             .expect("history schema exists");
         let validator = jsonschema::validator_for(&schema).expect("valid schema");
         let event = serde_json::json!({
-            "id": "history-1", "kind": "container_appeared", "observedAtMs": 1,
-            "containerId": "docker_container_safe", "previousStatus": null, "currentStatus": "running"
+            "id": "0123456789abcdef0123456789abcdef-1",
+            "kind": "container_appeared", "observedAtMs": 1,
+            "containerId": "docker_container_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "previousStatus": null, "currentStatus": "other"
         });
         let response = serde_json::json!({
             "source": "docker", "baselineEstablished": true,
@@ -132,14 +137,118 @@ mod tests {
             "events": [event]
         });
         assert!(validator.is_valid(&response));
+        assert!(serde_json::from_value::<ObservedChangeHistoryResponse>(response.clone()).is_ok());
+
+        for invalid_container_id in [
+            "docker_container_/srv/private/name",
+            "docker_container_0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef",
+            "docker_container_0123456789abcdef",
+            "docker_container_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef-extra",
+        ] {
+            let mut invalid = response.clone();
+            invalid["events"][0]["containerId"] = serde_json::json!(invalid_container_id);
+            assert!(!validator.is_valid(&invalid), "{invalid_container_id}");
+            assert!(
+                serde_json::from_value::<ObservedChangeHistoryResponse>(invalid).is_err(),
+                "{invalid_container_id}"
+            );
+        }
 
         let mut unknown_status = response.clone();
         unknown_status["events"][0]["currentStatus"] = serde_json::json!("raw Docker status");
         assert!(!validator.is_valid(&unknown_status));
 
         let mut missing_status = response;
-        missing_status["events"][0].as_object_mut().expect("event object").remove("previousStatus");
+        missing_status["events"][0]
+            .as_object_mut()
+            .expect("event object")
+            .remove("previousStatus");
         assert!(!validator.is_valid(&missing_status));
+    }
+
+    #[test]
+    fn observed_history_deserialization_enforces_cross_field_coherence() {
+        fn event(id: &str, kind: &str, at: u64, previous: Value, current: Value) -> Value {
+            serde_json::json!({
+                "id": id, "kind": kind, "observedAtMs": at,
+                "containerId": "docker_container_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "previousStatus": previous, "currentStatus": current
+            })
+        }
+        fn docker(events: Vec<Value>) -> Value {
+            serde_json::json!({
+                "source": "docker", "baselineEstablished": true,
+                "currentModelRevision": "publication-r1",
+                "observedRevision": "observation-r1", "events": events
+            })
+        }
+
+        let newest = event(
+            "0123456789abcdef0123456789abcdef-2",
+            "container_status_changed",
+            2,
+            serde_json::json!("running"),
+            serde_json::json!("other"),
+        );
+        let oldest = event(
+            "0123456789abcdef0123456789abcdef-1",
+            "container_appeared",
+            1,
+            Value::Null,
+            serde_json::json!("running"),
+        );
+        assert!(
+            serde_json::from_value::<ObservedChangeHistoryResponse>(docker(vec![
+                newest.clone(),
+                oldest.clone(),
+            ]))
+            .is_ok()
+        );
+
+        let invalid_responses = [
+            serde_json::json!({
+                "source": "mock", "baselineEstablished": true,
+                "currentModelRevision": "publication-r1",
+                "observedRevision": "observation-r1", "events": []
+            }),
+            serde_json::json!({
+                "source": "docker", "baselineEstablished": false,
+                "currentModelRevision": null, "observedRevision": null, "events": []
+            }),
+            docker(vec![oldest.clone(), newest.clone()]),
+            docker(vec![newest.clone(), newest]),
+            docker(vec![event(
+                "0123456789abcdef0123456789abcdef-3",
+                "container_appeared",
+                3,
+                serde_json::json!("running"),
+                Value::Null,
+            )]),
+            docker(vec![event(
+                "0123456789abcdef0123456789abcdef-3",
+                "container_status_changed",
+                3,
+                serde_json::json!("running"),
+                serde_json::json!("running"),
+            )]),
+        ];
+        for invalid in invalid_responses {
+            assert!(serde_json::from_value::<ObservedChangeHistoryResponse>(invalid).is_err());
+        }
+
+        let capped = (1..=65)
+            .rev()
+            .map(|sequence| {
+                event(
+                    &format!("0123456789abcdef0123456789abcdef-{sequence}"),
+                    "container_appeared",
+                    sequence,
+                    Value::Null,
+                    serde_json::json!("running"),
+                )
+            })
+            .collect();
+        assert!(serde_json::from_value::<ObservedChangeHistoryResponse>(docker(capped)).is_err());
     }
 
     #[test]
