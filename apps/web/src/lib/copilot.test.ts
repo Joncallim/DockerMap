@@ -72,6 +72,18 @@ describe("Copilot update-status responses", () => {
     expect(response.body.join(" ")).not.toMatch(/docker_container_|api|deployed|restarted|failed because/i);
   });
 
+  it("keeps numeric sequence 10 ahead of 9 when observations share a timestamp", () => {
+    const observedHistory: ObservedChangeHistoryResponse = {
+      source: "docker", baselineEstablished: true, currentModelRevision: "test-revision", observedRevision: "obs-r1",
+      events: [
+        { id: "0123456789abcdef0123456789abcdef-10", kind: "container_status_changed", observedAtMs: 20, containerId: `docker_container_${"b".repeat(64)}`, previousStatus: "running", currentStatus: "stopped" },
+        { id: "0123456789abcdef0123456789abcdef-9", kind: "container_appeared", observedAtMs: 20, containerId: `docker_container_${"a".repeat(64)}`, previousStatus: null, currentStatus: "running" }
+      ]
+    };
+    const response = answer(buildModel(liveSnapshot, runtime), "what changed recently", "live", "live", observedHistory);
+    expect(response.body[0]).toBe("A container observation changed status in the published inventory.");
+  });
+
   it("reports a coherent empty journal without turning absence into host state", () => {
     const observedHistory: ObservedChangeHistoryResponse = {
       source: "docker", baselineEstablished: true, currentModelRevision: "test-revision", observedRevision: "obs-r1", events: []

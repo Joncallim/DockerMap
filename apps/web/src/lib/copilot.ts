@@ -405,12 +405,9 @@ function recentChangeAnswer(
       evidence: "derived"
     };
   }
-  const latest = coherent.events.reduce((selected, event) => (
-    event.observedAtMs > selected.observedAtMs
-      || (event.observedAtMs === selected.observedAtMs && event.id > selected.id)
-      ? event
-      : selected
-  ));
+  // The history boundary has already proved newest-first timestamp and numeric
+  // sequence ordering. Do not re-sort variable-width decimal sequences as text.
+  const latest = coherent.events[0]!;
   const observation = latest.kind === "container_appeared"
     ? "A container appeared in the published inventory."
     : latest.kind === "container_disappeared"
