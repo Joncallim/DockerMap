@@ -50,6 +50,31 @@ acceptance work are recorded in [`CONTRACT_AUTHORITY.md`](CONTRACT_AUTHORITY.md)
 
 `GET /daemon/runtime/map` is the backend's provider-neutral JSON graph for visualization. `apps/api` proxies it as `GET /api/runtime/map`.
 
+## Observed Inventory History
+
+`GET /daemon/history`, proxied through the authenticated `/api/history` and
+`/api/v1/history` routes, publishes a bounded comparison of successfully published
+Docker inventories. The daemon establishes an in-memory baseline, retains at most 64
+newest-first deltas, and clears the baseline and history across Docker/mock source
+transitions or unusable clock movement. It does not persist data and does not consume
+Docker's event stream.
+
+History subjects are one-way SHA-256 identities used only for private comparison. The
+browser never presents them or treats them as current graph identities. Public events
+use a closed appeared/disappeared/status-changed vocabulary and closed status classes;
+they do not prove a deploy, restart, failure, recovery, health transition, or cause.
+The Node boundary validates the Rust-owned schema plus source, baseline, revision,
+transition, ordering, uniqueness, and single-daemon-epoch semantics before publication.
+The web admits observations only when their Docker source and current model revision
+match the live model. Atlas remains a projection of current topology and does not ingest
+this temporal side channel.
+
+The entire Docker observation pass has a daemon-owned five-second deadline. A stalled
+pass invalidates its cached client and publishes the ordinary sanitized mock fallback;
+the next pass must construct a fresh client. Continuous Docker events, temporal
+findings, and current resource telemetry remain deferred behind separate authority and
+truthfulness reviews.
+
 ### Relationship evidence lifecycle
 
 Each runtime edge has a required `evidenceRefs` array. The current Docker,

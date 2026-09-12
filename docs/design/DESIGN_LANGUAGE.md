@@ -62,11 +62,14 @@ Screenshot status — stale Resources panel: captured before #73. Any CPU, memor
 
 ## Change Center
 
-Change is a first-class story: a filterable timeline of deploys, restarts,
-failures, and recoveries only in explicit Demo Mode, visibly marked as sample data. In mock
-and live mode, the Change Center reports that history is not collected: DockerMap does not
-record deploy, restart, or failure events. Update status is not collected — no image-update entries exist on
-the timeline (#72).
+Change is a first-class story, but the evidence boundary stays explicit. In live Docker
+mode the Change Center shows only bounded, daemon-lifetime deltas between successfully
+published container inventories: appeared, disappeared, or closed status-class changes.
+Rows are marked as observations, do not expose container identities, do not link to a
+current service, and make no deployment, restart, failure, recovery, or causality claim.
+Mock mode reports that history is not collected. Explicit Demo Mode retains its visibly
+labelled sample timeline and filters. Update status is not collected — no image-update
+entries exist on the timeline (#72).
 
 ![Change Center](../screenshots/change-center.png)
 
