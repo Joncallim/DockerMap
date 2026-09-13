@@ -1270,6 +1270,39 @@ test("findings source remains optional without browser-side source inference", a
   assert.equal(Object.hasOwn(body, "source"), false);
 });
 
+test("Docker v1 finding evidence accepts an omitted slot but rejects every named slot", async () => {
+  const { validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/findings-response.json", import.meta.url), "utf8"
+  )) as { findings: Array<{ ruleId: string; evidenceRefs: Array<Record<string, unknown>> }> };
+  const daemonState = fixture.findings.find(({ ruleId }) => ruleId === "docker.daemon_state_bind_mount");
+  const internalNetwork = fixture.findings.find(({ ruleId }) => ruleId === "docker.internal_network_member_publishes_port");
+  assert.ok(daemonState, "canonical findings must exercise Docker daemon-state evidence");
+  assert.ok(internalNetwork, "canonical findings must exercise internal-network and port evidence");
+
+  const daemonShaped = structuredClone(fixture);
+  const daemonShapedEvidence = daemonShaped.findings
+    .filter(({ ruleId }) => ruleId === "docker.daemon_state_bind_mount" || ruleId === "docker.internal_network_member_publishes_port")
+    .flatMap(({ evidenceRefs }) => evidenceRefs);
+  assert.equal(daemonShapedEvidence.length, 3);
+  for (const evidence of daemonShapedEvidence) delete evidence.providerSlot;
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/findings", daemonShaped));
+
+  for (let index = 0; index < daemonShapedEvidence.length; index += 1) {
+    const namedSlot = structuredClone(daemonShaped);
+    const evidence = namedSlot.findings
+      .filter(({ ruleId }) => ruleId === "docker.daemon_state_bind_mount" || ruleId === "docker.internal_network_member_publishes_port")
+      .flatMap(({ evidenceRefs }) => evidenceRefs)[index];
+    assert.ok(evidence);
+    evidence.providerSlot = "project_npm";
+    assert.throws(
+      () => validateDaemonResponse("/daemon/findings", namedSlot),
+      undefined,
+      `Docker v1 evidence ${index} must reject a named provider slot`
+    );
+  }
+});
+
 test("daemon runtime provider metadata retains successful evidence across retries", async () => {
   const fixture = JSON.parse(await readFile(
     new URL("../../../tests/fixtures/contracts/runtime-map.json", import.meta.url), "utf8"
