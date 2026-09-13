@@ -1,173 +1,68 @@
-# DockerMap Page Logic Blueprint
+# DockerMap Page Logic
 
-## Shared Model
+This document describes the current browser architecture. The route declaration in
+`apps/web/src/App.tsx` remains executable authority when this guide and code differ.
+DockerMap is read-only: no page exposes start, stop, restart, pull, prune, create,
+delete, connect, or disconnect actions.
 
-- Keep one canonical resource store derived from the Docker snapshot and the read-only
-  runtime map.
-- Split the data flow into:
-  1. raw Docker snapshot
-  2. normalized resource store
-  3. page selectors and filters
-- Core store keys:
-  - `containers.byId`
-  - `containers.byName`
-  - `images.byName`
-  - `networks.byId`
-  - `volumes.byId`
-  - `logs.byContainerId`
-  - `metrics.byContainerId`
-  - `runtime.nodes.byId`
-  - `runtime.edges`
-  - `runtime.diagnostics`
-  - derived edges for container-to-container, container-to-network, and container-to-volume
+## Shared model
 
-## Routes
+`AppShell` loads one authenticated Docker snapshot, runtime map, findings response,
+and bounded observed-history response. Screens derive their views from that shared
+state; they do not create parallel provider models.
 
-- `/`
-- `/containers`
-- `/containers/{container_name}`
-- `/images`
-- `/networks`
-- `/volumes`
-- `/logs`
-- `/runtime` or a dashboard runtime panel for PM2, systemd, cron, tmux, tailnet, proxy,
-  DNS, and listening-port signals
+- The Docker snapshot owns container, image, network, and volume inventory.
+- The runtime map owns provider-neutral nodes, edges, evidence, diagnostics, and
+  provider freshness.
+- Findings are a closed Rust-owned advisory contract.
+- Observed history contains at most 64 sanitized deltas between successful Docker
+  inventory snapshots during the current daemon lifetime. It is not Docker event,
+  deployment, causality, or persistent audit history.
+- Resource telemetry is not collected. Live and mock modes must say so rather than
+  render demo CPU, memory, or network activity as observed data.
 
-Use query params for page state:
+## Current routes
 
-- `/containers?q=api&status=running&network=network_app&sort=name`
-- `/images?filter=in-use&sort=size`
-- `/networks?network=network_data`
-- `/volumes?filter=unused`
-- `/logs?service=api&level=error`
+| Route | Purpose |
+| --- | --- |
+| `/` | Home summary and primary topology story. |
+| `/map` | Interactive service topology. |
+| `/runtime` | Provider-neutral runtime inventory and evidence. |
+| `/findings` | Closed, evidence-bounded advisories. |
+| `/services/:name` | Service detail resolved through collision-safe identity. |
+| `/networks/:name` | Docker network detail. |
+| `/volumes/:name` | Docker volume detail. |
+| `/images/:image` | Docker image detail. |
+| `/changes` | Bounded daemon-lifetime inventory deltas, or an honest non-collection state. |
+| `/copilot` | Deterministic read-only questions over the loaded model. |
+| `/networking` | Network inventory. |
+| `/storage` | Volume inventory. |
+| `/images` | Image inventory. |
+| `/logs` | Bounded non-following container logs. |
+| `/compose` | Compose discovery and dry-run edit planning (`willWrite: false`). |
+| `/diagnostics` | Provider and contract diagnostics. |
+| `/settings` | Browser-local presentation/settings controls. |
+| `/atlas` | Build-gated Atlas overview; absent from the default production image. |
 
-## Shared UI State
+Unknown routes render the explicit not-found screen. There is no `/containers`
+route; services are selected from the graph/inventory and open at `/services/:name`.
 
-- Global shell state:
-  - `activePage`
-  - `searchQuery`
-  - `selectedEngine`
-  - `viewportMode`
-- Page state:
-  - `filters`
-  - `sortKey`
-  - `sortDirection`
-  - `selectedResource`
-  - `expandedPanels`
-  - `cursor`
-- Live data state:
-  - `snapshotTimestamp`
-  - `graph`
-  - `logs`
-  - `health`
+## Cross-page rules
 
-## Page Behavior
+- The graph is the primary navigation surface. Selecting a service opens its detail
+  without changing the observed host.
+- Network, volume, and image references link only to the corresponding read view.
+- Runtime evidence supports exactly the relationship displayed; reachability,
+  activity, health, or causality are not inferred from configuration alone.
+- Identity collisions resolve through the canonical aggregate/selector rules rather
+  than label-only matching.
+- Demo data is visibly labelled and cannot be admitted as live evidence.
+- Missing, stale, rejected, or unsupported data produces an explicit unknown or
+  not-collected state.
 
-### Dashboard
+## Browser API authority
 
-- Graph is the primary interaction surface.
-- Clicking a node should open container detail.
-- KPI cards should derive from the current filtered state.
-- Search should filter graph nodes, summary overlays, and KPI totals together.
-- Runtime-map signals should appear as read-only context, not as controls that imply
-  DockerMap can restart or edit those services.
-
-### Containers
-
-- Search by name, image, role, and label.
-- Filter by status, network, image, and stack.
-- Sort by name, cpu, memory, age, and status.
-- `Inspect` routes to `/containers/{name}`.
-- `Logs` routes to `/logs?service={name}`.
-
-### Container Detail
-
-- Resolve the URL slug to a canonical container record.
-- Show dependencies, dependents, networks, volumes, ports, labels, metrics, and recent logs.
-- Dependency chips route to sibling detail pages.
-- Network chips route to filtered networks.
-- Volume chips route to filtered volumes.
-- Logs action routes to filtered logs.
-
-### Images
-
-- Group by repository:tag.
-- Support search by repo, tag, image ID, and owning container.
-- Filter by in-use, unused, dangling, local-only, and remote-available.
-- Container chips route to container detail.
-- Registry panel should eventually support pull, prune, inspect, and tag actions.
-
-### Networks
-
-- Show member containers, traffic, and network attributes.
-- Support filter by driver, internal/public, and empty.
-- Member chips route to container detail.
-- Expanded view should eventually show IPAM, subnet, gateway, and attachability.
-
-### Volumes
-
-- Show attachment count, mountpoint, driver, and attachment safety.
-- Support filter by attached/unattached, driver, and mount mode.
-- Attached service chips route to container detail.
-- Empty volumes should be clearly marked as prune candidates.
-
-### Logs
-
-- Query-param-driven service filter.
-- Future filters:
-  - severity
-  - search within messages
-  - live tail toggle
-  - auto-scroll
-- Service links route back to container detail.
-
-## Cross-Page Rules
-
-- Dashboard node -> container detail
-- Dashboard image card -> images filtered to that image
-- Dashboard network card -> networks filtered to that network
-- Image container chip -> container detail
-- Network member chip -> container detail
-- Volume attached-service chip -> container detail
-- Container detail logs action -> logs filtered to that container
-- Logs service heading -> container detail
-
-## Backend Endpoints To Add
-
-- `GET /snapshot`
-- `GET /containers`
-- `GET /containers/{name}`
-- `GET /containers/{name}/metrics`
-- `GET /containers/{name}/logs`
-- `GET /images`
-- `GET /images/{imageRef}`
-- `GET /networks`
-- `GET /networks/{id}`
-- `GET /volumes`
-- `GET /volumes/{name}`
-- `GET /logs?service=&cursor=`
-
-Future write endpoints:
-
-- `POST /containers/{name}/start`
-- `POST /containers/{name}/stop`
-- `POST /containers/{name}/restart`
-- `POST /images/pull`
-- `DELETE /images/{imageRef}`
-- `POST /images/prune`
-- `POST /networks`
-- `DELETE /networks/{id}`
-- `POST /networks/{id}/connect`
-- `POST /networks/{id}/disconnect`
-- `POST /volumes`
-- `DELETE /volumes/{name}`
-- `POST /volumes/prune`
-
-## Recommended Build Order
-
-1. Extract normalization out of `build_summary()`.
-2. Add structured JSON endpoints per entity.
-3. Add query-param parsing for filters and sorting.
-4. Make graph nodes and summary chips route-aware and clickable.
-5. Add real log filtering and streaming behavior.
-6. Add write actions only after read-only navigation and drill-down are stable.
+The UI consumes authenticated `/api/*` routes through the Node boundary. Node
+validates Rust-owned contracts before publication and fails closed on semantic drift.
+The browser does not call the Rust daemon or Docker socket directly. See
+`CONTRACT_AUTHORITY.md` and `DOCKER_AUTHORITY_BOUNDARY.md` for those boundaries.
