@@ -48,6 +48,28 @@ test("split Docker services override the frontend image healthcheck at each plan
   );
 });
 
+test("the shared deployment image has exactly one Compose build owner", async () => {
+  const compose = await text("docker-compose.yml");
+  const buildDeclarations = [...compose.matchAll(/^\s{4}build:\s*\.\s*$/gm)];
+  const imageDeclarations = [...compose.matchAll(/^\s{4}image:\s*dockermap:local\s*$/gm)];
+
+  assert.equal(
+    buildDeclarations.length,
+    1,
+    "only the frontend service may build the shared image; parallel same-tag builds race on classic builders"
+  );
+  assert.equal(
+    imageDeclarations.length,
+    3,
+    "the frontend, collector, and gateway must continue consuming the same locally built image"
+  );
+  assert.match(
+    compose,
+    /dockermap:\n\s{4}build:\s*\.\n\s{4}image:\s*dockermap:local/,
+    "the frontend service must remain the shared image build owner"
+  );
+});
+
 test("the native collector is an explicit full-host profile", async () => {
   const unit = await text("deploy/systemd/dockermap-daemon.service");
   assert.ok(
