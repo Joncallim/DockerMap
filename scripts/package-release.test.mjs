@@ -64,11 +64,11 @@ async function releaseFixture() {
   return root;
 }
 
-test("alpha.2 packaging check accepts the exact tag and rejects the stable tag", async () => {
-  await execFileAsync("bash", ["scripts/package-release.sh", "v0.1.0-alpha.2", "--check"], { cwd: sourceRoot });
+test("stable packaging check accepts the exact tag and rejects the alpha.2 tag", async () => {
+  await execFileAsync("bash", ["scripts/package-release.sh", "v0.1.0", "--check"], { cwd: sourceRoot });
   await assert.rejects(
-    execFileAsync("bash", ["scripts/package-release.sh", "v0.1.0", "--check"], { cwd: sourceRoot }),
-    /must exactly match v0\.1\.0-alpha\.2/
+    execFileAsync("bash", ["scripts/package-release.sh", "v0.1.0-alpha.2", "--check"], { cwd: sourceRoot }),
+    /must exactly match v0\.1\.0/
   );
 });
 
