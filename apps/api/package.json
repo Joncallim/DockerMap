@@ -1,7 +1,7 @@
 {
   "name": "@dockermap/api",
   "private": true,
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "npm run build --workspace @dockermap/contracts && tsx watch src/index.ts",
@@ -11,7 +11,7 @@
     "test": "npm run build --workspace @dockermap/contracts && tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@dockermap/contracts": "0.1.0-alpha.2",
+    "@dockermap/contracts": "0.1.0",
     "ajv": "^8.20.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
