@@ -36,6 +36,7 @@ type ProcessHandle = {
   name: string;
   process: ChildProcessWithoutNullStreams;
   logs: string[];
+  privileged: boolean;
 };
 
 type Fixture = {
@@ -273,51 +274,69 @@ export async function startLiveDockerStack(): Promise<Stack> {
     runDocker(docker, ["compose", "-p", fixture.projectName, "-f", fixture.composeFile, "up", "-d"], fixture.dir);
     runDocker(docker, ["run", "-d", "--name", fixture.controlContainerName, "busybox:1.36.1", "sh", "-c", "while true; do sleep 60; done"], fixture.dir);
   } catch (error) {
-    cleanupLiveDocker(docker, fixture);
-    throw error;
+    let cleanupFailure = "";
+    try {
+      cleanupLiveDocker(docker, fixture);
+    } catch {
+      cleanupFailure = "\nLive-Docker cleanup incomplete: fixture cleanup failed";
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message}${cleanupFailure}`);
   }
 
-  const ports = await allocatePorts();
   const processes: ProcessHandle[] = [];
+  try {
+    const ports = await allocatePorts();
+    await ensureDaemonBinary();
+    ensureContractsRuntimePackage();
+    const gatewaySocket = join(fixture.dir, "docker-read.sock");
+    processes.push(startGateway({
+      socket: gatewaySocket,
+      labelFilter: fixture.labelFilter,
+      docker
+    }));
+    await waitForSocket(gatewaySocket);
+    processes.push(startDaemon({
+      port: ports.daemon,
+      cwd: fixture.dir,
+      useDockerAccess: true,
+      docker,
+      dockerLabelFilter: fixture.labelFilter,
+      gatewaySocket,
+      pathPrefix: fixture.stubBinDir,
+      // Match the recommended Docker-only deployment: it must never use the
+      // daemon process's partial PID namespace as host evidence.
+      pidNamespace: "restricted"
+    }));
+    await waitForDockerHealth(`http://127.0.0.1:${ports.daemon}/daemon/health`);
+    await waitForFixtureSnapshot(`http://127.0.0.1:${ports.daemon}/daemon/snapshot`, fixture.projectName);
 
-  await ensureDaemonBinary();
-  ensureContractsRuntimePackage();
-  const gatewaySocket = join(fixture.dir, "docker-read.sock");
-  processes.push(startGateway({ socket: gatewaySocket, labelFilter: fixture.labelFilter }));
-  await waitForSocket(gatewaySocket);
-  processes.push(startDaemon({
-    port: ports.daemon,
-    cwd: fixture.dir,
-    useDockerAccess: true,
-    docker,
-    dockerLabelFilter: fixture.labelFilter,
-    gatewaySocket,
-    pathPrefix: fixture.stubBinDir,
-    // Match the recommended Docker-only deployment: it must never use the
-    // daemon process's partial PID namespace as host evidence.
-    pidNamespace: "restricted"
-  }));
-  await waitForDockerHealth(`http://127.0.0.1:${ports.daemon}/daemon/health`);
-  await waitForFixtureSnapshot(`http://127.0.0.1:${ports.daemon}/daemon/snapshot`, fixture.projectName);
+    processes.push(startApi({ port: ports.api, daemonPort: ports.daemon, webPort: ports.web }));
+    await waitForJson(`http://127.0.0.1:${ports.api}/api/health`);
 
-  processes.push(startApi({ port: ports.api, daemonPort: ports.daemon, webPort: ports.web }));
-  await waitForJson(`http://127.0.0.1:${ports.api}/api/health`);
+    processes.push(startWeb({ port: ports.web, apiPort: ports.api }));
+    await waitForHttp(`http://127.0.0.1:${ports.web}`);
 
-  processes.push(startWeb({ port: ports.web, apiPort: ports.api }));
-  await waitForHttp(`http://127.0.0.1:${ports.web}`);
-
-  return {
-    apiUrl: `http://127.0.0.1:${ports.api}`,
-    webUrl: `http://127.0.0.1:${ports.web}`,
-    daemonUrl: `http://127.0.0.1:${ports.daemon}`,
-    fixtureDir: fixture.dir,
-    projectName: fixture.projectName,
-    controlContainerName: fixture.controlContainerName,
-    stop: async () => {
-      await stopProcesses(processes);
-      cleanupLiveDocker(docker, fixture);
+    return {
+      apiUrl: `http://127.0.0.1:${ports.api}`,
+      webUrl: `http://127.0.0.1:${ports.web}`,
+      daemonUrl: `http://127.0.0.1:${ports.daemon}`,
+      fixtureDir: fixture.dir,
+      projectName: fixture.projectName,
+      controlContainerName: fixture.controlContainerName,
+      stop: async () => cleanupStartedLiveDockerStack(processes, docker, fixture)
+    };
+  } catch (error) {
+    const diagnostics = boundedProcessDiagnostics(processes);
+    let cleanupFailure = "";
+    try {
+      await cleanupStartedLiveDockerStack(processes, docker, fixture);
+    } catch (cleanupError) {
+      cleanupFailure = `\n${cleanupError instanceof Error ? cleanupError.message : "Live-Docker cleanup failed"}`;
     }
-  };
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message}\nLive-Docker startup processes: ${diagnostics}${cleanupFailure}`);
+  }
 }
 
 export async function startTokenConfiguredCompose(overrides: NodeJS.ProcessEnv = {}): Promise<{ health: string; stop: () => Promise<void> }> {
@@ -439,8 +458,7 @@ function startDaemon(options: {
   apiToken?: string;
 }): ProcessHandle {
   const { DOCKERMAP_API_TOKEN: _apiToken, DOCKERMAP_DAEMON_TOKEN: _daemonToken, ...baseEnv } = process.env;
-  const env = {
-    ...baseEnv,
+  const harnessEnv = {
     DOCKERMAP_DAEMON_HOST: "127.0.0.1",
     DOCKERMAP_DAEMON_PORT: String(options.port),
     ...(options.daemonToken ? { DOCKERMAP_DAEMON_TOKEN: options.daemonToken } : {}),
@@ -453,25 +471,55 @@ function startDaemon(options: {
       ? {}
       : { DOCKERMAP_FORCE_MOCK: "true", DOCKERMAP_ALLOW_MOCK: "true" })
   };
+  const env = { ...baseEnv, ...harnessEnv };
 
   if (options.useDockerAccess && options.docker?.[0] === "sudo") {
-    return startProcess("daemon", "sudo", ["-n", "env", ...envPairs(env), daemonBinary], {
+    const {
+      DOCKERMAP_API_TOKEN: apiToken,
+      DOCKERMAP_DAEMON_TOKEN: daemonToken,
+      ...nonSecretHarnessEnv
+    } = harnessEnv;
+    const secretEnv = {
+      ...(apiToken ? { DOCKERMAP_API_TOKEN: apiToken } : {}),
+      ...(daemonToken ? { DOCKERMAP_DAEMON_TOKEN: daemonToken } : {})
+    };
+    const preservedSecretNames = Object.keys(secretEnv);
+    return startProcess("daemon", "sudo", [
+      "-n",
+      ...(preservedSecretNames.length > 0 ? [`--preserve-env=${preservedSecretNames.join(",")}`] : []),
+      "env",
+      "LC_ALL=C.UTF-8",
+      ...envPairs(nonSecretHarnessEnv),
+      daemonBinary
+    ], {
       cwd: options.cwd,
-      env: process.env
+      env: minimalSudoSpawnEnv(secretEnv),
+      privileged: true
     });
   }
 
   return startProcess("daemon", daemonBinary, [], { cwd: options.cwd, env });
 }
 
-function startGateway(options: { socket: string; labelFilter?: string }): ProcessHandle {
+function startGateway(options: { socket: string; labelFilter?: string; docker?: string[] }): ProcessHandle {
+  const gatewayEnv = {
+    DOCKERMAP_DOCKER_GATEWAY_SOCKET: options.socket,
+    DOCKERMAP_RAW_DOCKER_SOCKET: "/var/run/docker.sock",
+    ...(options.labelFilter ? { DOCKERMAP_DOCKER_LABEL_FILTER: options.labelFilter } : {})
+  };
+  if (options.docker?.[0] === "sudo") {
+    return startProcess(
+      "docker-read-gateway",
+      "sudo",
+      ["-n", "env", ...envPairs(gatewayEnv), gatewayBinary],
+      { cwd: repoRoot, env: minimalSudoSpawnEnv(), privileged: true },
+    );
+  }
   return startProcess("docker-read-gateway", gatewayBinary, [], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      DOCKERMAP_DOCKER_GATEWAY_SOCKET: options.socket,
-      DOCKERMAP_RAW_DOCKER_SOCKET: "/var/run/docker.sock",
-      ...(options.labelFilter ? { DOCKERMAP_DOCKER_LABEL_FILTER: options.labelFilter } : {})
+      ...gatewayEnv
     }
   });
 }
@@ -511,7 +559,7 @@ function startProcess(
   name: string,
   command: string,
   args: string[],
-  options: { cwd: string; env?: NodeJS.ProcessEnv },
+  options: { cwd: string; env?: NodeJS.ProcessEnv; privileged?: boolean },
 ): ProcessHandle {
   const child = spawn(command, args, {
     cwd: options.cwd,
@@ -533,21 +581,61 @@ function startProcess(
       logs.push(`${name} exited with ${code ?? signal}`);
     }
   });
-  return { name, process: child, logs };
+  return { name, process: child, logs, privileged: options.privileged === true };
+}
+
+function boundedProcessDiagnostics(processes: ProcessHandle[]) {
+  if (processes.length === 0) return "none started";
+  return processes.map((handle) => {
+    const status = handle.process.exitCode !== null
+      ? `exited(${handle.process.exitCode})`
+      : handle.process.signalCode !== null
+        ? `signaled(${handle.process.signalCode})`
+        : "running";
+    const output = handle.logs.join("\n").toLowerCase();
+    const signals = [
+      output.includes("permission denied") ? "permission_denied" : null,
+      output.includes("address already in use") ? "address_in_use" : null,
+      output.includes("listening on") ? "listening" : null,
+      output.includes("docker read gateway stopped") ? "gateway_stopped" : null
+    ].filter(Boolean);
+    return `${handle.name}=${status},signals=${signals.join("+") || "none"}`;
+  }).join("; ");
 }
 
 async function stopProcesses(processes: ProcessHandle[]) {
-  await Promise.all(processes.toReversed().map(stopProcess));
+  const results = await Promise.allSettled(processes.toReversed().map(stopProcess));
+  const failures = results.filter((result) => result.status === "rejected").length;
+  if (failures > 0) {
+    throw new Error(`Live-Docker process cleanup failed for ${failures} process(es)`);
+  }
+}
+
+async function cleanupStartedLiveDockerStack(processes: ProcessHandle[], docker: string[], fixture: Fixture) {
+  const failures: string[] = [];
+  try {
+    await stopProcesses(processes);
+  } catch {
+    failures.push("process cleanup failed");
+  }
+  try {
+    cleanupLiveDocker(docker, fixture);
+  } catch {
+    failures.push("fixture cleanup failed");
+  }
+  if (failures.length > 0) {
+    throw new Error(`Live-Docker cleanup incomplete: ${failures.join("; ")}`);
+  }
 }
 
 async function stopProcess(handle: ProcessHandle) {
-  if (handle.process.exitCode !== null) {
+  if (handle.process.exitCode !== null || handle.process.signalCode !== null) {
     return;
   }
 
   signalProcess(handle, "SIGTERM");
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (handle.process.exitCode !== null) {
+    if (handle.process.exitCode !== null || handle.process.signalCode !== null) {
       return;
     }
     await delay(100);
@@ -556,6 +644,20 @@ async function stopProcess(handle: ProcessHandle) {
 }
 
 function signalProcess(handle: ProcessHandle, signal: NodeJS.Signals) {
+  if (handle.privileged && handle.process.pid && process.platform !== "win32") {
+    const result = spawnSync("sudo", ["-n", "kill", `-${signal.slice(3)}`, "--", `-${handle.process.pid}`], {
+      stdio: "ignore"
+    });
+    if (result.status === 0) return;
+    try {
+      process.kill(-handle.process.pid, signal);
+      return;
+    } catch (error) {
+      if (isNoSuchProcessError(error)) return;
+      const sudoStatus = result.error ? "spawn_error" : result.signal ? `signal_${result.signal}` : `exit_${result.status ?? "unknown"}`;
+      throw new Error(`Could not ${signal} privileged ${handle.name} process group (sudo ${sudoStatus}; direct fallback denied)`);
+    }
+  }
   try {
     if (process.platform !== "win32" && handle.process.pid) {
       process.kill(-handle.process.pid, signal);
@@ -565,6 +667,10 @@ function signalProcess(handle: ProcessHandle, signal: NodeJS.Signals) {
     // Fall back to signaling the direct child below.
   }
   handle.process.kill(signal);
+}
+
+function isNoSuchProcessError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ESRCH";
 }
 
 async function waitForDockerHealth(url: string) {
@@ -991,10 +1097,20 @@ function parseProductionSessionBurst(output: string) {
 }
 
 function cleanupLiveDocker(docker: string[], fixture: Fixture) {
+  const failures: string[] = [];
   try {
     runDocker(docker, ["rm", "-f", fixture.controlContainerName], fixture.dir);
   } catch {
-    // Best-effort cleanup should not hide the original test result.
+    try {
+      const remaining = dockerOutput(
+        docker,
+        ["ps", "-aq", "--filter", `name=^/${fixture.controlContainerName}$`],
+        fixture.dir,
+      ).trim();
+      if (remaining) failures.push("control container");
+    } catch {
+      failures.push("control container");
+    }
   }
   try {
     runDocker(
@@ -1003,9 +1119,16 @@ function cleanupLiveDocker(docker: string[], fixture: Fixture) {
       fixture.dir,
     );
   } catch {
-    // Best-effort cleanup should not hide the original test result.
+    failures.push("Compose resources");
   }
-  rmSync(fixture.dir, { recursive: true, force: true });
+  try {
+    rmSync(fixture.dir, { recursive: true, force: true });
+  } catch {
+    failures.push("fixture directory");
+  }
+  if (failures.length > 0) {
+    throw new Error(`Live-Docker fixture cleanup failed for ${failures.join(", ")}`);
+  }
 }
 
 function cleanupProductionImage(
@@ -1043,4 +1166,13 @@ function cleanupProductionImage(
 
 function envPairs(env: NodeJS.ProcessEnv) {
   return Object.entries(env).flatMap(([key, value]) => (value === undefined ? [] : [`${key}=${value}`]));
+}
+
+function minimalSudoSpawnEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+    ...extra
+  };
 }
