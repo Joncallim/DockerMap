@@ -70,8 +70,11 @@ match the live model. Atlas remains a projection of current topology and does no
 this temporal side channel.
 
 The entire Docker observation pass has a daemon-owned five-second deadline. A stalled
-pass invalidates its cached client and publishes the ordinary sanitized mock fallback;
-the next pass must construct a fresh client. Continuous Docker events, temporal
+pass invalidates its cached client; the next pass must construct a fresh client. When
+`DOCKERMAP_ALLOW_MOCK=true`, the daemon may publish the ordinary sanitized mock fallback.
+Otherwise every cache-backed daemon route returns `503` until live Docker authority is
+restored, so a reachable daemon cannot bypass the deployment's fail-closed policy.
+Continuous Docker events, temporal
 findings, and current resource telemetry remain deferred behind separate authority and
 truthfulness reviews.
 
@@ -134,7 +137,7 @@ namespace, or when either the canonical local host or the tmux-session source
 identity is ambiguous. The producer/publication boundary and UI must not expose
 raw tmux session names, IDs, or metadata.
 
-Mock mode keeps representative topology available for UI and transport testing,
+Explicitly enabled mock mode keeps representative topology available for UI and transport testing,
 but it is not a Docker observation. In that mode every runtime edge has an
 empty `evidenceRefs` array and no evidence-derived finding is published. A
 Docker/mock source transition discards retained provider observations instead

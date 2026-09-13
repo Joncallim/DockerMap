@@ -20,7 +20,9 @@ pub(crate) use cache_refresh::AppState;
 use cache_refresh::DaemonCache;
 use cache_refresh::{refresh_cache, refresh_loop};
 use compose_api::run_cli;
-use config::{read_bind_host_env, read_daemon_token_env, read_port_env, DaemonAuthToken};
+use config::{
+    read_allow_mock_env, read_bind_host_env, read_daemon_token_env, read_port_env, DaemonAuthToken,
+};
 use daemon_api::daemon_router;
 pub(crate) use daemon_api::ApiError;
 #[cfg(test)]
@@ -133,7 +135,7 @@ async fn main() {
     let port = read_port_env("DOCKERMAP_DAEMON_PORT", 4100);
     let host = read_bind_host_env("DOCKERMAP_DAEMON_HOST", daemon_token.0.is_some());
     let address = SocketAddr::from((host, port));
-    let state = AppState::new();
+    let state = AppState::new(read_allow_mock_env());
 
     refresh_cache(&state).await;
     tokio::spawn(refresh_loop(state.clone()));
@@ -182,9 +184,46 @@ mod tests {
 
     fn test_daemon_state() -> AppState {
         AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(DaemonCache::mock())),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(crate::cache_refresh::ProviderSlotFlights::default()),
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_mock_cache_is_not_published_when_mock_mode_is_disabled() {
+        let state = AppState {
+            allow_mock: false,
+            cache: Arc::new(RwLock::new(DaemonCache::mock())),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(crate::cache_refresh::ProviderSlotFlights::default()),
+        };
+
+        for path in [
+            "/daemon/health",
+            "/daemon/snapshot",
+            "/daemon/graph",
+            "/daemon/runtime/map",
+            "/daemon/findings",
+            "/daemon/history",
+            "/daemon/containers",
+            "/daemon/containers/api",
+            "/daemon/images",
+            "/daemon/networks",
+            "/daemon/volumes",
+            "/daemon/logs?service=api",
+        ] {
+            let response = daemon_router(state.clone(), DaemonAuthToken(None))
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .body(axum::body::Body::empty())
+                        .expect("request should build"),
+                )
+                .await
+                .expect("daemon router should respond");
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
         }
     }
 
@@ -315,6 +354,7 @@ mod tests {
         let mut cache = DaemonCache::mock();
         cache.health.docker_reachable = true;
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(cache)),
             docker: Arc::new(RwLock::new(Some(DockerCollector::with_client(
                 Docker::connect_with_unix(

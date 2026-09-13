@@ -162,8 +162,8 @@ Field meanings:
 
 - `status` — `ok`, `degraded`, or `offline` (derived from Docker reachability
   and container state).
-- `mode` — `docker` (real Docker data), `mock` (the Node API's fallback
-  response when the daemon is unreachable and `DOCKERMAP_ALLOW_MOCK=true`),
+- `mode` — `docker` (real Docker data), `mock` (an explicitly enabled daemon
+  or Node fallback when live authority is unavailable),
   or `mixed`. `mixed` means `/daemon/health` and `/daemon/snapshot` resolved
   from DIFFERENT sources in one response (e.g. health from live Docker while
   the snapshot fell back to route-local mock): the counts in that payload

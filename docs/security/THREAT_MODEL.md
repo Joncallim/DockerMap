@@ -56,10 +56,12 @@ changes them:
   namespace, or when its host or session identity is ambiguous. The
   producer/publication boundary and UI must not disclose raw tmux session names,
   IDs, or metadata.
-- Mock fallback may show representative topology, but never attests it as Docker or retained
+- Explicitly enabled mock fallback may show representative topology, but never attests it as Docker or retained
   host-provider evidence: every runtime edge has an empty evidence array and evidence-derived
   findings are absent. A live/mock source change drops retained observations rather than
-  relabelling them as mock data.
+  relabelling them as mock data. With `DOCKERMAP_ALLOW_MOCK` disabled, the daemon rejects
+  every cache-backed publication with `503` while its internal cache is mock, including
+  health and inventory routes; the Node setting cannot be bypassed by a reachable daemon.
 - Docker port-publication evidence is emitted only for a validated nonzero host binding.
   A container-only listener stays visible as topology without publication evidence, and a
   publication fact does not establish reachability, health, traffic, or exploitability.
@@ -198,7 +200,7 @@ Automated tests currently cover:
   output, reverse-proxy markers, DNS markers, provider diagnostics, and provider edge metadata.
 - Runtime-edge evidence schema rejection and publication redaction, including malformed
   provenance fields and secret/control-character-bearing evidence summaries or references.
-- Evidence-source boundaries: forced mock and live-to-mock reset publish topology without
+- Evidence-source boundaries: explicitly allowed forced mock and live-to-mock reset publish topology without
   runtime evidence or evidence-derived findings; private container ports have no host-publication
   evidence; daemon-state facts remain path-free; and Systemd/npm declarations retain only their
   closed slot revision, timestamp, and freshness vocabulary.

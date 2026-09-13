@@ -56,6 +56,10 @@ const DOCKER_SNAPSHOT_COLLECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    /// Mock publications are an explicit deployment policy. When false, the
+    /// daemon may retain an internal mock cache for recovery bookkeeping, but
+    /// HTTP publication fails closed until live Docker authority is restored.
+    pub(crate) allow_mock: bool,
     pub(crate) cache: Arc<RwLock<DaemonCache>>,
     /// Reused Bollard client for the filtered gateway socket. It is created
     /// only through `DockerCollector::connect`, which has no raw-socket
@@ -67,8 +71,9 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(allow_mock: bool) -> Self {
         Self {
+            allow_mock,
             cache: Arc::new(RwLock::new(DaemonCache::mock())),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -2473,6 +2478,7 @@ mod scheduler_tests {
     #[tokio::test]
     async fn failed_systemd_collection_is_unavailable_initially_and_stale_when_retained() {
         let initial = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -2505,6 +2511,7 @@ mod scheduler_tests {
         drop(initial_cache);
 
         let retained = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -2555,6 +2562,7 @@ mod scheduler_tests {
     #[tokio::test]
     async fn tmux_failure_retains_sessions_but_no_server_clears_them_freshly() {
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -2631,6 +2639,7 @@ mod scheduler_tests {
     #[tokio::test]
     async fn timed_out_systemd_collection_publishes_collection_timed_out_not_failed() {
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -2901,6 +2910,7 @@ mod scheduler_tests {
         );
 
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(initial)),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -2936,6 +2946,7 @@ mod scheduler_tests {
                 && finding.evidence_refs[0].kind == RuntimeEvidenceKind::DockerComposeDependsOn
         }));
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(initial)),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -2976,6 +2987,7 @@ mod scheduler_tests {
                 })
         }));
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(initial)),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -3138,6 +3150,7 @@ mod scheduler_tests {
         });
 
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
             docker: Arc::new(RwLock::new(Some(DockerCollector::with_client(
                 Docker::connect_with_unix(socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
@@ -3257,6 +3270,7 @@ mod scheduler_tests {
         });
 
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
             docker: Arc::new(RwLock::new(Some(DockerCollector::with_client(
                 Docker::connect_with_unix(socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
@@ -3425,6 +3439,7 @@ mod scheduler_tests {
         };
         let first = collision_snapshot(10);
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -3595,6 +3610,7 @@ mod scheduler_tests {
     {
         let initial = docker_cache(generated_large_snapshot(0));
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(initial)),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -3867,6 +3883,7 @@ mod scheduler_tests {
 
     async fn run_real_collector_churn_trace(profile: &str) -> BTreeMap<ProviderSlot, usize> {
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -3958,6 +3975,7 @@ mod scheduler_tests {
         initial.rebuild_runtime_map();
         initial.assign_revision();
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(initial)),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -4098,6 +4116,7 @@ mod scheduler_tests {
             .unwrap()
             .observation = RuntimeProviderState::Fresh(python);
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(previous)),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -4125,6 +4144,7 @@ mod scheduler_tests {
     #[tokio::test]
     async fn old_docker_generation_cannot_complete_after_mock_round_trip() {
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -4362,6 +4382,7 @@ mod scheduler_tests {
             .unwrap()
             .observation = RuntimeProviderState::Fresh(collection);
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(previous)),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -4407,11 +4428,11 @@ mod scheduler_tests {
         // path, rather than merely constructing a sample cache by hand.
         std::env::set_var("DOCKERMAP_FORCE_MOCK", "true");
         let collected =
-            collect_snapshot(&AppState::new(), DOCKER_SNAPSHOT_COLLECTION_TIMEOUT).await;
+            collect_snapshot(&AppState::new(true), DOCKER_SNAPSHOT_COLLECTION_TIMEOUT).await;
         std::env::remove_var("DOCKERMAP_FORCE_MOCK");
         assert_eq!(collected.health.mode, RuntimeMode::Mock);
 
-        let state = AppState::new();
+        let state = AppState::new(true);
         publish_docker_snapshot_cache(&state, collected).await;
         let cache = state.cache.read().await;
         assert!(cache.runtime_map.nodes.iter().any(|node| {
@@ -4432,6 +4453,7 @@ mod scheduler_tests {
     #[tokio::test]
     async fn older_snapshot_completion_is_retained_only_as_stale_network_evidence() {
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -4483,6 +4505,7 @@ mod scheduler_tests {
             .unwrap()
             .observation = RuntimeProviderState::Fresh(collection);
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(previous)),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -4503,6 +4526,7 @@ mod scheduler_tests {
         let mut first = mock_snapshot();
         first.last_updated = 10;
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -4565,6 +4589,7 @@ mod scheduler_tests {
         let mut first = mock_snapshot();
         first.last_updated = 10;
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -4635,6 +4660,7 @@ mod scheduler_tests {
         let mut first = mock_snapshot();
         first.last_updated = 10;
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -4677,6 +4703,7 @@ mod scheduler_tests {
         let mut first = mock_snapshot();
         first.last_updated = 10;
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
@@ -4722,6 +4749,7 @@ mod scheduler_tests {
         let mut first = mock_snapshot();
         first.last_updated = 10;
         let state = AppState {
+            allow_mock: true,
             cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
