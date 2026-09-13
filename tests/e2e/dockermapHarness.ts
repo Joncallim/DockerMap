@@ -352,9 +352,12 @@ export async function startTokenConfiguredCompose(overrides: NodeJS.ProcessEnv =
   const fixtureDir = mkdtempSync(join(tmpdir(), "dockermap-compose-e2e-"));
   const overrideFile = join(fixtureDir, "network-override.yaml");
   const envFile = join(fixtureDir, "compose.env");
+  // Pin both Compose bridges together.  The ingress bridge otherwise consumes
+  // Docker's default pool, which may already be exhausted on review hosts.
+  const [apiSubnet, ingressSubnet] = unusedFixtureSubnets(docker, 2);
   writeFileSync(
     overrideFile,
-    `services:\n  dockermap:\n    ports: []\nnetworks:\n  dockermap-api:\n    ipam:\n      config:\n        - subnet: ${unusedFixtureSubnet(docker)}\n`,
+    `services:\n  dockermap:\n    ports: []\nnetworks:\n  dockermap-api:\n    ipam:\n      config:\n        - subnet: ${apiSubnet}\n  dockermap-ingress:\n    ipam:\n      config:\n        - subnet: ${ingressSubnet}\n`,
   );
   writeFileSync(envFile, composeEnvironmentFile(env), { encoding: "utf8", mode: 0o600, flag: "wx" });
   const composeArgs = ["compose", "--env-file", envFile, "-p", projectName, "-f", "docker-compose.yml", "-f", overrideFile];
