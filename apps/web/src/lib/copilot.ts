@@ -3,6 +3,8 @@ import { identityText, UNAVAILABLE_IMAGE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVI
 import { UPDATE_STATUS_CLAIM, UPDATE_STATUS_LABEL } from "./updates";
 import { CHANGE_HISTORY_CLAIM, NOT_COLLECTED_LABEL } from "./history";
 import { type EvidenceKind, type EvidenceMode, type ModelProvenance } from "./evidence";
+import type { ObservedChangeHistoryResponse } from "@dockermap/contracts";
+import { coherentObservedHistory } from "./observedHistory";
 
 /**
  * The Copilot interprets the topology. It does not control anything and it does
@@ -73,7 +75,13 @@ function evidenceFor(liveKind: EvidenceKind, authority: Authority): EvidenceKind
   return authority === "host" ? liveKind : "demo";
 }
 
-export function answer(model: SystemModel, raw: string, mode: EvidenceMode | null, provenance: ModelProvenance | null): CopilotAnswer {
+export function answer(
+  model: SystemModel,
+  raw: string,
+  mode: EvidenceMode | null,
+  provenance: ModelProvenance | null,
+  observedHistory?: ObservedChangeHistoryResponse | null
+): CopilotAnswer {
   const q = raw.trim();
   const lower = q.toLowerCase();
 
@@ -106,6 +114,9 @@ export function answer(model: SystemModel, raw: string, mode: EvidenceMode | nul
   if (/port\s*\d+|expose|listening/.test(lower)) {
     return portAnswer(model, q, lower, authority);
   }
+  if (isRecentHistoryQuestion(lower)) {
+    return recentChangeAnswer(model, q, authority, mode, provenance, observedHistory);
+  }
   if (/chang|recent|deploy|updat/.test(lower)) {
     return changeAnswer(q, authority);
   }
@@ -122,6 +133,14 @@ export function answer(model: SystemModel, raw: string, mode: EvidenceMode | nul
     references: [],
     evidence: evidenceFor("derived", authority)
   };
+}
+
+/** Keep registry/update and deployment questions out of snapshot-delta answers. */
+function isRecentHistoryQuestion(lower: string): boolean {
+  return /\b(?:what|which) changed recently\b/.test(lower)
+    || /\brecent (?:change|changes|history)\b/.test(lower)
+    || /\bchange history\b/.test(lower)
+    || /\bhistory of changes\b/.test(lower);
 }
 
 function findService(model: SystemModel, lower: string): Service | null {
@@ -363,6 +382,43 @@ function changeAnswer(q: string, authority: Authority): CopilotAnswer {
     ],
     references: [],
     evidence: "unavailable"
+  };
+}
+
+function recentChangeAnswer(
+  model: SystemModel,
+  q: string,
+  authority: Authority,
+  mode: EvidenceMode | null,
+  provenance: ModelProvenance | null,
+  history: ObservedChangeHistoryResponse | null | undefined
+): CopilotAnswer {
+  const coherent = coherentObservedHistory(model, mode, provenance, history);
+  if (authority !== "host" || !coherent) return changeAnswer(q, authority);
+  const boundary = "These are bounded inventory deltas retained only for this daemon process lifetime; they do not establish identity, service, current state, or cause.";
+  if (coherent.events.length === 0) {
+    return {
+      question: q,
+      headline: "No retained inventory deltas",
+      body: ["No inventory deltas have been retained since the daemon established its baseline.", boundary],
+      references: [],
+      evidence: "derived"
+    };
+  }
+  // The history boundary has already proved newest-first timestamp and numeric
+  // sequence ordering. Do not re-sort variable-width decimal sequences as text.
+  const latest = coherent.events[0]!;
+  const observation = latest.kind === "container_appeared"
+    ? "A container appeared in the published inventory."
+    : latest.kind === "container_disappeared"
+      ? "A container disappeared from the published inventory."
+      : "A container observation changed status in the published inventory.";
+  return {
+    question: q,
+    headline: "Latest retained inventory observation",
+    body: [observation, boundary],
+    references: [],
+    evidence: "derived"
   };
 }
 

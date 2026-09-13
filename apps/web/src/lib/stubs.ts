@@ -80,7 +80,7 @@ export interface ChangeEvent {
    * non-routable text and never emit a /services/ link in that case.
    */
   routeName: string | null;
-  kind: "deploy" | "restart" | "config" | "failure" | "recovery";
+  kind: "deploy" | "restart" | "config" | "failure" | "recovery" | "container_appeared" | "container_disappeared" | "container_status_changed";
   summary: string;
   detail?: string;
   at: number;
@@ -95,8 +95,10 @@ export interface ChangeEvent {
  * synthetic feed is available only under an allow-listed sample
  * mode/provenance pair — see `maySynthesizeHistory`.)
  */
+type SyntheticChangeKind = Exclude<ChangeEvent["kind"], "container_appeared" | "container_disappeared" | "container_status_changed">;
+
 const CHANGE_TEMPLATES: Record<
-  ChangeEvent["kind"],
+  SyntheticChangeKind,
   (service: Service) => { summary: string; detail?: string }
 > = {
   deploy: (s) => ({ summary: `${identityText(s.name, UNAVAILABLE_SERVICE)} redeployed`, detail: `Recreated from compose definition` }),
@@ -139,7 +141,7 @@ export function changeFeed(
   return demoSample(events.sort((a, b) => b.at - a.at).slice(0, 24));
 }
 
-function makeEvent(service: Service, kind: ChangeEvent["kind"], at: number, routeName: string | null): ChangeEvent {
+function makeEvent(service: Service, kind: SyntheticChangeKind, at: number, routeName: string | null): ChangeEvent {
   const tpl = CHANGE_TEMPLATES[kind](service);
   return {
     id: `${service.id}:${kind}:${at}`,

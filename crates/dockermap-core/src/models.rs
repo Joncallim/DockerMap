@@ -149,6 +149,263 @@ pub enum RuntimeMode {
     Mock,
 }
 
+/// A deliberately small, daemon-lifetime observation delta. It is derived
+/// from two published Docker inventories, not from Docker's event stream.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedChangeKind {
+    ContainerAppeared,
+    ContainerDisappeared,
+    ContainerStatusChanged,
+}
+
+/// Closed status classes prevent raw Docker status text from entering the
+/// temporal-history boundary.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedContainerStatus {
+    Running,
+    Stopped,
+    Other,
+}
+
+/// One observed inventory delta. `containerId` is an opaque digest-derived
+/// history identity, never a raw Docker ID, readable ID fragment, or name.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedChangeEvent {
+    #[schemars(regex(pattern = "^[0-9a-f]{32}-[1-9][0-9]{0,19}$"))]
+    pub id: String,
+    pub kind: ObservedChangeKind,
+    #[serde(rename = "observedAtMs")]
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub observed_at_ms: u64,
+    #[serde(rename = "containerId")]
+    #[schemars(regex(pattern = "^docker_container_[0-9a-f]{64}$"))]
+    pub container_id: String,
+    #[serde(rename = "previousStatus")]
+    #[schemars(required, with = "ObservedContainerStatusOrNull")]
+    pub previous_status: Option<ObservedContainerStatus>,
+    #[serde(rename = "currentStatus")]
+    #[schemars(required, with = "ObservedContainerStatusOrNull")]
+    pub current_status: Option<ObservedContainerStatus>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservedChangeEventWire {
+    id: String,
+    kind: ObservedChangeKind,
+    #[serde(rename = "observedAtMs")]
+    observed_at_ms: u64,
+    #[serde(rename = "containerId")]
+    container_id: String,
+    #[serde(rename = "previousStatus")]
+    previous_status: Option<ObservedContainerStatus>,
+    #[serde(rename = "currentStatus")]
+    current_status: Option<ObservedContainerStatus>,
+}
+
+impl<'de> Deserialize<'de> for ObservedChangeEvent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::try_from(ObservedChangeEventWire::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl TryFrom<ObservedChangeEventWire> for ObservedChangeEvent {
+    type Error = &'static str;
+
+    fn try_from(wire: ObservedChangeEventWire) -> Result<Self, Self::Error> {
+        if !is_observed_event_id(&wire.id) {
+            return Err("observed event ID must be an opaque boot token and sequence");
+        }
+        if !is_observed_container_id(&wire.container_id) {
+            return Err("observed container ID must be an opaque SHA-256 identity");
+        }
+        let coherent_transition = match wire.kind {
+            ObservedChangeKind::ContainerAppeared => {
+                wire.previous_status.is_none() && wire.current_status.is_some()
+            }
+            ObservedChangeKind::ContainerDisappeared => {
+                wire.previous_status.is_some() && wire.current_status.is_none()
+            }
+            ObservedChangeKind::ContainerStatusChanged => {
+                wire.previous_status.is_some()
+                    && wire.current_status.is_some()
+                    && wire.previous_status != wire.current_status
+            }
+        };
+        if !coherent_transition {
+            return Err("observed event statuses do not match its closed change kind");
+        }
+        Ok(Self {
+            id: wire.id,
+            kind: wire.kind,
+            observed_at_ms: wire.observed_at_ms,
+            container_id: wire.container_id,
+            previous_status: wire.previous_status,
+            current_status: wire.current_status,
+        })
+    }
+}
+
+fn is_observed_event_id(value: &str) -> bool {
+    let Some((boot, sequence)) = value.split_once('-') else {
+        return false;
+    };
+    boot.len() == 32
+        && boot
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && !sequence.is_empty()
+        && !sequence.starts_with('0')
+        && sequence.bytes().all(|byte| byte.is_ascii_digit())
+        && sequence.parse::<u64>().is_ok()
+}
+
+fn is_observed_container_id(value: &str) -> bool {
+    value
+        .strip_prefix("docker_container_")
+        .is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+}
+
+/// Schema-only union keeps optional status values required on the wire while
+/// accurately admitting the null state used by appearance/disappearance.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum ObservedContainerStatusOrNull {
+    Value(ObservedContainerStatus),
+    Null(()),
+}
+
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum NonEmptyStringOrNull {
+    Value(#[schemars(length(min = 1, max = 64))] String),
+    Null(()),
+}
+
+/// Bounded in-memory history for the daemon process only. `mock` never
+/// inherits a Docker baseline or events from an earlier source generation.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedChangeHistoryResponse {
+    pub source: RuntimeMode,
+    #[serde(rename = "baselineEstablished")]
+    pub baseline_established: bool,
+    #[serde(rename = "currentModelRevision")]
+    #[schemars(required, with = "NonEmptyStringOrNull")]
+    pub current_model_revision: Option<String>,
+    #[serde(rename = "observedRevision")]
+    #[schemars(required, with = "NonEmptyStringOrNull")]
+    pub observed_revision: Option<String>,
+    #[schemars(length(max = 64))]
+    pub events: Vec<ObservedChangeEvent>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservedChangeHistoryResponseWire {
+    source: RuntimeMode,
+    #[serde(rename = "baselineEstablished")]
+    baseline_established: bool,
+    #[serde(rename = "currentModelRevision")]
+    current_model_revision: Option<String>,
+    #[serde(rename = "observedRevision")]
+    observed_revision: Option<String>,
+    events: Vec<ObservedChangeEvent>,
+}
+
+impl<'de> Deserialize<'de> for ObservedChangeHistoryResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::try_from(ObservedChangeHistoryResponseWire::deserialize(
+            deserializer,
+        )?)
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl TryFrom<ObservedChangeHistoryResponseWire> for ObservedChangeHistoryResponse {
+    type Error = &'static str;
+
+    fn try_from(wire: ObservedChangeHistoryResponseWire) -> Result<Self, Self::Error> {
+        let revisions_present = wire
+            .current_model_revision
+            .as_ref()
+            .is_some_and(|value| !value.is_empty() && value.len() <= 64)
+            && wire
+                .observed_revision
+                .as_ref()
+                .is_some_and(|value| !value.is_empty() && value.len() <= 64);
+        let source_coherent = match wire.source {
+            RuntimeMode::Mock => {
+                !wire.baseline_established
+                    && wire.current_model_revision.is_none()
+                    && wire.observed_revision.is_none()
+                    && wire.events.is_empty()
+            }
+            RuntimeMode::Docker => wire.baseline_established && revisions_present,
+        };
+        if !source_coherent {
+            return Err("observed history source, baseline, revisions, and events are incoherent");
+        }
+        if wire.events.len() > 64 {
+            return Err("observed history exceeds its fixed event cap");
+        }
+        let mut previous: Option<(u64, &str, u64)> = None;
+        let mut ids = std::collections::BTreeSet::new();
+        for event in &wire.events {
+            let (boot, sequence) = observed_event_id_parts(&event.id)
+                .ok_or("observed event ID is not structurally valid")?;
+            if !ids.insert(event.id.as_str()) {
+                return Err("observed event IDs must be unique");
+            }
+            if let Some((previous_at, previous_boot, previous_sequence)) = previous {
+                if event.observed_at_ms > previous_at
+                    || boot != previous_boot
+                    || sequence >= previous_sequence
+                {
+                    return Err("observed events must be newest-first from one daemon epoch");
+                }
+            }
+            previous = Some((event.observed_at_ms, boot, sequence));
+        }
+        Ok(Self {
+            source: wire.source,
+            baseline_established: wire.baseline_established,
+            current_model_revision: wire.current_model_revision,
+            observed_revision: wire.observed_revision,
+            events: wire.events,
+        })
+    }
+}
+
+fn observed_event_id_parts(value: &str) -> Option<(&str, u64)> {
+    is_observed_event_id(value).then(|| {
+        let (boot, sequence) = value.split_once('-').expect("validated event ID");
+        (
+            boot,
+            sequence.parse::<u64>().expect("validated event sequence"),
+        )
+    })
+}
+
 /// Fixed, schema-backed host-provider slots. This is not a plugin or policy
 /// interface: the daemon owns the complete finite list.
 #[derive(

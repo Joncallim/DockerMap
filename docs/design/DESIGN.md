@@ -131,9 +131,10 @@ layer. Today it reasons locally and deterministically over the live model.
 - Hovering a service highlights its relationships; selecting it reveals its impact radius.
 - Empty states teach the next action; they never market, decorate, or celebrate.
 - Resource usage samples are shown only in explicit demo mode and labelled "Sample data";
-  mock and live mode report non-collection rather than showing a number. Change history
-  is likewise synthetic only in explicit demo mode; mock and live mode report it as
-  not collected.
+  mock and live mode report non-collection rather than showing a number. Live Docker
+  history contains only bounded, identity-free deltas between published inventories;
+  it is neither an event stream nor a causal record. Mock mode reports non-collection,
+  while explicit Demo Mode retains its labelled sample timeline.
 
 ## Accessibility Baseline
 

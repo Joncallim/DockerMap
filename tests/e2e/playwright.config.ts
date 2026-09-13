@@ -9,7 +9,10 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 1 : 0,
-  timeout: 120_000,
+  // A cold multi-stage production image build can legitimately exceed the
+  // ordinary browser-test ceiling on a fresh CI worker. Keep the broader
+  // allowance closed to the explicit production-image lane.
+  timeout: process.env.DOCKERMAP_E2E_PRODUCTION_IMAGE === "1" ? 360_000 : 120_000,
   expect: {
     timeout: 15_000
   },

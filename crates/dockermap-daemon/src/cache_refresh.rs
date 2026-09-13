@@ -27,15 +27,18 @@ use crate::{
 };
 use dockermap_core::{
     collision_resistant_id_component, derive_compose_runtime_mount_findings, derive_findings,
-    derive_images, discover_compose_files, mock_snapshot, scan_compose_binding_snapshot,
-    ComposeRuntimeBinding, DiagnosticSeverity, DockerSnapshot, FindingSummary, FindingsResponse,
-    HealthResponse, HealthState, ProviderSlot, ProviderState, ProviderStateKind,
+    derive_images, discover_compose_files, mock_snapshot, observed_container_inventory,
+    scan_compose_binding_snapshot, ComposeRuntimeBinding, ComposeRuntimeContainer, ComposeScan,
+    DiagnosticSeverity, DockerSnapshot, FindingSummary, FindingsResponse, HealthResponse,
+    HealthState, ObservedChangeEvent, ObservedChangeHistoryResponse, ObservedChangeKind,
+    ObservedContainerInventory, ProviderSlot, ProviderState, ProviderStateKind,
     ProviderStatusReason, RuntimeEvidenceAssertionKind, RuntimeEvidenceFreshness,
     RuntimeEvidenceKind, RuntimeEvidenceProvider, RuntimeEvidenceRef, RuntimeMap,
     RuntimeMapDiagnostic, RuntimeMapEdge, RuntimeMode, RuntimeProviderKind,
+    MAX_OBSERVED_CHANGE_EVENTS,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{atomic::AtomicBool, Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -45,6 +48,11 @@ use tokio::{sync::RwLock, time::sleep};
 /// single-flight and may still be unwinding when the next snapshot publishes;
 /// this interval is not a provider scheduler or policy API.
 pub(crate) const STATIC_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Maximum wall time for one complete Docker observation pass. This wraps all
+/// fixed inventory reads and the current Compose-correlation projection as one
+/// daemon-owned operation; it is not configurable provider policy.
+const DOCKER_SNAPSHOT_COLLECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -89,6 +97,140 @@ pub(crate) struct DaemonCache {
     /// identity, count, diagnostic, or provider material participates.
     integrity_observation_revision: IntegrityObservationRevision,
     revision: PublicationRevision,
+    observed_history: ObservedHistoryCache,
+}
+
+/// Daemon-lifetime inventory deltas only. This contains no Docker event stream
+/// payload, raw identity, status text, path, diagnostic, or causal claim.
+#[derive(Clone)]
+struct ObservedHistoryCache {
+    boot: String,
+    next_sequence: u64,
+    last_observed_at_ms: Option<u64>,
+    baseline: Option<ObservedContainerInventory>,
+    events: VecDeque<ObservedChangeEvent>,
+}
+
+impl ObservedHistoryCache {
+    fn new() -> Self {
+        Self {
+            boot: opaque_revision_boot_component(),
+            next_sequence: 0,
+            last_observed_at_ms: None,
+            baseline: None,
+            events: VecDeque::new(),
+        }
+    }
+
+    /// Advance only after a successful Docker inventory has been cloned
+    /// through the publication sanitizer. A first snapshot is a baseline, not
+    /// an asserted change; ambiguous public IDs fail closed.
+    fn observe_published_snapshot(&mut self, snapshot: &DockerSnapshot) {
+        const MAX_SAFE_JS_INTEGER: u64 = 9_007_199_254_740_991;
+        let current = observed_container_inventory(snapshot);
+        if snapshot.last_updated > MAX_SAFE_JS_INTEGER
+            || self
+                .last_observed_at_ms
+                .is_some_and(|previous| snapshot.last_updated < previous)
+        {
+            // A browser-imprecise or regressing clock cannot participate in a
+            // newest-first temporal claim. Rebaseline with a fresh epoch so
+            // later valid observations cannot be stitched to prior events.
+            self.boot = opaque_revision_boot_component();
+            self.next_sequence = 0;
+            self.last_observed_at_ms = None;
+            self.baseline = Some(current);
+            self.events.clear();
+            return;
+        }
+        self.last_observed_at_ms = Some(snapshot.last_updated);
+        let Some(previous) = self.baseline.replace(current.clone()) else {
+            return;
+        };
+
+        for (container_id, previous_status) in &previous.containers {
+            if current.containers.contains_key(container_id)
+                || current.ambiguous_ids.contains(container_id)
+            {
+                continue;
+            }
+            self.push(
+                ObservedChangeKind::ContainerDisappeared,
+                snapshot.last_updated,
+                container_id.clone(),
+                Some(*previous_status),
+                None,
+            );
+        }
+        for (container_id, current_status) in &current.containers {
+            match previous.containers.get(container_id) {
+                None if !previous.ambiguous_ids.contains(container_id) => self.push(
+                    ObservedChangeKind::ContainerAppeared,
+                    snapshot.last_updated,
+                    container_id.clone(),
+                    None,
+                    Some(*current_status),
+                ),
+                Some(previous_status) if previous_status != current_status => self.push(
+                    ObservedChangeKind::ContainerStatusChanged,
+                    snapshot.last_updated,
+                    container_id.clone(),
+                    Some(*previous_status),
+                    Some(*current_status),
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    fn push(
+        &mut self,
+        kind: ObservedChangeKind,
+        observed_at_ms: u64,
+        container_id: String,
+        previous_status: Option<dockermap_core::ObservedContainerStatus>,
+        current_status: Option<dockermap_core::ObservedContainerStatus>,
+    ) {
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .expect("observed history sequence overflow");
+        self.events.push_back(ObservedChangeEvent {
+            id: format!("{}-{}", self.boot, self.next_sequence),
+            kind,
+            observed_at_ms,
+            container_id,
+            previous_status,
+            current_status,
+        });
+        while self.events.len() > MAX_OBSERVED_CHANGE_EVENTS {
+            self.events.pop_front();
+        }
+    }
+
+    fn response(
+        &self,
+        source: RuntimeMode,
+        current_model_revision: String,
+        observed_revision: String,
+    ) -> ObservedChangeHistoryResponse {
+        if source != RuntimeMode::Docker || self.baseline.is_none() {
+            return ObservedChangeHistoryResponse {
+                source,
+                baseline_established: false,
+                current_model_revision: None,
+                observed_revision: None,
+                events: Vec::new(),
+            };
+        }
+        ObservedChangeHistoryResponse {
+            source,
+            baseline_established: true,
+            current_model_revision: Some(current_model_revision),
+            observed_revision: Some(observed_revision),
+            events: self.events.iter().rev().cloned().collect(),
+        }
+    }
 }
 
 /// Per-process, opaque revision source. The boot value comes from the OS CSPRNG
@@ -353,6 +495,10 @@ impl SlotDataRevision {
 }
 
 pub(crate) struct ProviderSlotFlights {
+    /// Per-AppState guard for bounded Compose filesystem projection. It is not
+    /// counted against provider worker capacity and remains claimed until a
+    /// timed-out blocking projection actually exits.
+    compose_projection: Arc<AtomicBool>,
     network: Arc<AtomicBool>,
     host: Arc<AtomicBool>,
     tmux: Arc<AtomicBool>,
@@ -366,6 +512,7 @@ pub(crate) struct ProviderSlotFlights {
 impl Default for ProviderSlotFlights {
     fn default() -> Self {
         Self {
+            compose_projection: Arc::new(AtomicBool::new(false)),
             network: Arc::new(AtomicBool::new(false)),
             host: Arc::new(AtomicBool::new(false)),
             tmux: Arc::new(AtomicBool::new(false)),
@@ -375,6 +522,31 @@ impl Default for ProviderSlotFlights {
             native: Arc::new(AtomicBool::new(false)),
             npm: Arc::new(AtomicBool::new(false)),
         }
+    }
+}
+
+struct ComposeProjectionFlight {
+    active: Arc<AtomicBool>,
+}
+
+impl ComposeProjectionFlight {
+    fn claim(active: Arc<AtomicBool>) -> Option<Self> {
+        active
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .ok()
+            .map(|_| Self { active })
+    }
+}
+
+impl Drop for ComposeProjectionFlight {
+    fn drop(&mut self) {
+        self.active
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -447,6 +619,7 @@ impl DaemonCache {
             docker_observation_revision: DockerObservationRevision::new(),
             integrity_observation_revision: IntegrityObservationRevision::new(),
             revision: PublicationRevision::new(),
+            observed_history: ObservedHistoryCache::new(),
         };
         cache.assign_docker_observation_revision();
         cache.assign_revision();
@@ -490,6 +663,14 @@ impl DaemonCache {
         self.docker_observation_revision.current()
     }
 
+    pub(crate) fn observed_history_response(&self) -> ObservedChangeHistoryResponse {
+        self.observed_history.response(
+            self.health.mode.clone(),
+            self.snapshot.model_revision.clone(),
+            self.docker_observation_token(),
+        )
+    }
+
     fn rebuild_runtime_map(&mut self) {
         self.assign_docker_observation_revision();
         let docker_observation_token = self.docker_observation_token();
@@ -527,8 +708,11 @@ pub(crate) async fn refresh_loop(state: AppState) {
 }
 
 pub(crate) async fn refresh_cache(state: &AppState) {
-    let (snapshot, mode, source_generation) =
-        publish_docker_snapshot_cache(state, collect_snapshot(state).await).await;
+    let (snapshot, mode, source_generation) = publish_docker_snapshot_cache(
+        state,
+        collect_snapshot(state, DOCKER_SNAPSHOT_COLLECTION_TIMEOUT).await,
+    )
+    .await;
 
     // Publish Docker evidence before running any optional host command. The
     // Spawned slot workers use fixed per-slot guards; they have no route,
@@ -606,9 +790,24 @@ async fn publish_docker_snapshot_cache(
     if same_source {
         updated.integrity_observation_revision = cache.integrity_observation_revision.clone();
     }
+    updated.observed_history = if same_source {
+        cache.observed_history.clone()
+    } else {
+        ObservedHistoryCache::new()
+    };
     updated.rebuild_runtime_map();
     updated.revision = cache.revision.clone();
     updated.assign_revision();
+    if updated.health.mode == RuntimeMode::Docker {
+        // The input is publication-sanitized before it becomes retained state.
+        // History observes only this coherent successful cache publication.
+        let mut published = publish_docker_snapshot(&updated.snapshot);
+        published.last_updated = updated.snapshot.last_updated;
+        published.model_revision.clear();
+        updated
+            .observed_history
+            .observe_published_snapshot(&published);
+    }
     *cache = updated;
     (
         cache.snapshot.clone(),
@@ -639,7 +838,103 @@ async fn invalidate_docker_collector(state: &AppState) {
     *state.docker.write().await = None;
 }
 
-async fn collect_snapshot(state: &AppState) -> DaemonCache {
+enum DockerReadFailure {
+    Failed(String),
+    TimedOut,
+}
+
+async fn collect_docker_snapshot_candidate<F>(
+    collector: DockerCollector,
+    snapshot_timeout: Duration,
+    projection_in_flight: Arc<AtomicBool>,
+    projection: F,
+) -> Result<DaemonCache, DockerReadFailure>
+where
+    F: FnOnce(
+            Option<Vec<ComposeRuntimeContainer>>,
+            u64,
+        ) -> Option<(ComposeScan, ComposeRuntimeBinding)>
+        + Send
+        + 'static,
+{
+    let started = tokio::time::Instant::now();
+    let observation =
+        match tokio::time::timeout(snapshot_timeout, collector.collect_observation()).await {
+            Ok(Ok(observation)) => observation,
+            Ok(Err(error)) => return Err(DockerReadFailure::Failed(error)),
+            Err(_) => return Err(DockerReadFailure::TimedOut),
+        };
+    let mut snapshot = observation.snapshot;
+    snapshot.images = derive_images(&snapshot);
+    let collected_at = snapshot.last_updated;
+
+    let compose_runtime_binding =
+        if let Some(flight) = ComposeProjectionFlight::claim(projection_in_flight) {
+            if let Some(remaining) = snapshot_timeout
+                .checked_sub(started.elapsed())
+                .filter(|remaining| !remaining.is_zero())
+            {
+                // The flight token moves into the closure, so timing out this
+                // await cannot release it early or permit queued projections.
+                let projection_task = tokio::task::spawn_blocking(move || {
+                    let _flight = flight;
+                    projection(observation.compose_containers, collected_at)
+                });
+                match tokio::time::timeout(remaining, projection_task).await {
+                    Ok(Ok(binding)) => binding,
+                    Ok(Err(_)) | Err(_) => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            // A prior timed-out projection is still unwinding. The Docker
+            // observation is independently truthful, but Compose correlation is
+            // unavailable for this publication and no second task is launched.
+            None
+        };
+
+    let health = HealthResponse {
+        status: HealthState::Ok,
+        mode: RuntimeMode::Docker,
+        docker_reachable: true,
+        last_updated: snapshot.last_updated,
+        snapshot_version: snapshot_observation_token(snapshot.last_updated),
+        model_revision: String::new(),
+        message: Some("Docker engine connected".into()),
+    };
+    Ok(DaemonCache {
+        snapshot,
+        health,
+        runtime_map: empty_runtime_map(0),
+        findings: FindingsResponse::default(),
+        compose_runtime_binding,
+        runtime_providers: unavailable_provider_slots(),
+        source_generation: 0,
+        docker_observation_revision: DockerObservationRevision::new(),
+        integrity_observation_revision: IntegrityObservationRevision::new(),
+        revision: PublicationRevision::new(),
+        observed_history: ObservedHistoryCache::new(),
+    })
+}
+
+async fn collect_snapshot(state: &AppState, snapshot_timeout: Duration) -> DaemonCache {
+    collect_snapshot_with_projection(state, snapshot_timeout, bounded_compose_runtime_binding).await
+}
+
+async fn collect_snapshot_with_projection<F>(
+    state: &AppState,
+    snapshot_timeout: Duration,
+    projection: F,
+) -> DaemonCache
+where
+    F: FnOnce(
+            Option<Vec<ComposeRuntimeContainer>>,
+            u64,
+        ) -> Option<(ComposeScan, ComposeRuntimeBinding)>
+        + Send
+        + 'static,
+{
     if std::env::var("DOCKERMAP_FORCE_MOCK").ok().as_deref() == Some("true") {
         let mut cache = DaemonCache::mock();
         cache.health.message = Some("Mock mode forced by DOCKERMAP_FORCE_MOCK".into());
@@ -648,44 +943,35 @@ async fn collect_snapshot(state: &AppState) -> DaemonCache {
     }
 
     let mut cache = match docker_collector(state).await {
-        Ok(collector) => match collector.collect_observation().await {
-            Ok(observation) => {
-                let mut snapshot = observation.snapshot;
-                snapshot.images = derive_images(&snapshot);
-                let collected_at = snapshot.last_updated;
-                let health = HealthResponse {
-                    status: HealthState::Ok,
-                    mode: RuntimeMode::Docker,
-                    docker_reachable: true,
-                    last_updated: snapshot.last_updated,
-                    snapshot_version: snapshot_observation_token(snapshot.last_updated),
-                    model_revision: String::new(),
-                    message: Some("Docker engine connected".into()),
-                };
-                DaemonCache {
-                    snapshot,
-                    health,
-                    runtime_map: empty_runtime_map(0),
-                    findings: FindingsResponse::default(),
-                    compose_runtime_binding: bounded_compose_runtime_binding(
-                        observation.compose_containers,
-                        collected_at,
-                    ),
-                    runtime_providers: unavailable_provider_slots(),
-                    source_generation: 0,
-                    docker_observation_revision: DockerObservationRevision::new(),
-                    integrity_observation_revision: IntegrityObservationRevision::new(),
-                    revision: PublicationRevision::new(),
+        Ok(collector) => {
+            match collect_docker_snapshot_candidate(
+                collector,
+                snapshot_timeout,
+                state.provider_slot_in_flight.compose_projection.clone(),
+                projection,
+            )
+            .await
+            {
+                Ok(cache) => cache,
+                Err(DockerReadFailure::Failed(error)) => {
+                    invalidate_docker_collector(state).await;
+                    let mut cache = DaemonCache::mock();
+                    cache.health.message =
+                        Some(format!("Docker read failed, serving mock data: {error}"));
+                    cache
+                }
+                Err(DockerReadFailure::TimedOut) => {
+                    // A gateway request is cancelled, so a fresh client is
+                    // required for recovery. Compose-only timeout is handled
+                    // independently and never reaches this branch.
+                    invalidate_docker_collector(state).await;
+                    let mut cache = DaemonCache::mock();
+                    cache.health.message =
+                        Some("Docker snapshot read timed out, serving mock data".into());
+                    cache
                 }
             }
-            Err(error) => {
-                invalidate_docker_collector(state).await;
-                let mut cache = DaemonCache::mock();
-                cache.health.message =
-                    Some(format!("Docker read failed, serving mock data: {error}"));
-                cache
-            }
-        },
+        }
         Err(error) => {
             let mut cache = DaemonCache::mock();
             cache.health.message = Some(format!("Docker unavailable, serving mock data: {error}"));
@@ -1567,12 +1853,18 @@ fn empty_runtime_map(last_updated: u64) -> RuntimeMap {
 mod scheduler_tests {
     use super::*;
     use crate::provider_contract::ProviderDiagnostic;
+    use bollard::{Docker, API_DEFAULT_VERSION};
     use dockermap_core::{
         mock_snapshot, ComposeMountKind, ContainerMount, HealthState, RuntimeMapNode,
         RuntimeNodeKind, RuntimeNodeLayer, RuntimeProviderKind,
     };
     use std::{
         collections::BTreeMap as TestBTreeMap, fs, os::unix::fs::PermissionsExt, process::Command,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::UnixListener,
+        sync::mpsc,
     };
 
     // Before Systemd was extracted into its own independently scheduled slot,
@@ -2763,9 +3055,291 @@ mod scheduler_tests {
             docker_observation_revision: DockerObservationRevision::new(),
             integrity_observation_revision: IntegrityObservationRevision::new(),
             revision: PublicationRevision::new(),
+            observed_history: ObservedHistoryCache::new(),
         };
         cache.assign_docker_observation_revision();
         cache
+    }
+
+    #[tokio::test]
+    async fn snapshot_timeout_invalidates_stalled_client_and_fresh_client_recovers() {
+        async fn read_request_head(connection: &mut tokio::net::UnixStream) -> String {
+            let mut request = Vec::new();
+            let mut bytes = [0_u8; 1_024];
+            loop {
+                let read = connection
+                    .read(&mut bytes)
+                    .await
+                    .expect("snapshot request should be readable");
+                assert!(read > 0, "client closed before request head completed");
+                request.extend_from_slice(&bytes[..read]);
+                assert!(request.len() <= 16_384, "request head must stay bounded");
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            String::from_utf8(request)
+                .expect("Bollard request should be UTF-8 HTTP")
+                .lines()
+                .next()
+                .expect("request line should be present")
+                .to_owned()
+        }
+
+        let directory = tempfile::tempdir().expect("temporary gateway directory");
+        let socket = directory.path().join("snapshot-timeout.sock");
+        let listener = UnixListener::bind(&socket).expect("gateway stub should bind");
+        let (stalled_tx, mut stalled_rx) = mpsc::unbounded_channel();
+        let gateway = tokio::spawn(async move {
+            let (mut stalled, _) = listener
+                .accept()
+                .await
+                .expect("stalled snapshot request should arrive");
+            let first_target = read_request_head(&mut stalled).await;
+            stalled
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n",
+                )
+                .await
+                .expect("gateway should start the stalled response");
+            stalled_tx
+                .send(first_target.clone())
+                .expect("test should observe the stalled request");
+
+            let mut targets = vec![first_target];
+            for _ in 0..3 {
+                let (mut connection, _) = listener
+                    .accept()
+                    .await
+                    .expect("fresh snapshot request should arrive");
+                let target = read_request_head(&mut connection).await;
+                let body = if target.contains("/containers/json") || target.contains("/networks") {
+                    "[]"
+                } else if target.contains("/volumes") {
+                    r#"{"Volumes":[],"Warnings":null}"#
+                } else {
+                    panic!("unexpected snapshot target: {target}");
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                connection
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("fresh snapshot response should be written");
+                targets.push(target);
+            }
+            // The incomplete response remains owned until replacement-client
+            // collection finishes, proving recovery does not reuse it.
+            drop(stalled);
+            targets
+        });
+
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(Some(DockerCollector::with_client(
+                Docker::connect_with_unix(socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
+                    .expect("Bollard should construct the stalled client"),
+                None,
+            )))),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        let test_timeout = Duration::from_millis(75);
+        let started = tokio::time::Instant::now();
+        let fallback = collect_snapshot(&state, test_timeout).await;
+        assert!(started.elapsed() >= test_timeout);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(
+            stalled_rx.try_recv().expect("gateway accepted the request"),
+            "GET /containers/json?all=true&size=false HTTP/1.1"
+        );
+        assert!(
+            state.docker.read().await.is_none(),
+            "the timed-out client pool must be invalidated"
+        );
+
+        publish_docker_snapshot_cache(&state, fallback).await;
+        {
+            let cache = state.cache.read().await;
+            assert_eq!(cache.health.mode, RuntimeMode::Mock);
+            assert!(!cache.health.docker_reachable);
+            assert_eq!(
+                cache.health.message.as_deref(),
+                Some("Docker snapshot read timed out, serving mock data")
+            );
+            assert_eq!(cache.source_generation, 1);
+        }
+
+        *state.docker.write().await = Some(DockerCollector::with_client(
+            Docker::connect_with_unix(socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
+                .expect("Bollard should construct a fresh client"),
+            None,
+        ));
+        let recovered = tokio::time::timeout(
+            Duration::from_secs(2),
+            collect_snapshot(&state, Duration::from_secs(1)),
+        )
+        .await
+        .expect("fresh client collection should stay bounded");
+        publish_docker_snapshot_cache(&state, recovered).await;
+
+        let cache = state.cache.read().await;
+        assert_eq!(cache.health.mode, RuntimeMode::Docker);
+        assert!(cache.health.docker_reachable);
+        assert!(cache.snapshot.containers.is_empty());
+        assert!(cache.snapshot.networks.is_empty());
+        assert!(cache.snapshot.volumes.is_empty());
+        assert_eq!(cache.source_generation, 2);
+        drop(cache);
+
+        assert_eq!(
+            gateway.await.expect("gateway stub should finish"),
+            vec![
+                "GET /containers/json?all=true&size=false HTTP/1.1",
+                "GET /containers/json?all=true&size=false HTTP/1.1",
+                "GET /networks? HTTP/1.1",
+                "GET /volumes? HTTP/1.1",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_projection_timeouts_are_single_flight_and_keep_the_docker_client() {
+        async fn read_request_head(connection: &mut tokio::net::UnixStream) -> String {
+            let mut request = Vec::new();
+            let mut bytes = [0_u8; 1_024];
+            loop {
+                let read = connection.read(&mut bytes).await.expect("request readable");
+                assert!(read > 0);
+                request.extend_from_slice(&bytes[..read]);
+                assert!(request.len() <= 16_384);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    return String::from_utf8(request)
+                        .expect("request is UTF-8 HTTP")
+                        .lines()
+                        .next()
+                        .expect("request line")
+                        .to_owned();
+                }
+            }
+        }
+
+        let directory = tempfile::tempdir().expect("temporary gateway directory");
+        let socket = directory.path().join("projection-timeout.sock");
+        let listener = UnixListener::bind(&socket).expect("gateway stub should bind");
+        let gateway = tokio::spawn(async move {
+            let mut targets = Vec::new();
+            for _ in 0..9 {
+                let (mut connection, _) = listener.accept().await.expect("snapshot request");
+                let target = read_request_head(&mut connection).await;
+                let body = if target.contains("/containers/json") || target.contains("/networks") {
+                    "[]"
+                } else if target.contains("/volumes") {
+                    r#"{"Volumes":[],"Warnings":null}"#
+                } else {
+                    panic!("unexpected snapshot target: {target}");
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                connection
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("snapshot response");
+                targets.push(target);
+            }
+            targets
+        });
+
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(mock_snapshot()))),
+            docker: Arc::new(RwLock::new(Some(DockerCollector::with_client(
+                Docker::connect_with_unix(socket.to_str().unwrap(), 5, API_DEFAULT_VERSION)
+                    .expect("Bollard client"),
+                None,
+            )))),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        let (projection_started_tx, projection_started_rx) = std::sync::mpsc::channel();
+        let (release_projection_tx, release_projection_rx) = std::sync::mpsc::channel();
+        let (projection_finished_tx, projection_finished_rx) = std::sync::mpsc::channel();
+        let projection_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let timeout = Duration::from_millis(150);
+        let started = tokio::time::Instant::now();
+        let first_runs = projection_runs.clone();
+        let first =
+            collect_snapshot_with_projection(&state, timeout, move |_containers, _collected_at| {
+                first_runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                projection_started_tx
+                    .send(())
+                    .expect("test observes projection start");
+                release_projection_rx
+                    .recv()
+                    .expect("test releases stalled projection");
+                projection_finished_tx
+                    .send(())
+                    .expect("test observes projection completion");
+                None
+            })
+            .await;
+
+        assert!(started.elapsed() >= timeout);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        projection_started_rx
+            .try_recv()
+            .expect("Docker reads completed before projection stalled");
+        assert_eq!(first.health.mode, RuntimeMode::Docker);
+        assert!(first.compose_runtime_binding.is_none());
+        assert!(state.docker.read().await.is_some());
+
+        // Repeated refreshes still perform their fresh Docker reads but skip
+        // Compose projection while the first blocking task owns the guard.
+        for _ in 0..2 {
+            let runs = projection_runs.clone();
+            let refresh_started = tokio::time::Instant::now();
+            let next = collect_snapshot_with_projection(
+                &state,
+                timeout,
+                move |_containers, _collected_at| {
+                    runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    None
+                },
+            )
+            .await;
+            assert!(refresh_started.elapsed() < Duration::from_secs(1));
+            assert_eq!(next.health.mode, RuntimeMode::Docker);
+            assert!(next.compose_runtime_binding.is_none());
+            assert!(state.docker.read().await.is_some());
+        }
+        assert_eq!(
+            projection_runs.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "only the original stalled projection may run"
+        );
+
+        // Publishing the Docker result remains an explicit caller action. The late
+        // read-only task owns no state and cannot replace it after release.
+        publish_docker_snapshot_cache(&state, first).await;
+        release_projection_tx
+            .send(())
+            .expect("release private blocking task");
+        projection_finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("late private projection completes");
+        while state
+            .provider_slot_in_flight
+            .compose_projection
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(state.cache.read().await.health.mode, RuntimeMode::Docker);
+        assert_eq!(gateway.await.expect("gateway stub").len(), 9);
     }
 
     fn first_docker_evidence_revision(cache: &DaemonCache) -> String {
@@ -3832,7 +4406,8 @@ mod scheduler_tests {
         // gateway. This regression therefore proves the explicit forced-mock
         // path, rather than merely constructing a sample cache by hand.
         std::env::set_var("DOCKERMAP_FORCE_MOCK", "true");
-        let collected = collect_snapshot(&AppState::new()).await;
+        let collected =
+            collect_snapshot(&AppState::new(), DOCKER_SNAPSHOT_COLLECTION_TIMEOUT).await;
         std::env::remove_var("DOCKERMAP_FORCE_MOCK");
         assert_eq!(collected.health.mode, RuntimeMode::Mock);
 
@@ -3983,5 +4558,194 @@ mod scheduler_tests {
             .iter()
             .all(|edge| edge.evidence_refs.is_empty()));
         assert!(mock_cache.findings.findings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn observed_history_emits_only_sanitized_container_deltas_after_a_baseline() {
+        let mut first = mock_snapshot();
+        first.last_updated = 10;
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        publish_docker_snapshot_cache(&state, docker_cache(first.clone())).await;
+        assert_eq!(
+            state
+                .cache
+                .read()
+                .await
+                .observed_history_response()
+                .events
+                .len(),
+            0
+        );
+
+        let mut raw_only = first.clone();
+        raw_only.last_updated = 11;
+        raw_only.containers[0].name = "token=DOCKERMAP_TEST_FAKE_HISTORY_NAME".into();
+        raw_only.containers[0].role = "token=DOCKERMAP_TEST_FAKE_HISTORY_ROLE".into();
+        publish_docker_snapshot_cache(&state, docker_cache(raw_only)).await;
+        assert!(state
+            .cache
+            .read()
+            .await
+            .observed_history_response()
+            .events
+            .is_empty());
+
+        let mut changed = first;
+        changed.last_updated = 12;
+        changed.containers[0].status = "Exited (137) 1 second ago".into();
+        publish_docker_snapshot_cache(&state, docker_cache(changed)).await;
+        let response = state.cache.read().await.observed_history_response();
+        assert!(response.baseline_established);
+        assert_eq!(response.events.len(), 1);
+        let event = &response.events[0];
+        assert_eq!(event.kind, ObservedChangeKind::ContainerStatusChanged);
+        assert_eq!(
+            event.previous_status,
+            Some(dockermap_core::ObservedContainerStatus::Running)
+        );
+        assert_eq!(
+            event.current_status,
+            Some(dockermap_core::ObservedContainerStatus::Stopped)
+        );
+        assert!(event.container_id.starts_with("docker_container_"));
+        assert_eq!(event.container_id.len(), "docker_container_".len() + 64);
+        assert!(event.container_id["docker_container_".len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        let encoded = serde_json::to_string(event).expect("event serializes");
+        for forbidden in [
+            "Exited (137)",
+            "/srv/private",
+            "DOCKERMAP_TEST_FAKE_HISTORY",
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "history leaked {forbidden}: {encoded}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn observed_history_clock_regression_rebaselines_with_a_fresh_epoch() {
+        let mut first = mock_snapshot();
+        first.last_updated = 10;
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(first.clone())).await;
+
+        let mut changed = first.clone();
+        changed.last_updated = 12;
+        changed.containers[0].status = "exited".into();
+        publish_docker_snapshot_cache(&state, docker_cache(changed)).await;
+        let prior_event_id = state.cache.read().await.observed_history_response().events[0]
+            .id
+            .clone();
+
+        let mut regressed = first.clone();
+        regressed.last_updated = 11;
+        publish_docker_snapshot_cache(&state, docker_cache(regressed)).await;
+        assert!(state
+            .cache
+            .read()
+            .await
+            .observed_history_response()
+            .events
+            .is_empty());
+
+        first.last_updated = 13;
+        first.containers[0].status = "exited".into();
+        publish_docker_snapshot_cache(&state, docker_cache(first)).await;
+        let response = state.cache.read().await.observed_history_response();
+        assert_eq!(response.events.len(), 1);
+        assert_ne!(response.events[0].id, prior_event_id);
+        assert!(serde_json::from_value::<ObservedChangeHistoryResponse>(
+            serde_json::to_value(response).expect("history serializes")
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn observed_history_resets_across_source_transitions_and_mock_is_unavailable() {
+        let mut first = mock_snapshot();
+        first.last_updated = 10;
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(first.clone())).await;
+        let mut changed = first.clone();
+        changed.last_updated = 11;
+        changed.containers.pop();
+        publish_docker_snapshot_cache(&state, docker_cache(changed)).await;
+        assert_eq!(
+            state
+                .cache
+                .read()
+                .await
+                .observed_history_response()
+                .events
+                .len(),
+            1
+        );
+
+        publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
+        let mock = state.cache.read().await.observed_history_response();
+        assert_eq!(mock.source, RuntimeMode::Mock);
+        assert!(!mock.baseline_established);
+        assert!(mock.current_model_revision.is_none());
+        assert!(mock.observed_revision.is_none());
+        assert!(mock.events.is_empty());
+        drop(mock);
+
+        publish_docker_snapshot_cache(&state, docker_cache(first)).await;
+        let docker = state.cache.read().await.observed_history_response();
+        assert_eq!(docker.source, RuntimeMode::Docker);
+        assert!(docker.baseline_established);
+        assert!(
+            docker.events.is_empty(),
+            "first Docker cache after reset is baseline only"
+        );
+    }
+
+    #[tokio::test]
+    async fn observed_history_is_bounded_newest_first_and_provider_revisions_do_not_change_observation_revision(
+    ) {
+        let mut first = mock_snapshot();
+        first.last_updated = 10;
+        let state = AppState {
+            cache: Arc::new(RwLock::new(docker_cache(first.clone()))),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+        publish_docker_snapshot_cache(&state, docker_cache(first.clone())).await;
+        for index in 0..(MAX_OBSERVED_CHANGE_EVENTS + 3) {
+            let mut changed = first.clone();
+            changed.last_updated = 11 + index as u64;
+            changed.containers[0].status = if index % 2 == 0 { "exited" } else { "running" }.into();
+            publish_docker_snapshot_cache(&state, docker_cache(changed)).await;
+            first.containers[0].status = if index % 2 == 0 { "exited" } else { "running" }.into();
+        }
+        let before = state.cache.read().await.observed_history_response();
+        assert_eq!(before.events.len(), MAX_OBSERVED_CHANGE_EVENTS);
+        assert!(before
+            .events
+            .windows(2)
+            .all(|pair| pair[0].observed_at_ms >= pair[1].observed_at_ms));
+        let observed_revision = before.observed_revision.clone();
+        drop(before);
+
+        claim_due_provider_slots(&state, Duration::ZERO).await;
+        let after = state.cache.read().await.observed_history_response();
+        assert_eq!(after.observed_revision, observed_revision);
+        assert_eq!(after.events.len(), MAX_OBSERVED_CHANGE_EVENTS);
     }
 }

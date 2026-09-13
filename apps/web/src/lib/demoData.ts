@@ -447,6 +447,9 @@ export function getDemoResponse<T>(path: string): T {
   if (pathname === "/api/graph") return demoGraph as T;
   if (pathname === "/api/runtime/map") return demoRuntimeMap as T;
   if (pathname === "/api/findings") return { findings: [], summary: { warningCount: 0, advisoryCount: 0, declaredDependencyCount: 0, dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0, evidenceIntegrityCount: 0 }, modelRevision: demoSnapshot.modelRevision } as FindingsResponse as T;
+  // Demo history is generated locally and visibly sample-tagged. This
+  // transport fallback is deliberately incapable of claiming host activity.
+  if (pathname === "/api/history") return { source: "mock", baselineEstablished: false, currentModelRevision: null, observedRevision: null, events: [] } as T;
   if (pathname === "/api/health") {
     return {
       node: { status: "ok", port: 4000 },

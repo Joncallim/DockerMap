@@ -20,7 +20,8 @@ const roots = [
   ["LogsResponse", "logs-response"], ["HealthResponse", "health-response"],
   ["ContainersResponse", "containers-response"], ["ContainerDetailResponse", "container-detail-response"],
   ["ImagesResponse", "images-response"], ["NetworksResponse", "networks-response"],
-  ["VolumesResponse", "volumes-response"], ["FindingsResponse", "findings-response"]
+  ["VolumesResponse", "volumes-response"], ["FindingsResponse", "findings-response"],
+  ["ObservedChangeHistoryResponse", "observed-change-history-response"]
 ];
 
 function stable(value) {

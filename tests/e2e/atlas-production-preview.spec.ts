@@ -6,7 +6,7 @@ const token = "dockermap-production-e2e-token";
 type NamedFixture = { name: string; body: unknown };
 type FixtureLedger = { served: string[]; unexpected: string[] };
 
-const fixtures: Record<"heartbeat" | "snapshot" | "runtime" | "findings" | "whoami", NamedFixture> = {
+const fixtures: Record<"heartbeat" | "snapshot" | "runtime" | "findings" | "history" | "whoami", NamedFixture> = {
   heartbeat: { name: "atlas-production-redacted-heartbeat-v1", body: { status: "ok", mode: "mock", dockerReachable: false, lastUpdated: 1, snapshotVersion: "atlas-production-redacted-v1", modelRevision: "atlas-production-r1", message: "Named redacted production fixture" } },
   snapshot: { name: "atlas-production-redacted-snapshot-v1", body: { source: "mock", modelRevision: "atlas-production-r1", lastUpdated: 1, containers: [], images: [], networks: [], volumes: [] } },
   runtime: { name: "atlas-production-redacted-runtime-v1", body: {
@@ -19,6 +19,7 @@ const fixtures: Record<"heartbeat" | "snapshot" | "runtime" | "findings" | "whoa
     diagnostics: [], providerStates: []
   } },
   findings: { name: "atlas-production-redacted-findings-v1", body: { source: "mock", modelRevision: "atlas-production-r1", findings: [] } },
+  history: { name: "atlas-production-redacted-history-v1", body: { source: "mock", baselineEstablished: false, currentModelRevision: null, observedRevision: null, events: [] } },
   whoami: { name: "atlas-production-redacted-whoami-v1", body: { authenticated: true, required: true } }
 };
 
@@ -50,7 +51,7 @@ test.describe("Atlas production-image preview", () => {
     await expect(atlas.getByRole("heading", { name: "Atlas Overview" })).toBeVisible();
     await expect(atlas).toContainText("gateway");
     await expect(atlas).not.toContainText("docker_container_production_gateway");
-    expect(ledger.served).toEqual(expect.arrayContaining([fixtures.heartbeat.name, fixtures.snapshot.name, fixtures.runtime.name, fixtures.findings.name]));
+    expect(ledger.served).toEqual(expect.arrayContaining([fixtures.heartbeat.name, fixtures.snapshot.name, fixtures.runtime.name, fixtures.findings.name, fixtures.history.name]));
     expect(ledger.unexpected, `unexpected production API traffic: ${ledger.unexpected.join(", ")}`).toEqual([]);
   });
 });
@@ -88,6 +89,7 @@ async function installNamedFixtureRoutes(page: Page): Promise<FixtureLedger> {
   await page.route("**/api/snapshot", (route) => fulfillJson(route, fixtures.snapshot, ledger));
   await page.route("**/api/runtime/map", (route) => fulfillJson(route, fixtures.runtime, ledger));
   await page.route("**/api/findings", (route) => fulfillJson(route, fixtures.findings, ledger));
+  await page.route("**/api/history", (route) => fulfillJson(route, fixtures.history, ledger));
   await page.route("**/api/auth/whoami", (route) => fulfillJson(route, fixtures.whoami, ledger));
   return ledger;
 }

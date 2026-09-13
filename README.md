@@ -83,6 +83,9 @@ This starts:
 - Use the Runtime Map workspace to inspect provider nodes, diagnostics, and
   cross-provider edges in one read-only view.
 - Compare what Compose says should exist with what Docker is actually running.
+- Review up to 64 identity-free container inventory deltas retained during the
+  current daemon process. These are snapshot observations, not persistent Docker
+  events or causal/deployment claims.
 - Use mock fallback data when Docker is not available AND mock fallback is
   enabled. When the daemon is unreachable, the Node API substitutes
   route-local mock responses ONLY when `DOCKERMAP_ALLOW_MOCK=true` (the

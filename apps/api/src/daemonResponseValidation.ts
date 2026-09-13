@@ -23,6 +23,7 @@ export const DAEMON_RESPONSE_SCHEMA_PATHS = [
   { path: "/daemon/graph", routeId: "graph", schema: RUST_ROUTE_RESPONSE_SCHEMAS.graph },
   { path: "/daemon/runtime/map", routeId: "runtime-map", schema: RUST_ROUTE_RESPONSE_SCHEMAS["runtime-map"] },
   { path: "/daemon/findings", routeId: "findings", schema: RUST_ROUTE_RESPONSE_SCHEMAS.findings },
+  { path: "/daemon/history", routeId: "history", schema: RUST_ROUTE_RESPONSE_SCHEMAS.history },
   { path: "/daemon/containers", routeId: "containers", schema: RUST_ROUTE_RESPONSE_SCHEMAS.containers },
   { path: "/daemon/containers/:name", routeId: "container", schema: RUST_ROUTE_RESPONSE_SCHEMAS.container },
   { path: "/daemon/images", routeId: "images", schema: RUST_ROUTE_RESPONSE_SCHEMAS.images },
@@ -840,6 +841,61 @@ function hasCoherentFindings(payload: unknown): boolean {
   });
 }
 
+// History is a narrow observation envelope, not an extensible diagnostics or
+// event channel. JSON Schema owns the field types and closed enums; this binds
+// them into the only states and status transitions the daemon may publish.
+function hasCoherentObservedHistory(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const history = payload as Record<string, unknown>;
+  const { source, baselineEstablished, currentModelRevision, observedRevision, events } = history;
+  if ((source !== "docker" && source !== "mock")
+    || typeof baselineEstablished !== "boolean"
+    || !Array.isArray(events)) return false;
+
+  // Mock bytes may never inherit a Docker baseline, revisions, or deltas.
+  if (source === "mock") {
+    return currentModelRevision === null
+      && baselineEstablished === false
+      && observedRevision === null
+      && events.length === 0;
+  }
+  if (!baselineEstablished
+    || typeof currentModelRevision !== "string" || currentModelRevision.length === 0
+    || typeof observedRevision !== "string" || observedRevision.length === 0) return false;
+
+  const ids = new Set<string>();
+  let priorObservedAt = Number.POSITIVE_INFINITY;
+  let epoch: string | null = null;
+  let priorSequence: bigint | null = null;
+  return events.every((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const event = candidate as Record<string, unknown>;
+    if (typeof event.id !== "string"
+      || typeof event.containerId !== "string"
+      || !/^docker_container_[0-9a-f]{64}$/.test(event.containerId)) return false;
+    const eventId = /^([0-9a-f]{32})-([1-9][0-9]{0,19})$/.exec(event.id);
+    if (!eventId) return false;
+    const sequence = BigInt(eventId[2]);
+    if (sequence > 18_446_744_073_709_551_615n) return false;
+    if (ids.has(event.id) || typeof event.observedAtMs !== "number"
+      || event.observedAtMs > priorObservedAt
+      || (epoch !== null && eventId[1] !== epoch)
+      || (priorSequence !== null && sequence >= priorSequence)) return false;
+    ids.add(event.id);
+    priorObservedAt = event.observedAtMs;
+    epoch = eventId[1];
+    priorSequence = sequence;
+    const previous = event.previousStatus;
+    const current = event.currentStatus;
+    if (event.kind === "container_appeared") return previous === null && typeof current === "string";
+    if (event.kind === "container_disappeared") return typeof previous === "string" && current === null;
+    return event.kind === "container_status_changed"
+      && typeof previous === "string"
+      && typeof current === "string"
+      && previous !== current;
+  });
+}
+
 export function daemonResponseSchemaId(path: string): RustResponseSchemaId | undefined {
   const pathname = path.split("?", 1)[0];
   if (pathname === "/daemon/containers") return "ContainersResponse";
@@ -858,7 +914,7 @@ export function daemonResponseSchemaId(path: string): RustResponseSchemaId | und
 export class DaemonResponseValidationError extends Error {
   constructor(
     readonly schema: RustResponseSchemaId | "unknown",
-    readonly reason: "schema" | "provider_state_vector" | "provider_freshness" | RuntimeEvidenceDiagnostic | "findings",
+    readonly reason: "schema" | "provider_state_vector" | "provider_freshness" | RuntimeEvidenceDiagnostic | "findings" | "history",
   ) {
     // Keep the public error deliberately independent of schema paths/errors:
     // a compromised daemon must not use validator output as an exfiltration channel.
@@ -882,5 +938,8 @@ export function validateDaemonResponse(path: string, payload: unknown) {
     if (evidenceDiagnostic) throw new DaemonResponseValidationError(schema, evidenceDiagnostic);
   }
   if (schema === "FindingsResponse" && !hasCoherentFindings(payload)) throw new DaemonResponseValidationError(schema, "findings");
+  if (schema === "ObservedChangeHistoryResponse" && !hasCoherentObservedHistory(payload)) {
+    throw new DaemonResponseValidationError(schema, "history");
+  }
   return payload;
 }

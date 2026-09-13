@@ -9,6 +9,8 @@ test("daemon bearer middleware protects every route and hides unavailable Compos
     "/daemon/snapshot",
     "/daemon/graph",
     "/daemon/runtime/map",
+    "/daemon/findings",
+    "/daemon/history",
     "/daemon/containers",
     "/daemon/containers/gateway",
     "/daemon/images",
