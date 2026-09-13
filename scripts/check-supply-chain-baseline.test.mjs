@@ -64,6 +64,9 @@ test("CI enforces documented Rust and container supply-chain gates", async () =>
   assert.match(workflow,
     /- name: Prepare image supply-chain evidence directory\s+run: mkdir -p artifacts/s);
   assert.match(workflow, /image-supply-chain-\$\{\{ github\.sha \}\}/);
+  assert.match(workflow,
+    /- name: Smoke-test runtime image[\s\S]*?docker run -d --name dockermap-smoke \\\s+--env DOCKERMAP_FORCE_MOCK=true \\\s+--env DOCKERMAP_ALLOW_MOCK=true \\\s+-p 127\.0\.0\.1:3999:3233 \\\s+dockermap:ci/,
+    "the socketless packaging smoke must opt into synthetic data explicitly");
 });
 
 test("tag builds retain artifacts for review and cannot publish automatically", async () => {
