@@ -124,6 +124,27 @@ test("the frontend ingress bridge cannot expose the private collector planes", a
   );
 });
 
+test("the container proxy preserves only an exact outer HTTPS scheme", async () => {
+  const main = await text("deploy/docker/nginx-main.conf");
+  const site = await text("deploy/docker/nginx.conf");
+
+  assert.match(
+    main,
+    /map \$http_x_forwarded_proto \$dockermap_forwarded_proto \{\n    ~\^https\$ https;\n    default \$scheme;\n  \}/,
+    "only the exact https marker may survive the outer-to-inner proxy hop"
+  );
+  assert.equal(
+    [...site.matchAll(/^    proxy_set_header X-Forwarded-Proto \$dockermap_forwarded_proto;$/gm)].length,
+    3,
+    "API, SSE, and health routes must use the same closed forwarded-scheme mapping"
+  );
+  assert.doesNotMatch(
+    site,
+    /^    proxy_set_header X-Forwarded-Proto \$(?:scheme|http_x_forwarded_proto);$/m,
+    "the inner proxy must neither erase outer HTTPS nor reflect arbitrary incoming values"
+  );
+});
+
 test("the native collector is an explicit full-host profile", async () => {
   const unit = await text("deploy/systemd/dockermap-daemon.service");
   assert.ok(
