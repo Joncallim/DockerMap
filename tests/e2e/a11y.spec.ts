@@ -58,6 +58,21 @@ test.describe("responsive and accessibility matrix", () => {
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
   }
 
+  async function openClientRoute(page: Page, route: string, theme: Theme) {
+    if (!page.url().startsWith(stack.webUrl)) {
+      await page.goto(`${stack.webUrl}${route}`, { waitUntil: "domcontentloaded" });
+    } else if (new URL(page.url()).pathname !== route) {
+      await page.evaluate((nextRoute) => {
+        window.history.pushState({}, "", nextRoute);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      }, route);
+    }
+    await expect(page).toHaveURL(`${stack.webUrl}${route}`);
+    await expect(page.getByRole("main")).toBeVisible();
+    await expect(page.locator("main h1").first()).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+  }
+
   async function attachAxe(page: Page, testInfo: TestInfo, target: string) {
     const results = await new AxeBuilder({ page }).analyze();
     const sorted = {
@@ -355,7 +370,7 @@ test.describe("responsive and accessibility matrix", () => {
       const page = await context.newPage();
       try {
         for (const [name, route] of coreRoutes) {
-          await openRoute(page, route, "light");
+          await openClientRoute(page, route, "light");
           await assertUsableAtWidth(page, `${name} ${route}`, width);
         }
 
@@ -366,7 +381,7 @@ test.describe("responsive and accessibility matrix", () => {
         // (wheel) scrolling reach content past the right edge — the pre-fix
         // 760px block widened .nav with flex:none so the rail clipped it with
         // overflow:hidden and the Settings item sat unreachable off-viewport.
-        await openRoute(page, "/", "light");
+        await openClientRoute(page, "/", "light");
         const rail = page.locator(".rail");
         await expect(rail).toHaveCSS("flex-direction", "row");
         const nav = page.locator(".nav");
@@ -424,13 +439,13 @@ test.describe("responsive and accessibility matrix", () => {
         // Map selected state at width. The graph node and the directory
         // button share the "postgres, healthy" accessible name, so target
         // the graph node explicitly (it is in the recorded topology).
-        await openRoute(page, "/map", "light");
+        await openClientRoute(page, "/map", "light");
         await page.getByRole("group", { name: "Compose start-order map" }).getByLabel("postgres, healthy").click();
         await assertUsableAtWidth(page, "map selected state", width);
         await page.getByRole("button", { name: /Clear postgres service selection/ }).click();
 
         // Runtime selected and unselected states at width.
-        await openRoute(page, "/runtime", "light");
+        await openClientRoute(page, "/runtime", "light");
         const runtimeNode = page.locator("button.runtime-node-btn").first();
         await runtimeNode.click();
         await assertUsableAtWidth(page, "runtime selected state", width);
@@ -438,34 +453,34 @@ test.describe("responsive and accessibility matrix", () => {
         await assertUsableAtWidth(page, "runtime unselected state", width);
 
         // Stateful detail/config states.
-        await openRoute(page, "/services/postgres", "light");
+        await openClientRoute(page, "/services/postgres", "light");
         await page.getByRole("tab", { name: "Configuration" }).click();
         await page.getByRole("button", { name: "Show service internals" }).click();
         await assertUsableAtWidth(page, "service configuration internals expanded", width);
+        await page.getByRole("button", { name: "Hide service internals" }).click();
 
         // Every ServiceDetail tab is a mandated stateful cell at BOTH widths.
         for (const tabName of ["Overview", "Dependencies", "Resources", "Logs", "Configuration"]) {
-          await openRoute(page, "/services/postgres", "light");
           await page.getByRole("tab", { name: tabName }).click();
           await assertUsableAtWidth(page, `service tab ${tabName.toLowerCase()}`, width);
         }
 
         // Every detail disclosure expanded is a mandated stateful cell.
         for (const route of ["/networks/application", "/volumes/postgres_data", "/images/python%3A3.11-slim"]) {
-          await openRoute(page, route, "light");
+          await openClientRoute(page, route, "light");
           const disclosure = page.locator("[aria-controls]").first();
           await disclosure.click();
           await expect(disclosure).toHaveAttribute("aria-expanded", "true");
           await assertUsableAtWidth(page, `${route} disclosure expanded`, width);
         }
 
-        await openRoute(page, "/logs", "light");
+        await openClientRoute(page, "/logs", "light");
         await assertUsableAtWidth(page, "logs", width);
-        await openRoute(page, "/compose", "light");
+        await openClientRoute(page, "/compose", "light");
         await assertUsableAtWidth(page, "compose", width);
-        await openRoute(page, "/diagnostics", "light");
+        await openClientRoute(page, "/diagnostics", "light");
         await assertUsableAtWidth(page, "diagnostics", width);
-        await openRoute(page, "/settings", "light");
+        await openClientRoute(page, "/settings", "light");
         await assertUsableAtWidth(page, "settings", width);
       } finally {
         await context.close();
@@ -660,18 +675,19 @@ test.describe("responsive and accessibility matrix", () => {
       // The SSE stream drives refresh ticks that would ABORT the delayed
       // snapshot fetch before it settles (each tick restarts the clock), so
       // the stream is stalled for the duration of both scenarios.
-      void page.route("**/api/events/stream*", (route) => route.abort());
+      await page.route("**/api/events/stream*", (route) => route.abort());
       await page.route("**/api/runtime/map", async (route) => {
         const response = await route.fetch();
         const body = await response.json() as Record<string, unknown>;
         await route.fulfill({ response, json: { ...body, modelRevision: "a11y-delayed-model" } });
       });
-      return page.route("**/api/snapshot", async (route) => {
+      await page.route("**/api/snapshot", async (route) => {
         await new Promise((resolve) => setTimeout(resolve, milliseconds));
         const response = await route.fetch();
         const body = await response.json() as Record<string, unknown>;
         await route.fulfill({ response, json: { ...body, modelRevision: "a11y-delayed-model" } });
       });
+      return () => page.unrouteAll({ behavior: "wait" });
     };
     const contextWithMapDefault = async () => {
       const context = await browser.newContext({ colorScheme: "dark" });
@@ -688,11 +704,12 @@ test.describe("responsive and accessibility matrix", () => {
     {
       const context = await contextWithMapDefault();
       const page = await context.newPage();
+      const removeDelayedRoutes = await delaySnapshot(page, 5_500);
       try {
-        await delaySnapshot(page, 5_500);
         await page.goto(stack.webUrl, { waitUntil: "domcontentloaded" });
-        await expect(page.getByRole("heading", { name: "Service Map" })).toBeFocused();
+        await expect(page.getByRole("heading", { name: "Service Map" })).toBeFocused({ timeout: 10_000 });
       } finally {
+        await removeDelayedRoutes();
         await context.close();
       }
     }
@@ -702,8 +719,8 @@ test.describe("responsive and accessibility matrix", () => {
     {
       const context = await contextWithMapDefault();
       const page = await context.newPage();
+      const removeDelayedRoutes = await delaySnapshot(page, 1_500);
       try {
-        await delaySnapshot(page, 1_500);
         await page.goto(stack.webUrl, { waitUntil: "domcontentloaded" });
         // The heading must still be pending (snapshot delayed)…
         await expect(page.getByRole("heading", { name: "Service Map" })).toHaveCount(0);
@@ -716,6 +733,7 @@ test.describe("responsive and accessibility matrix", () => {
         await expect(page.getByRole("heading", { name: "Service Map" })).toBeVisible();
         await expect(page.getByRole("link", { name: "Skip to main content" })).toBeFocused();
       } finally {
+        await removeDelayedRoutes();
         await context.close();
       }
     }

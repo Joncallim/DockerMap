@@ -31,11 +31,12 @@ services:
       # This container has its own PID namespace; never infer host collectors
       # from incidental markers such as /.dockerenv.
       DOCKERMAP_PID_NAMESPACE: "restricted"
-    networks: [dockermap-api]
+    # Keep daemon traffic on the isolated API plane while giving Docker's port
+    # publisher a routable bridge for the loopback-bound frontend port.
+    networks: [dockermap-api, dockermap-ingress]
     restart: unless-stopped
 
   collector:
-    build: .
     image: dockermap:local
     entrypoint: ["/usr/local/bin/dockermap-daemon"]
     user: "10003:10003"
@@ -63,7 +64,6 @@ services:
       retries: 3
 
   docker-read-gateway:
-    build: .
     image: dockermap:local
     entrypoint: ["/usr/local/bin/dockermap-docker-gateway"]
     user: "10002:10003"
@@ -95,6 +95,9 @@ networks:
       config:
         # Explicitly override this with an unused private /24 on crowded hosts.
         - subnet: ${DOCKERMAP_INTERNAL_SUBNET:-10.254.251.0/24}
+  dockermap-ingress:
+    driver: bridge
+    internal: false
 
 volumes:
   docker-read-socket:
