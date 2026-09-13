@@ -64,7 +64,9 @@ Requirements:
 - Node.js 22.x LTS
 - npm
 - Rust, using the version pinned in [rust-toolchain.toml](rust-toolchain.toml)
-- Docker, if you want live Docker data instead of fallback demo data
+- Docker for live runtime data. Without Docker, the API is unavailable by default;
+  synthetic mock fallback requires the explicit test/internal opt-in
+  `DOCKERMAP_ALLOW_MOCK=true` (separate from the browser's Demo Mode).
 
 Install and start the local stack:
 
