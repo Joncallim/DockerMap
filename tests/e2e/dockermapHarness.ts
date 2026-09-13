@@ -343,21 +343,26 @@ export async function startTokenConfiguredCompose(overrides: NodeJS.ProcessEnv =
   const docker = detectDockerCommand();
   if (!docker) throw new SkipLiveDockerError("Docker is not reachable by the current user or sudo -n docker.");
 
+  const env = validatedComposeEnvironment({
+    DOCKERMAP_DAEMON_TOKEN: randomBytes(32).toString("hex"),
+    DOCKER_GID: String(statSync("/var/run/docker.sock").gid),
+    ...overrides
+  });
   const projectName = `dockermap-compose-e2e-${Date.now().toString(36)}`;
   const fixtureDir = mkdtempSync(join(tmpdir(), "dockermap-compose-e2e-"));
   const overrideFile = join(fixtureDir, "network-override.yaml");
+  const envFile = join(fixtureDir, "compose.env");
   writeFileSync(
     overrideFile,
     `services:\n  dockermap:\n    ports: []\nnetworks:\n  dockermap-api:\n    ipam:\n      config:\n        - subnet: ${unusedFixtureSubnet(docker)}\n`,
   );
-  const env = {
-    ...process.env,
-    DOCKERMAP_DAEMON_TOKEN: randomBytes(32).toString("hex"),
-    DOCKER_GID: String(statSync("/var/run/docker.sock").gid),
-    ...overrides
-  };
+  writeFileSync(envFile, composeEnvironmentFile(env), { encoding: "utf8", mode: 0o600, flag: "wx" });
+  const composeArgs = ["compose", "--env-file", envFile, "-p", projectName, "-f", "docker-compose.yml", "-f", overrideFile];
+  const commandEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !composeEnvironmentKeys.has(key))
+  );
   try {
-    runDocker(docker, ["compose", "-p", projectName, "-f", "docker-compose.yml", "-f", overrideFile, "up", "--detach", "--build"], repoRoot, env);
+    runDocker(docker, [...composeArgs, "up", "--detach", "--build"], repoRoot, commandEnv, 300_000);
     const container = `${projectName}-dockermap-1`;
     let health = "";
     await waitForCondition(async () => {
@@ -367,18 +372,85 @@ export async function startTokenConfiguredCompose(overrides: NodeJS.ProcessEnv =
     return {
       health,
       stop: async () => {
-        runDocker(docker, ["compose", "-p", projectName, "-f", "docker-compose.yml", "-f", overrideFile, "down", "--volumes", "--remove-orphans"], repoRoot, env);
-        rmSync(fixtureDir, { recursive: true, force: true });
+        try {
+          cleanupTokenConfiguredCompose(docker, composeArgs, projectName, commandEnv);
+        } finally {
+          rmSync(fixtureDir, { recursive: true, force: true });
+        }
       }
     };
   } catch (error) {
+    let cleanupFailure = "";
     try {
-      runDocker(docker, ["compose", "-p", projectName, "-f", "docker-compose.yml", "-f", overrideFile, "down", "--volumes", "--remove-orphans"], repoRoot, env);
+      cleanupTokenConfiguredCompose(docker, composeArgs, projectName, commandEnv);
     } catch {
-      // Preserve the original failure.
+      cleanupFailure = "\nCompose cleanup incomplete: project resources remain or could not be verified";
     }
     rmSync(fixtureDir, { recursive: true, force: true });
-    throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message}${cleanupFailure}`);
+  }
+}
+
+const composeEnvironmentKeys = new Set([
+  "DOCKERMAP_DAEMON_TOKEN",
+  "DOCKER_GID",
+  "DOCKERMAP_API_TOKEN",
+  "DOCKERMAP_AUTH_REQUIRED",
+  "DOCKERMAP_AUTH_USER_HEADER"
+]);
+
+function validatedComposeEnvironment(environment: NodeJS.ProcessEnv): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(environment)) {
+    if (!composeEnvironmentKeys.has(key)) {
+      throw new Error(`Unsupported production Compose E2E environment key: ${key}`);
+    }
+    if (value === undefined) continue;
+    if (/[\0\r\n\\']/u.test(value)) {
+      throw new Error(`Production Compose E2E environment value for ${key} contains a forbidden control or quoting character`);
+    }
+    result[key] = value;
+  }
+  return result;
+}
+
+function composeEnvironmentFile(environment: Record<string, string>): string {
+  return Object.entries(environment)
+    .map(([key, value]) => `${key}='${value}'`)
+    .join("\n") + "\n";
+}
+
+function cleanupTokenConfiguredCompose(
+  docker: string[],
+  composeArgs: string[],
+  projectName: string,
+  commandEnv: NodeJS.ProcessEnv,
+) {
+  let downFailed = false;
+  try {
+    runDocker(docker, [...composeArgs, "down", "--volumes", "--remove-orphans"], repoRoot, commandEnv);
+  } catch {
+    downFailed = true;
+  }
+
+  const resourceKinds = [
+    ["ps", "-aq"],
+    ["network", "ls", "-q"],
+    ["volume", "ls", "-q"]
+  ];
+  let remainingKinds = 0;
+  try {
+    for (const args of resourceKinds) {
+      if (dockerOutput(docker, [...args, "--filter", `label=com.docker.compose.project=${projectName}`], repoRoot).trim()) {
+        remainingKinds += 1;
+      }
+    }
+  } catch {
+    throw new Error("Production Compose E2E cleanup could not verify project resource removal");
+  }
+  if (remainingKinds > 0) {
+    throw new Error(`Production Compose E2E cleanup left ${remainingKinds} project resource kind(s)${downFailed ? " after the down command failed" : ""}`);
   }
 }
 
