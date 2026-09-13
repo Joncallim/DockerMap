@@ -63,6 +63,7 @@ pub(crate) fn daemon_router(state: AppState, daemon_token: DaemonAuthToken) -> R
         .route("/daemon/graph", get(get_graph))
         .route("/daemon/runtime/map", get(get_runtime_map))
         .route("/daemon/findings", get(get_findings))
+        .route("/daemon/history", get(get_observed_history))
         .route("/daemon/containers", get(get_containers))
         .route("/daemon/containers/{name}", get(get_container))
         .route("/daemon/images", get(get_images))
@@ -125,6 +126,13 @@ fn publish_findings(findings: &FindingsResponse, mode: &RuntimeMode) -> Findings
     let mut published = findings.clone();
     published.source = Some(mode.clone());
     published
+}
+
+async fn get_observed_history(
+    State(state): State<AppState>,
+) -> Json<dockermap_core::ObservedChangeHistoryResponse> {
+    let cache = state.cache.read().await;
+    Json(cache.observed_history_response())
 }
 
 async fn get_containers(State(state): State<AppState>) -> Json<ContainersResponse> {

@@ -255,6 +255,7 @@ Use this after larger changes or before a demo:
    GET http://127.0.0.1:4000/api/health
    GET http://127.0.0.1:4000/api/snapshot
    GET http://127.0.0.1:4000/api/runtime/map
+   GET http://127.0.0.1:4000/api/history
    GET http://127.0.0.1:4000/api/compose/scan?file=tests/fixtures/compose/path-mapping.compose.yaml
    GET http://127.0.0.1:4000/api/compose/graph?file=tests/fixtures/compose/path-mapping.compose.yaml
    GET http://127.0.0.1:4000/api/compose/edit-plan?file=tests/fixtures/compose/path-mapping.compose.yaml&service=api&mount=0&source=./app

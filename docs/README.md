@@ -45,6 +45,8 @@ Working now:
 - Versioned API routes and an OpenAPI document at `/api/openapi.json`.
 - Evidence-kind/provenance gating so sample, unavailable, inferred, and observed
   data cannot be presented as equivalent live host truth.
+- Bounded, daemon-lifetime observed Docker inventory deltas exposed through the
+  authenticated history API and the identity-free Change Center.
 
 Still in progress:
 
@@ -60,8 +62,10 @@ The practical direction is:
   closure of the implemented #61/#62 work.
 - In progress: finalize the parity/acceptance evidence for backend decomposition
   (#64) and canonical contract authority (#65).
-- Next: provider freshness (#66), the Hearth design-system adoption (#67), then
-  provenance (#68), findings (#69), and observed history/telemetry (#70).
+- Current implemented baseline includes provider freshness (#66), Hearth (#67),
+  provenance (#68), findings (#69), and bounded snapshot history from #70.
+  Continuous Docker events, temporal findings, and resource telemetry remain
+  future #70 work.
 - Later: add safe edit mode only after validation, backups, confirmation, and
   rollback are designed and tested.
 

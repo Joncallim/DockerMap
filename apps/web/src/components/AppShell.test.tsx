@@ -52,7 +52,8 @@ const mocks = vi.hoisted(() => {
     settings: { demoMode: false },
     heartbeat: { health: null as HealthResponse | null, tick: 0 },
     model: { model: null, modelProvenance: null, loading: false, error: null },
-    api: { data: null, error: null, loading: false, generation: 0, provenance: null }
+    api: { data: null, error: null, loading: false, generation: 0, provenance: null },
+    apiPaths: [] as string[]
   };
 });
 
@@ -73,13 +74,14 @@ vi.mock("../hooks/useSystemModel", () => ({
 }));
 
 vi.mock("../hooks/useApiResource", () => ({
-  useApiResource: () => mocks.api
+  useApiResource: (path: string) => { mocks.apiPaths.push(path); return mocks.api; }
 }));
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 beforeEach(() => {
+  mocks.apiPaths.length = 0;
   // jsdom does not implement window.matchMedia; AppShell's theme effect needs it.
   window.matchMedia = vi.fn((query: string) => ({
     matches: false,
@@ -135,6 +137,12 @@ const pillText = (hostEl: HTMLDivElement) => hostEl.querySelector(".conn-mode")!
 const connDot = (hostEl: HTMLDivElement) => hostEl.querySelector<HTMLElement>(".conn .state-dot")!;
 
 describe("AppShell mode-pill and connection-dot wiring", () => {
+  it("requests observed history on the heartbeat-backed shell path", () => {
+    mocks.settings.demoMode = false;
+    mocks.heartbeat.health = liveHealth;
+    renderAppShell();
+    expect(mocks.apiPaths).toContain("/api/history");
+  });
   it("(a) demo mode renders the Demo pill and a neutral NON-pulsing dot even with dockerReachable: true", () => {
     mocks.settings.demoMode = true;
     mocks.heartbeat.health = demoHealth; // dockerReachable: true must NOT drive the dot (U5)

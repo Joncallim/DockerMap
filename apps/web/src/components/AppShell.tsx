@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import type { AuthWhoamiResponse } from "@dockermap/contracts";
+import type { AuthWhoamiResponse, ObservedChangeHistoryResponse } from "@dockermap/contracts";
 import { useDaemonHeartbeat } from "../hooks/useDaemonHeartbeat";
 import { useSystemModel } from "../hooks/useSystemModel";
 import { useSettings } from "../hooks/useSettings";
@@ -141,6 +141,7 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
     healthMode: health?.mode ?? null
   });
   const { model, atlas, findings, modelProvenance, loading, error } = useSystemModel(tick, evidenceMode, true);
+  const historyResource = useApiResource<ObservedChangeHistoryResponse>("/api/history", tick);
   const [commandOpen, setCommandOpen] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
 
@@ -192,6 +193,7 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
     error,
     health,
     findings,
+    observedHistory: historyResource.data,
     tick,
     evidenceMode,
     openCommand: () => setCommandOpen(true)
