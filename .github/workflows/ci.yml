@@ -262,7 +262,14 @@ jobs:
       - name: Smoke-test runtime image
         run: |
           set -euo pipefail
-          docker run -d --name dockermap-smoke -p 127.0.0.1:3999:3233 dockermap:ci
+          # This packaging smoke has no Docker socket by design. Opt into the
+          # synthetic fixture explicitly; supported deployment profiles remain
+          # fail-closed when their live authority is unavailable.
+          docker run -d --name dockermap-smoke \
+            --env DOCKERMAP_FORCE_MOCK=true \
+            --env DOCKERMAP_ALLOW_MOCK=true \
+            -p 127.0.0.1:3999:3233 \
+            dockermap:ci
           for attempt in {1..60}; do
             if curl --fail --silent --show-error http://127.0.0.1:3999/api/health; then
               break

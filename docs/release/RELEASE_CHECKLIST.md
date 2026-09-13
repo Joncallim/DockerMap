@@ -1,192 +1,122 @@
-# DockerMap Release Checklist
+# Private-alpha release checklist
 
-This checklist is the release gate for the first private review release. DockerMap is
-still read-first, so release readiness is judged by whether it can inspect a host without
-changing files, containers, services, or Docker state.
+This checklist decides whether one exact DockerMap commit is ready for
+maintainer-authorized `v0.1.0-alpha.2` tagging. It does not authorize the tag,
+create a release, or publish an image. Release readiness means the Docker-only
+profile can inspect its bounded host surface without changing inspected Docker
+state and can be installed, recovered, rolled back, removed, and reinstalled as
+documented.
 
-## Minimum Tasks For First Private Release
+## 1. Freeze the candidate
 
-These tasks must be complete before tagging `v0.1.0-alpha`.
+- [ ] Record the exact 40-character `main` SHA.
+- [ ] Confirm the worktree and generated contracts are clean at that SHA.
+- [ ] Confirm `VERSION` and the proposed tag agree.
+- [ ] Record known limitations without presenting deferred work as shipped.
+- [ ] Confirm the advertised surface is Docker-only; native/full-host and the
+  single-container compatibility profile remain unsupported.
 
-- [x] Normalize local check commands in `package.json`.
-- [x] Run JavaScript typecheck, build, and workspace tests from CI.
-- [x] Run Rust format, lint, and full workspace tests from CI.
-- [x] Add API security tests for bearer auth, CORS, query limits, startup config, and error detail exposure.
-- [x] Add fixture-driven Compose validation tests for malformed files and blocked edit plans.
-- [x] Add non-live Playwright smoke coverage for the primary GUI pages.
-- [x] Add Playwright smoke coverage to CI.
-- [x] Keep provider commands fixed and read-only for systemd, tmux, package, Python/native-process, reverse-proxy, DNS, and external-API collectors.
-  Python/native-process collectors shipped via #32/#38/#39 + #33; provider commands
-  remain fixed read-only invocations (see `docs/security/THREAT_MODEL.md`).
-- [x] Bound provider filesystem scanning to documented paths, explicit request targets, and hard caps.
-- [x] Make package advisory, registry, or other external-network behavior opt-in or document it explicitly in release notes and deployment docs.
-  Current runtime docs state that package registry/advisory, DNS-provider API,
-  Cloudflare API, and generic external-API lookups are disabled or not implemented.
-  Tailscale/Headscale delegated CLI behavior is documented as a release
-  decision; the browser uses a local/system font stack and makes no hosted-font
-  request.
-- [x] Verify package, service, process, unit, proxy, and DNS inspection does not leak env vars, secrets, credentials, or inline auth URLs.
-  Fixture evidence (`npm run test:rust:daemon`) covers current provider outputs
-  including Python/native-process-shaped sentinels; config-content collectors
-  (reverse-proxy/DNS raw config parsing) remain future work.
-- [x] Keep provider security checks runnable without GUI availability or host-specific daemons beyond the test fixture or stub daemon.
-- [x] Run `npm run test:live-docker` on a Docker-capable Linux host and record the result.
-  Recorded on Hearth for DockerMap `fb30b374d86102f8420a1815ba0c30b0b1e4c012`;
-  the labelled fixture now runs through the filtered Docker Read Gateway and
-  uses inspected, distinct IPAM subnets. Host/tool versions are in
-  [the alpha baseline](ALPHA_BASELINE.md).
-- [x] Run `npm run build:deploy` on the release target or a clean Linux build host.
-  Recorded on Hearth for the authority-isolated deployment baseline; see
-  [the alpha baseline](ALPHA_BASELINE.md).
-- [x] Deploy behind the documented reverse proxy with a browser-facing
-  authentication boundary. Live `dockermap.jo-nas.com` uses Caddy plus DockerMap
-  bearer-session protection; it rejects anonymous API access and client-supplied
-  identity headers.
-- [x] Run `scripts/smoke-deploy.sh` against `http://127.0.0.1:4000` on the host.
-  The #16 evidence record includes a passing local loopback smoke at
-  `17c7dd1ef0e8bc53b33a7367eef4283e830053a8`: it checked unauthenticated
-  denial, authenticated protected routes, and an SSE snapshot without retaining
-  the test token. The later private-review certification at
-  `ca66725a0391d4533d162a0887a23027ba66525f` repeated the protected proxy
-  checks after cutover.
-- [x] Run `scripts/smoke-deploy.sh` against the public review URL through the reverse proxy.
-  Recorded on Hearth on 2026-08-29 without retaining tokens. It verified anonymous
-  browser API denial and authenticated browser API access.
-- [x] Confirm direct remote access to `127.0.0.1:4100` is impossible from another machine.
-  The final #16 certification records that the collector has no published host
-  port and the review host has no TCP listener on `4100`; the private-review
-  smoke also passed after collector recovery. This is deployment evidence for
-  the bearer-session/Caddy review path, not a general claim about an operator
-  who deliberately enables remote-daemon mode.
-- [x] Confirm `/api/snapshot` returns `401` without a browser session or bearer
-  token. The public entrypoint also rejects client-supplied `X-Authentik-*`
-  identity headers; the daemon has no public listener.
-- [x] Confirm `/api/health`, `/api/snapshot`, `/api/runtime/map`, `/api/compose/scan`, and `/api/events/stream` work through the proxy under the browser-session boundary.
-- [ ] Update `README.md`, `docs/deployment/DEPLOYMENT.md`, `docs/deployment/REVERSE_PROXY.md`, `docs/testing/TESTING_PLAN.md`, and `docs/security/THREAT_MODEL.md` for any release-time behavior changes.
-- [ ] Create release notes with known limitations and the exact commit SHA.
-  The non-tagging baseline and known limitations are recorded in
-  [ALPHA_BASELINE.md](ALPHA_BASELINE.md). Final release notes must be refreshed
-  for the exact tagged candidate. #16's reverse-proxy and private-daemon gate
-  has completed evidence; #63 still requires clean supported-host install,
-  rollback/cleanup, and host-reboot recovery evidence.
+Any fix after this point creates a new candidate SHA and restarts this
+checklist.
 
-## Completed #16 boundary evidence; remaining #63 recovery evidence
+## 2. Canonical repository and supply-chain gates
 
-The current private-review deployment has completed #16 resolution evidence at
-DockerMap commit `ca66725a0391d4533d162a0887a23027ba66525f`: Caddy fronts the
-browser API, bearer-session protection denies anonymous and spoofed-identity
-requests, authenticated API and SSE checks pass, and the collector has no public
-listener. That evidence satisfies the reverse-proxy boundary gate and does not
-require Authentik or an interactive SSO flow.
+Run against the exact candidate and retain complete command results:
 
-It does **not** satisfy #63's separate release-recovery gate. Before promoting a
-new alpha candidate, capture clean supported-host installation, documented
-rollback/cleanup, and an actual host-reboot recovery result for each advertised
-deployment profile. Do not treat a container recreation or a service-only
-restart as host-reboot evidence.
+- [ ] `npm run check`
+- [ ] `npm run test:e2e`
+- [ ] `npm run test:e2e:a11y`
+- [ ] `npm run test:live-docker`
+- [ ] `npm run build:deploy`
+- [ ] production-image E2E
+- [ ] `npm audit --omit=dev`
+- [ ] RustSec audit with the repository-pinned audit command
+- [ ] Docker image build and Syft SPDX JSON SBOM
+- [ ] complete Grype report plus the remediable high/critical gating report
+- [ ] GitGuardian/security checks
 
-## Docker authority isolation (#62)
+The tag workflow reruns these release gates, creates checksums and package/image
+SBOMs, and **retains candidate artifacts for maintainer review** for 30 days. It
+**does not publish prerelease assets automatically** and cannot create a GitHub
+Release.
 
-- [x] Docker-only deployment keeps the raw Docker socket exclusively in the
-  Docker Read Gateway. The frontend and collector receive neither that socket
-  nor a direct Docker endpoint; the collector uses only the filtered Unix
-  socket.
-- [x] The gateway's fixed read allowlist, bounded log query contract, and
-  conditional label-filter contract are recorded in
-  [`DOCKER_AUTHORITY_BOUNDARY.md`](../architecture/DOCKER_AUTHORITY_BOUNDARY.md)
-  and covered by deny-before-upstream tests.
-- [x] Hearth's DockerMap-only rollout records non-root identities, dropped
-  capabilities, read-only filesystems, mount and network separation, source
-  coherence, gateway denial, and service restart recovery in #62 resolution
-  evidence. The independent browser authentication choice is recorded by #16/#63
-  and is not evidence for this authority boundary.
+## 3. Disposable-guest install and boundary checks
 
-## Follow-up evidence and product work
+Use HEARTH only as the hypervisor. Never certify or reboot HEARTH itself. In a
+new disposable supported guest, execute
+[the Docker-only deployment procedure](../deployment/DOCKER.md) without
+undocumented corrections.
 
-- [x] Add provider-specific redaction fixtures for systemd, tmux, npm/package metadata,
-  native process inspection, reverse-proxy config, and DNS collectors.
-  Current coverage is systemd, tmux, npm/package, native-process-shaped output,
-  reverse-proxy marker, and DNS marker fixture coverage. Native process, reverse-proxy
-  config-content, and DNS config-content collectors remain future implementation work.
-- [x] Decide and document package advisory, registry, or other external-network behavior:
-  keep it disabled/opt-in by default, and record the operator-facing setting in release
-  notes and deployment docs.
-  Documented current behavior: no runtime package registry/advisory/external-API lookup,
-  build/release tooling may contact registries, Tailscale/Headscale use installed CLI
-  configuration, and the browser makes no hosted-font request.
-- [x] Capture live-Docker evidence on the release host with `npm run test:live-docker`,
-  including Docker and Compose versions. The recorded Docker/Compose versions are in
-  [the alpha baseline](ALPHA_BASELINE.md); every later candidate must rerun it.
-- [x] Capture reverse-proxy smoke evidence on the release host: bearer-session
-  browser access, SSE streaming, anonymous denial, spoofed-identity-header denial,
-  and no public daemon port were recorded on 2026-08-29.
-- [x] Plan Python and native-process providers as the next backend provider peers after
-  the current Rust runtime model and contracts settle.
-  The planning doc is `docs/planning/PYTHON_AND_PROCESS_PROVIDERS.md`. Both providers
-  are implemented (#32/#38/#39 + #33); remaining enrichment is tracked in the roadmap.
+- [ ] Record guest OS, kernel, architecture, Docker, Compose, Git, and Chromium
+  versions.
+- [ ] Check out the exact candidate SHA detached from any moving branch.
+- [ ] Create separate API and daemon tokens in the protected external env file.
+- [ ] Build and start the fixed `dockermap-alpha2` Compose project.
+- [ ] Confirm all three DockerMap components report healthy, not merely
+  running.
+- [ ] Confirm anonymous `/api/health`, `/api/snapshot`, `/api/history`, and
+  `/api/findings` access is denied.
+- [ ] Confirm authenticated health, snapshot, runtime map, Compose scan,
+  history, findings, and SSE checks pass.
+- [ ] Confirm history is the closed, bounded daemon-lifetime snapshot contract;
+  do not describe it as persistent Docker events or causality.
+- [ ] Confirm the collector has no host-published port and only the gateway has
+  the raw Docker socket.
+- [ ] Confirm unrelated Docker objects are excluded from labelled live-Docker
+  acceptance evidence.
 
-## Second Round Before Wider Beta
+Never retain a credential, session cookie, shell trace, or persistent browser
+profile as evidence.
 
-These tasks are not required for the first private review release, but should be closed
-before a broader beta.
+## 4. Recovery, rollback, and clean state
 
-- [x] Generate daemon TypeScript declarations from Rust models and fail CI on
-  schema/declaration drift. Its composed schema and contract tests validate
-  Node envelopes, SSE events, bounded requests, fixtures, and route/OpenAPI
-  associations. #65 remains open for final epic acceptance, not because the
-  generated pipeline is absent.
-- [ ] Add reverse-proxy integration tests for bearer-token injection and SSE streaming.
-  Tracked as part of epic #63 (v0.1 alpha certification).
-- [x] Add OpenAPI or equivalent machine-readable route documentation for read-only endpoints.
-  `/api/openapi.json` is generated as OpenAPI 3.1.1; its structural and
-  route/schema completeness checks are part of `npm run check:contracts`.
-- [x] Extract route, configuration, Docker collector, host-provider, and core
-  boundaries from the former monolith. The cumulative behavior-parity ledger is
-  [`BACKEND_REFACTOR_PARITY.md`](../architecture/BACKEND_REFACTOR_PARITY.md);
-  #64 remains open for its final parity/acceptance audit.
-- [ ] Add parser-level tests for systemd, cron, PM2, tmux, Tailscale, Headscale, reverse-proxy, DNS, and listener provider output fixtures.
-  Tracked in the roadmap (Runtime Providers).
-- [ ] Add provider-fixture redaction tests for npm/package metadata, Python apps, native processes, and service/unit inspection before enabling those routes by default.
-  Python/native-process routes are enabled with redaction fixtures shipped; remaining
-  config-content collector work is tracked in the roadmap.
-- [ ] Add browser tests for error states, token/proxy behavior, logs filtering, Compose edit-plan display, and responsive navigation.
-  Tracked as part of epic #63 (v0.1 alpha certification).
-- [ ] Add a clean-host install test for systemd units and Nginx/Caddy proxy config.
-- [x] Add tag-triggered release automation for deploy artifacts and SHA-256
-  checksums. [`.github/workflows/release.yml`](../../.github/workflows/release.yml)
-  validates the tag/version, builds, packages, checksums, and retains candidate
-  artifacts for maintainer review. It does not publish prerelease assets
-  automatically.
-- [x] Add a documented support policy for Linux distro, Node, Rust, Docker, and browser versions.
-  See [SUPPORT_POLICY.md](SUPPORT_POLICY.md); each release must still rerun the
-  relevant gates against its exact candidate.
-- [ ] Add write-mode design gates before any endpoint can mutate files or Docker state.
-  Design gates are documented in the roadmap (Safe Write Mode section).
+- [ ] Restart all three DockerMap components and repeat smoke/boundary checks.
+- [ ] Record the guest `boot_id`, perform an actual guest reboot, prove the
+  `boot_id` changed, and repeat the checks.
+- [ ] Confirm DockerMap recovered through Docker's boot startup and
+  `unless-stopped` policy without manually recreating the project.
+- [ ] Preserve the working image identity, install an upgrade candidate, restore
+  the preserved image with `--no-build`, and rerun acceptance checks.
+- [ ] Remove the named Compose project with volumes and orphans.
+- [ ] Prove no DockerMap-labelled containers, networks, or volumes remain and
+  the frontend no longer listens.
+- [ ] Remove only the verified DockerMap checkout, protected credential file,
+  boot marker, and known local images.
+- [ ] Reinstall the same exact SHA from a new clone with new credentials and
+  rerun the install checks.
 
-## Release Evidence To Capture
+A service restart, container recreation, or hypervisor uptime is not guest
+reboot evidence.
 
-Store this evidence in release notes or the release PR.
+## 5. Candidate security decision
 
-- Commit SHA.
-- `npm run check` result.
-- `npm run test:e2e` result.
-- `npm run test:live-docker` result, including Docker and Compose versions.
-- `npm run build:deploy` result.
-- Host OS and kernel.
-- Node, npm, Rust, Cargo, Docker, and browser versions.
-- Reverse-proxy smoke result.
-- Provider-network behavior note stating whether any package/advisory or other external API calls were enabled.
-  Current docs record no runtime package registry/advisory/external-API lookup; note the
-  Tailscale/Headscale delegated CLI caveat in release notes.
-- Provider-redaction evidence for any new systemd, tmux, package, Python/native-process, reverse-proxy, DNS, or external-API routes shipped in the release.
-  Current fixture evidence is `npm run test:rust:daemon`, covering fake systemd, tmux,
-  npm/package, native-process-shaped, reverse-proxy marker, DNS marker, diagnostic, and
-  edge-metadata secret sentinels without live host services.
-- For a candidate that includes V5 tmux provenance, record the focused core,
-  daemon, contract/API, and browser-state checks run for that exact candidate.
-  This evidence validates the constrained local-session listing fact, its
-  fail-closed lifecycle, and producer/UI suppression of raw session names, IDs,
-  and metadata; it is not a claim of live-host session availability or of session
-  attachment, activity, process ownership, health, reachability, persistence,
-  or completeness.
-- Known limitations and skipped tests.
+- [ ] Retain the complete Grype SARIF report under the exact candidate artifact.
+- [ ] Confirm the fixed/remediable high/critical gate is green.
+- [ ] Copy the candidate record from
+  [security finding triage](SECURITY_FINDING_TRIAGE.md).
+- [ ] For every unfixed high/critical finding, record exposure, compensating
+  controls, owner, review date, and an explicit named-maintainer `ACCEPT` or
+  `DEFER` decision.
+- [ ] Treat any missing owner, assessment, report, or decision as `DEFER`.
+
+`DEFER` blocks publication. Scanner silence or a green remediable-finding gate
+is not an implicit acceptance of the complete report.
+
+## 6. Final maintainer gate
+
+- [ ] Update [the alpha baseline](ALPHA_BASELINE.md) with exact-candidate facts
+  and no secrets.
+- [ ] Prepare release notes with exact SHA, supported profile, checksums, SBOM,
+  scan decision, limitations, and skipped tests.
+- [ ] Obtain explicit maintainer authorization to create the tag or prerelease.
+
+Do not tag or publish without that authorization.
+
+## Historical evidence
+
+Earlier private-review work proved useful boundaries on Hearth, including the
+filtered Docker gateway, bearer-session anonymous denial, private collector,
+SSE behavior, component restart recovery, and isolated live-Docker fixtures.
+Those alpha.1-era records remain in [the alpha baseline](ALPHA_BASELINE.md).
+They informed this checklist but do not satisfy alpha.2's exact-SHA clean-host,
+real guest reboot, rollback, removal, reinstall, or current scan decisions.

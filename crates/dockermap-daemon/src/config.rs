@@ -30,6 +30,10 @@ pub(crate) fn read_daemon_token_env() -> DaemonAuthToken {
     DaemonAuthToken(token.map(Arc::<str>::from))
 }
 
+pub(crate) fn read_allow_mock_env() -> bool {
+    std::env::var("DOCKERMAP_ALLOW_MOCK").ok().as_deref() == Some("true")
+}
+
 fn read_optional_token_env(name: &str) -> Option<String> {
     match std::env::var(name) {
         Ok(value) => {

@@ -1,7 +1,15 @@
-# DockerMap Draft Deployment
+# Native/full-host deployment reference
 
-This is a practical checklist for a private review deployment on one Linux host. It is
-not a public production hardening guide yet.
+This document explains the native systemd layout for maintainers evaluating
+host-provider behavior. It is not part of the `v0.1.0-alpha.2` supported or
+certified deployment surface. Use the executable
+[Docker-only private-alpha procedure](DOCKER.md) for clean install, auth,
+restart, guest reboot, rollback, uninstall, and reinstall evidence.
+
+The native profile deliberately sees more of the host and needs separate
+certification before it can become supported. The details below remain an
+implementation reference; they are not a claim that a clean native install,
+rollback, or reboot recovery has passed.
 
 ## Deployment Shape
 
@@ -18,7 +26,7 @@ the local Node API.
 ## Host Requirements
 
 - Linux host with Docker available if you want live Docker data.
-- Node.js 22 or newer.
+- Node.js 22.x LTS.
 - Rust 1.88.0 or the repo-pinned `rust-toolchain.toml`.
 - Nginx, Caddy, or another HTTPS reverse proxy.
 - A dedicated service user, for example `dockermap`.
@@ -150,7 +158,7 @@ systemd supplies and owns that runtime directory.
 | --- | --- | --- |
 | Demo | None; sample data only. | None. |
 | Docker-only (recommended) | Gateway-only raw socket; collector gets a filtered Unix socket and bounded project mount. | `DOCKERMAP_PID_NAMESPACE=restricted`; host providers unavailable. |
-| Full-host (this systemd profile) | Gateway-only raw socket; collector never joins Docker's group. | `DOCKERMAP_PID_NAMESPACE=host`; intentional access to bounded host providers and fixed read-only commands. |
+| Full-host (this systemd reference) | Gateway-only raw socket; collector never joins Docker's group. | `DOCKERMAP_PID_NAMESPACE=host`; intentional access to bounded host providers and fixed read-only commands; not supported for alpha.2. |
 
 Full-host inspection is not a claim of perfect sandboxing: it intentionally sees
 host `/proc`, fixed system locations, and selected local commands. Tailscale and
@@ -200,19 +208,31 @@ The smoke script currently verifies:
 - `/api/health` returns `200`.
 - Browser API routes return `401` without a token when `DOCKERMAP_API_TOKEN`
   is provided locally.
-- `/api/health`, `/api/snapshot`, `/api/runtime/map`, and `/api/compose/scan` return `200`
-  with the expected auth path.
+- `/api/health`, `/api/snapshot`, `/api/runtime/map`, `/api/compose/scan`, and
+  `/api/history` return `200` with the expected auth path.
 - `/api/events/stream` emits at least one `snapshot` SSE event.
 
-## Draft Deployment Definition Of Done
+The script does not currently call `/api/status` or `/api/findings`. The
+supported Docker-only procedure checks their live-source and authentication
+semantics separately; do the same for any native evaluation rather than
+claiming the smoke wrapper covered them.
+
+## Native evaluation definition of done
 
 - `dockermap-daemon` and `dockermap-api` are running under systemd.
 - The daemon is not reachable from outside the host.
 - The web UI loads over HTTPS.
-- `/api/health`, `/api/snapshot`, `/api/runtime/map`, and `/api/compose/scan` pass smoke
-  checks through the proxy.
+- `/api/health`, `/api/snapshot`, `/api/runtime/map`, `/api/compose/scan`, and
+  `/api/history` pass smoke checks through the proxy.
+- `/api/status` reports a coherent Docker source, and authenticated
+  `/api/findings` succeeds while anonymous access is denied.
 - `/api/events/stream` stays live through the proxy without buffering away the
   event stream.
 - Viewer authentication is enabled at the proxy.
 - `DOCKERMAP_API_TOKEN` is set and browser API routes reject direct unauthenticated
   requests.
+
+Meeting this list is useful evaluation evidence, but it does not expand the
+private-alpha support policy. A future native-profile certification must also
+execute clean-state removal, reinstall, rollback, and real guest-reboot recovery
+against one exact candidate SHA.

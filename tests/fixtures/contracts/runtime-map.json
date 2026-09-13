@@ -16,8 +16,7 @@
         "status": "running",
         "dependencies": [],
         "dependents": [],
-        "logs": [],
-        "events": []
+        "logs": []
       }
     }
   ],

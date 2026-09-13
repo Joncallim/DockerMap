@@ -37,7 +37,7 @@ Information reveals itself by intent across four layers. We never show everythin
 
 1. **System story** — counts, what needs attention, recent change (Home).
 2. **Relationships** — the service map, dependencies, impact radius (Service Map).
-3. **Operations** — logs, resources, configuration, images, volumes, networks.
+3. **Operations** — bounded logs, observed configuration, images, volumes, and networks.
 4. **Docker internals** — container IDs, raw image refs, port bindings. Shown only on request.
 
 ## Information Hierarchy
@@ -46,10 +46,13 @@ Always, in this order:
 
 1. **State** — healthy, warning, degraded, offline, updating, unknown.
 2. **Service name**.
-3. **Key metrics** — CPU, memory, network.
+3. **Available operational facts** — ports, dependencies, mounts, and collection state.
 4. **Metadata** — image tags, container IDs, technical detail.
 
-State dominates. Names come second. Metrics third. Metadata last.
+State dominates. Names come second. Supported operational facts come third. Metadata
+comes last. CPU, memory, and network activity are not currently collected; live and
+mock views show an explicit non-collection state and never promote demo values as
+observations.
 
 ## State System
 

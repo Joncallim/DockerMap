@@ -64,6 +64,9 @@ test("CI enforces documented Rust and container supply-chain gates", async () =>
   assert.match(workflow,
     /- name: Prepare image supply-chain evidence directory\s+run: mkdir -p artifacts/s);
   assert.match(workflow, /image-supply-chain-\$\{\{ github\.sha \}\}/);
+  assert.match(workflow,
+    /- name: Smoke-test runtime image[\s\S]*?docker run -d --name dockermap-smoke \\\s+--env DOCKERMAP_FORCE_MOCK=true \\\s+--env DOCKERMAP_ALLOW_MOCK=true \\\s+-p 127\.0\.0\.1:3999:3233 \\\s+dockermap:ci/,
+    "the socketless packaging smoke must opt into synthetic data explicitly");
 });
 
 test("tag builds retain artifacts for review and cannot publish automatically", async () => {
@@ -110,18 +113,23 @@ test("tag builds retain artifacts for review and cannot publish automatically", 
   assert.match(triage, /Maintainer decision: DEFER \| ACCEPT/);
   assert.match(triage, /UNTRIAGED \/\s*DEFERRED/);
   assert.match(triage, /zero remediable high\/critical findings/);
-  assert.match(triage, /CVE-2026-42533/,
-    "the current deferred record must retain exact unfixed high/critical CVEs");
   assert.match(triage, /#63 remains open/);
 
-  const currentBaseline = triage.split("## Current baseline — untriaged and deferred")[1];
-  assert.ok(currentBaseline, "the current image baseline must have its own triage record");
-  assert.match(currentBaseline,
-    /Complete report artifact: PENDING — release-candidate-<tag>-5a93bbea2106f79ba7d0add891c87f43abac6a5a\/dist\/release\/dockermap-<tag>-image\.grype\.all\.sarif/);
-  assert.match(currentBaseline, /Owner: UNASSIGNED/);
-  assert.match(currentBaseline, /Review date: UNSET/);
-  assert.match(currentBaseline, /Maintainer decision: DEFER/);
-  assert.match(currentBaseline, /not a maintainer acceptance/);
-  assert.doesNotMatch(currentBaseline, /Maintainer decision: ACCEPT/,
-    "the untriaged current baseline must not be represented as accepted");
+  const pendingCandidate = triage.split("## Alpha.2 candidate — pending exact scan")[1]
+    ?.split("## Historical local baseline")[0];
+  assert.ok(pendingCandidate, "alpha.2 must have an explicit pending candidate boundary");
+  assert.match(pendingCandidate, /No alpha\.2 source SHA, image identity, complete report, or maintainer decision/);
+  assert.match(pendingCandidate, /UNTRIAGED \/\s*DEFERRED/);
+  assert.match(pendingCandidate, /blocks publication/);
+  assert.doesNotMatch(pendingCandidate, /Maintainer decision: ACCEPT/,
+    "a pending alpha.2 candidate must not be represented as accepted");
+
+  const historicalBaseline = triage.split("## Historical local baseline — untriaged and deferred")[1];
+  assert.ok(historicalBaseline, "the previous scan must remain clearly separated as historical evidence");
+  assert.match(historicalBaseline, /Candidate source commit: 5a93bbea2106f79ba7d0add891c87f43abac6a5a/);
+  assert.match(historicalBaseline, /Maintainer decision: DEFER/);
+  assert.match(historicalBaseline, /not a maintainer acceptance/);
+  assert.match(historicalBaseline, /must not be reused as alpha\.2 evidence/);
+  assert.doesNotMatch(historicalBaseline, /Maintainer decision: ACCEPT/,
+    "historical deferred evidence must not be represented as accepted");
 });

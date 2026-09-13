@@ -1,7 +1,7 @@
 {
   "name": "dockermap-monorepo",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.2",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -29,7 +29,7 @@
     "test:api": "npm run test --workspace @dockermap/api --if-present",
     "test:web": "npm run test --workspace @dockermap/web --if-present",
     "test:contracts": "npm run test --workspace @dockermap/contracts --if-present",
-    "test:version": "node --test scripts/check-version-authority.test.mjs",
+    "test:version": "node --test scripts/check-version-authority.test.mjs scripts/package-release.test.mjs",
     "test:deployment": "node --test scripts/check-systemd-profile.test.mjs scripts/check-supply-chain-baseline.test.mjs",
     "generate:contracts": "cargo run -p dockermap-core --bin generate-contract-schemas --manifest-path crates/Cargo.toml -- && node scripts/generate-rust-contract-types.mjs",
     "check:contracts": "node scripts/check-rust-contract-schemas.mjs && node scripts/generate-rust-contract-types.mjs --check && node --test scripts/generate-rust-contract-types.test.mjs && npm run test:contracts",

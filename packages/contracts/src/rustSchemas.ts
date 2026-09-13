@@ -480,37 +480,6 @@ export const RUST_RESPONSE_SCHEMAS = {
       ],
       "type": "string"
     },
-    "RuntimeEventRef": {
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "kind": {
-          "type": "string"
-        },
-        "message": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "timestamp": {
-          "format": "uint64",
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "id",
-        "kind"
-      ],
-      "type": "object"
-    },
     "RuntimeEvidenceAssertionKind": {
       "description": "Evidence assertion semantics are deliberately closed. A declaration says\nwhat a source configured, never that its target is healthy or was invoked.",
       "enum": [
@@ -1248,13 +1217,6 @@ export const RUST_RESPONSE_SCHEMAS = {
           },
           "type": "array"
         },
-        "events": {
-          "description": "Reserved — not emitted by current collectors.",
-          "items": {
-            "$ref": "#/$defs/RuntimeEventRef"
-          },
-          "type": "array"
-        },
         "health": {
           "anyOf": [
             {
@@ -1307,8 +1269,7 @@ export const RUST_RESPONSE_SCHEMAS = {
         "status",
         "dependencies",
         "dependents",
-        "logs",
-        "events"
+        "logs"
       ],
       "type": "object"
     },
@@ -3339,37 +3300,6 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
       ],
       "type": "string"
     },
-    "RuntimeEventRef": {
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "kind": {
-          "type": "string"
-        },
-        "message": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "timestamp": {
-          "format": "uint64",
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "id",
-        "kind"
-      ],
-      "type": "object"
-    },
     "RuntimeEvidenceAssertionKind": {
       "description": "Evidence assertion semantics are deliberately closed. A declaration says\nwhat a source configured, never that its target is healthy or was invoked.",
       "enum": [
@@ -4107,13 +4037,6 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
           },
           "type": "array"
         },
-        "events": {
-          "description": "Reserved — not emitted by current collectors.",
-          "items": {
-            "$ref": "#/components/schemas/RuntimeMap/$defs/RuntimeEventRef"
-          },
-          "type": "array"
-        },
         "health": {
           "anyOf": [
             {
@@ -4166,8 +4089,7 @@ export const OPENAPI_RUST_RESPONSE_SCHEMAS = {
         "status",
         "dependencies",
         "dependents",
-        "logs",
-        "events"
+        "logs"
       ],
       "type": "object"
     },

@@ -23,6 +23,31 @@ test("the Docker-only Compose collector is always PID-restricted", async () => {
   );
 });
 
+test("the recommended Docker-only profile fails closed instead of publishing mock topology", async () => {
+  const compose = await text("docker-compose.yml");
+  const declarations = [...compose.matchAll(/DOCKERMAP_ALLOW_MOCK:\s*"([^"]+)"/g)]
+    .map((match) => match[1]);
+  assert.deepEqual(
+    declarations,
+    ["false", "false"],
+    "both the frontend and collector must reject unavailable live authority instead of falling back to mock data"
+  );
+});
+
+test("split Docker services override the frontend image healthcheck at each plane", async () => {
+  const compose = await text("docker-compose.yml");
+  assert.match(
+    compose,
+    /collector:[\s\S]*?healthcheck:[\s\S]*?\/daemon\/health/,
+    "the collector must check its authenticated daemon endpoint instead of the absent frontend"
+  );
+  assert.match(
+    compose,
+    /docker-read-gateway:[\s\S]*?healthcheck:[\s\S]*?--unix-socket \/run\/dockermap\/docker-read\.sock[\s\S]*?\/containers\/json\?all=true&size=false/,
+    "the gateway must check its filtered Unix socket instead of the absent frontend"
+  );
+});
+
 test("the native collector is an explicit full-host profile", async () => {
   const unit = await text("deploy/systemd/dockermap-daemon.service");
   assert.ok(

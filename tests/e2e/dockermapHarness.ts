@@ -449,7 +449,9 @@ function startDaemon(options: {
     ...(options.gatewaySocket ? { DOCKERMAP_DOCKER_GATEWAY_SOCKET: options.gatewaySocket } : {}),
     ...(options.pathPrefix ? { PATH: `${options.pathPrefix}:${process.env.PATH}` } : {}),
     ...(options.pidNamespace ? { DOCKERMAP_PID_NAMESPACE: options.pidNamespace } : {}),
-    ...(options.useDockerAccess ? {} : { DOCKERMAP_FORCE_MOCK: "true" })
+    ...(options.useDockerAccess
+      ? {}
+      : { DOCKERMAP_FORCE_MOCK: "true", DOCKERMAP_ALLOW_MOCK: "true" })
   };
 
   if (options.useDockerAccess && options.docker?.[0] === "sudo") {

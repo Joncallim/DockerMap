@@ -446,10 +446,6 @@ export interface RuntimeServiceEntity {
   /**
    * Reserved — not emitted by current collectors.
    */
-  events: RuntimeEventRef[];
-  /**
-   * Reserved — not emitted by current collectors.
-   */
   health?: RuntimeHealth | null;
   /**
    * Reserved — not emitted by current collectors.
@@ -465,12 +461,6 @@ export interface RuntimeServiceEntity {
    */
   owner?: RuntimeOwnership | null;
   status: RuntimeServiceStatus;
-}
-export interface RuntimeEventRef {
-  id: string;
-  kind: string;
-  message?: string | null;
-  timestamp?: number | null;
 }
 export interface RuntimeHealth {
   checkedAt?: number | null;

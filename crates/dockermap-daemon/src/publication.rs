@@ -201,13 +201,6 @@ fn redact_service_entity(service: Option<&mut RuntimeServiceEntity>) {
         log.id = redact_runtime_display_text(&log.id);
         log.source = redact_runtime_display_text(&log.source);
     }
-    for event in &mut service.events {
-        event.id = redact_runtime_display_text(&event.id);
-        event.kind = redact_runtime_display_text(&event.kind);
-        if let Some(message) = &mut event.message {
-            *message = redact_runtime_display_text(message);
-        }
-    }
     redact_ownership(service.owner.as_mut());
     redact_location(service.location.as_mut());
 }

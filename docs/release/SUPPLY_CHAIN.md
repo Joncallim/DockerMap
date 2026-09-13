@@ -61,7 +61,21 @@ Docker image build, vulnerability scan, and relevant release checks.
 Manifest-list digests retain the upstream image's supported architecture
 variants.
 
-## Release publication control
+## Pre-tag candidate control
+
+Freeze one exact source commit before tagging. Build its image, generate the
+package and image SBOMs, retain both complete and gating Grype reports, and run
+the clean-host install/restart/reboot/rollback/removal/reinstall procedure
+against that same SHA. Complete the security finding decision from those
+artifacts. A moving branch, an older image report, or a successful tag workflow
+for a different commit is not candidate evidence.
+
+Any source, dependency, Dockerfile, deployment, or documentation fix changes
+the candidate SHA and requires the affected scans plus clean-host certification
+to be rerun. The maintainer's explicit candidate decision happens before tag
+creation; `DEFER` blocks the tag/publication path.
+
+## Tag and publication control
 
 A `v*` tag reruns the production Node audit, RustSec advisory audit, local
 release-candidate image build/vulnerability scan, release build, version/tag
@@ -70,9 +84,13 @@ image SBOM generation. It uploads those outputs only as a 30-day GitHub Actions
 artifact. The workflow has read-only repository contents permission and cannot
 create a GitHub Release or publish a container image.
 
-After the exact-tag clean-host, proxy, restart/reboot, and required #15/#16
-evidence is reviewed, a maintainer may create the private prerelease manually
-and attach the checksummed archive and SPDX SBOM. Record the source SHA, scan
-result summary, the completed finding-triage decision, and known limitations in
-the release notes. This prevents a tag by itself from being represented as
-certified alpha evidence.
+After the exact-SHA clean-host, restart/reboot, rollback, clean-state,
+reinstall, supply-chain, and required security evidence is reviewed, a
+maintainer may explicitly authorize the tag. The tag workflow then reproduces
+the release artifacts for review; it does not publish them. A maintainer may
+create the private prerelease manually only after confirming the tag resolved
+to the certified SHA and the tag-workflow artifacts passed. Attach the
+checksummed archive and SPDX SBOM, and record the source SHA, scan summary,
+completed finding-triage decision, and known limitations in the release notes.
+This prevents a tag by itself from being represented as certified alpha
+evidence.

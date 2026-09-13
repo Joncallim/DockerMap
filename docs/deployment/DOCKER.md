@@ -1,113 +1,447 @@
-# Running DockerMap In Docker
+# Docker-only private-alpha deployment
 
-Docker-only is the recommended container profile. Compose runs a frontend
-(nginx plus Node API), a Rust collector, and a Docker Read Gateway. Only the
-gateway receives the raw Docker socket; the collector receives a filtered Unix
-socket and the bounded project mount.
+This is the canonical clean-host procedure for the `v0.1.0-alpha.2` candidate.
+It installs the split Compose profile, proves its authentication and Docker
+authority boundaries, survives a real guest reboot, and then proves removal and
+reinstallation. Run it in a disposable supported Linux VM against one exact
+40-character source commit. A moving branch is not release evidence.
 
-## Files
+DockerMap remains read-only toward the host it observes. The installation and
+removal commands below do change DockerMap's own containers, image, private
+network, socket volume, checkout, and credential file.
 
-- [`Dockerfile`](../../Dockerfile): multi-stage build (Rust daemon, Node/web build, runtime image).
-- [`docker-compose.yml`](../../docker-compose.yml): split Docker-only deployment.
-- [`deploy/docker/nginx.conf`](../../deploy/docker/nginx.conf): serves the web app and proxies `/api/*`.
-- [`deploy/docker/frontend-entrypoint.sh`](../../deploy/docker/frontend-entrypoint.sh):
-  starts the frontend API and nginx for the Compose `dockermap` service.
-- [`deploy/docker/entrypoint.sh`](../../deploy/docker/entrypoint.sh): compatibility
-  image entrypoint that starts gateway, collector, API, and nginx together; it is
-  not the split Compose authority profile.
+## What this profile runs
 
-## Run With Docker Compose
+- `dockermap`: nginx, the web bundle, and Node API; published only on
+  `127.0.0.1:3233` by default.
+- `collector`: the Rust daemon; reachable only on the internal Compose network.
+- `docker-read-gateway`: the only component with the raw Docker socket. It
+  exposes a fixed read allowlist over a private Unix socket.
+
+The collector gets the filtered socket and a read-only project mount. The
+frontend gets neither. Host process providers are unavailable because the
+collector uses `DOCKERMAP_PID_NAMESPACE=restricted`.
+
+## Clean-host prerequisites
+
+The supported alpha procedure requires:
+
+- an Ubuntu Server 26.04 LTS `x86_64` guest;
+- Docker Engine with the Docker Compose plugin;
+- Git, curl, OpenSSL, Python 3, and `sudo`;
+- outbound network access while cloning and building.
+
+Record the actual versions in the certification evidence. Enable Docker before
+installing so DockerMap's `unless-stopped` restart policy can operate after a
+guest reboot:
 
 ```bash
-docker compose up --build
+uname -a
+docker version
+docker compose version
+git --version
+sudo systemctl enable --now docker
 ```
 
-Before starting Compose, generate a daemon-to-collector token in a protected
-environment file and set `DOCKERMAP_DAEMON_TOKEN`; set `DOCKER_GID` to the
-numeric group owning `/var/run/docker.sock`. Open `http://127.0.0.1:3233`.
+## 1. Check out one exact candidate
 
-## Run With Plain Docker
+Set `DOCKERMAP_REF` to the candidate's full commit SHA, not a branch or an
+abbreviated SHA:
+
+```bash
+export DOCKERMAP_REF='<40-hex-candidate-sha>'
+test "${#DOCKERMAP_REF}" = 40
+test -z "$(printf '%s' "$DOCKERMAP_REF" | tr -d '0-9a-f')"
+sudo git clone https://github.com/Joncallim/DockerMap.git /opt/dockermap-alpha2
+sudo git -C /opt/dockermap-alpha2 checkout --detach "$DOCKERMAP_REF"
+test "$(sudo git -C /opt/dockermap-alpha2 rev-parse HEAD)" = "$DOCKERMAP_REF"
+```
+
+All remaining commands assume:
+
+```bash
+cd /opt/dockermap-alpha2
+```
+
+## 2. Create protected credentials outside the checkout
+
+The browser and daemon tokens are separate random credentials. This command
+writes them without printing them. The Docker socket group is recorded so the
+non-root gateway can open the host socket.
+
+```bash
+sudo install -d -m 0700 /etc/dockermap
+sudo sh -c 'umask 077; printf "DOCKERMAP_API_TOKEN=%s\nDOCKERMAP_DAEMON_TOKEN=%s\nDOCKER_GID=%s\nDOCKERMAP_BIND_ADDRESS=127.0.0.1\nDOCKERMAP_FRONTEND_PORT=3233\nDOCKERMAP_INTERNAL_SUBNET=10.254.251.0/24\n" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(stat -c %g /var/run/docker.sock)" > /etc/dockermap/dockermap.env'
+sudo test "$(stat -c %a /etc/dockermap/dockermap.env)" = 600
+```
+
+If `10.254.251.0/24` overlaps the guest's existing networks, replace it in the
+protected file with one unused private `/24` before starting. Do not copy
+`.env.example` as-is: it contains placeholders and native-profile settings.
+
+Use the same fixed project name and env file for every lifecycle command:
+
+```bash
+sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 config --quiet
+```
+
+## 3. Build and install
+
+```bash
+sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 up --build -d
+sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 ps
+for attempt in $(seq 1 60); do
+  HEALTHY_SERVICES=0
+  for service in dockermap collector docker-read-gateway; do
+    CONTAINER_ID="$(sudo docker compose --env-file /etc/dockermap/dockermap.env -p dockermap-alpha2 ps -q "$service")"
+    test "$(sudo docker inspect "$CONTAINER_ID" --format '{{.State.Health.Status}}')" = healthy && HEALTHY_SERVICES=$((HEALTHY_SERVICES + 1))
+  done
+  test "$HEALTHY_SERVICES" = 3 && break
+  sleep 2
+done
+test "$HEALTHY_SERVICES" = 3
+unset HEALTHY_SERVICES CONTAINER_ID
+```
+
+Wait for the frontend to answer, then load its token without printing it and
+run the repository smoke test:
+
+```bash
+export DOCKERMAP_API_TOKEN="$(sudo sed -n 's/^DOCKERMAP_API_TOKEN=//p' /etc/dockermap/dockermap.env)"
+export DOCKERMAP_SMOKE_URL='http://127.0.0.1:3233'
+for attempt in $(seq 1 60); do
+  test "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $DOCKERMAP_API_TOKEN" http://127.0.0.1:3233/api/health || true)" = 200 && break
+  sleep 2
+done
+test "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $DOCKERMAP_API_TOKEN" http://127.0.0.1:3233/api/health || true)" = 200
+./scripts/smoke-deploy.sh
+```
+
+The smoke test checks anonymous denial, authenticated health, snapshot,
+runtime, Compose scan, bounded observed history, and one SSE snapshot. Add the
+findings boundary and private-daemon checks:
+
+```bash
+test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3233/api/findings)" = 401
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $DOCKERMAP_API_TOKEN" \
+  http://127.0.0.1:3233/api/findings)" = 200
+test -z "$(sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 port collector 4100)"
+```
+
+Prove that health and status report live Docker bytes and that snapshot history
+refers to the same current publication revision. The bounded retry avoids
+mistaking a refresh that lands between the two requests for incoherence:
+
+```bash
+python3 - <<'PY'
+import json, os, time, urllib.request
+
+headers = {"Authorization": f"Bearer {os.environ['DOCKERMAP_API_TOKEN']}"}
+def get(path):
+    request = urllib.request.Request(f"http://127.0.0.1:3233{path}", headers=headers)
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.load(response)
+
+health = get("/api/health")
+status = get("/api/status")
+assert health["daemon"]["mode"] == "docker" and health["dockerReachable"] is True
+assert status["mode"] == "docker" and status["sourceCoherent"] is True
+assert status["snapshotSource"] == "docker" and status["dockerReachable"] is True
+for attempt in range(10):
+    snapshot = get("/api/snapshot")
+    history = get("/api/history")
+    assert snapshot["source"] == "docker" and snapshot["modelRevision"]
+    assert history["source"] == "docker" and history["baselineEstablished"] is True
+    assert history["observedRevision"] and len(history["events"]) <= 64
+    if history["currentModelRevision"] == snapshot["modelRevision"]:
+        break
+    time.sleep(0.25)
+else:
+    raise AssertionError("snapshot/history publication revisions did not converge")
+PY
+```
+
+Prove mount authority from Docker's effective container configuration, not just
+from the Compose source:
+
+```bash
+FRONTEND_ID="$(sudo docker compose --env-file /etc/dockermap/dockermap.env -p dockermap-alpha2 ps -q dockermap)"
+COLLECTOR_ID="$(sudo docker compose --env-file /etc/dockermap/dockermap.env -p dockermap-alpha2 ps -q collector)"
+GATEWAY_ID="$(sudo docker compose --env-file /etc/dockermap/dockermap.env -p dockermap-alpha2 ps -q docker-read-gateway)"
+sudo docker inspect "$FRONTEND_ID" "$COLLECTOR_ID" "$GATEWAY_ID" | python3 -c '
+import json, sys
+items = json.load(sys.stdin)
+mounts = {item["Name"]: item.get("Mounts", []) for item in items}
+frontend = next(value for key, value in mounts.items() if "dockermap-1" in key)
+collector = next(value for key, value in mounts.items() if "collector" in key)
+gateway = next(value for key, value in mounts.items() if "docker-read-gateway" in key)
+raw = "/var/run/docker.sock"
+assert not frontend
+assert all(m.get("Source") != raw and m.get("Destination") != raw for m in collector)
+assert {(m["Destination"], m["RW"]) for m in collector} == {
+    ("/opt/dockermap/project", False), ("/run/dockermap", True)}
+assert sum(m.get("Source") == raw and m.get("Destination") == raw and not m["RW"] for m in gateway) == 1
+assert sum(m.get("Source") == raw for group in mounts.values() for m in group) == 1
+'
+unset FRONTEND_ID COLLECTOR_ID GATEWAY_ID
+```
+
+Do not print, paste, or retain the token in evidence. Unset it when the checks
+finish:
+
+```bash
+unset DOCKERMAP_API_TOKEN DOCKERMAP_SMOKE_URL
+```
+
+## 4. Prove component restart recovery
+
+```bash
+sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 restart
+sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 ps
+for attempt in $(seq 1 60); do
+  HEALTHY_SERVICES=0
+  for service in dockermap collector docker-read-gateway; do
+    CONTAINER_ID="$(sudo docker compose --env-file /etc/dockermap/dockermap.env -p dockermap-alpha2 ps -q "$service")"
+    test "$(sudo docker inspect "$CONTAINER_ID" --format '{{.State.Health.Status}}')" = healthy && HEALTHY_SERVICES=$((HEALTHY_SERVICES + 1))
+  done
+  test "$HEALTHY_SERVICES" = 3 && break
+  sleep 2
+done
+test "$HEALTHY_SERVICES" = 3
+unset HEALTHY_SERVICES CONTAINER_ID
+export DOCKERMAP_API_TOKEN="$(sudo sed -n 's/^DOCKERMAP_API_TOKEN=//p' /etc/dockermap/dockermap.env)"
+export DOCKERMAP_SMOKE_URL='http://127.0.0.1:3233'
+for attempt in $(seq 1 60); do
+  test "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $DOCKERMAP_API_TOKEN" http://127.0.0.1:3233/api/health || true)" = 200 && break
+  sleep 2
+done
+./scripts/smoke-deploy.sh
+unset DOCKERMAP_API_TOKEN DOCKERMAP_SMOKE_URL
+```
+
+A restart is useful recovery evidence, but it is not guest-reboot evidence.
+
+## 5. Prove an actual guest reboot
+
+Record the guest boot identity on persistent storage, reboot the disposable
+guest, and reconnect. Never run this step on the hypervisor.
+
+```bash
+cat /proc/sys/kernel/random/boot_id | sudo tee /var/tmp/dockermap-boot-id.before >/dev/null
+sudo reboot
+```
+
+After reconnecting, prove the boot identity changed and repeat the protected
+boundary checks:
+
+```bash
+if test "$(cat /proc/sys/kernel/random/boot_id)" = "$(sudo cat /var/tmp/dockermap-boot-id.before)"; then
+  echo 'guest boot_id did not change' >&2
+  exit 1
+fi
+cd /opt/dockermap-alpha2
+sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 ps
+for attempt in $(seq 1 60); do
+  HEALTHY_SERVICES=0
+  for service in dockermap collector docker-read-gateway; do
+    CONTAINER_ID="$(sudo docker compose --env-file /etc/dockermap/dockermap.env -p dockermap-alpha2 ps -q "$service")"
+    test "$(sudo docker inspect "$CONTAINER_ID" --format '{{.State.Health.Status}}')" = healthy && HEALTHY_SERVICES=$((HEALTHY_SERVICES + 1))
+  done
+  test "$HEALTHY_SERVICES" = 3 && break
+  sleep 2
+done
+test "$HEALTHY_SERVICES" = 3
+unset HEALTHY_SERVICES CONTAINER_ID
+export DOCKERMAP_API_TOKEN="$(sudo sed -n 's/^DOCKERMAP_API_TOKEN=//p' /etc/dockermap/dockermap.env)"
+export DOCKERMAP_SMOKE_URL='http://127.0.0.1:3233'
+for attempt in $(seq 1 60); do
+  test "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $DOCKERMAP_API_TOKEN" http://127.0.0.1:3233/api/health || true)" = 200 && break
+  sleep 2
+done
+./scripts/smoke-deploy.sh
+test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3233/api/findings)" = 401
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $DOCKERMAP_API_TOKEN" \
+  http://127.0.0.1:3233/api/findings)" = 200
+test -z "$(sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 port collector 4100)"
+python3 - <<'PY'
+import json, os, time, urllib.request
+headers = {"Authorization": f"Bearer {os.environ['DOCKERMAP_API_TOKEN']}"}
+def get(path):
+    request = urllib.request.Request(f"http://127.0.0.1:3233{path}", headers=headers)
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.load(response)
+health, status = get("/api/health"), get("/api/status")
+assert health["daemon"]["mode"] == "docker" and health["dockerReachable"] is True
+assert status["mode"] == "docker" and status["sourceCoherent"] is True
+assert status["snapshotSource"] == "docker" and status["dockerReachable"] is True
+for attempt in range(10):
+    snapshot, history = get("/api/snapshot"), get("/api/history")
+    assert snapshot["source"] == "docker" and snapshot["modelRevision"]
+    assert history["source"] == "docker" and history["baselineEstablished"] is True
+    assert history["observedRevision"] and len(history["events"]) <= 64
+    if history["currentModelRevision"] == snapshot["modelRevision"]:
+        break
+    time.sleep(0.25)
+else:
+    raise AssertionError("snapshot/history publication revisions did not converge")
+PY
+FRONTEND_ID="$(sudo docker compose --env-file /etc/dockermap/dockermap.env -p dockermap-alpha2 ps -q dockermap)"
+COLLECTOR_ID="$(sudo docker compose --env-file /etc/dockermap/dockermap.env -p dockermap-alpha2 ps -q collector)"
+GATEWAY_ID="$(sudo docker compose --env-file /etc/dockermap/dockermap.env -p dockermap-alpha2 ps -q docker-read-gateway)"
+sudo docker inspect "$FRONTEND_ID" "$COLLECTOR_ID" "$GATEWAY_ID" | python3 -c '
+import json, sys
+items = json.load(sys.stdin)
+mounts = {item["Name"]: item.get("Mounts", []) for item in items}
+frontend = next(value for key, value in mounts.items() if "dockermap-1" in key)
+collector = next(value for key, value in mounts.items() if "collector" in key)
+gateway = next(value for key, value in mounts.items() if "docker-read-gateway" in key)
+raw = "/var/run/docker.sock"
+assert not frontend
+assert all(m.get("Source") != raw and m.get("Destination") != raw for m in collector)
+assert {(m["Destination"], m["RW"]) for m in collector} == {
+    ("/opt/dockermap/project", False), ("/run/dockermap", True)}
+assert sum(m.get("Source") == raw and m.get("Destination") == raw and not m["RW"] for m in gateway) == 1
+assert sum(m.get("Source") == raw for group in mounts.values() for m in group) == 1
+'
+unset FRONTEND_ID COLLECTOR_ID GATEWAY_ID
+unset DOCKERMAP_API_TOKEN DOCKERMAP_SMOKE_URL
+```
+
+Snapshot history is daemon-lifetime memory. A clean collector restart or guest
+reboot correctly establishes a new baseline; it does not restore pre-restart
+history.
+
+## 6. Prove rollback with a failing upgrade image
+
+Preserve the accepted image's immutable local ID, then deliberately replace the
+moving `dockermap:local` tag with a deterministic empty image. This is an
+acceptance-harness fault, not DockerMap source, and proves the rollback is not a
+no-op against an untouched image:
+
+```bash
+export DOCKERMAP_ACCEPTED_IMAGE="$(sudo docker image inspect dockermap:local --format '{{.Id}}')"
+sudo docker image tag "$DOCKERMAP_ACCEPTED_IMAGE" dockermap:rollback-alpha2
+sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 down --remove-orphans
+printf '%s\n' 'FROM dockermap:rollback-alpha2' \
+  'RUN rm -f /frontend-entrypoint.sh /usr/local/bin/dockermap-daemon /usr/local/bin/dockermap-docker-gateway' \
+  | sudo docker build -t dockermap:local -
+test "$(sudo docker image inspect dockermap:local --format '{{.Id}}')" != "$DOCKERMAP_ACCEPTED_IMAGE"
+if sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 up -d --no-build; then
+  echo 'failing upgrade image unexpectedly started' >&2
+  exit 1
+fi
+```
+
+Remove the failed project objects, restore the preserved image without
+rebuilding source, and prove both image identity and acceptance recover:
+
+```bash
+sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 down --remove-orphans
+sudo docker image tag dockermap:rollback-alpha2 dockermap:local
+test "$(sudo docker image inspect dockermap:local --format '{{.Id}}')" = "$DOCKERMAP_ACCEPTED_IMAGE"
+sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 up -d --no-build
+export DOCKERMAP_API_TOKEN="$(sudo sed -n 's/^DOCKERMAP_API_TOKEN=//p' /etc/dockermap/dockermap.env)"
+export DOCKERMAP_SMOKE_URL='http://127.0.0.1:3233'
+for attempt in $(seq 1 60); do
+  test "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $DOCKERMAP_API_TOKEN" http://127.0.0.1:3233/api/health || true)" = 200 && break
+  sleep 2
+done
+./scripts/smoke-deploy.sh
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer $DOCKERMAP_API_TOKEN" \
+  http://127.0.0.1:3233/api/findings)" = 200
+test -z "$(sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 port collector 4100)"
+unset DOCKERMAP_API_TOKEN DOCKERMAP_SMOKE_URL DOCKERMAP_ACCEPTED_IMAGE
+```
+
+This rolls back DockerMap's image; DockerMap has no application database or
+persisted history to migrate.
+
+## 7. Uninstall and prove clean state
+
+This removes only the explicitly named DockerMap Compose project, including its
+private network and socket volume. It does not remove unrelated Docker objects.
+
+```bash
+cd /opt/dockermap-alpha2
+sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 down --volumes --remove-orphans
+test -z "$(sudo docker ps -aq --filter label=com.docker.compose.project=dockermap-alpha2)"
+test -z "$(sudo docker network ls -q --filter label=com.docker.compose.project=dockermap-alpha2)"
+test -z "$(sudo docker volume ls -q --filter label=com.docker.compose.project=dockermap-alpha2)"
+test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3233/api/health || true)" = 000
+```
+
+After the clean-state evidence is captured, remove only DockerMap's known local
+images and exact installation paths:
+
+```bash
+sudo docker image rm dockermap:local dockermap:rollback-alpha2 2>/dev/null || true
+test "$(realpath /opt/dockermap-alpha2)" = /opt/dockermap-alpha2
+sudo rm -rf -- /opt/dockermap-alpha2
+sudo rm -f -- /etc/dockermap/dockermap.env /var/tmp/dockermap-boot-id.before
+sudo rmdir /etc/dockermap
+```
+
+Those last commands delete the checkout and credentials and are not reversible.
+Resolve and verify the exact paths before running them.
+
+## 8. Reinstall proof
+
+Repeat sections 1–3 from a new clone of the same exact SHA and newly generated
+tokens. Rerun the smoke, findings, and private-daemon checks. Record that the
+checkout, credentials, Compose project, image, network, and volume were newly
+created; do not reuse the objects retained for rollback.
+
+## Plain Docker compatibility
+
+The root image can run all components in one container for local compatibility
+testing:
 
 ```bash
 docker build -t dockermap:local .
-docker run --rm -p 127.0.0.1:3233:3233 \
+docker run --rm --env-file /etc/dockermap/dockermap.env \
+  -p 127.0.0.1:3233:3233 \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -v "$PWD":/opt/dockermap/project:ro \
   dockermap:local
 ```
 
-The port is bound to loopback (127.0.0.1) because with no `DOCKERMAP_API_TOKEN`
-set the API is unauthenticated read-only — do not expose it on the LAN. For
-remote access, set `DOCKERMAP_API_TOKEN` (see `.env.example`) and publish the
-port on the interface of your choice, e.g. `-p 3233:3233`.
+This profile gives one container the raw Docker socket and is not the supported
+alpha deployment or release-certification path.
 
-## Authority and mounts
+## Configuration contract
 
-- Gateway only: `/var/run/docker.sock` read-only. The gateway independently
-  permits only the reviewed inventory and bounded non-following log reads.
-- Collector only: `/opt/dockermap/project` read-only plus the filtered gateway
-  socket. It cannot mount or fall back to the raw socket.
-- Frontend: neither mount. It is the only DockerMap service that has a
-  listener and it has no gateway network/socket path.
+`.env.example` describes the complete Node, daemon, and web configuration
+surface. Boolean switches enable only on the literal value `true`. Keep secrets
+out of `VITE_*` variables, logs, screenshots, shell tracing, and committed proxy
+configuration. The alpha procedure intentionally sets only these Compose
+inputs:
 
-## Optional Docker Label Filter
+| Variable | Purpose |
+| --- | --- |
+| `DOCKERMAP_API_TOKEN` | Required browser API bearer credential. |
+| `DOCKERMAP_DAEMON_TOKEN` | Separate frontend-to-collector bearer credential. |
+| `DOCKER_GID` | Numeric group owning `/var/run/docker.sock`. |
+| `DOCKERMAP_BIND_ADDRESS` | Keep `127.0.0.1` for the supported alpha. |
+| `DOCKERMAP_FRONTEND_PORT` | Host frontend port, default `3233`. |
+| `DOCKERMAP_INTERNAL_SUBNET` | Unused private `/24` for the internal API network. |
 
-Set `DOCKERMAP_DOCKER_LABEL_FILTER` on the daemon to inspect only Docker resources
-that carry one label expression:
-
-```yaml
-environment:
-  DOCKERMAP_DOCKER_LABEL_FILTER: "com.dockermap.fixture=abc123"
-```
-
-When unset, DockerMap inspects all visible Docker containers, networks, and volumes.
-When set, the filter is applied directly to Docker Engine list calls before DockerMap
-builds its snapshot. This is useful for sandbox fixtures and release-host tests where
-unrelated host resources must stay out of the UI.
-
-## Security Note
-
-Mounting a Docker socket gives its holder Docker-daemon-level authority; `:ro`
-does not restrict Docker API mutations. DockerMap therefore gives that mount
-only to the fail-closed gateway. See [docs/security/THREAT_MODEL.md](../security/THREAT_MODEL.md).
-The plain `docker run` compatibility image remains a local/dev convenience and
-does not provide this three-service isolation; use Compose for deployments.
-
-## Environment Variables
-
-`.env.example` is the deployable starter file. The table below is the complete
-DockerMap/Vite configuration contract; `NODE_ENV` is a normal Node runtime
-setting rather than a DockerMap setting. Boolean switches only enable on the
-literal value `true`; use `false` or leave them unset otherwise. Values marked
-**secret** must not be copied into browser build variables, logs, screenshots,
-or proxy configuration committed to source control.
-
-| Variable | Scope | Default | Accepted values / range |
-| --- | --- | --- | --- |
-| `PORT` | Node API | `4000` | Integer `1`–`65535`. The API still binds loopback. |
-| `DOCKERMAP_DAEMON_URL` | Node API | `http://127.0.0.1:4100` | Absolute `http`/`https` URL; loopback unless `DOCKERMAP_ALLOW_REMOTE_DAEMON=true`. |
-| `DOCKERMAP_API_TOKEN` | Node API / daemon fallback | unset | Non-empty **secret**; enables bearer mode unless forward-auth is selected. |
-| `DOCKERMAP_DAEMON_TOKEN` | Node API / daemon | `DOCKERMAP_API_TOKEN` | Non-empty **secret** when set; API-to-daemon credential. |
-| `DOCKERMAP_ALLOWED_ORIGINS` | Node API | `http://127.0.0.1:3233,http://localhost:3233` | Comma-separated explicit `http`/`https` origins only; no `*`, path, query, or credentials. |
-| `DOCKERMAP_ALLOW_MOCK` | Node API | `false` | `true` permits Node mock fallback when the daemon is unavailable. |
-| `DOCKERMAP_EXPOSE_ERROR_DETAILS` | Node API | `false` | `true` exposes daemon failure details; keep `false` outside diagnosis. |
-| `DOCKERMAP_SSE_INTERVAL_MS` | Node API | `2000` | Number clamped to `1000`–`30000` ms; non-numeric uses default. |
-| `DOCKERMAP_MAX_SSE_STREAMS_PER_SESSION` | Node API | `8` | Number clamped to `1`–`64`. |
-| `DOCKERMAP_MAX_SSE_STREAMS` | Node API | `128` | Number clamped to `1`–`1024`. |
-| `DOCKERMAP_AUTH_REQUIRED` | Node API | `false` | `true` selects trusted forward-auth and takes precedence over bearer token mode. |
-| `DOCKERMAP_AUTH_USER_HEADER` | Node API | `x-remote-user` | Trusted forward-auth header name: lowercase letters, digits, and `-`. |
-| `DOCKERMAP_AUTH_NAME_HEADER` | Node API | `x-remote-name` | Trusted forward-auth header name: lowercase letters, digits, and `-`. |
-| `DOCKERMAP_AUTH_EMAIL_HEADER` | Node API | `x-remote-email` | Trusted forward-auth header name: lowercase letters, digits, and `-`. |
-| `DOCKERMAP_AUTH_GROUPS_HEADER` | Node API | `x-remote-groups` | Trusted forward-auth header name: lowercase letters, digits, and `-`; comma-separated groups. |
-| `DOCKERMAP_AUTH_COOKIE` | Node API | `dockermap_session` | HTTP cookie-token characters only; bearer-mode session cookie name. |
-| `DOCKERMAP_DAEMON_HOST` | Rust daemon | `127.0.0.1` | `localhost` or an IP address. A non-loopback bind also requires `DOCKERMAP_ALLOW_REMOTE_DAEMON=true` and a token. |
-| `DOCKERMAP_DAEMON_PORT` | Rust daemon | `4100` | Unsigned 16-bit integer (`0`–`65535` accepted by the current parser); use `1`–`65535` for a usable listener. |
-| `DOCKERMAP_PROJECT_ROOT` | Rust daemon | current working directory | Existing canonicalizable directory used as the bounded Compose/project root. |
-| `DOCKERMAP_DOCKER_LABEL_FILTER` | Rust daemon | unset | Empty or one Docker label expression (`key` or `key=value`), at most 256 characters, no NUL or empty key. |
-| `DOCKERMAP_PID_NAMESPACE` | Rust daemon | `auto` | `auto`, `host`, or `restricted`; `auto` and invalid values fail closed to restricted host-provider visibility. `host` is an explicit, trusted full-host deployment override. |
-| `DOCKERMAP_FORCE_MOCK` | Rust daemon | `false` | **Test/internal only.** Literal `true` forces mock inventory even if Docker is reachable; never use as a deployment fallback. |
-| `DOCKERMAP_ALLOW_REMOTE_DAEMON` | Node API / Rust daemon | `false` | Literal `true` permits a remote daemon URL/non-loopback daemon bind; use only with a non-empty daemon/API token. |
-| `VITE_API_BASE_URL` | web build time | `http://127.0.0.1:4000` | Empty string for same-origin `/api` paths (production image), or one public API origin. It is browser-visible: no secrets. |
-
-All variables above work inside the container. Set them under `environment:` in
-`docker-compose.yml`, with `-e` on `docker run`, or from a protected env file.
+See [the security threat model](../security/THREAT_MODEL.md) and
+[Docker authority boundary](../architecture/DOCKER_AUTHORITY_BOUNDARY.md) for
+the exact read and trust boundaries.

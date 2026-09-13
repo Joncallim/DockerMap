@@ -1,7 +1,7 @@
 {
   "name": "@dockermap/web",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@dockermap/contracts": "0.1.0",
+    "@dockermap/contracts": "0.1.0-alpha.2",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.18.2"

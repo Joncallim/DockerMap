@@ -14,10 +14,15 @@ services, change containers, edit Compose files, or delete data.
 
 ## Quick Start
 
-The fastest way to try DockerMap is Docker Compose:
+The supported private-alpha path is the split Docker Compose deployment. Create
+a protected environment file outside the checkout so the required browser and
+daemon credentials are never stored in Git:
 
 ```bash
-docker compose up --build
+sudo install -d -m 0700 /etc/dockermap
+sudo sh -c 'umask 077; printf "DOCKERMAP_API_TOKEN=%s\nDOCKERMAP_DAEMON_TOKEN=%s\nDOCKER_GID=%s\n" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(stat -c %g /var/run/docker.sock)" > /etc/dockermap/dockermap.env'
+sudo docker compose --env-file /etc/dockermap/dockermap.env \
+  -p dockermap-alpha2 up --build -d
 ```
 
 Then open:
@@ -26,21 +31,22 @@ Then open:
 http://127.0.0.1:3233
 ```
 
-If you do not use Docker Compose, plain Docker works too:
+For local compatibility testing, the less-isolated single-container image also
+works with the same protected credentials:
 
 ```bash
 docker build -t dockermap:local .
-docker run --rm -p 127.0.0.1:3233:3233 \
+docker run --rm --env-file /etc/dockermap/dockermap.env \
+  -p 127.0.0.1:3233:3233 \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   dockermap:local
 ```
 
-The port is bound to loopback (127.0.0.1) because with no `DOCKERMAP_API_TOKEN`
-set the browser API is unauthenticated read-only — do not expose it on the LAN. For
-remote access, set `DOCKERMAP_API_TOKEN` (see `.env.example`) and publish the
-port on the interface of your choice, e.g. `-p 3233:3233`. If the Rust daemon is
-also intentionally bound off-host, set `DOCKERMAP_DAEMON_TOKEN` (or use the API
-token fallback); its routes, including health, require that bearer credential.
+The frontend port is bound to loopback and the browser API requires the token
+stored in `/etc/dockermap/dockermap.env`. The collector has no host-published
+port. Follow the exact-ref clean-host, smoke, reboot, rollback, and reinstall
+procedure in [Docker setup](docs/deployment/DOCKER.md) before treating a build
+as release evidence.
 
 That Docker socket mount is passed to the Docker Read Gateway. A read-only
 mount does not make the Docker API read-only, so the gateway independently
@@ -55,10 +61,12 @@ running directly on your machine.
 
 Requirements:
 
-- Node.js 22 or newer
+- Node.js 22.x LTS
 - npm
 - Rust, using the version pinned in [rust-toolchain.toml](rust-toolchain.toml)
-- Docker, if you want live Docker data instead of fallback demo data
+- Docker for live runtime data. Without Docker, the API is unavailable by default;
+  synthetic mock fallback requires the explicit test/internal opt-in
+  `DOCKERMAP_ALLOW_MOCK=true` (separate from the browser's Demo Mode).
 
 Install and start the local stack:
 
@@ -148,7 +156,7 @@ rather than the main UI. It is also available at the versioned alias
   "healthy": 10,
   "attention": 1,
   "offline": 1,
-  "version": "0.1.0"
+  "version": "0.1.0-alpha.2"
 }
 ```
 
@@ -156,8 +164,8 @@ Field meanings:
 
 - `status` — `ok`, `degraded`, or `offline` (derived from Docker reachability
   and container state).
-- `mode` — `docker` (real Docker data), `mock` (the Node API's fallback
-  response when the daemon is unreachable and `DOCKERMAP_ALLOW_MOCK=true`),
+- `mode` — `docker` (real Docker data), `mock` (an explicitly enabled daemon
+  or Node fallback when live authority is unavailable),
   or `mixed`. `mixed` means `/daemon/health` and `/daemon/snapshot` resolved
   from DIFFERENT sources in one response (e.g. health from live Docker while
   the snapshot fell back to route-local mock): the counts in that payload

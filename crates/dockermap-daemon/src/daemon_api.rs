@@ -7,6 +7,7 @@
 use crate::{
     auth::require_daemon_bearer_token,
     cache_refresh::docker_collector,
+    cache_refresh::DaemonCache,
     compose_api::{get_compose_edit_plan, get_compose_graph, get_compose_scan},
     publication::{
         publish_docker_snapshot, redact_container_record, redact_health_response,
@@ -28,6 +29,7 @@ use dockermap_core::{
     NetworksResponse, RuntimeMap, RuntimeMode, VolumesResponse, DEFAULT_LOG_PAGE_SIZE,
     MAX_LOG_PAGE_SIZE,
 };
+use tokio::sync::RwLockReadGuard;
 
 pub(crate) const MAX_LOG_QUERY_CHARS: usize = 256;
 const MAX_LOG_SERVICE_CHARS: usize = 128;
@@ -81,45 +83,56 @@ pub(crate) fn daemon_router(state: AppState, daemon_token: DaemonAuthToken) -> R
         .with_state(state)
 }
 
-async fn get_health(State(state): State<AppState>) -> Json<HealthResponse> {
+async fn publication_cache(state: &AppState) -> Result<RwLockReadGuard<'_, DaemonCache>, ApiError> {
     let cache = state.cache.read().await;
-    let mut health = cache.health.clone();
-    redact_health_response(&mut health);
-    Json(health)
+    if !state.allow_mock && cache.health.mode == RuntimeMode::Mock {
+        return Err(ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "Live Docker authority is unavailable and mock publication is disabled".into(),
+        });
+    }
+    Ok(cache)
 }
 
-async fn get_snapshot(State(state): State<AppState>) -> Json<DockerSnapshot> {
-    let cache = state.cache.read().await;
+async fn get_health(State(state): State<AppState>) -> Result<Json<HealthResponse>, ApiError> {
+    let cache = publication_cache(&state).await?;
+    let mut health = cache.health.clone();
+    redact_health_response(&mut health);
+    Ok(Json(health))
+}
+
+async fn get_snapshot(State(state): State<AppState>) -> Result<Json<DockerSnapshot>, ApiError> {
+    let cache = publication_cache(&state).await?;
     let mut published = publish_docker_snapshot(&cache.snapshot);
     // Actual source stamp: these bytes came from live Docker collection or
     // the daemon's mock fallback — attested by the cache's runtime mode so
     // the browser can never mistake fabricated sample bytes for host data.
     published.source = Some(cache.health.mode.clone());
-    Json(published)
+    Ok(Json(published))
 }
 
-async fn get_graph(State(state): State<AppState>) -> Json<GraphResponse> {
-    let cache = state.cache.read().await;
+async fn get_graph(State(state): State<AppState>) -> Result<Json<GraphResponse>, ApiError> {
+    let cache = publication_cache(&state).await?;
     let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(derive_graph(&snapshot))
+    Ok(Json(derive_graph(&snapshot)))
 }
 
-async fn get_runtime_map(State(state): State<AppState>) -> Json<RuntimeMap> {
+async fn get_runtime_map(State(state): State<AppState>) -> Result<Json<RuntimeMap>, ApiError> {
     // Served from the refresh cache rather than collecting on the Tokio worker
     // per request.
-    let cache = state.cache.read().await;
+    let cache = publication_cache(&state).await?;
     let mut runtime_map = cache.runtime_map.clone();
     runtime_map.source = Some(cache.health.mode.clone());
-    Json(runtime_map)
+    Ok(Json(runtime_map))
 }
 
-async fn get_findings(State(state): State<AppState>) -> Json<FindingsResponse> {
+async fn get_findings(State(state): State<AppState>) -> Result<Json<FindingsResponse>, ApiError> {
     // Findings are cached during refresh immediately after the runtime map is
     // assigned its publication revision; requests never invoke providers.
     // Stamp the actual cache mode at this same read boundary, matching the
     // runtime-map source contract without trusting any request parameter.
-    let cache = state.cache.read().await;
-    Json(publish_findings(&cache.findings, &cache.health.mode))
+    let cache = publication_cache(&state).await?;
+    Ok(Json(publish_findings(&cache.findings, &cache.health.mode)))
 }
 
 fn publish_findings(findings: &FindingsResponse, mode: &RuntimeMode) -> FindingsResponse {
@@ -130,24 +143,26 @@ fn publish_findings(findings: &FindingsResponse, mode: &RuntimeMode) -> Findings
 
 async fn get_observed_history(
     State(state): State<AppState>,
-) -> Json<dockermap_core::ObservedChangeHistoryResponse> {
-    let cache = state.cache.read().await;
-    Json(cache.observed_history_response())
+) -> Result<Json<dockermap_core::ObservedChangeHistoryResponse>, ApiError> {
+    let cache = publication_cache(&state).await?;
+    Ok(Json(cache.observed_history_response()))
 }
 
-async fn get_containers(State(state): State<AppState>) -> Json<ContainersResponse> {
-    let cache = state.cache.read().await;
+async fn get_containers(
+    State(state): State<AppState>,
+) -> Result<Json<ContainersResponse>, ApiError> {
+    let cache = publication_cache(&state).await?;
     let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(ContainersResponse {
+    Ok(Json(ContainersResponse {
         containers: snapshot.containers,
-    })
+    }))
 }
 
 async fn get_container(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<ContainerDetailResponse>, ApiError> {
-    let cache = state.cache.read().await;
+    let cache = publication_cache(&state).await?;
     let mut container = cache
         .snapshot
         .containers
@@ -162,28 +177,28 @@ async fn get_container(
     Ok(Json(ContainerDetailResponse(container)))
 }
 
-async fn get_images(State(state): State<AppState>) -> Json<ImagesResponse> {
-    let cache = state.cache.read().await;
+async fn get_images(State(state): State<AppState>) -> Result<Json<ImagesResponse>, ApiError> {
+    let cache = publication_cache(&state).await?;
     let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(ImagesResponse {
+    Ok(Json(ImagesResponse {
         images: snapshot.images,
-    })
+    }))
 }
 
-async fn get_networks(State(state): State<AppState>) -> Json<NetworksResponse> {
-    let cache = state.cache.read().await;
+async fn get_networks(State(state): State<AppState>) -> Result<Json<NetworksResponse>, ApiError> {
+    let cache = publication_cache(&state).await?;
     let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(NetworksResponse {
+    Ok(Json(NetworksResponse {
         networks: snapshot.networks,
-    })
+    }))
 }
 
-async fn get_volumes(State(state): State<AppState>) -> Json<VolumesResponse> {
-    let cache = state.cache.read().await;
+async fn get_volumes(State(state): State<AppState>) -> Result<Json<VolumesResponse>, ApiError> {
+    let cache = publication_cache(&state).await?;
     let snapshot = publish_docker_snapshot(&cache.snapshot);
-    Json(VolumesResponse {
+    Ok(Json(VolumesResponse {
         volumes: snapshot.volumes,
-    })
+    }))
 }
 
 pub(crate) fn docker_log_collection_failed(error: &str) -> ApiError {
@@ -207,7 +222,7 @@ async fn get_logs(
     let q = validate_optional_query(query.q.as_deref(), "q", MAX_LOG_QUERY_CHARS)?;
     let cursor = parse_log_cursor(query.cursor.as_deref())?;
     let limit = parse_log_limit(query.limit)?;
-    let cache = state.cache.read().await;
+    let cache = publication_cache(&state).await?;
     let docker_reachable = cache.health.docker_reachable;
     // Capture the mode with the branch-selection data. A later refresh must
     // not relabel fabricated entries as Docker bytes, or vice versa.
@@ -406,9 +421,9 @@ mod tests {
 
     #[tokio::test]
     async fn findings_route_stamps_the_actual_cache_mode_after_live_and_mock_resets() {
-        let state = AppState::new();
+        let state = AppState::new(true);
         assert_eq!(
-            get_findings(State(state.clone())).await.0.source,
+            get_findings(State(state.clone())).await.unwrap().0.source,
             Some(RuntimeMode::Mock),
             "initial unavailable/fallback data must be visibly non-live"
         );
@@ -422,7 +437,7 @@ mod tests {
             cache.findings.source = Some(RuntimeMode::Mock);
         }
         assert_eq!(
-            get_findings(State(state.clone())).await.0.source,
+            get_findings(State(state.clone())).await.unwrap().0.source,
             Some(RuntimeMode::Docker),
             "a live Docker cache must not be labelled as mock"
         );
@@ -433,7 +448,7 @@ mod tests {
             cache.findings.source = Some(RuntimeMode::Docker);
         }
         assert_eq!(
-            get_findings(State(state)).await.0.source,
+            get_findings(State(state)).await.unwrap().0.source,
             Some(RuntimeMode::Mock),
             "a Docker-to-mock reset must overwrite stale live provenance"
         );

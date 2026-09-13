@@ -66,7 +66,7 @@ describe("D2. negative-state overclassification and bucket precision", () => {
 
   it("explicit health.state unhealthy maps to degraded, not offline", () => {
     const model = buildModel(emptySnapshot, {
-      nodes: [{ id: "svc", provider: "docker", type: "service", label: "svc", status: "running", metadata: {}, service: { name: "svc", status: "running", dependencies: [], dependents: [], health: { state: "unhealthy" }, logs: [], events: [], owner: null, location: null } }],
+      nodes: [{ id: "svc", provider: "docker", type: "service", label: "svc", status: "running", metadata: {}, service: { name: "svc", status: "running", dependencies: [], dependents: [], health: { state: "unhealthy" }, logs: [], owner: null, location: null } }],
       edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0
     });
     expect(model.runtime.nodes.find((n) => n.id === "svc")?.state).toBe("degraded");
@@ -74,7 +74,7 @@ describe("D2. negative-state overclassification and bucket precision", () => {
 
   it("explicit health.state unknown is preserved as unknown, never healthy", () => {
     const model = buildModel(emptySnapshot, {
-      nodes: [{ id: "svc", provider: "docker", type: "service", label: "svc", status: "running", metadata: {}, service: { name: "svc", status: "running", dependencies: [], dependents: [], health: { state: "unknown" }, logs: [], events: [], owner: null, location: null } }],
+      nodes: [{ id: "svc", provider: "docker", type: "service", label: "svc", status: "running", metadata: {}, service: { name: "svc", status: "running", dependencies: [], dependents: [], health: { state: "unknown" }, logs: [], owner: null, location: null } }],
       edges: [], diagnostics: [], modelRevision: "test-revision", providerStates: testProviderStates, lastUpdated: 0
     });
     expect(model.runtime.nodes.find((n) => n.id === "svc")?.state).toBe("unknown");

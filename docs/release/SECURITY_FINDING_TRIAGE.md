@@ -33,12 +33,23 @@ Finding/group: <CVE/GHSA IDs and affected package(s), or explicitly bounded base
 Exposure and compensating controls: <how DockerMap uses it; controls, or NOT ASSESSED>
 ```
 
-## Current baseline — untriaged and deferred
+## Alpha.2 candidate — pending exact scan
 
-This record documents the local remediation candidate only. It is **UNTRIAGED /
-DEFERRED**, is not a maintainer acceptance, and does not authorize a release.
-PR #208 is an enabling control; issue #63 remains open until a tagged candidate
-has an uploaded complete report and a maintainer completes this record.
+No alpha.2 source SHA, image identity, complete report, or maintainer decision
+is recorded yet. Copy the candidate record template only after the final SHA is
+frozen and its image has been scanned. Until then the candidate is **UNTRIAGED /
+DEFERRED**, and issue #63 remains open.
+
+The fixed/remediable high/critical gate must report zero remediable
+high/critical findings. That result does not replace the complete report or
+accept any unfixed finding. Missing exact evidence, owner, review date, or
+decision remains `DEFER` and blocks publication.
+
+## Historical local baseline — untriaged and deferred
+
+This preserved pre-alpha.2 record documents an earlier local remediation
+candidate only. It is **UNTRIAGED / DEFERRED**, is not a maintainer acceptance,
+does not authorize a release, and must not be reused as alpha.2 evidence.
 
 ```text
 Candidate source commit: 5a93bbea2106f79ba7d0add891c87f43abac6a5a
@@ -70,4 +81,5 @@ record. A maintainer must split a group if its exposure differs.
 
 When a subsequent base image or package update changes the report, preserve the
 previous candidate record with its artifact reference and add a new dated
-record. Never edit an accepted candidate's list in place.
+record. Never edit an accepted candidate's list in place. Historical CVE lists
+describe only their recorded image and are not claims about the current image.
