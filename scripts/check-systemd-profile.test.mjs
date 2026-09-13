@@ -14,6 +14,15 @@ function hasDirective(unit, directive) {
   return unit.split(/\r?\n/).includes(directive);
 }
 
+function composeService(compose, service) {
+  const lines = compose.split(/\r?\n/);
+  const start = lines.indexOf(`  ${service}:`);
+  assert.notEqual(start, -1, `missing Compose service ${service}`);
+  const endOffset = lines.slice(start + 1).findIndex((line) => /^  [a-zA-Z0-9_-]+:$/.test(line));
+  const end = endOffset === -1 ? lines.length : start + 1 + endOffset;
+  return lines.slice(start, end).join("\n");
+}
+
 test("the Docker-only Compose collector is always PID-restricted", async () => {
   const compose = await text("docker-compose.yml");
   assert.match(
@@ -67,6 +76,46 @@ test("the shared deployment image has exactly one Compose build owner", async ()
     compose,
     /dockermap:\n\s{4}build:\s*\.\n\s{4}image:\s*dockermap:local/,
     "the frontend service must remain the shared image build owner"
+  );
+});
+
+test("the frontend ingress bridge cannot expose the private collector planes", async () => {
+  const compose = await text("docker-compose.yml");
+  const frontend = composeService(compose, "dockermap");
+  const collector = composeService(compose, "collector");
+  const gateway = composeService(compose, "docker-read-gateway");
+
+  assert.match(
+    frontend,
+    /^    networks: \[dockermap-api, dockermap-ingress\]$/m,
+    "the frontend needs both private API reachability and a routable ingress bridge for published ports"
+  );
+  assert.match(frontend, /^    ports:$/m, "only the frontend may publish a host port");
+  assert.match(
+    collector,
+    /^    networks: \[dockermap-api\]$/m,
+    "the collector must remain solely on the internal API network"
+  );
+  assert.doesNotMatch(collector, /^    ports:$/m, "the collector daemon must not publish a host port");
+  assert.doesNotMatch(collector, /dockermap-ingress/, "the collector must not join the ingress network");
+  assert.match(gateway, /^    network_mode: "none"$/m, "the Docker gateway must remain networkless");
+  assert.doesNotMatch(gateway, /^    ports:$/m, "the Docker gateway must not publish a host port");
+  assert.doesNotMatch(gateway, /^    networks:/m, "the Docker gateway must not join any Compose network");
+
+  assert.match(
+    compose,
+    /^  dockermap-api:\n    internal: true$/m,
+    "daemon traffic must remain on an internal network"
+  );
+  assert.match(
+    compose,
+    /^  dockermap-ingress:\n    driver: bridge\n    internal: false$/m,
+    "frontend ingress must use an explicitly non-internal bridge so Docker can publish its loopback port"
+  );
+  assert.equal(
+    [...compose.matchAll(/^    ports:$/gm)].length,
+    1,
+    "no service other than the frontend may expose a host port"
   );
 });
 
