@@ -17,7 +17,7 @@ use axum::{
 use dockermap_core::{
     correlate_compose_runtime, derive_compose_graph, discover_compose_files,
     plan_compose_mount_edit, scan_compose_files, ComposeDiagnostic, ComposeEditPlan, ComposeGraph,
-    ComposeScan, DiagnosticSeverity,
+    ComposeScan, DiagnosticSeverity, RuntimeMode,
 };
 use std::{
     fs,
@@ -82,9 +82,24 @@ pub(crate) async fn get_compose_scan(
     let query = parse_compose_scan_query(raw.as_deref())?;
     let mut scan = scan_compose_query(query).await?;
     let cache = state.cache.read().await;
-    scan.correlations = correlate_compose_runtime(&scan, &cache.snapshot);
+    apply_runtime_correlations(&mut scan, &cache, state.allow_mock);
     redact_compose_scan(&mut scan);
     Ok(Json(scan))
+}
+
+fn apply_runtime_correlations(
+    scan: &mut ComposeScan,
+    cache: &crate::cache_refresh::DaemonCache,
+    allow_mock: bool,
+) {
+    // Compose parsing remains useful without Docker, but correlations are
+    // runtime evidence. Never derive them from the fabricated recovery cache
+    // when deployment policy disables mock publication.
+    scan.correlations = if allow_mock || cache.health.mode != RuntimeMode::Mock {
+        correlate_compose_runtime(scan, &cache.snapshot)
+    } else {
+        Vec::new()
+    };
 }
 
 pub(crate) async fn get_compose_graph(
@@ -491,6 +506,33 @@ fn reject_symlink_path(project_root: &StdPath, canonical: &StdPath) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mock_disabled_compose_scan_omits_mock_runtime_correlations() {
+        let project_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/compose");
+        let file = project_root.join("path-mapping.compose.yaml");
+        let scan = scan_compose_files(&project_root, &[file]).expect("fixture should scan");
+        let cache = crate::cache_refresh::DaemonCache::mock();
+
+        let mut mock_enabled = scan.clone();
+        apply_runtime_correlations(&mut mock_enabled, &cache, true);
+        assert!(
+            !mock_enabled.correlations.is_empty(),
+            "fixture must prove that the mock cache could otherwise create runtime correlations"
+        );
+
+        let mut mock_disabled = scan;
+        apply_runtime_correlations(&mut mock_disabled, &cache, false);
+        assert!(
+            mock_disabled.correlations.is_empty(),
+            "bounded Compose parsing must not publish fabricated runtime correlations"
+        );
+        assert!(
+            !mock_disabled.services.is_empty() && !mock_disabled.mounts.is_empty(),
+            "mock policy must preserve bounded filesystem parsing"
+        );
+    }
 
     #[test]
     fn rejects_too_many_compose_files() {
