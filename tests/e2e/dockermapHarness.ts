@@ -139,6 +139,8 @@ export async function startProductionImageStack(options: ProductionImageStackOpt
       docker,
       ["build", ...(options.atlasOverview === true ? ["--build-arg", "VITE_ENABLE_ATLAS_OVERVIEW=true"] : []), "--tag", image, "."],
       repoRoot,
+      undefined,
+      300_000,
     );
     const runArgs = [
       "run", "--detach", "--name", container,
@@ -908,12 +910,12 @@ exit 1
   }
 }
 
-function runDocker(docker: string[], args: string[], cwd: string, env?: NodeJS.ProcessEnv) {
+function runDocker(docker: string[], args: string[], cwd: string, env?: NodeJS.ProcessEnv, timeoutMs = 120_000) {
   const result = spawnSync(docker[0], [...docker.slice(1), ...args], {
     cwd,
     env,
     encoding: "utf8",
-    timeout: 120_000
+    timeout: timeoutMs
   });
   if (result.status !== 0) {
     throw new Error(`Docker command failed: ${docker.join(" ")} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
