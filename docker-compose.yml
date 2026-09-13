@@ -19,7 +19,7 @@ services:
       - /var/cache/nginx:mode=1777
       - /var/lib/nginx:mode=1777
     environment:
-      DOCKERMAP_ALLOW_MOCK: "true"
+      DOCKERMAP_ALLOW_MOCK: "false"
       DOCKERMAP_ALLOW_REMOTE_DAEMON: "true"
       DOCKERMAP_DAEMON_URL: http://collector:4100
       DOCKERMAP_DAEMON_TOKEN: ${DOCKERMAP_DAEMON_TOKEN:?set a random DockerMap daemon token}
@@ -43,7 +43,7 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     environment:
-      DOCKERMAP_ALLOW_MOCK: "true"
+      DOCKERMAP_ALLOW_MOCK: "false"
       DOCKERMAP_DAEMON_HOST: 0.0.0.0
       DOCKERMAP_DAEMON_PORT: "4100"
       DOCKERMAP_ALLOW_REMOTE_DAEMON: "true"
