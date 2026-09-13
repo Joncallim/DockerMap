@@ -2266,7 +2266,7 @@ test("bare /api/v1 answers with a version descriptor instead of 404ing", async (
   assert.deepEqual(await bare.json(), {
     service: "dockermap",
     apiVersion: "v1",
-    version: "0.1.0"
+    version: "0.1.0-alpha.2"
   });
 
   const slashed = await request(api, "/api/v1/");
