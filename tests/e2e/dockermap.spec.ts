@@ -683,6 +683,13 @@ test.describe("DockerMap GUI", () => {
     const unauthenticated = await request.get(`${stack.apiUrl}/api/snapshot`);
     expect(unauthenticated.status()).toBe(401);
 
+    const forwardedHttpsSession = await request.post(`${stack.apiUrl}/api/auth/session`, {
+      data: { token: "dockermap-production-e2e-token" },
+      headers: { "X-Forwarded-Proto": "https" }
+    });
+    expect(forwardedHttpsSession.status()).toBe(204);
+    expect(forwardedHttpsSession.headers()["set-cookie"]).toContain("; Secure");
+
     await page.goto(stack.webUrl);
     await expect(page.getByRole("heading", { name: "Enter your API token" })).toBeVisible();
     await page.getByRole("textbox", { name: "API token" }).fill("dockermap-production-e2e-token");

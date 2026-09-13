@@ -52,6 +52,14 @@ Rust daemon.
 Important: if the proxy injects the DockerMap bearer token but does not authenticate
 viewers, the API is effectively public. The proxy must protect the human-facing route.
 
+When the supported Compose frontend is placed behind an HTTPS proxy, that proxy
+must keep port `3233` loopback-only and overwrite (not append)
+`X-Forwarded-Proto: https`. The frontend's internal Nginx hop preserves
+only that exact value; missing, comma-separated, or otherwise malformed values
+are replaced with the internal hop's actual scheme. This lets the Node API mark
+browser-session cookies `Secure` without reflecting arbitrary forwarded-protocol
+input.
+
 ## Nginx Shape
 
 This is a starting point, not a complete production config.
