@@ -55,6 +55,12 @@ services:
       - docker-read-socket:/run/dockermap
     networks: [dockermap-api]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --show-error --max-time 5 --header \"Authorization: Bearer $$DOCKERMAP_DAEMON_TOKEN\" http://127.0.0.1:4100/daemon/health >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
   docker-read-gateway:
     build: .
@@ -75,6 +81,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - docker-read-socket:/run/dockermap
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --show-error --max-time 5 --unix-socket /run/dockermap/docker-read.sock 'http://localhost/containers/json?all=true&size=false' >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
 networks:
   dockermap-api:
