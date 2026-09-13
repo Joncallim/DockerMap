@@ -108,10 +108,6 @@ function runtimeNode(id: string, label: string): RuntimeMapNode {
         { id: "l_dup", source: label, level: "info" },
         { id: "l_dup", source: label, level: "warn" }
       ],
-      events: [
-        { id: "ev_dup", kind: "start", message: "first duplicate event" },
-        { id: "ev_dup", kind: "start", message: "second duplicate event" }
-      ],
       owner: null,
       location: null
     },
@@ -251,7 +247,7 @@ describe("collidable list keys are occurrence-qualified (client reconciler)", ()
     expect(sameKeyErrors).toEqual([]);
   });
 
-  it("Runtime inspector renders duplicate log and event ref ids as distinct rows without a same-key warning", () => {
+  it("Runtime inspector renders duplicate log ref ids as distinct rows without a same-key warning", () => {
     const { hostEl, sameKeyErrors } = mountCollectingKeys(
       <AppContext.Provider value={contextFor({ containers: [], images: [], networks: [], volumes: [], modelRevision: "test-revision", lastUpdated: 0 }, runtimeFixture, "live", "live")}>
         <MemoryRouter initialEntries={["/runtime"]}>
@@ -266,9 +262,7 @@ describe("collidable list keys are occurrence-qualified (client reconciler)", ()
     act(() => {
       nodeButton!.click();
     });
-    expect(hostEl.querySelectorAll(".runtime-evidence-list li").length).toBe(4);
-    expect(hostEl.textContent).toContain("first duplicate event");
-    expect(hostEl.textContent).toContain("second duplicate event");
+    expect(hostEl.querySelectorAll(".runtime-evidence-list li").length).toBe(2);
     expect(sameKeyErrors).toEqual([]);
   });
 });

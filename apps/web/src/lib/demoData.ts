@@ -260,7 +260,6 @@ const demoRuntimeMap: RuntimeMap = {
         dependents: ["review-browser"],
         health: { state: "healthy", source: "nginx", message: "Serving edge traffic" },
         logs: [{ id: "runtime_gateway_log", source: "nginx", level: "info" }],
-        events: [{ id: "runtime_gateway_event", kind: "reload", message: "Proxy config reloaded" }],
         owner: { kind: "team", name: "platform" },
         location: { kind: "host", value: "demo-host" }
       }
@@ -283,7 +282,6 @@ const demoRuntimeMap: RuntimeMap = {
         dependents: ["gateway", "worker"],
         health: { state: "healthy", source: "http", message: "Responding in 42ms" },
         logs: [{ id: "runtime_api_log", source: "docker logs api", level: "info" }],
-        events: [{ id: "runtime_api_event", kind: "deploy", message: "API revision promoted" }],
         owner: { kind: "team", name: "product" },
         location: { kind: "container", value: "application" }
       }
@@ -306,7 +304,6 @@ const demoRuntimeMap: RuntimeMap = {
         dependents: [],
         health: { state: "degraded", source: "heartbeat", message: "Queue lag above target" },
         logs: [{ id: "runtime_worker_log", source: "worker", level: "warn" }],
-        events: [{ id: "runtime_worker_event", kind: "lag", message: "Queue delay crossed 30 seconds" }],
         owner: { kind: "team", name: "ops" },
         location: { kind: "host", value: "demo-host" }
       }
@@ -329,7 +326,6 @@ const demoRuntimeMap: RuntimeMap = {
         dependents: ["gateway"],
         health: { state: "healthy", source: "systemd", message: "Unit is active" },
         logs: [],
-        events: [{ id: "runtime_systemd_event", kind: "start", message: "systemd marked the unit active" }],
         owner: { kind: "system", name: "systemd" },
         location: { kind: "host", value: "demo-host" }
       }
@@ -379,7 +375,6 @@ const demoRuntimeMap: RuntimeMap = {
         dependents: ["api", "worker"],
         health: { state: "healthy", source: "postgres", message: "Primary is ready" },
         logs: [],
-        events: [{ id: "runtime_postgres_event", kind: "backup", message: "Nightly backup completed" }],
         owner: { kind: "team", name: "platform" },
         location: { kind: "container", value: "data" }
       }

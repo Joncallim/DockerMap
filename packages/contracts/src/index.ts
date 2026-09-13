@@ -47,7 +47,6 @@ export type {
   RuntimeEvidenceKind,
   RuntimeEvidenceProvider,
   RuntimeEvidenceRef,
-  RuntimeEventRef,
   RuntimeHealth,
   RuntimeHealthState,
   RuntimeLocation,

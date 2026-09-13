@@ -34,7 +34,6 @@ export const UNAVAILABLE_USER = "Unavailable user identity";
 export const UNAVAILABLE_DIAGNOSTIC_SOURCE = "Unavailable diagnostic source";
 export const UNAVAILABLE_DIAGNOSTIC_FILE = "Unavailable diagnostic file";
 export const UNAVAILABLE_DIAGNOSTIC_MESSAGE = "Unavailable diagnostic message";
-export const UNAVAILABLE_EVENT_KIND = "Unavailable event kind";
 export const UNAVAILABLE_LOCATION_KIND = "Unavailable location kind";
 export const UNAVAILABLE_LOCATION_VALUE = "Unavailable location value";
 export const UNAVAILABLE_METADATA_VALUE = "Unavailable metadata value";

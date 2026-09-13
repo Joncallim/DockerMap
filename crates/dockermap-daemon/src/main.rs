@@ -170,8 +170,8 @@ mod tests {
     use axum::extract::Request;
     use dockermap_core::{
         derive_compose_graph, scan_compose_files, ComposeDiagnostic, ComposeEditPlan, ComposeMount,
-        ComposeScan, RuntimeAdvisorySeverity, RuntimeEventRef, RuntimeLogLevel, RuntimeLogRef,
-        RuntimeOwnershipKind, RuntimePackageAdvisory, RuntimePackageUpdate,
+        ComposeScan, RuntimeAdvisorySeverity, RuntimeLogLevel, RuntimeLogRef, RuntimeOwnershipKind,
+        RuntimePackageAdvisory, RuntimePackageUpdate,
     };
     use std::{collections::HashSet, process::Command};
     use tokio::{
@@ -2527,12 +2527,6 @@ mod tests {
             source: "source".into(),
             level: Some(RuntimeLogLevel::Info),
         });
-        service.events.push(RuntimeEventRef {
-            id: "event\u{202e}id".into(),
-            kind: "event".into(),
-            timestamp: None,
-            message: None,
-        });
         service.owner = Some(RuntimeOwnership {
             kind: RuntimeOwnershipKind::Person,
             name: "owner".into(),
@@ -2620,7 +2614,6 @@ mod tests {
             .find_map(|node| node.service.as_ref())
             .expect("service node remains");
         assert_eq!(service.logs[0].id, "log�id");
-        assert_eq!(service.events[0].id, "event�id");
         assert_eq!(
             service.owner.as_ref().and_then(|owner| owner.id.as_deref()),
             Some("owner�id")

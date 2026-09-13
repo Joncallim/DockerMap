@@ -7,7 +7,7 @@ import { needsAttention, type RuntimeLayerId, type RuntimeNodeRecord, type Servi
 import { formatRelative } from "../lib/format";
 import Icon, { type IconName } from "../components/Icon";
 import { EmptyState, ErrorState, KeyValue, Loading, Metric, Panel, StateDot, StatePill, Tag } from "../components/primitives";
-import { COLLISION_HINT, COLLISION_TAG, identityText, UNAVAILABLE_DIAGNOSTIC_MESSAGE, UNAVAILABLE_EVENT_KIND, UNAVAILABLE_LOCATION_KIND, UNAVAILABLE_LOCATION_VALUE, UNAVAILABLE_LOG_SOURCE, UNAVAILABLE_METADATA_VALUE, UNAVAILABLE_OWNER, UNAVAILABLE_PACKAGE, UNAVAILABLE_PACKAGE_VERSION, UNAVAILABLE_RUNTIME_ID, UNAVAILABLE_RUNTIME_NODE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "../lib/identity";
+import { COLLISION_HINT, COLLISION_TAG, identityText, UNAVAILABLE_DIAGNOSTIC_MESSAGE, UNAVAILABLE_LOCATION_KIND, UNAVAILABLE_LOCATION_VALUE, UNAVAILABLE_LOG_SOURCE, UNAVAILABLE_METADATA_VALUE, UNAVAILABLE_OWNER, UNAVAILABLE_PACKAGE, UNAVAILABLE_PACKAGE_VERSION, UNAVAILABLE_RUNTIME_ID, UNAVAILABLE_RUNTIME_NODE, UNAVAILABLE_SERVICE, UNAVAILABLE_SERVICE_STATUS } from "../lib/identity";
 
 const PROVIDER_ICON: Record<RuntimeProviderKind, IconName> = {
   docker: "service",
@@ -498,21 +498,6 @@ export default function RuntimeScreen() {
                       <li key={`${entry.id}-${index}`}>
                         <Tag tone="muted">{identityText(entry.source, UNAVAILABLE_LOG_SOURCE)}</Tag>
                         <span>{entry.level || "log reference"}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-
-              {!selectedTmuxSession && selected.service?.events.length ? (
-                <div className="inspector-section">
-                  <h4>Recent events</h4>
-                  <ul className="runtime-evidence-list">
-                    {selected.service.events.map((event, index) => (
-                      <li key={`${event.id}-${index}`}>
-                        <Tag tone="muted">{identityText(event.kind, UNAVAILABLE_EVENT_KIND)}</Tag>
-                        <span>{event.message || "event recorded"}</span>
-                        {event.timestamp ? <span className="runtime-evidence-time">{formatRelative(event.timestamp)}</span> : null}
                       </li>
                     ))}
                   </ul>

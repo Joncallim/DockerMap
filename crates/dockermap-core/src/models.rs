@@ -950,16 +950,6 @@ pub struct RuntimeLogRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct RuntimeEventRef {
-    pub id: String,
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeOwnership {
     pub kind: RuntimeOwnershipKind,
     pub name: String,
@@ -987,8 +977,6 @@ pub struct RuntimeServiceEntity {
     /// Reserved — not emitted by current collectors.
     pub logs: Vec<RuntimeLogRef>,
     /// Reserved — not emitted by current collectors.
-    pub events: Vec<RuntimeEventRef>,
-    /// Reserved — not emitted by current collectors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<RuntimeOwnership>,
     /// Reserved — not emitted by current collectors.
@@ -1008,7 +996,6 @@ impl RuntimeServiceEntity {
             dependents: Vec::new(),
             health: None,
             logs: Vec::new(),
-            events: Vec::new(),
             owner: None,
             location: None,
         }

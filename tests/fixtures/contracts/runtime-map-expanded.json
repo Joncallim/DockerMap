@@ -28,13 +28,6 @@
             "level": "info"
           }
         ],
-        "events": [
-          {
-            "id": "runtime_cloudflare_edge_event_1",
-            "kind": "heartbeat",
-            "message": "Edge tunnel connected"
-          }
-        ],
         "owner": {
           "kind": "vendor",
           "name": "Cloudflare"
@@ -73,13 +66,6 @@
             "level": "info"
           }
         ],
-        "events": [
-          {
-            "id": "runtime_caddy_proxy_event_1",
-            "kind": "config_reload",
-            "message": "Loaded Caddyfile"
-          }
-        ],
         "owner": {
           "kind": "team",
           "name": "platform"
@@ -116,13 +102,6 @@
             "id": "runtime_systemd_caddy_log_1",
             "source": "journalctl",
             "level": "info"
-          }
-        ],
-        "events": [
-          {
-            "id": "runtime_systemd_caddy_event_1",
-            "kind": "start",
-            "message": "Service entered running state"
           }
         ],
         "owner": {
@@ -175,13 +154,6 @@
             "level": "info"
           }
         ],
-        "events": [
-          {
-            "id": "runtime_container_api_event_1",
-            "kind": "restart",
-            "message": "Container restarted after deploy"
-          }
-        ],
         "owner": {
           "kind": "team",
           "name": "platform"
@@ -218,13 +190,6 @@
             "id": "runtime_database_db_log_1",
             "source": "postgres",
             "level": "info"
-          }
-        ],
-        "events": [
-          {
-            "id": "runtime_database_db_event_1",
-            "kind": "backup",
-            "message": "Nightly backup completed"
           }
         ],
         "owner": {
@@ -275,13 +240,6 @@
             "id": "runtime_npm_app_log_1",
             "source": "npm run start",
             "level": "info"
-          }
-        ],
-        "events": [
-          {
-            "id": "runtime_npm_app_event_1",
-            "kind": "deploy",
-            "message": "New npm build deployed"
           }
         ],
         "owner": {
@@ -413,13 +371,6 @@
             "level": "info"
           }
         ],
-        "events": [
-          {
-            "id": "runtime_systemd_worker_event_1",
-            "kind": "start",
-            "message": "Worker service is running"
-          }
-        ],
         "owner": {
           "kind": "automation",
           "name": "systemd"
@@ -456,13 +407,6 @@
             "id": "runtime_tmux_worker_log_1",
             "source": "tmux",
             "level": "info"
-          }
-        ],
-        "events": [
-          {
-            "id": "runtime_tmux_worker_event_1",
-            "kind": "attach",
-            "message": "Operator attached to worker session"
           }
         ],
         "owner": {

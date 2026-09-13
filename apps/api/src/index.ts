@@ -350,7 +350,6 @@ function getMockResponse<T>(path: string): T {
           dependents: [],
           health: null,
           logs: [],
-          events: [],
           owner: null,
           location: null
         },
