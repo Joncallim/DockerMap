@@ -92,6 +92,11 @@ test("the frontend ingress bridge cannot expose the private collector planes", a
   );
   assert.match(frontend, /^    ports:$/m, "only the frontend may publish a host port");
   assert.match(
+    frontend,
+    /^      - "\$\{DOCKERMAP_BIND_ADDRESS:-127\.0\.0\.1\}:\$\{DOCKERMAP_FRONTEND_PORT:-3233\}:3233"$/m,
+    "the routable ingress bridge must remain paired with an explicit loopback-only default binding"
+  );
+  assert.match(
     collector,
     /^    networks: \[dockermap-api\]$/m,
     "the collector must remain solely on the internal API network"
