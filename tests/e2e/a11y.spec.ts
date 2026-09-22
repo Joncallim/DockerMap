@@ -203,6 +203,20 @@ test.describe("responsive and accessibility matrix", () => {
 
       await page.getByRole("link", { name: "Service Map", exact: true }).click();
       await expect(page.getByRole("heading", { name: "Service Map" })).toBeFocused();
+      // Regression (#326): pointer toggle-off on a graph node must take the
+      // same focus-restoration path as keyboard toggle-off. Use api rather
+      // than the postgres coverage below to prove the destination is tied to
+      // the service that was deselected, not a global fallback.
+      const graphApi = page.getByRole("group", { name: "Compose start-order map" }).getByRole("button", { name: "api, healthy", exact: true });
+      const directoryApi = page.locator(".service-directory").getByRole("button", { name: "api, healthy", exact: true });
+      const clearApi = page.getByRole("button", { name: "Clear api service selection", exact: true });
+      await graphApi.click();
+      await expect(graphApi).toHaveAttribute("aria-pressed", "true");
+      await expect(clearApi).toBeVisible();
+      await graphApi.click();
+      await expect(clearApi).toBeHidden();
+      await expect(graphApi).toHaveAttribute("aria-pressed", "false");
+      await expect(directoryApi).toBeFocused();
       // Focus the directory entry (not the graph node — under the focused
       // topology contract the selected service leaves the graph on clear).
       const directoryPostgres = page.locator(".service-directory").getByRole("button", { name: /postgres, healthy/ });
