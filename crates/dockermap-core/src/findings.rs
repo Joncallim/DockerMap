@@ -111,37 +111,6 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
 
     let mut daemon_state_counts = BTreeMap::<(&str, &str), usize>::new();
     for edge in &runtime_map.edges {
-        let pair = (edge.source.as_str(), edge.target.as_str());
-        if non_current_declared_relationship_counts.get(&pair) != Some(&1)
-            || !is_candidate_non_current_declared_relationship(edge)
-        {
-            continue;
-        }
-        let (Some(source), Some(target)) = (nodes.get(pair.0), nodes.get(pair.1)) else {
-            continue;
-        };
-        if source.provider != RuntimeProviderKind::Systemd
-            || target.provider != RuntimeProviderKind::Systemd
-            || source.kind != RuntimeNodeKind::SystemdService
-            || target.kind != RuntimeNodeKind::SystemdService
-        {
-            continue;
-        }
-        findings.push(Finding {
-            id: format!(
-                "finding_runtime_declared_relationship_evidence_not_current_{}",
-                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
-            ),
-            rule_id: FindingRule::RuntimeDeclaredRelationshipEvidenceNotCurrent,
-            severity: FindingSeverity::Advisory,
-            summary: DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_SUMMARY.into(),
-            recommendation: DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_RECOMMENDATION.into(),
-            subject_ref: edge.source.clone(),
-            target_ref: edge.target.clone(),
-            evidence_refs: vec![edge.evidence_refs[0].clone()],
-        });
-    }
-    for edge in &runtime_map.edges {
         if is_docker_daemon_state_shape(edge, &nodes) {
             *daemon_state_counts
                 .entry((edge.source.as_str(), edge.target.as_str()))
@@ -208,6 +177,37 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
     }
 
     let mut findings = Vec::new();
+    for edge in &runtime_map.edges {
+        let pair = (edge.source.as_str(), edge.target.as_str());
+        if non_current_declared_relationship_counts.get(&pair) != Some(&1)
+            || !is_candidate_non_current_declared_relationship(edge)
+        {
+            continue;
+        }
+        let (Some(source), Some(target)) = (nodes.get(pair.0), nodes.get(pair.1)) else {
+            continue;
+        };
+        if source.provider != RuntimeProviderKind::Systemd
+            || target.provider != RuntimeProviderKind::Systemd
+            || source.kind != RuntimeNodeKind::SystemdService
+            || target.kind != RuntimeNodeKind::SystemdService
+        {
+            continue;
+        }
+        findings.push(Finding {
+            id: format!(
+                "finding_runtime_declared_relationship_evidence_not_current_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            rule_id: FindingRule::RuntimeDeclaredRelationshipEvidenceNotCurrent,
+            severity: FindingSeverity::Advisory,
+            summary: DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_SUMMARY.into(),
+            recommendation: DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_RECOMMENDATION.into(),
+            subject_ref: edge.source.clone(),
+            target_ref: edge.target.clone(),
+            evidence_refs: vec![edge.evidence_refs[0].clone()],
+        });
+    }
     let integrity_edge_count = runtime_map
         .edges
         .iter()
@@ -771,10 +771,20 @@ fn is_candidate_non_current_declared_relationship(edge: &crate::RuntimeMapEdge) 
         && edge.source != edge.target
         && edge.evidence_refs.len() == 1
         && matches!(
-            (edge.relationship, edge.evidence_refs.first().map(|evidence| evidence.kind)),
-            (RuntimeRelationshipKind::Requires, Some(RuntimeEvidenceKind::SystemdRequires))
-                | (RuntimeRelationshipKind::Wants, Some(RuntimeEvidenceKind::SystemdWants))
-                | (RuntimeRelationshipKind::PartOf, Some(RuntimeEvidenceKind::SystemdPartOf))
+            (
+                &edge.relationship,
+                edge.evidence_refs.first().map(|evidence| &evidence.kind)
+            ),
+            (
+                RuntimeRelationshipKind::Requires,
+                Some(RuntimeEvidenceKind::SystemdRequires)
+            ) | (
+                RuntimeRelationshipKind::Wants,
+                Some(RuntimeEvidenceKind::SystemdWants)
+            ) | (
+                RuntimeRelationshipKind::PartOf,
+                Some(RuntimeEvidenceKind::SystemdPartOf)
+            )
         )
         && matches!(
             edge.evidence_refs.first(),
@@ -878,38 +888,80 @@ mod tests {
     #[test]
     fn emits_advisory_for_each_non_current_declared_systemd_relationship() {
         for (edge, freshness) in [
-            (edge(RuntimeEvidenceFreshness::Stale), RuntimeEvidenceFreshness::Stale),
-            (edge(RuntimeEvidenceFreshness::TimedOut), RuntimeEvidenceFreshness::TimedOut),
-            (wants_edge(RuntimeEvidenceFreshness::Stale), RuntimeEvidenceFreshness::Stale),
-            (part_of_edge(RuntimeEvidenceFreshness::TimedOut), RuntimeEvidenceFreshness::TimedOut),
+            (
+                edge(RuntimeEvidenceFreshness::Stale),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                edge(RuntimeEvidenceFreshness::TimedOut),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
+            (
+                wants_edge(RuntimeEvidenceFreshness::Stale),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                part_of_edge(RuntimeEvidenceFreshness::TimedOut),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
         ] {
             let input = map(edge);
             let findings = derive_findings(&input);
             assert_eq!(findings.len(), 1);
             let finding = &findings[0];
-            assert_eq!(finding.rule_id, FindingRule::RuntimeDeclaredRelationshipEvidenceNotCurrent);
+            assert_eq!(
+                finding.rule_id,
+                FindingRule::RuntimeDeclaredRelationshipEvidenceNotCurrent
+            );
             assert_eq!(finding.severity, FindingSeverity::Advisory);
-            assert_eq!(finding.summary, DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_SUMMARY);
-            assert_eq!(finding.recommendation, DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_RECOMMENDATION);
+            assert_eq!(
+                finding.summary,
+                DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_SUMMARY
+            );
+            assert_eq!(
+                finding.recommendation,
+                DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_RECOMMENDATION
+            );
             assert_eq!(finding.subject_ref, "systemd_service_source");
             assert_eq!(finding.target_ref, "systemd_service_target");
-            assert_eq!(finding.evidence_refs, vec![input.edges[0].evidence_refs[0].clone()]);
+            assert_eq!(
+                finding.evidence_refs,
+                vec![input.edges[0].evidence_refs[0].clone()]
+            );
             assert_eq!(finding.evidence_refs[0].freshness, freshness);
-            assert_eq!(finding.id, format!("finding_runtime_declared_relationship_evidence_not_current_{}", collision_resistant_id_component("systemd_service_source\u{1f}systemd_service_target")));
+            assert_eq!(
+                finding.id,
+                format!(
+                    "finding_runtime_declared_relationship_evidence_not_current_{}",
+                    collision_resistant_id_component(
+                        "systemd_service_source\u{1f}systemd_service_target"
+                    )
+                )
+            );
             assert_eq!(findings, derive_findings(&input));
         }
     }
 
     #[test]
     fn non_current_relationship_rule_fails_closed_for_fresh_ambiguous_or_invalid_inputs() {
-        for edge in [edge(RuntimeEvidenceFreshness::Fresh), wants_edge(RuntimeEvidenceFreshness::Fresh), part_of_edge(RuntimeEvidenceFreshness::Fresh)] {
-            assert!(derive_findings(&map(edge)).iter().all(|finding| finding.rule_id != FindingRule::RuntimeDeclaredRelationshipEvidenceNotCurrent));
+        for edge in [
+            edge(RuntimeEvidenceFreshness::Fresh),
+            wants_edge(RuntimeEvidenceFreshness::Fresh),
+            part_of_edge(RuntimeEvidenceFreshness::Fresh),
+        ] {
+            assert!(derive_findings(&map(edge))
+                .iter()
+                .all(|finding| finding.rule_id
+                    != FindingRule::RuntimeDeclaredRelationshipEvidenceNotCurrent));
         }
         let mut duplicate = map(edge(RuntimeEvidenceFreshness::Stale));
-        duplicate.edges.push(edge(RuntimeEvidenceFreshness::TimedOut));
+        duplicate
+            .edges
+            .push(edge(RuntimeEvidenceFreshness::TimedOut));
         assert!(derive_findings(&duplicate).is_empty());
         let mut plural = map(edge(RuntimeEvidenceFreshness::Stale));
-        plural.edges[0].evidence_refs.push(plural.edges[0].evidence_refs[0].clone());
+        let duplicate_evidence = plural.edges[0].evidence_refs[0].clone();
+        plural.edges[0].evidence_refs.push(duplicate_evidence);
         assert!(derive_findings(&plural).is_empty());
         let mut malformed = map(edge(RuntimeEvidenceFreshness::Stale));
         malformed.edges[0].evidence_refs[0].provider = RuntimeEvidenceProvider::Docker;

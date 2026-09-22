@@ -1682,7 +1682,9 @@ impl FindingRule {
                 FindingCategory::DeclaredDependency
             }
             Self::RuntimeIdentityCollisionDetected
-            | Self::RuntimeDeclaredRelationshipEvidenceNotCurrent => FindingCategory::EvidenceIntegrity,
+            | Self::RuntimeDeclaredRelationshipEvidenceNotCurrent => {
+                FindingCategory::EvidenceIntegrity
+            }
         }
     }
 }
