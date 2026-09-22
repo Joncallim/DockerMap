@@ -815,18 +815,29 @@ mod tests {
             assert_eq!(finding.recommendation, PART_OF_RECOMMENDATION);
             assert_eq!(finding.subject_ref, "systemd_service_source");
             assert_eq!(finding.target_ref, "systemd_service_target");
-            assert_eq!(finding.evidence_refs, vec![input.edges[0].evidence_refs[0].clone()]);
-            assert_eq!(finding.id, format!(
-                "finding_systemd_part_of_target_not_active_{}",
-                collision_resistant_id_component("systemd_service_source\u{1f}systemd_service_target")
-            ));
+            assert_eq!(
+                finding.evidence_refs,
+                vec![input.edges[0].evidence_refs[0].clone()]
+            );
+            assert_eq!(
+                finding.id,
+                format!(
+                    "finding_systemd_part_of_target_not_active_{}",
+                    collision_resistant_id_component(
+                        "systemd_service_source\u{1f}systemd_service_target"
+                    )
+                )
+            );
             assert_eq!(findings, derive_findings(&input));
         }
     }
 
     #[test]
     fn part_of_fails_closed_for_benign_stale_or_ambiguous_inputs() {
-        for freshness in [RuntimeEvidenceFreshness::Stale, RuntimeEvidenceFreshness::TimedOut] {
+        for freshness in [
+            RuntimeEvidenceFreshness::Stale,
+            RuntimeEvidenceFreshness::TimedOut,
+        ] {
             assert!(derive_findings(&map(part_of_edge(freshness))).is_empty());
         }
         let mut wants = map(part_of_edge(RuntimeEvidenceFreshness::Fresh));
@@ -847,10 +858,15 @@ mod tests {
         unknown_status.nodes[0].status = Some("unknown".into());
         assert!(derive_findings(&unknown_status).is_empty());
         let mut duplicate_pair = map(part_of_edge(RuntimeEvidenceFreshness::Fresh));
-        duplicate_pair.edges.push(part_of_edge(RuntimeEvidenceFreshness::Fresh));
+        duplicate_pair
+            .edges
+            .push(part_of_edge(RuntimeEvidenceFreshness::Fresh));
         assert!(derive_findings(&duplicate_pair).is_empty());
         let mut plural_evidence = map(part_of_edge(RuntimeEvidenceFreshness::Fresh));
-        plural_evidence.edges[0].evidence_refs.push(plural_evidence.edges[0].evidence_refs[0].clone());
+        let duplicate_evidence = plural_evidence.edges[0].evidence_refs[0].clone();
+        plural_evidence.edges[0]
+            .evidence_refs
+            .push(duplicate_evidence);
         assert!(derive_findings(&plural_evidence).is_empty());
         let mut wrong_kind = map(part_of_edge(RuntimeEvidenceFreshness::Fresh));
         wrong_kind.edges[0].evidence_refs[0].kind = RuntimeEvidenceKind::SystemdRequires;
@@ -859,7 +875,8 @@ mod tests {
         wrong_provider.edges[0].evidence_refs[0].provider = RuntimeEvidenceProvider::Docker;
         assert!(derive_findings(&wrong_provider).is_empty());
         let mut wrong_assertion = map(part_of_edge(RuntimeEvidenceFreshness::Fresh));
-        wrong_assertion.edges[0].evidence_refs[0].assertion_kind = RuntimeEvidenceAssertionKind::Observed;
+        wrong_assertion.edges[0].evidence_refs[0].assertion_kind =
+            RuntimeEvidenceAssertionKind::Observed;
         assert!(derive_findings(&wrong_assertion).is_empty());
         let mut wrong_slot = map(part_of_edge(RuntimeEvidenceFreshness::Fresh));
         wrong_slot.edges[0].evidence_refs[0].provider_slot = None;
@@ -1900,7 +1917,9 @@ mod tests {
     #[test]
     fn finding_summary_is_a_closed_rule_and_severity_projection() {
         let mut findings = derive_findings(&map(edge(RuntimeEvidenceFreshness::Fresh)));
-        findings.extend(derive_findings(&map(part_of_edge(RuntimeEvidenceFreshness::Fresh))));
+        findings.extend(derive_findings(&map(part_of_edge(
+            RuntimeEvidenceFreshness::Fresh,
+        ))));
         findings.extend(derive_findings(&internal_network_port_map()));
         findings.extend(derive_findings(&unspecified_address_port_map()));
         findings.extend(derive_findings(&daemon_state_map()));
