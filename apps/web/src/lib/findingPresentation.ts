@@ -25,6 +25,20 @@ export interface FindingPresentation {
   };
 }
 
+/**
+ * Zero-findings empty state, shared by every surface that can report "no
+ * current findings" (Home and the Findings screen).
+ *
+ * Zero findings means exactly one thing: no shipped rule concluded from the
+ * evidence DockerMap can currently support. It is never a statement that the
+ * host, its services, or DockerMap's evidence coverage are healthy or complete
+ * — unavailable, stale, or unsupported evidence produces no finding at all.
+ */
+export const ZERO_FINDINGS_EMPTY_STATE = {
+  title: "No current findings",
+  body: "No current findings from the evidence DockerMap can support right now. This is not a claim that the host, its services, or the evidence behind them are healthy or complete."
+} as const;
+
 type FindingSpec = FindingPresentation & {
   ruleId: Finding["ruleId"];
   severity: Finding["severity"];

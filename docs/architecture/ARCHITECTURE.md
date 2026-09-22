@@ -278,6 +278,22 @@ that Compose start order ran, or that either container is ready or healthy. It
 does not establish traffic, deployment failure, causality, Internet
 reachability, compromise, or a security incident.
 
+`compose.declared_mount_missing_at_bound_container` emits a warning only when
+one fresh Compose-declared bind or named-volume mount is absent from the
+runtime container it is exactly bound to. The binding is private and exact:
+project, service, config-file set, and Docker container identity must all
+agree, and both canonical evidence references — the declared
+`compose_declared_mount` fact and the observed `docker_compose_runtime_binding`
+fact — must come from the same collection. It is a bounded configuration-state
+review prompt, not a claim that data was lost, that a write failed, that either
+surface is unhealthy, or that one side caused the other. Missing, stale,
+timed-out, ambiguous, duplicated, malformed, oversized, changing,
+symlinked, or path-racing inputs, incomplete bindings, mock mode, and
+diagnostics all suppress it. The finding carries only its canonical evidence
+references and fixed display copy; the browser displays no mount path, project
+name, config path, service label, container identity, or opaque binding
+identifier.
+
 Each rule carries only its exact triggering evidence references. The API
 validates the fixed vocabulary, static display text, and rule-specific evidence
 shape before publication, and the browser displays findings only when their
@@ -285,16 +301,21 @@ nonempty model revision matches the current live model.
 
 #### Current finding policy
 
-`warning` is reserved for a fresh, directly recorded declaration whose current
-service-state endpoints satisfy a closed, fail-closed condition, or for the
-single path-free Docker-daemon-state fact whose recorded access may provide
-Docker daemon API authority. Neither meaning proves a failed start, breach,
-reachability, compromise, or impact. `advisory` is reserved for a fresh
-combination of directly observed Docker facts that merits a configuration
-review but does not establish exposure, reachability, vulnerability, or
-impact. There is no critical severity in the current pack. New rules require
-an explicit contract, fixed evidence budget, deterministic positive and
-benign-negative fixtures, and a review of their exact conclusion language.
+`warning` is a closed, fail-closed projection of fresh, directly recorded
+evidence: a declaration whose current service-state endpoints satisfy a closed
+condition (`systemd.requires_target_not_active`), the path-free Docker
+daemon-state facts whose recorded access may provide Docker daemon API
+authority (`docker.daemon_state_bind_mount` and its co-occurrence with a
+validated host-to-container port publication), or a fresh declared Compose
+mount absent from its exactly bound runtime container
+(`compose.declared_mount_missing_at_bound_container`). None of these meanings
+proves a failed start, breach, reachability, compromise, data loss, or impact.
+`advisory` is reserved for a fresh combination of directly observed Docker
+facts that merits a configuration review but does not establish exposure,
+reachability, vulnerability, or impact. There is no critical severity in the
+current pack. New rules require an explicit contract, fixed evidence budget,
+deterministic positive and benign-negative fixtures, and a review of their
+exact conclusion language.
 
 The map is organized around a unified service concept. Docker containers, systemd
 services, tmux sessions, npm applications, Python applications, and native processes

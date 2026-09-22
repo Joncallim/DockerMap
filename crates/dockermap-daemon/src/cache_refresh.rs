@@ -3677,7 +3677,7 @@ mod scheduler_tests {
         // Before Systemd became independently schedulable, one aggregate
         // host-scoped pass covered it alongside the four other fixed bundles.
         // Preserve that actual historical five-bundle baseline rather than
-        // retroactively multiplying the old cadence by today's six slots.
+        // retroactively multiplying the old cadence by today's eight slots.
         let legacy_aggregate_passes =
             (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * LEGACY_AGGREGATE_SLOT_COUNT;
         assert_eq!(legacy_aggregate_passes, 155);
@@ -3878,6 +3878,50 @@ mod scheduler_tests {
             assert!(!scheduler_churn_attestation_matches(
                 profile, supplied, stored
             ));
+        }
+    }
+
+    /// Guards the provider-scheduling ADR against the exact fixed-slot set this
+    /// module schedules. Adding, renaming, or removing a slot must update the
+    /// ADR, and a stale slot-count claim must not survive the change.
+    #[test]
+    fn provider_scheduling_adr_names_the_current_fixed_slot_set() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/architecture/PROVIDER_SCHEDULING_AND_MODEL_REVISIONS.md");
+        let doc = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+
+        for slot in STATIC_PROVIDER_SLOTS {
+            let value = serde_json::to_value(slot).expect("provider slot serializes");
+            let id = value
+                .as_str()
+                .expect("provider slot serializes to a string");
+            assert!(
+                doc.contains(id),
+                "provider scheduling ADR must name the fixed slot `{id}`"
+            );
+        }
+
+        let count_word = match STATIC_PROVIDER_SLOTS.len() {
+            8 => "eight",
+            other => panic!("update this guard and the ADR for {other} fixed slots"),
+        };
+        assert!(
+            doc.contains(&format!("{count_word}-item"))
+                && doc.contains(&format!("{count_word}-slot")),
+            "provider scheduling ADR must state the current {count_word} fixed slots"
+        );
+        for stale in [
+            "six-item",
+            "six-slot",
+            "six slots",
+            "six fixed",
+            "33 actual slot claims",
+        ] {
+            assert!(
+                !doc.contains(stale),
+                "provider scheduling ADR retains a stale scheduling claim: `{stale}`"
+            );
         }
     }
 
