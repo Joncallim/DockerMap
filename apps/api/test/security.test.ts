@@ -1303,6 +1303,34 @@ test("Docker v1 finding evidence accepts an omitted slot but rejects every named
   }
 });
 
+test("PartOf findings accept only one fresh declared Systemd PartOf fact", async () => {
+  const { validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/findings-response.json", import.meta.url), "utf8"
+  )) as { findings: Array<{ ruleId: string; evidenceRefs: Array<Record<string, unknown>> }> };
+  const partOf = fixture.findings.find(({ ruleId }) => ruleId === "systemd.part_of_target_not_active");
+  assert.ok(partOf, "canonical findings must exercise PartOf evidence");
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/findings", fixture));
+
+  for (const mutate of [
+    (evidence: Record<string, unknown>) => { evidence.freshness = "stale"; },
+    (evidence: Record<string, unknown>) => { evidence.kind = "systemd_requires"; },
+    (evidence: Record<string, unknown>) => { evidence.provider = "docker"; },
+    (evidence: Record<string, unknown>) => { evidence.assertionKind = "observed"; },
+  ]) {
+    const forged = structuredClone(fixture);
+    const evidence = forged.findings.find(({ ruleId }) => ruleId === "systemd.part_of_target_not_active")?.evidenceRefs[0];
+    assert.ok(evidence);
+    mutate(evidence);
+    assert.throws(() => validateDaemonResponse("/daemon/findings", forged));
+  }
+  const plural = structuredClone(fixture);
+  const pluralFinding = plural.findings.find(({ ruleId }) => ruleId === "systemd.part_of_target_not_active");
+  assert.ok(pluralFinding);
+  pluralFinding.evidenceRefs.push(structuredClone(pluralFinding.evidenceRefs[0]));
+  assert.throws(() => validateDaemonResponse("/daemon/findings", plural));
+});
+
 test("daemon runtime provider metadata retains successful evidence across retries", async () => {
   const fixture = JSON.parse(await readFile(
     new URL("../../../tests/fixtures/contracts/runtime-map.json", import.meta.url), "utf8"

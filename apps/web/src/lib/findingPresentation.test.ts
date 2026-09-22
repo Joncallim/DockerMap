@@ -11,6 +11,16 @@ const composeFinding = {
   evidenceRefs: [{ version: 1, provider: "docker", kind: "docker_compose_depends_on", assertionKind: "observed", providerSlot: null, freshness: "fresh", subjectRef: "docker_container_source" }]
 };
 
+const partOfFinding = {
+  id: "finding_systemd_part_of_target_not_active_opaque",
+  ruleId: "systemd.part_of_target_not_active",
+  severity: "advisory",
+  summary: "An active systemd service is PartOf a unit that is inactive or failed.",
+  recommendation: "Inspect the coupling target unit's state and the declaring unit's PartOf configuration.",
+  subjectRef: "systemd_service_source", targetRef: "systemd_service_target",
+  evidenceRefs: [{ version: 2, provider: "systemd", kind: "systemd_part_of", assertionKind: "declared", providerSlot: "systemd", freshness: "fresh", subjectRef: "systemd_service_source" }]
+};
+
 const mutualComposeFinding = {
   id: "finding_docker_compose_mutual_dependency_opaque",
   ruleId: "docker.compose_mutual_dependency",
@@ -59,6 +69,18 @@ const identityCollisionFinding = {
 };
 
 describe("finding presentation boundary", () => {
+  it("admits only the static closed PartOf advisory shape", () => {
+    expect(presentationForFinding(partOfFinding)).toMatchObject({
+      title: "Lifecycle coupling target is not active", category: "Systemd PartOf", tone: "muted"
+    });
+  });
+
+  it("fails closed for stale, forged, or plural PartOf evidence", () => {
+    expect(presentationForFinding({ ...partOfFinding, evidenceRefs: [{ ...partOfFinding.evidenceRefs[0], freshness: "stale" }] })).toBeNull();
+    expect(presentationForFinding({ ...partOfFinding, evidenceRefs: [{ ...partOfFinding.evidenceRefs[0], kind: "systemd_requires" }] })).toBeNull();
+    expect(presentationForFinding({ ...partOfFinding, evidenceRefs: [partOfFinding.evidenceRefs[0], partOfFinding.evidenceRefs[0]] })).toBeNull();
+  });
+
   it("admits only the static closed Compose advisory shape", () => {
     expect(presentationForFinding(composeFinding)).toMatchObject({
       title: "Declared Compose dependency needs review", category: "Docker Compose", inspectChanges: true

@@ -54,6 +54,15 @@ const SPECS: readonly FindingSpec[] = [
     inspection: { ruleLabel: "Systemd declared dependency", ruleId: "systemd.requires_target_not_active", freshEvidenceRequirement: "Requires one fresh declared systemd fact.", factDescription: "One declared dependency fact.", limits: "Does not establish service readiness, causality, traffic, or remediation." }
   },
   {
+    ruleId: "systemd.part_of_target_not_active", severity: "advisory",
+    summary: "An active systemd service is PartOf a unit that is inactive or failed.",
+    recommendation: "Inspect the coupling target unit's state and the declaring unit's PartOf configuration.",
+    idPrefix: "finding_systemd_part_of_target_not_active_", subjectPrefix: "systemd_service_", targetPrefix: "systemd_service_",
+    evidenceCount: 1, evidence: { version: 2, provider: "systemd", kind: "systemd_part_of", assertionKind: "declared", providerSlot: "systemd" },
+    title: "Lifecycle coupling target is not active", category: "Systemd PartOf", hint: "Observed declaration", tone: "muted", severityLabel: "Advisory",
+    inspection: { ruleLabel: "Systemd lifecycle coupling", ruleId: "systemd.part_of_target_not_active", freshEvidenceRequirement: "Requires one fresh declared PartOf fact.", factDescription: "One declared PartOf dependency fact.", limits: "Does not establish service readiness, causality, restart behaviour, traffic, or remediation." }
+  },
+  {
     ruleId: "docker.internal_network_member_publishes_port", severity: "advisory",
     summary: "A container on an internal Docker network also has a published host port.",
     recommendation: "Review whether the host-port publication is intended for this internal-network service.",

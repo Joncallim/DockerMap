@@ -1634,6 +1634,8 @@ pub enum FindingSeverity {
 pub enum FindingRule {
     #[serde(rename = "systemd.requires_target_not_active")]
     SystemdRequiresTargetNotActive,
+    #[serde(rename = "systemd.part_of_target_not_active")]
+    SystemdPartOfTargetNotActive,
     #[serde(rename = "docker.internal_network_member_publishes_port")]
     DockerInternalNetworkMemberPublishesPort,
     #[serde(rename = "docker.port_published_on_unspecified_address")]
@@ -1667,6 +1669,7 @@ impl FindingRule {
     pub const fn category(self) -> FindingCategory {
         match self {
             Self::SystemdRequiresTargetNotActive
+            | Self::SystemdPartOfTargetNotActive
             | Self::DockerComposeDeclaredTargetNotActive
             | Self::DockerComposeMutualDependency => FindingCategory::DeclaredDependency,
             Self::DockerDaemonStateBindMount => FindingCategory::DockerDaemonAuthority,

@@ -170,13 +170,14 @@ Current relationship-source matrix:
 
 `GET /daemon/findings` and its authenticated browser aliases expose only a
 cached projection of the same published runtime-map revision. The closed
-`systemd.requires_target_not_active` rule emits one warning only when
-there is exactly one fresh, declared Systemd `Requires` edge from a uniquely
-identified active service to a uniquely identified inactive or failed service.
-It is a dependency configuration condition—not proof of a failed start,
-readiness, traffic, service health, or security impact. Stale, timed-out,
-ambiguous, duplicate, non-Systemd, `Wants`, and `PartOf` evidence produces no
-finding.
+`systemd.requires_target_not_active` emits one warning for one fresh, declared
+Systemd `Requires` edge from a uniquely identified active service to a uniquely
+identified inactive or failed service. `systemd.part_of_target_not_active`
+similarly emits one advisory for one fresh, declared `PartOf` edge under those
+same identity and state bounds. They are dependency-configuration conditions,
+not proof of a failed start, readiness, traffic, service health, restart
+behaviour, or security impact. Stale, timed-out, ambiguous, duplicate,
+non-Systemd, and `Wants` evidence produces no finding.
 
 `docker.internal_network_member_publishes_port` emits an advisory only when
 one uniquely identified Docker container has both one fresh, validated Docker
