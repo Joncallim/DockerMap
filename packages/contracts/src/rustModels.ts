@@ -166,6 +166,7 @@ export type HealthState = 'ok' | 'degraded';
  */
 export type FindingRule =
   | 'systemd.requires_target_not_active'
+  | 'systemd.part_of_target_not_active'
   | 'docker.internal_network_member_publishes_port'
   | 'docker.port_published_on_unspecified_address'
   | 'docker.daemon_state_bind_mount'

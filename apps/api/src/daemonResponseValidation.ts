@@ -60,6 +60,9 @@ const U32_MAX = 4_294_967_295;
 const SYSTEMD_REQUIRES_FINDING_RULE = "systemd.requires_target_not_active";
 const SYSTEMD_REQUIRES_FINDING_SUMMARY = "An active systemd service requires a target that is inactive or failed";
 const SYSTEMD_REQUIRES_FINDING_RECOMMENDATION = "Inspect the target service state and its declared dependency configuration.";
+const SYSTEMD_PART_OF_FINDING_RULE = "systemd.part_of_target_not_active";
+const SYSTEMD_PART_OF_FINDING_SUMMARY = "An active systemd service is PartOf a unit that is inactive or failed.";
+const SYSTEMD_PART_OF_FINDING_RECOMMENDATION = "Inspect the coupling target unit's state and the declaring unit's PartOf configuration.";
 const INTERNAL_NETWORK_PORT_FINDING_RULE = "docker.internal_network_member_publishes_port";
 const INTERNAL_NETWORK_PORT_FINDING_SUMMARY = "A container on an internal Docker network also has a published host port.";
 const INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION = "Review whether the host-port publication is intended for this internal-network service.";
@@ -111,6 +114,7 @@ const FINDING_SUMMARY_KEYS = [
 // A new rule has no browser path until both sides explicitly classify it.
 const FINDING_RULE_CATEGORY = {
   [SYSTEMD_REQUIRES_FINDING_RULE]: "declaredDependencyCount",
+  [SYSTEMD_PART_OF_FINDING_RULE]: "declaredDependencyCount",
   [INTERNAL_NETWORK_PORT_FINDING_RULE]: "hostPortPublicationCount",
   [UNSPECIFIED_ADDRESS_PORT_FINDING_RULE]: "hostPortPublicationCount",
   [DOCKER_DAEMON_STATE_FINDING_RULE]: "dockerDaemonAuthorityCount",
@@ -572,7 +576,7 @@ function hasCoherentFindings(payload: unknown): boolean {
       && finding.subjectRef.startsWith("systemd_service_")
       && typeof finding.targetRef === "string"
       && finding.targetRef.startsWith("systemd_service_")
-      && finding.subjectRef !== finding.targetRef
+       && finding.subjectRef !== finding.targetRef
       && Array.isArray(finding.evidenceRefs)
       && finding.evidenceRefs.length === 1
       && (() => {
@@ -582,6 +586,30 @@ function hasCoherentFindings(payload: unknown): boolean {
         return evidence.version === 2
           && evidence.provider === "systemd"
           && evidence.kind === "systemd_requires"
+          && evidence.assertionKind === "declared"
+          && evidence.providerSlot === "systemd"
+          && evidence.freshness === "fresh"
+          && evidence.subjectRef === finding.subjectRef;
+       })();
+    if (finding.ruleId === SYSTEMD_PART_OF_FINDING_RULE) return finding.severity === "advisory"
+      && finding.summary === SYSTEMD_PART_OF_FINDING_SUMMARY
+      && finding.recommendation === SYSTEMD_PART_OF_FINDING_RECOMMENDATION
+      && typeof finding.id === "string"
+      && finding.id.startsWith("finding_systemd_part_of_target_not_active_")
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("systemd_service_")
+      && typeof finding.targetRef === "string"
+      && finding.targetRef.startsWith("systemd_service_")
+      && finding.subjectRef !== finding.targetRef
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 1
+      && (() => {
+        const candidateEvidence = finding.evidenceRefs[0];
+        if (!candidateEvidence || typeof candidateEvidence !== "object") return false;
+        const evidence = candidateEvidence as Record<string, unknown>;
+        return evidence.version === 2
+          && evidence.provider === "systemd"
+          && evidence.kind === "systemd_part_of"
           && evidence.assertionKind === "declared"
           && evidence.providerSlot === "systemd"
           && evidence.freshness === "fresh"

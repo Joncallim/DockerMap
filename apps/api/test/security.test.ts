@@ -1153,50 +1153,50 @@ test("daemon model responses require non-empty revision and complete provider st
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].subjectRef = value.findings[0].targetRef; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); delete value.findings[0].evidenceRefs; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[0].evidenceRefs[0].freshness = "stale"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[2].targetRef = "host_risk_untrusted"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[1].kind = "docker_volume_mount"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[1].evidenceRefs[0].providerRevision = String(value.findings[1].evidenceRefs[0].collectedAt); return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[3].evidenceRefs[0], value.findings[3].evidenceRefs[1]] = [value.findings[3].evidenceRefs[1], value.findings[3].evidenceRefs[0]]; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].collectedAt += 1; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].providerRevision = "mismatched-revision"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].freshness = "stale"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].targetRef = "host_risk_untrusted"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].id = "finding_docker_daemon_state_bind_mount_publishes_port_forged"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].evidenceRefs[1].summary = "DOCKERMAP_TEST_FORGED_PORT"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[3].unsafe = "DOCKERMAP_TEST_EXTRA"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].summary = "DOCKERMAP_TEST_FORGED_COMPOSE_FINDING"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].id = "finding_docker_compose_declared_target_not_active_forged"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[0].freshness = "stale"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[0].kind = "docker_network_membership"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[2].evidenceRefs[1].kind = "docker_volume_mount"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[2].evidenceRefs[0].providerRevision = String(value.findings[2].evidenceRefs[0].collectedAt); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[4].evidenceRefs[0], value.findings[4].evidenceRefs[1]] = [value.findings[4].evidenceRefs[1], value.findings[4].evidenceRefs[0]]; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[1].collectedAt += 1; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[1].providerRevision = "mismatched-revision"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[1].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].targetRef = "host_risk_untrusted"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].id = "finding_docker_daemon_state_bind_mount_publishes_port_forged"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].evidenceRefs[1].summary = "DOCKERMAP_TEST_FORGED_PORT"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[4].unsafe = "DOCKERMAP_TEST_EXTRA"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].id = "finding_docker_compose_mutual_dependency_forged"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].summary = "DOCKERMAP_TEST_FORGED_MUTUAL_COMPOSE_FINDING"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[5].subjectRef, value.findings[5].targetRef] = [value.findings[5].targetRef, value.findings[5].subjectRef]; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[5].evidenceRefs[0], value.findings[5].evidenceRefs[1]] = [value.findings[5].evidenceRefs[1], value.findings[5].evidenceRefs[0]]; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[1].collectedAt += 1; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[1].providerRevision = "other-revision"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs.push(structuredClone(value.findings[5].evidenceRefs[0])); return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[1].kind = "docker_network_membership"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].summary = "DOCKERMAP_TEST_FORGED_COMPOSE_FINDING"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].id = "finding_docker_compose_declared_target_not_active_forged"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[0].kind = "docker_network_membership"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[5].unsafe = "DOCKERMAP_TEST_EXTRA"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].id = "finding_docker_compose_mutual_dependency_forged"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].summary = "DOCKERMAP_TEST_FORGED_MUTUAL_COMPOSE_FINDING"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[6].subjectRef, value.findings[6].targetRef] = [value.findings[6].targetRef, value.findings[6].subjectRef]; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[6].evidenceRefs[0], value.findings[6].evidenceRefs[1]] = [value.findings[6].evidenceRefs[1], value.findings[6].evidenceRefs[0]]; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].targetRef = "compose_runtime_binding_" + "0".repeat(64); return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].id = "/private/path/compose.yaml"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[1].providerRevision = "other-observation"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].summary = "/private/path/compose.yaml"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].targetRef = "host_risk_untrusted"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].summary = "DOCKERMAP_TEST_FORGED_UNSPECIFIED_ADDRESS"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].kind = "docker_port_publication"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].summary = "0.0.0.0:443"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[1].collectedAt += 1; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[1].providerRevision = "other-revision"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs.push(structuredClone(value.findings[6].evidenceRefs[0])); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[1].kind = "docker_network_membership"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[6].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); [value.findings[7].evidenceRefs[0], value.findings[7].evidenceRefs[1]] = [value.findings[7].evidenceRefs[1], value.findings[7].evidenceRefs[0]]; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].targetRef = "compose_runtime_binding_" + "0".repeat(64); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].id = "/private/path/compose.yaml"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[1].providerRevision = "other-observation"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].freshness = "stale"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs.push(structuredClone(value.findings[7].evidenceRefs[0])); return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].targetRef = "runtime_integrity_risk_other"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].summary = "collision: secret-provider-value"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[7].evidenceRefs[0].summary = "/private/path/compose.yaml"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].targetRef = "host_risk_untrusted"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].summary = "DOCKERMAP_TEST_FORGED_UNSPECIFIED_ADDRESS"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].kind = "docker_port_publication"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].summary = "0.0.0.0:443"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].providerSlot = "project_npm"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].freshness = "stale"; return value; })()],
-    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs[0].providerRevision = "fixture-revision"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[8].evidenceRefs.push(structuredClone(value.findings[8].evidenceRefs[0])); return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[9].targetRef = "runtime_integrity_risk_other"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[9].evidenceRefs[0].summary = "collision: secret-provider-value"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[9].evidenceRefs[0].freshness = "stale"; return value; })()],
+    ["/daemon/findings", (() => { const value = structuredClone(findings); value.findings[9].evidenceRefs[0].providerRevision = "fixture-revision"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.source = "untrusted"; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.source = null; return value; })()],
     ["/daemon/findings", (() => { const value = structuredClone(findings); value.source = 1; return value; })()],
@@ -1301,6 +1301,34 @@ test("Docker v1 finding evidence accepts an omitted slot but rejects every named
       `Docker v1 evidence ${index} must reject a named provider slot`
     );
   }
+});
+
+test("PartOf findings accept only one fresh declared Systemd PartOf fact", async () => {
+  const { validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/findings-response.json", import.meta.url), "utf8"
+  )) as { findings: Array<{ ruleId: string; evidenceRefs: Array<Record<string, unknown>> }> };
+  const partOf = fixture.findings.find(({ ruleId }) => ruleId === "systemd.part_of_target_not_active");
+  assert.ok(partOf, "canonical findings must exercise PartOf evidence");
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/findings", fixture));
+
+  for (const mutate of [
+    (evidence: Record<string, unknown>) => { evidence.freshness = "stale"; },
+    (evidence: Record<string, unknown>) => { evidence.kind = "systemd_requires"; },
+    (evidence: Record<string, unknown>) => { evidence.provider = "docker"; },
+    (evidence: Record<string, unknown>) => { evidence.assertionKind = "observed"; },
+  ]) {
+    const forged = structuredClone(fixture);
+    const evidence = forged.findings.find(({ ruleId }) => ruleId === "systemd.part_of_target_not_active")?.evidenceRefs[0];
+    assert.ok(evidence);
+    mutate(evidence);
+    assert.throws(() => validateDaemonResponse("/daemon/findings", forged));
+  }
+  const plural = structuredClone(fixture);
+  const pluralFinding = plural.findings.find(({ ruleId }) => ruleId === "systemd.part_of_target_not_active");
+  assert.ok(pluralFinding);
+  pluralFinding.evidenceRefs.push(structuredClone(pluralFinding.evidenceRefs[0]));
+  assert.throws(() => validateDaemonResponse("/daemon/findings", plural));
 });
 
 test("daemon runtime provider metadata retains successful evidence across retries", async () => {
