@@ -638,6 +638,8 @@ impl DaemonCache {
             .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
         // Findings are a pure projection of the sanitized runtime map, so
         // calculate and cache them only after the publication revision exists.
+        let bench_sink = crate::bench_timing::sink();
+        let findings_started = std::time::Instant::now();
         let mut findings = derive_findings(&self.runtime_map);
         if self.health.mode == RuntimeMode::Docker {
             if let Some((scan, binding)) = &self.compose_runtime_binding {
@@ -647,6 +649,11 @@ impl DaemonCache {
             }
         }
         findings.sort_by(|left, right| left.id.cmp(&right.id));
+        crate::bench_timing::record(
+            bench_sink.as_deref(),
+            crate::bench_timing::STAGE_FINDINGS_DERIVATION,
+            findings_started,
+        );
         self.findings = FindingsResponse {
             summary: FindingSummary::from_findings(&findings),
             findings,
@@ -863,12 +870,22 @@ where
         + 'static,
 {
     let started = tokio::time::Instant::now();
+    // Test-only stage attribution (#335). Disabled unless the benchmark harness
+    // sets an absolute DOCKERMAP_BENCH_STAGE_TIMING_PATH; it records durations
+    // only and never changes what is collected or published.
+    let bench_sink = crate::bench_timing::sink();
+    let bench_docker_started = std::time::Instant::now();
     let observation =
         match tokio::time::timeout(snapshot_timeout, collector.collect_observation()).await {
             Ok(Ok(observation)) => observation,
             Ok(Err(error)) => return Err(DockerReadFailure::Failed(error)),
             Err(_) => return Err(DockerReadFailure::TimedOut),
         };
+    crate::bench_timing::record(
+        bench_sink.as_deref(),
+        crate::bench_timing::STAGE_DOCKER_OBSERVATION,
+        bench_docker_started,
+    );
     let mut snapshot = observation.snapshot;
     snapshot.images = derive_images(&snapshot);
     let collected_at = snapshot.last_updated;
@@ -885,10 +902,21 @@ where
                     let _flight = flight;
                     projection(observation.compose_containers, collected_at)
                 });
-                match tokio::time::timeout(remaining, projection_task).await {
+                let projection_started = std::time::Instant::now();
+                let binding = match tokio::time::timeout(remaining, projection_task).await {
                     Ok(Ok(binding)) => binding,
                     Ok(Err(_)) | Err(_) => None,
-                }
+                };
+                // Attributed separately from the Docker observation so the
+                // baseline can show that this projection currently sits inside
+                // the Docker publication budget. #336 owns moving it off that
+                // path; nothing is decoupled here.
+                crate::bench_timing::record(
+                    bench_sink.as_deref(),
+                    crate::bench_timing::STAGE_COMPOSE_ENRICHMENT,
+                    projection_started,
+                );
+                binding
             } else {
                 None
             }
