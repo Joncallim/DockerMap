@@ -16,7 +16,7 @@ import {
   withinTimeToAnswerPromotionLimit
 } from "./timeToAnswerEvidence";
 
-const environment = {
+const environment: Record<string, unknown> = {
   runnerClass: "hearth-dedicated-x64",
   cpuClass: "pinned-4-vcpu",
   osImage: "ubuntu-24.04@sha256:fixture",
@@ -31,9 +31,18 @@ const environment = {
   buildMode: "production",
   fixtureRevision: "dockermap-v1/time-to-answer-fixtures-1",
   sourceRevision: "candidate"
-} as const;
+};
 
-function rawEvidence() {
+/**
+ * Deliberately loosely typed: every hostile case below mutates the raw JSON a
+ * benchmark job would emit, and the validator must reject it without the test
+ * needing a cast per mutation.
+ */
+function rawEvidence(): {
+  baseline: string;
+  environment: Record<string, unknown>;
+  records: { fixture: string; stage: string; runs: number[][] }[];
+} {
   return {
     baseline: TIME_TO_ANSWER_BASELINE,
     environment,
@@ -70,7 +79,7 @@ describe("time-to-answer evidence contract", () => {
     }
     // Every listed fixture is a declared fixture, and the matrix is the union
     // of the per-stage lists with no duplicate pair.
-    const declared = new Set(TIME_TO_ANSWER_REFERENCE_FIXTURES.map((fixture) => fixture.name));
+    const declared = new Set<string>(TIME_TO_ANSWER_REFERENCE_FIXTURES.map((fixture) => fixture.name));
     const expectedPairs = TIME_TO_ANSWER_STAGES.flatMap((stage) => stage.fixtures).length;
     expect(TIME_TO_ANSWER_MATRIX.length).toBe(expectedPairs);
     expect(new Set(TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => `${fixture}\u0000${stage}`)).size).toBe(
