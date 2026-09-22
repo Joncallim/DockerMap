@@ -308,8 +308,9 @@ nonempty model revision matches the current live model.
 evidence: a declaration whose current service-state endpoints satisfy a closed
 condition (`systemd.requires_target_not_active`), the path-free Docker
 daemon-state facts whose recorded access may provide Docker daemon API
-authority (`docker.daemon_state_bind_mount` and its co-occurrence with a
-validated host-to-container port publication), or a fresh declared Compose
+authority (`docker.daemon_state_bind_mount` and
+`docker.daemon_state_bind_mount_publishes_port`, the latter for its co-occurrence
+with a validated host-to-container port publication), or a fresh declared Compose
 mount absent from its exactly bound runtime container
 (`compose.declared_mount_missing_at_bound_container`). None of these meanings
 proves a failed start, breach, reachability, compromise, data loss, or impact.
@@ -317,11 +318,11 @@ proves a failed start, breach, reachability, compromise, data loss, or impact.
 but establishes nothing about exposure, reachability, vulnerability, or impact:
 a declared Systemd dependency relationship that cannot currently be trusted
 (`systemd.part_of_target_not_active`,
-`runtime.declared_relationship_evidence_not_current`), a fresh combination of
-directly observed Docker facts (`docker.compose_declared_target_not_active`,
-`docker.compose_mutual_dependency`,
-`docker.internal_network_member_publishes_port`,
-`docker.port_published_on_unspecified_address`), or the single aggregate
+`runtime.declared_relationship_evidence_not_current`), a single fresh Docker
+fact (`docker.compose_declared_target_not_active`,
+`docker.port_published_on_unspecified_address`), a fresh pair of matching Docker
+facts (`docker.compose_mutual_dependency`,
+`docker.internal_network_member_publishes_port`), or the single aggregate
 DockerMap evidence-integrity fact (`runtime.identity_collision_detected`).
 There is no critical severity in the current pack. New rules require an explicit
 contract, fixed evidence budget, deterministic positive and benign-negative

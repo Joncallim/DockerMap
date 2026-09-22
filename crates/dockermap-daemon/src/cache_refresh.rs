@@ -3953,6 +3953,7 @@ mod scheduler_tests {
             for claim in [
                 format!("{word}-item"),
                 format!("{word}-slot runtime vector"),
+                format!("{word}-slot evidence"),
                 format!("{word} fixed slots"),
             ] {
                 assert!(
