@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { useApp } from "../context";
 import Icon from "../components/Icon";
 import { EmptyState, Loading, Panel, Tag } from "../components/primitives";
-import { presentationForFinding } from "../lib/findingPresentation";
+import { presentationForFinding, ZERO_FINDINGS_EMPTY_STATE } from "../lib/findingPresentation";
 
 export default function Findings() {
   const { findings, loading, evidenceMode, modelProvenance } = useApp();
@@ -30,7 +30,7 @@ export default function Findings() {
       ) : liveFindings.findings.length === 0 ? (
         <Panel title="Findings" icon="check" hint="Live evidence">
           <FindingSummary summary={liveFindings.summary} />
-          <EmptyState icon="check" title="No current findings" body="No supported declared-dependency condition is currently detected." />
+          <EmptyState icon="check" title={ZERO_FINDINGS_EMPTY_STATE.title} body={ZERO_FINDINGS_EMPTY_STATE.body} />
         </Panel>
       ) : (
         <div className="stack">

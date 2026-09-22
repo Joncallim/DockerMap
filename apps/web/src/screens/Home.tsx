@@ -13,6 +13,7 @@ import {
   SAMPLE_EMPTY_TITLE
 } from "../lib/history";
 import { identityText, UNAVAILABLE_SERVICE } from "../lib/identity";
+import { ZERO_FINDINGS_EMPTY_STATE } from "../lib/findingPresentation";
 import Icon, { KIND_ICON } from "../components/Icon";
 import ServiceMap from "../components/ServiceMap";
 import { Bar, EmptyState, ErrorState, Loading, Metric, Panel, StatePill, Tag } from "../components/primitives";
@@ -126,7 +127,7 @@ export default function Home() {
           <Panel title="Findings" icon="alert" hint={findings ? "Live evidence" : "Not collected"} actions={<Link className="ghost-link" to="/findings">Review</Link>}>
             {findings ? (
               findings.findings.length === 0
-                ? <EmptyState icon="check" title="No current findings" body="No supported declared-dependency condition is currently detected." />
+                ? <EmptyState icon="check" title={ZERO_FINDINGS_EMPTY_STATE.title} body={ZERO_FINDINGS_EMPTY_STATE.body} />
                 : <p className="muted-copy">{findings.findings.length} bounded finding{findings.findings.length === 1 ? "" : "s"} available for review.</p>
             ) : (
               <EmptyState icon="alert" title="Not collected" body="Findings require a coherent live Docker model." />

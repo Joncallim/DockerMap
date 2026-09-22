@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { FindingsResponse } from "@dockermap/contracts";
 import { AppContext, type AppContextValue } from "../context";
 import Findings from "./Findings";
+import { ZERO_FINDINGS_EMPTY_STATE } from "../lib/findingPresentation";
 
 const findings: FindingsResponse = {
   modelRevision: "findings-revision",
@@ -57,6 +58,26 @@ describe("Findings screen", () => {
     const html = render({ findings: null });
     expect(html).toContain("Live evidence is not established");
     expect(html).toContain("model revision matches the current live Docker model");
+  });
+
+  it("scopes the zero-findings state to available supported evidence instead of health", () => {
+    const empty: FindingsResponse = {
+      modelRevision: "findings-revision",
+      summary: {
+        warningCount: 0, advisoryCount: 0, declaredDependencyCount: 0,
+        dockerDaemonAuthorityCount: 0, hostPortPublicationCount: 0, evidenceIntegrityCount: 0,
+      },
+      findings: [],
+    };
+    const html = render({ findings: empty });
+    expect(html).toContain(ZERO_FINDINGS_EMPTY_STATE.body);
+    // Zero findings may only describe the evidence DockerMap supports right
+    // now. It must never read as a complete or healthy-host conclusion, and
+    // must not narrow the rule pack to declared-dependency conditions.
+    expect(html).toContain("not a claim that the host, its services, or the evidence behind them are healthy or complete");
+    expect(html).not.toContain("declared-dependency condition");
+    expect(html).not.toContain("Everything is healthy");
+    expect(html).not.toContain("all healthy");
   });
 
   it("describes the Docker internal-network condition without claiming Internet exposure", () => {

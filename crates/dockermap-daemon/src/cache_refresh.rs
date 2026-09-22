@@ -3677,7 +3677,7 @@ mod scheduler_tests {
         // Before Systemd became independently schedulable, one aggregate
         // host-scoped pass covered it alongside the four other fixed bundles.
         // Preserve that actual historical five-bundle baseline rather than
-        // retroactively multiplying the old cadence by today's six slots.
+        // retroactively multiplying the old cadence by today's eight slots.
         let legacy_aggregate_passes =
             (1 + 60 / STATIC_REFRESH_INTERVAL.as_secs()) * LEGACY_AGGREGATE_SLOT_COUNT;
         assert_eq!(legacy_aggregate_passes, 155);
@@ -3881,6 +3881,95 @@ mod scheduler_tests {
         }
     }
 
+    /// Guards the provider-scheduling ADR against the exact fixed-slot set this
+    /// module schedules. Adding, renaming, or removing a slot must update the
+    /// ADR, and a stale slot-count claim must not survive the change.
+    #[test]
+    fn provider_scheduling_adr_names_the_current_fixed_slot_set() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/architecture/PROVIDER_SCHEDULING_AND_MODEL_REVISIONS.md");
+        let doc = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+
+        // The ADR must name the slots in the exact order this module schedules
+        // them, as one literal backticked list, so a dropped, renamed or
+        // reordered slot fails here instead of surviving in unrelated prose.
+        // The comparison is whitespace-insensitive so prose line wrapping does
+        // not weaken it.
+        let normalized = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+        let ids: Vec<String> = STATIC_PROVIDER_SLOTS
+            .iter()
+            .map(|slot| {
+                serde_json::to_value(slot)
+                    .expect("provider slot serializes")
+                    .as_str()
+                    .expect("provider slot serializes to a string")
+                    .to_owned()
+            })
+            .collect();
+        let mut ordered = String::new();
+        for (index, id) in ids.iter().enumerate() {
+            if index > 0 {
+                ordered.push_str(if index + 1 == ids.len() {
+                    ", and "
+                } else {
+                    ", "
+                });
+            }
+            ordered.push('`');
+            ordered.push_str(id);
+            ordered.push('`');
+        }
+        assert!(
+            normalized.contains(&ordered),
+            "provider scheduling ADR must name the fixed slots in order: {ordered}"
+        );
+
+        const NUMBER_WORDS: [&str; 12] = [
+            "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+            "eleven", "twelve",
+        ];
+        let count_word = *NUMBER_WORDS
+            .get(STATIC_PROVIDER_SLOTS.len() - 1)
+            .unwrap_or_else(|| {
+                panic!(
+                    "extend NUMBER_WORDS for {} fixed slots",
+                    STATIC_PROVIDER_SLOTS.len()
+                )
+            });
+        assert!(
+            doc.contains(&format!("{count_word}-item"))
+                && doc.contains(&format!("{count_word}-slot")),
+            "provider scheduling ADR must state the current {count_word} fixed slots"
+        );
+        for word in NUMBER_WORDS {
+            if word == count_word {
+                continue;
+            }
+            // Only claims that encode the public slot COUNT are stale: the
+            // providerStates bound, the runtime vector, and the legacy numeric
+            // baseline. Unrelated phrases such as "two-slot concurrency" are
+            // deliberately not matched.
+            for claim in [
+                format!("{word}-item"),
+                format!("{word}-slot runtime vector"),
+                format!("{word}-slot evidence"),
+                format!("{word} fixed slots"),
+            ] {
+                assert!(
+                    !normalized.contains(&claim),
+                    "provider scheduling ADR retains a stale slot-count claim: `{claim}`"
+                );
+            }
+        }
+        for stale in ["six slots", "six fixed", "33 actual slot claims"] {
+            assert!(
+                !doc.contains(stale),
+                "provider scheduling ADR retains a stale scheduling claim: `{stale}`"
+            );
+        }
+    }
+
     async fn run_real_collector_churn_trace(profile: &str) -> BTreeMap<ProviderSlot, usize> {
         let state = AppState {
             allow_mock: true,
@@ -3933,6 +4022,7 @@ mod scheduler_tests {
                 ProviderSlot::HostScoped,
                 ProviderSlot::Tmux,
                 ProviderSlot::Cron,
+                ProviderSlot::Systemd,
                 ProviderSlot::PythonProcesses,
                 ProviderSlot::NativeProcesses,
             ] {
