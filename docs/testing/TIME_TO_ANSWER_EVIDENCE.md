@@ -120,6 +120,22 @@ not "close enough".
 No optimization claim in #336/#337/#338 (or later) may be accepted without
 comparing against this baseline under this rule.
 
+## Stage attribution inside the daemon
+
+`dockerObservationMs`, `composeEnrichmentMs` and `findingsDerivationMs` are
+measured by a **test-only** hook in the daemon
+(`crates/dockermap-daemon/src/bench_timing.rs`). It is inert unless
+`DOCKERMAP_BENCH_STAGE_TIMING_PATH` names an absolute path; it then appends
+newline-delimited JSON records to that file. There is no route, no response
+field, no runtime telemetry, and no behaviour change.
+
+The hook times the Docker inventory read and the Compose filesystem projection
+**separately while both still execute inside the same Docker publication
+budget**. This baseline is therefore expected to show that Compose projection
+currently sits inside the Docker critical path. That is the measurement, not a
+fix: **nothing is decoupled here, and #336 owns moving the projection off that
+path** — these are the numbers it must improve against.
+
 ## Current state of this slice
 
 Done and enforced by tests:
@@ -129,11 +145,23 @@ Done and enforced by tests:
   summary math and the promotion gate;
 - the deterministic fixture topology and the fixture Docker daemon, proven
   against the real daemon build;
+- the inert bench-only stage attribution hook for `dockerObservationMs`,
+  `composeEnrichmentMs` and `findingsDerivationMs`, covering 4 unit tests
+  including "a disabled hook writes nothing";
 - `npm run test:perf` wired into `npm run check:js`.
 
-Not yet in place (this is the remainder of #335, not a completed claim): the
-single documented capture command that drives all three controlled runs end to
-end, the browser-side stage probes that reuse the existing Playwright harness
-for the rendering/model/search stages, and the first captured baseline artifact.
+Not yet in place (this is the remainder of #335, not a completed claim):
+
+1. the single documented capture command that drives all three controlled runs
+   end to end and writes the closed artifact. Its orchestration needs the real
+   API (`tsx apps/api/src/index.ts`) and the production web build
+   (`vite preview`) alongside the daemon, which is a harness of its own;
+2. the browser-side probes for the model/rendering/search stages
+   (`publicationToNodeObservationMs`, `notificationToCoherentModelMs`,
+   `coherentModelToUsefulRenderMs`, `buildModelMs`, `legacyTopologyLayoutMs`,
+   `commandQueryMs`, `productionBundleMs`), reusing the existing Playwright
+   setup rather than duplicating it;
+3. the first captured baseline artifact.
+
 Until that baseline exists there is no performance number to quote and no
 optimization may be claimed.
