@@ -3891,33 +3891,77 @@ mod scheduler_tests {
         let doc = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
 
-        for slot in STATIC_PROVIDER_SLOTS {
-            let value = serde_json::to_value(slot).expect("provider slot serializes");
-            let id = value
-                .as_str()
-                .expect("provider slot serializes to a string");
-            assert!(
-                doc.contains(id),
-                "provider scheduling ADR must name the fixed slot `{id}`"
-            );
+        // The ADR must name the slots in the exact order this module schedules
+        // them, as one literal backticked list, so a dropped, renamed or
+        // reordered slot fails here instead of surviving in unrelated prose.
+        // The comparison is whitespace-insensitive so prose line wrapping does
+        // not weaken it.
+        let normalized = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+        let ids: Vec<String> = STATIC_PROVIDER_SLOTS
+            .iter()
+            .map(|slot| {
+                serde_json::to_value(slot)
+                    .expect("provider slot serializes")
+                    .as_str()
+                    .expect("provider slot serializes to a string")
+                    .to_owned()
+            })
+            .collect();
+        let mut ordered = String::new();
+        for (index, id) in ids.iter().enumerate() {
+            if index > 0 {
+                ordered.push_str(if index + 1 == ids.len() {
+                    ", and "
+                } else {
+                    ", "
+                });
+            }
+            ordered.push('`');
+            ordered.push_str(id);
+            ordered.push('`');
         }
+        assert!(
+            normalized.contains(&ordered),
+            "provider scheduling ADR must name the fixed slots in order: {ordered}"
+        );
 
-        let count_word = match STATIC_PROVIDER_SLOTS.len() {
-            8 => "eight",
-            other => panic!("update this guard and the ADR for {other} fixed slots"),
-        };
+        const NUMBER_WORDS: [&str; 12] = [
+            "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+            "eleven", "twelve",
+        ];
+        let count_word = *NUMBER_WORDS
+            .get(STATIC_PROVIDER_SLOTS.len() - 1)
+            .unwrap_or_else(|| {
+                panic!(
+                    "extend NUMBER_WORDS for {} fixed slots",
+                    STATIC_PROVIDER_SLOTS.len()
+                )
+            });
         assert!(
             doc.contains(&format!("{count_word}-item"))
                 && doc.contains(&format!("{count_word}-slot")),
             "provider scheduling ADR must state the current {count_word} fixed slots"
         );
-        for stale in [
-            "six-item",
-            "six-slot",
-            "six slots",
-            "six fixed",
-            "33 actual slot claims",
-        ] {
+        for word in NUMBER_WORDS {
+            if word == count_word {
+                continue;
+            }
+            // Only claims that encode the public slot COUNT are stale: the
+            // providerStates bound, the runtime vector, and the legacy numeric
+            // baseline. Unrelated phrases such as "two-slot concurrency" are
+            // deliberately not matched.
+            for claim in [
+                format!("{word}-item"),
+                format!("{word}-slot runtime vector"),
+                format!("{word} fixed slots"),
+            ] {
+                assert!(
+                    !normalized.contains(&claim),
+                    "provider scheduling ADR retains a stale slot-count claim: `{claim}`"
+                );
+            }
+        }
+        for stale in ["six slots", "six fixed", "33 actual slot claims"] {
             assert!(
                 !doc.contains(stale),
                 "provider scheduling ADR retains a stale scheduling claim: `{stale}`"
@@ -3977,6 +4021,7 @@ mod scheduler_tests {
                 ProviderSlot::HostScoped,
                 ProviderSlot::Tmux,
                 ProviderSlot::Cron,
+                ProviderSlot::Systemd,
                 ProviderSlot::PythonProcesses,
                 ProviderSlot::NativeProcesses,
             ] {

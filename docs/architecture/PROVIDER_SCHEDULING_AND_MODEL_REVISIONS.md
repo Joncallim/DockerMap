@@ -45,8 +45,10 @@ the fixed slots: `network_infrastructure`, `host_scoped`, `tmux`, `cron`,
 `systemd`, `python_processes`, `native_processes`, and `project_npm`. Each
 entry contains only its slot and one of `fresh`, `stale`, `collecting`,
 `unavailable`, `timed_out`, or `disabled`. It contains no provider command,
-path, raw error, diagnostic, secret, timestamp, or configurable policy.
-Diagnostics remain the human-readable, publication-sanitized explanation.
+path, raw error, diagnostic, secret, or configurable policy; its only timestamp
+data is the bounded, schema-checked freshness metadata documented in the next
+section. Diagnostics remain the human-readable, publication-sanitized
+explanation.
 
 The schema enforces item shape and an eight-item bound; the Node daemon-response
 boundary additionally rejects a vector unless every fixed slot appears exactly
