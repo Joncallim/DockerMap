@@ -1331,6 +1331,39 @@ test("PartOf findings accept only one fresh declared Systemd PartOf fact", async
   assert.throws(() => validateDaemonResponse("/daemon/findings", plural));
 });
 
+test("non-current declared relationship findings accept only one stale or timed-out Systemd relationship fact", async () => {
+  const { validateDaemonResponse } = await import("../src/daemonResponseValidation.js");
+  const fixture = JSON.parse(await readFile(
+    new URL("../../../tests/fixtures/contracts/findings-response.json", import.meta.url), "utf8"
+  )) as { findings: Array<{ ruleId: string; evidenceRefs: Array<Record<string, unknown>> }> };
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/findings", fixture));
+  const nonCurrent = fixture.findings.find(({ ruleId }) => ruleId === "runtime.declared_relationship_evidence_not_current");
+  assert.ok(nonCurrent, "canonical findings must exercise non-current declared relationship evidence");
+  const timedOut = structuredClone(fixture);
+  const timedOutEvidence = timedOut.findings.find(({ ruleId }) => ruleId === "runtime.declared_relationship_evidence_not_current")?.evidenceRefs[0];
+  assert.ok(timedOutEvidence);
+  timedOutEvidence.freshness = "timed_out";
+  assert.doesNotThrow(() => validateDaemonResponse("/daemon/findings", timedOut));
+  for (const mutate of [
+    (evidence: Record<string, unknown>) => { evidence.freshness = "fresh"; },
+    (evidence: Record<string, unknown>) => { evidence.kind = "docker_compose_depends_on"; },
+    (evidence: Record<string, unknown>) => { evidence.provider = "docker"; },
+    (evidence: Record<string, unknown>) => { evidence.assertionKind = "observed"; },
+    (evidence: Record<string, unknown>) => { evidence.providerSlot = null; },
+  ]) {
+    const forged = structuredClone(fixture);
+    const evidence = forged.findings.find(({ ruleId }) => ruleId === "runtime.declared_relationship_evidence_not_current")?.evidenceRefs[0];
+    assert.ok(evidence);
+    mutate(evidence);
+    assert.throws(() => validateDaemonResponse("/daemon/findings", forged));
+  }
+  const plural = structuredClone(fixture);
+  const pluralFinding = plural.findings.find(({ ruleId }) => ruleId === "runtime.declared_relationship_evidence_not_current");
+  assert.ok(pluralFinding);
+  pluralFinding.evidenceRefs.push(structuredClone(pluralFinding.evidenceRefs[0]));
+  assert.throws(() => validateDaemonResponse("/daemon/findings", plural));
+});
+
 test("daemon runtime provider metadata retains successful evidence across retries", async () => {
   const fixture = JSON.parse(await readFile(
     new URL("../../../tests/fixtures/contracts/runtime-map.json", import.meta.url), "utf8"

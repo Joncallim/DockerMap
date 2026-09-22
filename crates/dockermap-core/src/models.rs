@@ -1652,6 +1652,8 @@ pub enum FindingRule {
     ComposeDeclaredMountMissingAtBoundContainer,
     #[serde(rename = "runtime.identity_collision_detected")]
     RuntimeIdentityCollisionDetected,
+    #[serde(rename = "runtime.declared_relationship_evidence_not_current")]
+    RuntimeDeclaredRelationshipEvidenceNotCurrent,
 }
 
 /// The one mutually-exclusive family assigned to every closed finding rule.
@@ -1679,7 +1681,8 @@ impl FindingRule {
             Self::ComposeDeclaredMountMissingAtBoundContainer => {
                 FindingCategory::DeclaredDependency
             }
-            Self::RuntimeIdentityCollisionDetected => FindingCategory::EvidenceIntegrity,
+            Self::RuntimeIdentityCollisionDetected
+            | Self::RuntimeDeclaredRelationshipEvidenceNotCurrent => FindingCategory::EvidenceIntegrity,
         }
     }
 }
