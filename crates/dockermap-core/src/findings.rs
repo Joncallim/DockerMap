@@ -14,6 +14,10 @@ const PART_OF_SUMMARY: &str =
     "An active systemd service is PartOf a unit that is inactive or failed.";
 const PART_OF_RECOMMENDATION: &str =
     "Inspect the coupling target unit's state and the declaring unit's PartOf configuration.";
+const DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_SUMMARY: &str =
+    "A declared systemd dependency relationship is attested only by stale or timed-out evidence.";
+const DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_RECOMMENDATION: &str =
+    "Inspect the systemd provider collection state before trusting dependency conclusions for this pair.";
 const INTERNAL_NETWORK_PORT_SUMMARY: &str =
     "A container on an internal Docker network also has a published host port.";
 const INTERNAL_NETWORK_PORT_RECOMMENDATION: &str =
@@ -96,6 +100,14 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
                 .or_default() += 1;
         }
     }
+    let mut non_current_declared_relationship_counts = BTreeMap::<(&str, &str), usize>::new();
+    for edge in &runtime_map.edges {
+        if is_candidate_non_current_declared_relationship(edge) {
+            *non_current_declared_relationship_counts
+                .entry((edge.source.as_str(), edge.target.as_str()))
+                .or_default() += 1;
+        }
+    }
 
     let mut daemon_state_counts = BTreeMap::<(&str, &str), usize>::new();
     for edge in &runtime_map.edges {
@@ -165,6 +177,37 @@ pub fn derive_findings(runtime_map: &RuntimeMap) -> Vec<Finding> {
     }
 
     let mut findings = Vec::new();
+    for edge in &runtime_map.edges {
+        let pair = (edge.source.as_str(), edge.target.as_str());
+        if non_current_declared_relationship_counts.get(&pair) != Some(&1)
+            || !is_candidate_non_current_declared_relationship(edge)
+        {
+            continue;
+        }
+        let (Some(source), Some(target)) = (nodes.get(pair.0), nodes.get(pair.1)) else {
+            continue;
+        };
+        if source.provider != RuntimeProviderKind::Systemd
+            || target.provider != RuntimeProviderKind::Systemd
+            || source.kind != RuntimeNodeKind::SystemdService
+            || target.kind != RuntimeNodeKind::SystemdService
+        {
+            continue;
+        }
+        findings.push(Finding {
+            id: format!(
+                "finding_runtime_declared_relationship_evidence_not_current_{}",
+                collision_resistant_id_component(&format!("{}\u{1f}{}", edge.source, edge.target))
+            ),
+            rule_id: FindingRule::RuntimeDeclaredRelationshipEvidenceNotCurrent,
+            severity: FindingSeverity::Advisory,
+            summary: DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_SUMMARY.into(),
+            recommendation: DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_RECOMMENDATION.into(),
+            subject_ref: edge.source.clone(),
+            target_ref: edge.target.clone(),
+            evidence_refs: vec![edge.evidence_refs[0].clone()],
+        });
+    }
     let integrity_edge_count = runtime_map
         .edges
         .iter()
@@ -723,6 +766,38 @@ fn is_candidate_part_of(edge: &crate::RuntimeMapEdge) -> bool {
         )
 }
 
+fn is_candidate_non_current_declared_relationship(edge: &crate::RuntimeMapEdge) -> bool {
+    edge.has_valid_evidence_refs()
+        && edge.source != edge.target
+        && edge.evidence_refs.len() == 1
+        && matches!(
+            (
+                &edge.relationship,
+                edge.evidence_refs.first().map(|evidence| &evidence.kind)
+            ),
+            (
+                RuntimeRelationshipKind::Requires,
+                Some(RuntimeEvidenceKind::SystemdRequires)
+            ) | (
+                RuntimeRelationshipKind::Wants,
+                Some(RuntimeEvidenceKind::SystemdWants)
+            ) | (
+                RuntimeRelationshipKind::PartOf,
+                Some(RuntimeEvidenceKind::SystemdPartOf)
+            )
+        )
+        && matches!(
+            edge.evidence_refs.first(),
+            Some(evidence)
+                if evidence.version == 2
+                    && evidence.provider == RuntimeEvidenceProvider::Systemd
+                    && evidence.assertion_kind == RuntimeEvidenceAssertionKind::Declared
+                    && matches!(evidence.freshness, RuntimeEvidenceFreshness::Stale | RuntimeEvidenceFreshness::TimedOut)
+                    && evidence.subject_ref == edge.source
+                    && evidence.provider_slot == Some(crate::ProviderSlot::Systemd)
+        )
+}
+
 fn is_candidate_compose_dependency<'a>(
     edge: &crate::RuntimeMapEdge,
     nodes: &BTreeMap<&'a str, &'a crate::RuntimeMapNode>,
@@ -801,6 +876,110 @@ mod tests {
         edge
     }
 
+    fn wants_edge(freshness: RuntimeEvidenceFreshness) -> RuntimeMapEdge {
+        let mut edge = edge(freshness);
+        edge.relationship = RuntimeRelationshipKind::Wants;
+        edge.evidence_refs[0].id = "systemd_evidence_wants_safe".into();
+        edge.evidence_refs[0].kind = RuntimeEvidenceKind::SystemdWants;
+        edge.evidence_refs[0].summary = "systemd declared a Wants dependency".into();
+        edge
+    }
+
+    #[test]
+    fn emits_advisory_for_each_non_current_declared_systemd_relationship() {
+        for (edge, freshness) in [
+            (
+                edge(RuntimeEvidenceFreshness::Stale),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                edge(RuntimeEvidenceFreshness::TimedOut),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
+            (
+                wants_edge(RuntimeEvidenceFreshness::Stale),
+                RuntimeEvidenceFreshness::Stale,
+            ),
+            (
+                part_of_edge(RuntimeEvidenceFreshness::TimedOut),
+                RuntimeEvidenceFreshness::TimedOut,
+            ),
+        ] {
+            let input = map(edge);
+            let findings = derive_findings(&input);
+            assert_eq!(findings.len(), 1);
+            let finding = &findings[0];
+            assert_eq!(
+                finding.rule_id,
+                FindingRule::RuntimeDeclaredRelationshipEvidenceNotCurrent
+            );
+            assert_eq!(finding.severity, FindingSeverity::Advisory);
+            assert_eq!(
+                finding.summary,
+                DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_SUMMARY
+            );
+            assert_eq!(
+                finding.recommendation,
+                DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_RECOMMENDATION
+            );
+            assert_eq!(finding.subject_ref, "systemd_service_source");
+            assert_eq!(finding.target_ref, "systemd_service_target");
+            assert_eq!(
+                finding.evidence_refs,
+                vec![input.edges[0].evidence_refs[0].clone()]
+            );
+            assert_eq!(finding.evidence_refs[0].freshness, freshness);
+            assert_eq!(
+                finding.id,
+                format!(
+                    "finding_runtime_declared_relationship_evidence_not_current_{}",
+                    collision_resistant_id_component(
+                        "systemd_service_source\u{1f}systemd_service_target"
+                    )
+                )
+            );
+            assert_eq!(findings, derive_findings(&input));
+        }
+    }
+
+    #[test]
+    fn non_current_relationship_rule_fails_closed_for_fresh_ambiguous_or_invalid_inputs() {
+        for edge in [
+            edge(RuntimeEvidenceFreshness::Fresh),
+            wants_edge(RuntimeEvidenceFreshness::Fresh),
+            part_of_edge(RuntimeEvidenceFreshness::Fresh),
+        ] {
+            assert!(derive_findings(&map(edge))
+                .iter()
+                .all(|finding| finding.rule_id
+                    != FindingRule::RuntimeDeclaredRelationshipEvidenceNotCurrent));
+        }
+        let mut duplicate = map(edge(RuntimeEvidenceFreshness::Stale));
+        duplicate
+            .edges
+            .push(edge(RuntimeEvidenceFreshness::TimedOut));
+        assert!(derive_findings(&duplicate).is_empty());
+        let mut plural = map(edge(RuntimeEvidenceFreshness::Stale));
+        let duplicate_evidence = plural.edges[0].evidence_refs[0].clone();
+        plural.edges[0].evidence_refs.push(duplicate_evidence);
+        assert!(derive_findings(&plural).is_empty());
+        let mut malformed = map(edge(RuntimeEvidenceFreshness::Stale));
+        malformed.edges[0].evidence_refs[0].provider = RuntimeEvidenceProvider::Docker;
+        assert!(derive_findings(&malformed).is_empty());
+        let mut self_edge = map(edge(RuntimeEvidenceFreshness::Stale));
+        self_edge.edges[0].target = self_edge.edges[0].source.clone();
+        assert!(derive_findings(&self_edge).is_empty());
+        let mut non_systemd = map(edge(RuntimeEvidenceFreshness::Stale));
+        non_systemd.nodes[1].provider = RuntimeProviderKind::Docker;
+        assert!(derive_findings(&non_systemd).is_empty());
+        let mut missing = map(edge(RuntimeEvidenceFreshness::Stale));
+        missing.nodes.pop();
+        assert!(derive_findings(&missing).is_empty());
+        let mut unrelated = map(edge(RuntimeEvidenceFreshness::Stale));
+        unrelated.edges[0].relationship = RuntimeRelationshipKind::DependsOn;
+        assert!(derive_findings(&unrelated).is_empty());
+    }
+
     #[test]
     fn emits_deterministic_advisory_for_fresh_part_of_to_inactive_or_failed_target() {
         for target_status in ["inactive", "failed"] {
@@ -834,12 +1013,6 @@ mod tests {
 
     #[test]
     fn part_of_fails_closed_for_benign_stale_or_ambiguous_inputs() {
-        for freshness in [
-            RuntimeEvidenceFreshness::Stale,
-            RuntimeEvidenceFreshness::TimedOut,
-        ] {
-            assert!(derive_findings(&map(part_of_edge(freshness))).is_empty());
-        }
         let mut wants = map(part_of_edge(RuntimeEvidenceFreshness::Fresh));
         // Wants is intentionally best-effort and has no Findings rule.
         wants.edges[0].relationship = RuntimeRelationshipKind::Wants;
@@ -917,12 +1090,6 @@ mod tests {
 
     #[test]
     fn fails_closed_for_stale_ambiguous_or_non_matching_inputs() {
-        for freshness in [
-            RuntimeEvidenceFreshness::Stale,
-            RuntimeEvidenceFreshness::TimedOut,
-        ] {
-            assert!(derive_findings(&map(edge(freshness))).is_empty());
-        }
         let mut ambiguous = map(edge(RuntimeEvidenceFreshness::Fresh));
         ambiguous.edges.push(edge(RuntimeEvidenceFreshness::Fresh));
         assert!(derive_findings(&ambiguous).is_empty());
@@ -1877,6 +2044,10 @@ mod tests {
                 map(part_of_edge(RuntimeEvidenceFreshness::Fresh)),
             ),
             (
+                FindingRule::RuntimeDeclaredRelationshipEvidenceNotCurrent,
+                map(wants_edge(RuntimeEvidenceFreshness::Stale)),
+            ),
+            (
                 FindingRule::DockerInternalNetworkMemberPublishesPort,
                 internal_network_port_map(),
             ),
@@ -1920,6 +2091,9 @@ mod tests {
         findings.extend(derive_findings(&map(part_of_edge(
             RuntimeEvidenceFreshness::Fresh,
         ))));
+        findings.extend(derive_findings(&map(wants_edge(
+            RuntimeEvidenceFreshness::Stale,
+        ))));
         findings.extend(derive_findings(&internal_network_port_map()));
         findings.extend(derive_findings(&unspecified_address_port_map()));
         findings.extend(derive_findings(&daemon_state_map()));
@@ -1929,18 +2103,18 @@ mod tests {
 
         assert_eq!(
             findings.len(),
-            9,
+            10,
             "the representative maps exercise all closed rules"
         );
         assert_eq!(
             crate::FindingSummary::from_findings(&findings),
             crate::FindingSummary {
                 warning_count: 4,
-                advisory_count: 5,
+                advisory_count: 6,
                 declared_dependency_count: 4,
                 docker_daemon_authority_count: 2,
                 host_port_publication_count: 3,
-                evidence_integrity_count: 0,
+                evidence_integrity_count: 1,
             }
         );
 
@@ -1950,12 +2124,13 @@ mod tests {
         findings[0].severity = FindingSeverity::Advisory;
         let mutated = crate::FindingSummary::from_findings(&findings);
         assert_eq!(mutated.warning_count, 3);
-        assert_eq!(mutated.advisory_count, 6);
+        assert_eq!(mutated.advisory_count, 7);
         assert_eq!(
             mutated.declared_dependency_count
                 + mutated.docker_daemon_authority_count
-                + mutated.host_port_publication_count,
-            9
+                + mutated.host_port_publication_count
+                + mutated.evidence_integrity_count,
+            10
         );
     }
 

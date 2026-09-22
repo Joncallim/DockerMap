@@ -2,11 +2,11 @@
   "modelRevision": "fixture-findings-revision",
   "summary": {
     "warningCount": 4,
-    "advisoryCount": 6,
+    "advisoryCount": 7,
     "declaredDependencyCount": 5,
     "dockerDaemonAuthorityCount": 1,
     "hostPortPublicationCount": 3,
-    "evidenceIntegrityCount": 1
+    "evidenceIntegrityCount": 2
   },
   "source": "docker",
   "findings": [
@@ -55,6 +55,30 @@
           "providerRevision": "fixture-systemd-observation",
           "providerSlot": "systemd",
           "freshness": "fresh"
+        }
+      ]
+    },
+    {
+      "id": "finding_runtime_declared_relationship_evidence_not_current_systemd_service_application-systemd_service_stal--a09364eb33a0e509842a59915b0a1d13c29c4ff4f8826b5129908e58d57244f3",
+      "ruleId": "runtime.declared_relationship_evidence_not_current",
+      "severity": "advisory",
+      "summary": "A declared systemd dependency relationship is attested only by stale or timed-out evidence.",
+      "recommendation": "Inspect the systemd provider collection state before trusting dependency conclusions for this pair.",
+      "subjectRef": "systemd_service_application",
+      "targetRef": "systemd_service_stale_target",
+      "evidenceRefs": [
+        {
+          "version": 2,
+          "id": "systemd_wants:systemd_service_application:systemd_service_stale_target",
+          "provider": "systemd",
+          "kind": "systemd_wants",
+          "assertionKind": "declared",
+          "summary": "systemd declared a Wants dependency",
+          "subjectRef": "systemd_service_application",
+          "collectedAt": 1710000000000,
+          "providerRevision": "fixture-systemd-observation",
+          "providerSlot": "systemd",
+          "freshness": "stale"
         }
       ]
     },

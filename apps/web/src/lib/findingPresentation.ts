@@ -38,12 +38,22 @@ type FindingSpec = FindingPresentation & {
     version: number;
     provider: string;
     kind: string;
+    kinds?: readonly string[];
     assertionKind: string;
     providerSlot?: string | null;
   };
 };
 
 const SPECS: readonly FindingSpec[] = [
+  {
+    ruleId: "runtime.declared_relationship_evidence_not_current", severity: "advisory",
+    summary: "A declared systemd dependency relationship is attested only by stale or timed-out evidence.",
+    recommendation: "Inspect the systemd provider collection state before trusting dependency conclusions for this pair.",
+    idPrefix: "finding_runtime_declared_relationship_evidence_not_current_", subjectPrefix: "systemd_service_", targetPrefix: "systemd_service_",
+    evidenceCount: 1, evidence: { version: 2, provider: "systemd", kind: "systemd_requires", kinds: ["systemd_requires", "systemd_wants", "systemd_part_of"], assertionKind: "declared", providerSlot: "systemd" },
+    title: "Declared relationship evidence is not current", category: "Evidence Integrity", hint: "Evidence freshness", tone: "muted", severityLabel: "Advisory",
+    inspection: { ruleLabel: "Relationship evidence freshness", ruleId: "runtime.declared_relationship_evidence_not_current", freshEvidenceRequirement: "Requires fresh relationship evidence to assert a dependency conclusion.", factDescription: "One declared relationship whose evidence is stale or timed out.", limits: "Does not establish that the dependency is broken, unhealthy, or unavailable; it states only that current evidence does not support the conclusion." }
+  },
   {
     ruleId: "systemd.requires_target_not_active", severity: "warning",
     summary: "An active systemd service requires a target that is inactive or failed",
@@ -180,7 +190,7 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
   if (!evidence
     || evidence.version !== spec.evidence.version
     || evidence.provider !== spec.evidence.provider
-    || evidence.kind !== spec.evidence.kind
+    || (spec.evidence.kinds ? !spec.evidence.kinds.includes(evidence.kind as string) : evidence.kind !== spec.evidence.kind)
     || evidence.assertionKind !== spec.evidence.assertionKind
     // The API permits the Compose observation's legacy absent slot as well as
     // null. Both mean the Docker-wide collector, never a provider-supplied
@@ -188,7 +198,9 @@ export function presentationForFinding(value: unknown): FindingPresentation | nu
     || ((spec.ruleId === "docker.compose_declared_target_not_active" || spec.ruleId === "docker.daemon_state_bind_mount_publishes_port" || spec.ruleId === "docker.compose_mutual_dependency" || spec.ruleId === "compose.declared_mount_missing_at_bound_container" || spec.ruleId === "docker.port_published_on_unspecified_address" || spec.ruleId === "runtime.identity_collision_detected")
       ? evidence.providerSlot !== undefined && evidence.providerSlot !== null
       : evidence.providerSlot !== spec.evidence.providerSlot)
-    || evidence.freshness !== "fresh"
+    || (spec.ruleId === "runtime.declared_relationship_evidence_not_current"
+      ? (evidence.freshness !== "stale" && evidence.freshness !== "timed_out")
+      : evidence.freshness !== "fresh")
     || evidence.subjectRef !== finding.subjectRef) return null;
 
   // The two-fact internal-network condition has a fixed complementary port

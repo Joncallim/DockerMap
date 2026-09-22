@@ -21,6 +21,16 @@ const partOfFinding = {
   evidenceRefs: [{ version: 2, provider: "systemd", kind: "systemd_part_of", assertionKind: "declared", providerSlot: "systemd", freshness: "fresh", subjectRef: "systemd_service_source" }]
 };
 
+const nonCurrentRelationshipFinding = {
+  id: "finding_runtime_declared_relationship_evidence_not_current_opaque",
+  ruleId: "runtime.declared_relationship_evidence_not_current",
+  severity: "advisory",
+  summary: "A declared systemd dependency relationship is attested only by stale or timed-out evidence.",
+  recommendation: "Inspect the systemd provider collection state before trusting dependency conclusions for this pair.",
+  subjectRef: "systemd_service_source", targetRef: "systemd_service_target",
+  evidenceRefs: [{ version: 2, provider: "systemd", kind: "systemd_wants", assertionKind: "declared", providerSlot: "systemd", freshness: "stale", subjectRef: "systemd_service_source" }]
+};
+
 const mutualComposeFinding = {
   id: "finding_docker_compose_mutual_dependency_opaque",
   ruleId: "docker.compose_mutual_dependency",
@@ -69,6 +79,19 @@ const identityCollisionFinding = {
 };
 
 describe("finding presentation boundary", () => {
+  it("admits the exact stale or timed-out declared relationship evidence presentation", () => {
+    expect(presentationForFinding(nonCurrentRelationshipFinding)).toMatchObject({
+      title: "Declared relationship evidence is not current", category: "Evidence Integrity", hint: "Evidence freshness", tone: "muted", severityLabel: "Advisory",
+      inspection: { ruleLabel: "Relationship evidence freshness", freshEvidenceRequirement: "Requires fresh relationship evidence to assert a dependency conclusion.", factDescription: "One declared relationship whose evidence is stale or timed out.", limits: "Does not establish that the dependency is broken, unhealthy, or unavailable; it states only that current evidence does not support the conclusion." }
+    });
+    expect(presentationForFinding({ ...nonCurrentRelationshipFinding, evidenceRefs: [{ ...nonCurrentRelationshipFinding.evidenceRefs[0], freshness: "timed_out", kind: "systemd_part_of" }] })).not.toBeNull();
+  });
+
+  it("suppresses fresh, malformed, or non-Systemd non-current relationship evidence", () => {
+    expect(presentationForFinding({ ...nonCurrentRelationshipFinding, evidenceRefs: [{ ...nonCurrentRelationshipFinding.evidenceRefs[0], freshness: "fresh" }] })).toBeNull();
+    expect(presentationForFinding({ ...nonCurrentRelationshipFinding, evidenceRefs: [{ ...nonCurrentRelationshipFinding.evidenceRefs[0], kind: "systemd_requires", providerSlot: null }] })).toBeNull();
+    expect(presentationForFinding({ ...nonCurrentRelationshipFinding, evidenceRefs: [nonCurrentRelationshipFinding.evidenceRefs[0], nonCurrentRelationshipFinding.evidenceRefs[0]] })).toBeNull();
+  });
   it("admits only the static closed PartOf advisory shape", () => {
     expect(presentationForFinding(partOfFinding)).toMatchObject({
       title: "Lifecycle coupling target is not active", category: "Systemd PartOf", tone: "muted"

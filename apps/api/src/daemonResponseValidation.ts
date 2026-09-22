@@ -63,6 +63,9 @@ const SYSTEMD_REQUIRES_FINDING_RECOMMENDATION = "Inspect the target service stat
 const SYSTEMD_PART_OF_FINDING_RULE = "systemd.part_of_target_not_active";
 const SYSTEMD_PART_OF_FINDING_SUMMARY = "An active systemd service is PartOf a unit that is inactive or failed.";
 const SYSTEMD_PART_OF_FINDING_RECOMMENDATION = "Inspect the coupling target unit's state and the declaring unit's PartOf configuration.";
+const DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_FINDING_RULE = "runtime.declared_relationship_evidence_not_current";
+const DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_FINDING_SUMMARY = "A declared systemd dependency relationship is attested only by stale or timed-out evidence.";
+const DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_FINDING_RECOMMENDATION = "Inspect the systemd provider collection state before trusting dependency conclusions for this pair.";
 const INTERNAL_NETWORK_PORT_FINDING_RULE = "docker.internal_network_member_publishes_port";
 const INTERNAL_NETWORK_PORT_FINDING_SUMMARY = "A container on an internal Docker network also has a published host port.";
 const INTERNAL_NETWORK_PORT_FINDING_RECOMMENDATION = "Review whether the host-port publication is intended for this internal-network service.";
@@ -115,6 +118,7 @@ const FINDING_SUMMARY_KEYS = [
 const FINDING_RULE_CATEGORY = {
   [SYSTEMD_REQUIRES_FINDING_RULE]: "declaredDependencyCount",
   [SYSTEMD_PART_OF_FINDING_RULE]: "declaredDependencyCount",
+  [DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_FINDING_RULE]: "evidenceIntegrityCount",
   [INTERNAL_NETWORK_PORT_FINDING_RULE]: "hostPortPublicationCount",
   [UNSPECIFIED_ADDRESS_PORT_FINDING_RULE]: "hostPortPublicationCount",
   [DOCKER_DAEMON_STATE_FINDING_RULE]: "dockerDaemonAuthorityCount",
@@ -231,6 +235,10 @@ function collisionResistantIdComponent(value: string): string {
 
 function composeDeclaredTargetFindingId(subjectRef: string, targetRef: string): string {
   return `finding_docker_compose_declared_target_not_active_${collisionResistantIdComponent(`${subjectRef}\u001f${targetRef}`)}`;
+}
+
+function declaredRelationshipEvidenceNotCurrentFindingId(subjectRef: string, targetRef: string): string {
+  return `finding_runtime_declared_relationship_evidence_not_current_${collisionResistantIdComponent(`${subjectRef}\u001f${targetRef}`)}`;
 }
 
 function daemonStatePublishedPortFindingId(subjectRef: string): string {
@@ -613,6 +621,29 @@ function hasCoherentFindings(payload: unknown): boolean {
           && evidence.assertionKind === "declared"
           && evidence.providerSlot === "systemd"
           && evidence.freshness === "fresh"
+          && evidence.subjectRef === finding.subjectRef;
+       })();
+    if (finding.ruleId === DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_FINDING_RULE) return finding.severity === "advisory"
+      && finding.summary === DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_FINDING_SUMMARY
+      && finding.recommendation === DECLARED_RELATIONSHIP_EVIDENCE_NOT_CURRENT_FINDING_RECOMMENDATION
+      && typeof finding.subjectRef === "string"
+      && finding.subjectRef.startsWith("systemd_service_")
+      && typeof finding.targetRef === "string"
+      && finding.targetRef.startsWith("systemd_service_")
+      && finding.subjectRef !== finding.targetRef
+      && finding.id === declaredRelationshipEvidenceNotCurrentFindingId(finding.subjectRef, finding.targetRef)
+      && Array.isArray(finding.evidenceRefs)
+      && finding.evidenceRefs.length === 1
+      && (() => {
+        const candidateEvidence = finding.evidenceRefs[0];
+        if (!candidateEvidence || typeof candidateEvidence !== "object") return false;
+        const evidence = candidateEvidence as Record<string, unknown>;
+        return evidence.version === 2
+          && evidence.provider === "systemd"
+          && (evidence.kind === "systemd_requires" || evidence.kind === "systemd_wants" || evidence.kind === "systemd_part_of")
+          && evidence.assertionKind === "declared"
+          && evidence.providerSlot === "systemd"
+          && (evidence.freshness === "stale" || evidence.freshness === "timed_out")
           && evidence.subjectRef === finding.subjectRef;
       })();
     if (finding.ruleId === DOCKER_DAEMON_STATE_FINDING_RULE) return finding.severity === "warning"

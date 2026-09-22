@@ -174,7 +174,8 @@ export type FindingRule =
   | 'docker.compose_declared_target_not_active'
   | 'docker.compose_mutual_dependency'
   | 'compose.declared_mount_missing_at_bound_container'
-  | 'runtime.identity_collision_detected';
+  | 'runtime.identity_collision_detected'
+  | 'runtime.declared_relationship_evidence_not_current';
 /**
  * Findings are intentionally a small, closed advisory vocabulary. They do
  * not expose provider output or prescribe an automated remediation.
