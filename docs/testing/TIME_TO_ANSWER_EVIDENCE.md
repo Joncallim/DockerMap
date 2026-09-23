@@ -136,32 +136,55 @@ currently sits inside the Docker critical path. That is the measurement, not a
 fix: **nothing is decoupled here, and #336 owns moving the projection off that
 path** — these are the numbers it must improve against.
 
+## Running the benchmark
+
+```
+# 1. pin the environment from the runner itself
+npm run perf:metadata -- --output /tmp/time-to-answer-metadata.json
+# 2. capture (3 controlled runs × 15 warmed samples for every declared cell)
+npm run perf:time-to-answer -- \
+  --metadata /tmp/time-to-answer-metadata.json \
+  --output   /tmp/time-to-answer-baseline.json \
+  --raw-dir  /tmp/time-to-answer-raw
+# 3. recompute summaries from the raw samples (never trust supplied aggregates)
+npm run perf:summarize -- --artifact /tmp/time-to-answer-baseline.json
+# 4. compare a candidate against a reviewed baseline (fails closed)
+npm run perf:time-to-answer -- \
+  --metadata /tmp/time-to-answer-metadata.json \
+  --output   /tmp/time-to-answer-candidate.json \
+  --baseline /tmp/time-to-answer-baseline.json
+```
+
+Prerequisites: a release daemon (`cargo build --release -p dockermap-daemon`),
+Chromium for Playwright, and a built web app — the capture performs the contract,
+web and probe builds itself. `npm run perf:time-to-answer` is the only command
+needed; it owns every process it starts.
+
+Procedure notes: the benchmark-only Vite build (`tests/perf/benchVite.config.mjs`)
+is what stages 8 and 10 run against, and it imports the real production modules;
+`tests/perf/browserProbe.js` is test-only instrumentation loaded before product
+code. `.bench-dist` is generated and gitignored.
+
 ## Current state of this slice
 
-Done and enforced by tests:
+Complete and enforced by tests:
 
 - the closed contract, the 12 stages and their buckets, the fixture set, the
-  fixture × stage matrix, the environment allowlist, raw-sample validation, the
-  summary math and the promotion gate;
+  fixture × stage matrix, the environment allowlist (including the effective SSE
+  poll interval), raw-sample validation, the summary math and the promotion gate;
 - the deterministic fixture topology and the fixture Docker daemon, proven
   against the real daemon build;
 - the inert bench-only stage attribution hook for `dockerObservationMs`,
-  `composeEnrichmentMs` and `findingsDerivationMs`, covering 4 unit tests
-  including "a disabled hook writes nothing";
+  `composeEnrichmentMs` and `findingsDerivationMs`;
+- the single documented capture command with its benchmark-only browser probes,
+  the environment emitter and the summarizer;
+- the promotion RED-checks (`timeToAnswerPromotion.test.ts`) and the production
+  isolation proof (`productionIsolation.test.mjs`);
 - `npm run test:perf` wired into `npm run check:js`.
 
-Not yet in place (this is the remainder of #335, not a completed claim):
-
-1. the single documented capture command that drives all three controlled runs
-   end to end and writes the closed artifact. Its orchestration needs the real
-   API (`tsx apps/api/src/index.ts`) and the production web build
-   (`vite preview`) alongside the daemon, which is a harness of its own;
-2. the browser-side probes for the model/rendering/search stages
-   (`publicationToNodeObservationMs`, `notificationToCoherentModelMs`,
-   `coherentModelToUsefulRenderMs`, `buildModelMs`, `legacyTopologyLayoutMs`,
-   `commandQueryMs`, `productionBundleMs`), reusing the existing Playwright
-   setup rather than duplicating it;
-3. the first captured baseline artifact.
-
-Until that baseline exists there is no performance number to quote and no
-optimization may be claimed.
+The first baseline has been captured and interpreted in
+`docs/testing/TIME_TO_ANSWER_BASELINE.md`. Baseline 1 identifies the
+publication→Node observation floor, cold start and the legacy topology layout as
+the dominant costs, and records Composite projection as a measured, currently
+coupled cost. No optimization may be claimed until a candidate passes the
+promotion gate.

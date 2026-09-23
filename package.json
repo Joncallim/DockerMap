@@ -32,6 +32,7 @@
     "test:version": "node --test scripts/check-version-authority.test.mjs scripts/package-release.test.mjs",
     "test:perf": "node --test tests/perf/*.test.mjs",
     "perf:time-to-answer": "tsx tests/perf/capture.ts",
+    "perf:summarize": "tsx tests/perf/summarize.ts",
     "perf:metadata": "node tests/perf/emit-metadata.mjs",
     "test:deployment": "node --test scripts/check-systemd-profile.test.mjs scripts/check-supply-chain-baseline.test.mjs",
     "generate:contracts": "cargo run -p dockermap-core --bin generate-contract-schemas --manifest-path crates/Cargo.toml -- && node scripts/generate-rust-contract-types.mjs",

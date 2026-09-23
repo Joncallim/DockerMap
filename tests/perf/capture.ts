@@ -102,7 +102,18 @@ const MATRIX = new Set(TIME_TO_ANSWER_MATRIX.map((cell) => `${cell.fixture}|${ce
 const hasStage = (fixture: string, stage: string) => MATRIX.has(`${fixture}|${stage}`);
 function record(fixture: string, stage: string, values: number[]): void {
   if (!hasStage(fixture, stage)) return;
-  raw[fixture]![stage]!.push(values.map((value) => [value]));
+  // Fail at the measurement site, naming the cell, rather than at artifact
+  // validation where the origin is no longer recoverable.
+  for (const value of values) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      throw new Error(`non-numeric ${stage} sample for ${fixture}: ${JSON.stringify(value)}`);
+    }
+  }
+  if (values.length === 0) {
+    throw new Error(`no samples were measured for ${stage} on ${fixture}`);
+  }
+  // `values` is one complete controlled run: its samples, in order.
+  raw[fixture]![stage]!.push(values);
 }
 for (const plan of plans) {
   raw[plan.name] = {};
@@ -421,34 +432,51 @@ async function main(): Promise<void> {
           if (!existsSync(fixtureReady)) throw new Error("fixture Docker daemon did not become ready");
 
           // Stage 1: process start -> listener ready.
-          const daemonStartedAt = nowMs();
-          // `unavailable-optional-provider` runs the daemon with an empty PATH so
-          // every optional provider command genuinely fails on this host.
           const emptyPath = join(workdir, "empty-path");
           if (plan.name === "unavailable-optional-provider") mkdirSync(emptyPath, { recursive: true });
-          daemonChild = spawnOwned(daemonBinary, [], {
+          const daemonEnv = {
             DOCKERMAP_DOCKER_GATEWAY_SOCKET: fixtureSocket,
             DOCKERMAP_BENCH_STAGE_TIMING_PATH: benchSink,
             DOCKERMAP_DAEMON_PORT: String(daemonPort),
             DOCKERMAP_DAEMON_HOST: "127.0.0.1",
             DOCKERMAP_PROJECT_ROOT: projectRoot,
             ...(plan.name === "unavailable-optional-provider" ? { PATH: emptyPath } : {})
-          });
-          // Stages 1 and 2 exist only for the reference fixtures.
-          await waitForJson(`http://127.0.0.1:${daemonPort}/daemon/health`, () => true, 60_000);
-          record(plan.name, "daemonStartToListenerMs", [nowMs() - daemonStartedAt]);
+          };
+          const healthUrl = (port: number) => `http://127.0.0.1:${port}/daemon/health`;
+          daemonChild = spawnOwned(daemonBinary, [], daemonEnv);
+          await waitForJson(healthUrl(daemonPort), () => true, 60_000);
 
-          // Stage 2: listener ready -> first authoritative Docker publication.
-          const listenerReadyAt = nowMs();
-          await waitForJson(
-            `http://127.0.0.1:${daemonPort}/daemon/health`,
-            (value) =>
-              value.mode === "docker" &&
-              typeof value.modelRevision === "string" &&
-              value.modelRevision.length > 0,
-            60_000
-          );
-          record(plan.name, "listenerToFirstDockerModelMs", [nowMs() - listenerReadyAt]);
+          // Stages 1 and 2 need a CLEAN start per warmed sample, so they are
+          // measured by restarting the daemon `samples` times on private ports
+          // rather than by reusing the resident benchmark daemon.
+          const needsStartup = hasStage(plan.name, "daemonStartToListenerMs");
+          if (needsStartup) {
+            const starts: number[] = [];
+            const models: number[] = [];
+            for (let index = 0; index < samples; index += 1) {
+              const probePort = await reservePort();
+              const startAt = nowMs();
+              const probeChild = spawnOwned(daemonBinary, [], {
+                ...daemonEnv,
+                DOCKERMAP_DAEMON_PORT: String(probePort)
+              });
+              try {
+                await waitForJson(healthUrl(probePort), () => true, 60_000);
+                starts.push(nowMs() - startAt);
+                const readyAt = nowMs();
+                await waitForJson(
+                  healthUrl(probePort),
+                  (value) => value.mode === "docker" && Boolean(value.modelRevision),
+                  60_000
+                );
+                models.push(nowMs() - readyAt);
+              } finally {
+                stopOwned(probeChild);
+              }
+            }
+            record(plan.name, "daemonStartToListenerMs", starts);
+            record(plan.name, "listenerToFirstDockerModelMs", models);
+          }
 
           // Stages 3, 4, 9: bench attribution from the current implementation.
           const needsBench = BENCH_STAGE_KEYS.some((key) => hasStage(plan.name, key));
@@ -476,14 +504,9 @@ async function main(): Promise<void> {
           });
           await waitForJson(`http://127.0.0.1:${apiPort}/api/health`, () => true, 60_000);
 
-          // Stage 5: publication -> Node observation through the real API.
-          if (hasStage(plan.name, "publicationToNodeObservationMs")) {
-            record(plan.name, "publicationToNodeObservationMs", [
-              await measurePublicationToNodeObservation(daemonPort, apiPort, webOrigin)
-            ]);
-          }
-
-          // Browser stages.
+          // Browser stages. Every browser stage needs `samples` warmed
+          // observations per controlled run, so revision-driven stages loop over
+          // real published revision changes instead of being measured once.
           const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
           const page = await context.newPage();
           if (process.env.DOCKERMAP_BENCH_DEBUG === "1") {
@@ -491,10 +514,6 @@ async function main(): Promise<void> {
             page.on("requestfailed", (failed) =>
               process.stdout.write(`[browser:requestfailed] ${failed.url()} ${failed.failure()?.errorText ?? ""}\n`)
             );
-            page.on("response", (response) => {
-              if (response.url().includes("/api/"))
-                process.stdout.write(`[browser:response] ${response.status()} ${response.url()}\n`);
-            });
           }
           await page.addInitScript({ path: join(REPO_ROOT, "tests/perf/browserProbe.js") });
           await page.goto(`${webOrigin}/`, { waitUntil: "domcontentloaded" });
@@ -502,29 +521,63 @@ async function main(): Promise<void> {
             timeout: 90_000
           });
 
-          if (hasStage(plan.name, "notificationToCoherentModelMs")) {
-            const initialRevision: string = await page.evaluate(
-              "window.__dockermapBenchHelpers.currentRevision()"
-            );
-            if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
-              // A real published inventory change: the fixture daemon serves a
-              // new generation, so the daemon must publish a new revision.
-              await postUnix(fixtureSocket, "/__fixture/topology-generation/1");
+          const observationSamples: number[] = [];
+          const coherentSamples: number[] = [];
+          const usefulSamples: number[] = [];
+          const querySamples: number[] = [];
+          const bundleSamples: number[] = [];
+          const needsRevisionLoop =
+            hasStage(plan.name, "publicationToNodeObservationMs") ||
+            hasStage(plan.name, "notificationToCoherentModelMs");
+          if (needsRevisionLoop) {
+            for (let index = 0; index < samples; index += 1) {
+              const initialRevision: string = hasStage(plan.name, "notificationToCoherentModelMs")
+                ? await page.evaluate("window.__dockermapBenchHelpers.currentRevision()")
+                : "";
+              if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
+                // A real published inventory change: the fixture daemon serves a
+                // new generation, so the daemon must publish a new revision.
+                await postUnix(fixtureSocket, `/__fixture/topology-generation/${index + 1}`);
+              }
+              // `provider-only-revision-change` and `unavailable-optional-provider`
+              // need no trigger: their revision advance comes from provider state
+              // alone, which is exactly what those fixtures characterise.
+              if (hasStage(plan.name, "publicationToNodeObservationMs")) {
+                observationSamples.push(
+                  await measurePublicationToNodeObservation(daemonPort, apiPort, webOrigin)
+                );
+              }
+              if (hasStage(plan.name, "notificationToCoherentModelMs")) {
+                const measured = await measureModelAcceptance(page, initialRevision);
+                coherentSamples.push(measured.notificationToCoherentModelMs);
+                usefulSamples.push(measured.coherentModelToUsefulRenderMs);
+              }
             }
-            // `provider-only-revision-change` and `unavailable-optional-provider`
-            // need no trigger: their revision advance comes from provider state
-            // alone, which is exactly what those fixtures characterise.
-            const measured = await measureModelAcceptance(page, initialRevision);
-            record(plan.name, "notificationToCoherentModelMs", [measured.notificationToCoherentModelMs]);
-            record(plan.name, "coherentModelToUsefulRenderMs", [measured.coherentModelToUsefulRenderMs]);
           }
           if (hasStage(plan.name, "commandQueryMs")) {
-            record(plan.name, "commandQueryMs", [await measureCommandQuery(page)]);
+            for (let index = 0; index < samples; index += 1) {
+              // A fresh page per sample: the measurement must be a real closed
+              // palette opening for the first time, not a still-open dialog.
+              await page.goto(`${webOrigin}/`, { waitUntil: "domcontentloaded" });
+              await page.waitForFunction("window.__dockermapBenchHelpers.homeReady()", undefined, {
+                timeout: 90_000
+              });
+              querySamples.push(await measureCommandQuery(page));
+            }
           }
           if (hasStage(plan.name, "productionBundleMs")) {
-            record(plan.name, "productionBundleMs", [await measureProductionBundle(browser, webOrigin)]);
+            for (let index = 0; index < samples; index += 1) {
+              bundleSamples.push(await measureProductionBundle(browser, webOrigin));
+            }
           }
           await context.close();
+          if (observationSamples.length > 0) record(plan.name, "publicationToNodeObservationMs", observationSamples);
+          if (coherentSamples.length > 0) {
+            record(plan.name, "notificationToCoherentModelMs", coherentSamples);
+            record(plan.name, "coherentModelToUsefulRenderMs", usefulSamples);
+          }
+          if (querySamples.length > 0) record(plan.name, "commandQueryMs", querySamples);
+          if (bundleSamples.length > 0) record(plan.name, "productionBundleMs", bundleSamples);
 
           // Stages 8, 10: the real production modules measured in real Chromium
           // through the benchmark-only entry.
@@ -569,23 +622,30 @@ async function main(): Promise<void> {
     rmSync(workRoot, { recursive: true, force: true });
   }
 
-  const records = TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => ({
-    fixture,
-    stage,
-    runs: raw[fixture]?.[stage] ?? []
-  }));
-  const validated = validateTimeToAnswerEvidence({
-    baseline: TIME_TO_ANSWER_BASELINE,
-    environment,
-    records
-  });
-  if (baselinePath) {
-    assertTimeToAnswerPromotion(JSON.parse(readFileSync(baselinePath, "utf8")), validated);
+  try {
+    const records = TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => ({
+      fixture,
+      stage,
+      runs: raw[fixture]?.[stage] ?? []
+    }));
+    const validated = validateTimeToAnswerEvidence({
+      baseline: TIME_TO_ANSWER_BASELINE,
+      environment,
+      records
+    });
+    if (baselinePath) {
+      assertTimeToAnswerPromotion(JSON.parse(readFileSync(baselinePath, "utf8")), validated);
+    }
+    writeFileSync(outputPath, JSON.stringify(validated, null, 2));
+    process.stdout.write(
+      `[capture] wrote ${outputPath} in ${((Date.now() - startedAt) / 60_000).toFixed(1)} min (fixture revision ${FIXTURE_REVISION})\n`
+    );
+  } catch (error) {
+    // Assembly or validation failed: the measurement pass is expensive, so the
+    // raw samples are preserved even though no artifact can be emitted.
+    preserveRaw(String(error));
+    throw error;
   }
-  writeFileSync(outputPath, JSON.stringify(validated, null, 2));
-  process.stdout.write(
-    `[capture] wrote ${outputPath} in ${((Date.now() - startedAt) / 60_000).toFixed(1)} min (fixture revision ${FIXTURE_REVISION})\n`
-  );
 }
 
 await main();
