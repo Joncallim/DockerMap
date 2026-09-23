@@ -218,7 +218,7 @@ const stageSixSevenAudit: Array<Record<string, unknown>> = [];
  * written beside the artifact rather than inside it, so the closed evidence
  * schema stays raw numbers only.
  */
-const stageFiveSweep: Array<PollPhaseSweep & { fixture: string }> = [];
+const stageFiveSweep: Array<PollPhaseSweep & { fixture: string; attributedToCycleBoundary: boolean }> = [];
 /** Per-fixture result of the declared phase-sweep validity guards. */
 const stageFiveValidity: Record<string, unknown> = {};
 /**
@@ -532,18 +532,22 @@ interface PublicationTracker {
 }
 
 /**
- * A refresh cycle can publish more than one revision (the inventory publication and
- * a provider-state publication follow each other), and those intra-cycle changes are
- * milliseconds apart. The phase grid must be fitted over CYCLE instants: fitting it
- * over every revision change would fold extra publications into the grid and skew
- * the period, which stage 5's deepest declared phases amplify one-for-one.
+ * The daemon's refresh CYCLE boundaries: one cycle publishes the Docker snapshot and
+ * may publish a provider-state revision a few hundred milliseconds later. The phase
+ * grid must be built from cycle boundaries — fitting it over every revision change
+ * folds those extras into the grid and skews the period, which stage 5's deepest
+ * declared phases amplify one-for-one.
+ *
+ * A boundary is a publication at least `intervalMs * 0.6` after the previous one:
+ * the daemon refreshes on a fixed 2 s interval, so anything closer belongs to the
+ * cycle already in progress.
  */
 function cycleLeaders(publications: readonly number[], intervalMs: number): number[] {
   const leaders: number[] = [];
-  const separationMs = intervalMs / 4;
+  const minimumGapMs = intervalMs * 0.6;
   for (const instant of publications) {
     const previous = leaders[leaders.length - 1];
-    if (previous === undefined || instant - previous > separationMs) leaders.push(instant);
+    if (previous === undefined || instant - previous >= minimumGapMs) leaders.push(instant);
   }
   return leaders;
 }
@@ -640,7 +644,7 @@ async function observeStageFiveSample(input: {
   sampleIndex: number;
   onConnected: (plan: PhaseSamplePlan) => Promise<void>;
   timeoutMs?: number;
-}): Promise<{ sample: PollPhaseSweep; revisions: string[] }> {
+}): Promise<{ sample: PollPhaseSweep; revisions: string[]; attributedToCycleBoundary: boolean }> {
   const declaredPhaseMs = declaredPhaseForSample(input.runIndex, input.sampleIndex, input.intervalMs);
   const intended = intendedLatencyMs(declaredPhaseMs, input.intervalMs);
   // Four publications give the grid fit three intervals to work with before the
@@ -718,13 +722,21 @@ async function observeStageFiveSample(input: {
         `(predicted publication ${(predicted - connectedAtMs).toFixed(1)} ms after connection)`
     );
   }
-  const publicationAt = nearestPublication(input.tracker.publications, predicted);
+  // Attribution is CAUSAL: the API's poll tick emits the revision that is current at
+  // tick time, so the publication this sample measured is the last revision change
+  // at or before the tick. Anything else would attribute a sample to a publication
+  // the tick never carried.
+  const publicationAt = lastPublicationAtOrBefore(input.tracker.publications, observed.at);
   if (publicationAt === null) {
     throw new Error("stage 5 lost the publication instant for this sample");
   }
   const observedLatencyMs = Math.max(0, observed.at - publicationAt);
+  const attributedToCycleBoundary = input.tracker
+    .cycles()
+    .some((instant) => Math.abs(instant - publicationAt) < 1);
   return {
     revisions: observed.revisions,
+    attributedToCycleBoundary,
     sample: {
       runIndex: input.runIndex,
       sampleIndex: input.sampleIndex,
@@ -744,24 +756,13 @@ async function observeStageFiveSample(input: {
   };
 }
 
-/**
- * The detected revision change that carries this sample: the one nearest the
- * predicted cycle instant. Selecting the nearest (rather than, say, the earliest
- * after some threshold) keeps a second publication from being attributed to the
- * sample it does not belong to, and any misplacement shows up as the declared-phase
- * error the guards already enforce.
- */
-function nearestPublication(publications: readonly number[], predicted: number): number | null {
-  let best: number | null = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const instant of publications) {
-    const distance = Math.abs(instant - predicted);
-    if (distance < bestDistance) {
-      best = instant;
-      bestDistance = distance;
-    }
+/** The last revision change at or before `instant` — the one a poll tick carried. */
+function lastPublicationAtOrBefore(publications: readonly number[], instant: number): number | null {
+  let latest: number | null = null;
+  for (const candidate of publications) {
+    if (candidate <= instant) latest = candidate;
   }
-  return best;
+  return latest;
 }
 
 /**
@@ -1166,7 +1167,7 @@ async function main(): Promise<void> {
               // derived from the fixture rather than assumed.
               const generation = index + 1;
               const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
-              const { sample, revisions } = await observeStageFiveSample({
+              const { sample, revisions, attributedToCycleBoundary } = await observeStageFiveSample({
                 tracker,
                 daemonPort,
                 apiPort,
@@ -1198,7 +1199,7 @@ async function main(): Promise<void> {
                   // alone, which is exactly what those fixtures characterise.
                 }
               });
-              stageFiveSweep.push({ ...sample, fixture: plan.name });
+              stageFiveSweep.push({ ...sample, fixture: plan.name, attributedToCycleBoundary });
               observationSamples.push(sample.observedLatencyMs);
               // Fail fast on a control failure: the phase the harness drove did not
               // produce the latency the design predicted, so this sample is not a
@@ -1477,7 +1478,7 @@ async function main(): Promise<void> {
   });
   // Stage-5 poll-phase evidence: every sample's declared and observed phase, the
   // observed phase curve, and the per-run arrays the shared math consumes.
-  const stageFiveByFixture = new Map<string, Array<PollPhaseSweep & { fixture: string }>>();
+  const stageFiveByFixture = new Map<string, Array<PollPhaseSweep & { fixture: string; attributedToCycleBoundary: boolean }>>();
   for (const sample of stageFiveSweep) {
     stageFiveByFixture.set(sample.fixture, [...(stageFiveByFixture.get(sample.fixture) ?? []), sample]);
   }
