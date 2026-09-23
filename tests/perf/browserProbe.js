@@ -376,6 +376,22 @@
               arm.expectedMetricValue +
               "; story=" +
               JSON.stringify(bench.commits.filter((entry) => entry.inStory).slice(-4)) +
+              "; inStory commits=" +
+              bench.commits.filter((entry) => entry.inStory).length +
+              "; accepted=" +
+              JSON.stringify(acceptanceSink().slice(-3)) +
+              "; latest accepted seq=" +
+              arm.previousSeq +
+              "->" +
+              (acceptanceSink().length ? acceptanceSink()[acceptanceSink().length - 1].seq : 0) +
+              "; notifications=" +
+              bench.events +
+              " opens=" +
+              bench.opens +
+              " latest notified=" +
+              bench.notifyRevision +
+              " " +
+              JSON.stringify(bench.notifyLog.slice(-3)) +
               ")"
           );
         }
