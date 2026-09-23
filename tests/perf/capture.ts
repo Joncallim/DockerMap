@@ -54,9 +54,11 @@ import {
   POLL_PHASE_CONTROL_TOLERANCE_MS,
   POLL_PHASE_DIVISIONS,
   POLL_PHASE_MIN_SAMPLES_PER_PHASE,
+  assertFreeRunningPhaseSamples,
   assertPollPhaseSweep,
   declaredPhaseForSample,
   intendedLatencyMs,
+  isPhaseControlledFixture,
   observedPhaseBucketMs,
   phaseMediansMs,
   pollPhaseGridMs,
@@ -651,24 +653,31 @@ async function observeStageFiveSample(input: {
   intervalMs: number;
   runIndex: number;
   sampleIndex: number;
+  mode: "phase-controlled" | "free-running";
   onConnected: (plan: PhaseSamplePlan) => Promise<void>;
   timeoutMs?: number;
 }): Promise<{ sample: PollPhaseSweep; revisions: string[]; tickCarriedNewerRevision: boolean }> {
+  const phaseControlled = input.mode === "phase-controlled";
   const declaredPhaseMs = declaredPhaseForSample(input.runIndex, input.sampleIndex, input.intervalMs);
   const intended = intendedLatencyMs(declaredPhaseMs, input.intervalMs);
-  // Four cycles give the grid fit three intervals to work with before the first
-  // sample is placed; the tracker usually satisfies this long before the browser
-  // stages begin.
-  await input.tracker.waitForCycles(4, 60_000);
-  const period = input.tracker.periodMs();
-
-  // Choose the publication cycle to measure: the next one on the daemon's grid whose
-  // connection instant is still in the future by a safety margin.
-  let predicted = input.tracker.lastCycleAtMs() + period;
-  while (predicted - declaredPhaseMs < nowMs() + PHASE_CONNECT_MARGIN_MS) predicted += period;
-
-  const connectAt = predicted - declaredPhaseMs;
-  await sleep(Math.max(0, connectAt - nowMs()));
+  let predicted = 0;
+  let connectAt = nowMs();
+  if (phaseControlled) {
+    // Four cycles give the grid fit three intervals to work with before the first
+    // sample is placed; the tracker usually satisfies this long before the browser
+    // stages begin.
+    await input.tracker.waitForCycles(4, 60_000);
+    const period = input.tracker.periodMs();
+    // Choose the publication cycle to measure: the next one on the daemon's grid whose
+    // connection instant is still in the future by a safety margin.
+    predicted = input.tracker.lastCycleAtMs() + period;
+    while (predicted - declaredPhaseMs < nowMs() + PHASE_CONNECT_MARGIN_MS) predicted += period;
+    connectAt = predicted - declaredPhaseMs;
+    await sleep(Math.max(0, connectAt - nowMs()));
+  }
+  // Free-running cells cannot place the publication (their revisions advance from the
+  // daemon's own host provider collection), so the observation is started now and the
+  // phase the sample achieves is recorded rather than driven.
   const previousRevision = input.tracker.revision();
   const connectedAtMs = nowMs();
 
@@ -746,24 +755,32 @@ async function observeStageFiveSample(input: {
   const tickCarriedNewerRevision = input.tracker.revisionChanges.some(
     (change) => change.at > publicationAt && change.at <= observed.at
   );
+  // Free-running samples record the phase they ACHIEVED: the declared phase is the
+  // bucket the observation landed in, so the sample cannot claim a phase it did not
+  // drive. Controlled samples keep the declared phase they were driven to.
+  const recordedPhaseMs = phaseControlled
+    ? declaredPhaseMs
+    : input.intervalMs - observedPhaseBucketMs(observedLatencyMs, input.intervalMs);
+  const recordedIntended = phaseControlled ? intended : input.intervalMs - recordedPhaseMs;
   return {
     revisions: observed.revisions,
     tickCarriedNewerRevision,
     sample: {
       runIndex: input.runIndex,
       sampleIndex: input.sampleIndex,
-      declaredPhaseMs,
-      intendedLatencyMs: intended,
+      declaredPhaseMs: recordedPhaseMs,
+      intendedLatencyMs: recordedIntended,
       connectedAtMs,
-      predictedPublicationAtMs: predicted,
+      predictedPublicationAtMs: phaseControlled ? predicted : publicationAt,
       observedPublicationAtMs: publicationAt,
       observedObservationAtMs: observed.at,
       observedLatencyMs,
       observedPhaseBucketMs: observedPhaseBucketMs(observedLatencyMs, input.intervalMs),
-      phaseErrorMs: observedLatencyMs - intended,
+      phaseErrorMs: observedLatencyMs - recordedIntended,
       observedVia: "api-sse",
       observedRevision: observed.revisions[0] ?? "",
-      previousRevision
+      previousRevision,
+      phaseControlled
     }
   };
 }
@@ -1170,6 +1187,7 @@ async function main(): Promise<void> {
               // derived from the fixture rather than assumed.
               const generation = index + 1;
               const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
+              const phaseControlled = isPhaseControlledFixture(plan.name);
               const { sample, revisions, tickCarriedNewerRevision } = await observeStageFiveSample({
                 tracker,
                 daemonPort,
@@ -1178,6 +1196,7 @@ async function main(): Promise<void> {
                 intervalMs: pollIntervalMs,
                 runIndex,
                 sampleIndex: index,
+                mode: phaseControlled ? "phase-controlled" : "free-running",
                 // Runs after the observation stream is connected and before the
                 // publication: arming the browser here means the acceptance this
                 // sample measures is caused by THIS publication, and the generation
@@ -1206,8 +1225,9 @@ async function main(): Promise<void> {
               observationSamples.push(sample.observedLatencyMs);
               // Fail fast on a control failure: the phase the harness drove did not
               // produce the latency the design predicted, so this sample is not a
-              // measurement of the declared phase.
-              if (Math.abs(sample.phaseErrorMs) > POLL_PHASE_CONTROL_TOLERANCE_MS) {
+              // measurement of the declared phase. Free-running cells make no such
+              // claim, so the check does not apply to them.
+              if (phaseControlled && Math.abs(sample.phaseErrorMs) > POLL_PHASE_CONTROL_TOLERANCE_MS) {
                 throw new Error(
                   `stage 5 declared phase ${sample.declaredPhaseMs.toFixed(1)} ms produced ` +
                     `${sample.observedLatencyMs.toFixed(1)} ms instead of the intended ` +
@@ -1595,8 +1615,31 @@ async function main(): Promise<void> {
       throw new Error(`the stage-5 poll-phase sweep did not run for ${stageFiveMissing.join(", ")}`);
     }
     for (const fixture of stageFiveRequired) {
+      const samplesForFixture = stageFiveByFixture.get(fixture)!;
+      const phaseControlled = isPhaseControlledFixture(fixture);
+      if (!phaseControlled) {
+        // Free-running cell: the harness cannot place these publications, so the
+        // coverage and direction guards do not apply — only that the samples are real
+        // poller observations, with the phase they achieved recorded.
+        const freeRunning = assertFreeRunningPhaseSamples(
+          samplesForFixture,
+          runs >= TIME_TO_ANSWER_CONTROLLED_RUNS ? 30 : 10
+        );
+        stageFiveValidity[fixture] = { phaseControlled: false, ...freeRunning };
+        stageFiveEvidence[fixture] = {
+          ...(stageFiveEvidence[fixture] as Record<string, unknown>),
+          phaseControlled: false,
+          validity: stageFiveValidity[fixture]
+        };
+        process.stdout.write(
+          `[capture] stage 5 free-running ${fixture}: ${freeRunning.samples} samples, observed latency ` +
+            `${freeRunning.minObservedLatencyMs.toFixed(1)}–${freeRunning.maxObservedLatencyMs.toFixed(1)} ms ` +
+            `(no declared phase: these publications are host-provider driven)\n`
+        );
+        continue;
+      }
       const verdict = assertPollPhaseSweep(
-        stageFiveByFixture.get(fixture)!,
+        samplesForFixture,
         Number(environment.ssePollIntervalMs),
         // Debug runs may declare a single controlled run, which cannot reach the
         // three-samples-per-phase the full protocol requires. The declared minimum is
@@ -1604,10 +1647,11 @@ async function main(): Promise<void> {
         // (the closed matrix requires three runs); every other guard still applies.
         runs >= TIME_TO_ANSWER_CONTROLLED_RUNS ? POLL_PHASE_MIN_SAMPLES_PER_PHASE : 1
       );
-      stageFiveValidity[fixture] = verdict;
+      stageFiveValidity[fixture] = { phaseControlled: true, ...verdict };
       stageFiveEvidence[fixture] = {
         ...(stageFiveEvidence[fixture] as Record<string, unknown>),
-        validity: verdict
+        phaseControlled: true,
+        validity: stageFiveValidity[fixture]
       };
       process.stdout.write(
         `[capture] stage 5 sweep ${fixture}: ${verdict.samples} samples over ${verdict.divisions} declared phases, ` +

@@ -15,6 +15,7 @@ import {
   derivedTimeToAnswerSummaries,
   validateTimeToAnswerEvidence
 } from "../../apps/web/src/lib/performance/timeToAnswerEvidence";
+import { isPhaseControlledFixture } from "../../apps/web/src/lib/performance/timeToAnswerPollPhase";
 
 const args = Object.fromEntries(
   process.argv
@@ -53,8 +54,12 @@ process.stdout.write(`${rows.join("\n")}\n\n`);
 // Stage 5: the declared-phase curve and the phase-normalized figure. Both are
 // recomputed here from the raw samples, using the declared grid — never read from
 // the artifact, which stores raw numbers only.
-const stageFiveFixtures = fixtures.filter((fixture) =>
-  evidence.records.some((record) => record.fixture === fixture && record.stage === "publicationToNodeObservationMs")
+const stageFiveFixtures = fixtures.filter(
+  (fixture) =>
+    isPhaseControlledFixture(fixture) &&
+    evidence.records.some(
+      (record) => record.fixture === fixture && record.stage === "publicationToNodeObservationMs"
+    )
 );
 if (stageFiveFixtures.length > 0) {
   const intervalMs = Number(evidence.environment.ssePollIntervalMs);

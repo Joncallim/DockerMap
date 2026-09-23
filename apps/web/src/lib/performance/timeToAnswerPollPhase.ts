@@ -54,8 +54,31 @@ export const POLL_PHASE_CONTROL_TOLERANCE_MS = 60;
 export const POLL_PHASE_MIN_SPAN_SHARE = 0.5;
 export const POLL_PHASE_MIN_DIRECTION_SHARE = 0.5;
 
-/** Every declared phase must appear at least this many times in a cell. */
+/** Every declared phase must appear at least this many times in a controlled cell. */
 export const POLL_PHASE_MIN_SAMPLES_PER_PHASE = 2;
+
+/**
+ * Cells whose publication the harness can actually trigger, and which therefore get
+ * the declared phase sweep.
+ *
+ * The two provider-state fixtures are NOT here on purpose. Their revisions advance
+ * from the daemon's own host provider collection — the harness has no input that
+ * makes the daemon publish at a chosen instant — so their stage-5 samples are
+ * FREE-RUNNING: the phase each sample achieved is recorded, the sweep's coverage and
+ * direction guards do not apply, and no phase-normalized figure is derived for them.
+ * They still measure today's real poll wait, and they are still declared in the
+ * matrix; what they cannot do is place the publication.
+ */
+export const POLL_PHASE_CONTROLLED_FIXTURES = [
+  "reference-25",
+  "reference-100",
+  "reference-250",
+  "docker-topology-change"
+] as const;
+
+export function isPhaseControlledFixture(fixture: string): boolean {
+  return (POLL_PHASE_CONTROLLED_FIXTURES as readonly string[]).includes(fixture);
+}
 
 export interface PollPhaseSweep {
   runIndex: number;
@@ -82,6 +105,12 @@ export interface PollPhaseSweep {
   /** The revision observed, and the revision that was current before the sample. */
   observedRevision: string;
   previousRevision: string;
+  /**
+   * Whether the harness drove this sample's publication phase. Free-running cells
+   * (the provider-state fixtures) record the phase they achieved instead, and are
+   * excluded from the sweep's coverage and direction guards.
+   */
+  phaseControlled: boolean;
 }
 
 export interface PollPhaseValidity {
@@ -219,6 +248,12 @@ export function assertPollPhaseSweep(
     if (!Number.isFinite(sample.observedLatencyMs) || sample.observedLatencyMs < 0) {
       throw new Error("a stage-5 sample has a non-finite observed latency");
     }
+    if (!sample.phaseControlled) {
+      throw new Error(
+        "the declared phase sweep was applied to a sample the harness did not drive; " +
+          "free-running cells use the free-running guard instead"
+      );
+    }
     if (sample.observedVia !== "api-sse") {
       throw new Error(
         `a stage-5 sample was observed via ${sample.observedVia} instead of the real API poller path`
@@ -312,6 +347,60 @@ export function assertPollPhaseSweep(
 
 function declaredPhaseIndexOfValue(phaseMs: number, grid: readonly number[]): number {
   return grid.findIndex((candidate) => Math.abs(candidate - phaseMs) < 1e-6);
+}
+
+export interface FreeRunningPhaseValidity {
+  samples: number;
+  minObservedLatencyMs: number;
+  maxObservedLatencyMs: number;
+  spanMs: number;
+  observedPhaseBucketsMs: readonly number[];
+}
+
+/**
+ * Guard for FREE-RUNNING stage-5 cells — the provider-state fixtures, whose
+ * publications the harness cannot place. Coverage and direction are NOT required
+ * (the design does not claim to control the phase there), but the sample must still
+ * be a real observation: a new revision, seen through the real API poller path, with
+ * the phase it achieved recorded. A cell that recorded no usable samples, or that
+ * saw a non-poller observation, is rejected.
+ */
+export function assertFreeRunningPhaseSamples(
+  samples: readonly PollPhaseSweep[],
+  minimumSamples = 10
+): FreeRunningPhaseValidity {
+  if (samples.length < minimumSamples) {
+    throw new Error(
+      `a free-running stage-5 cell needs at least ${minimumSamples} samples, got ${samples.length}`
+    );
+  }
+  let minObservedLatencyMs = Number.POSITIVE_INFINITY;
+  let maxObservedLatencyMs = Number.NEGATIVE_INFINITY;
+  const observedPhaseBucketsMs: number[] = [];
+  for (const sample of samples) {
+    if (sample.phaseControlled) {
+      throw new Error("a free-running cell must not contain phase-controlled samples");
+    }
+    if (sample.observedVia !== "api-sse") {
+      throw new Error("a free-running stage-5 sample did not arrive through the real API poller path");
+    }
+    if (!sample.observedRevision || sample.observedRevision === sample.previousRevision) {
+      throw new Error("a free-running stage-5 sample observed no new revision");
+    }
+    if (!Number.isFinite(sample.observedLatencyMs) || sample.observedLatencyMs < 0) {
+      throw new Error("a free-running stage-5 sample has a non-finite observed latency");
+    }
+    observedPhaseBucketsMs.push(sample.observedPhaseBucketMs);
+    minObservedLatencyMs = Math.min(minObservedLatencyMs, sample.observedLatencyMs);
+    maxObservedLatencyMs = Math.max(maxObservedLatencyMs, sample.observedLatencyMs);
+  }
+  return {
+    samples: samples.length,
+    minObservedLatencyMs,
+    maxObservedLatencyMs,
+    spanMs: maxObservedLatencyMs - minObservedLatencyMs,
+    observedPhaseBucketsMs
+  };
 }
 
 /** Rebuild per-run sample arrays from sweep records, so the shared math can be reused. */

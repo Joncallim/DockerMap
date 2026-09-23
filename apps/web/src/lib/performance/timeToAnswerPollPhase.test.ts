@@ -15,6 +15,7 @@ import {
   POLL_PHASE_CONTROL_TOLERANCE_MS,
   POLL_PHASE_DIVISIONS,
   POLL_PHASE_MIN_SAMPLES_PER_PHASE,
+  assertFreeRunningPhaseSamples,
   assertPollPhaseSweep,
   declaredPhaseForSample,
   intendedLatencyMs,
@@ -54,7 +55,8 @@ function goodSweep(intervalMs = INTERVAL, errorMs = 4): PollPhaseSweep[] {
         phaseErrorMs: observed - intended,
         observedVia: "api-sse",
         observedRevision: `rev-${run}-${index}`,
-        previousRevision: `rev-${run}-${index}-prev`
+        previousRevision: `rev-${run}-${index}-prev`,
+        phaseControlled: true
       });
     }
   }
@@ -184,6 +186,50 @@ describe("stage-5 phase sweep validity", () => {
       sample.sampleIndex === 4 ? { ...sample, declaredPhaseMs: 12.5 } : sample
     );
     expect(() => assertPollPhaseSweep(offGrid, INTERVAL)).toThrow(/declared grid|design requires/);
+  });
+});
+
+describe("stage-5 free-running cells", () => {
+  const freeRunning = (count: number, latencyMs: (index: number) => number): PollPhaseSweep[] =>
+    Array.from({ length: count }, (_, index) => ({
+      ...goodSweep()[0]!,
+      runIndex: 0,
+      sampleIndex: index % POLL_PHASE_DIVISIONS,
+      declaredPhaseMs: 0,
+      intendedLatencyMs: latencyMs(index),
+      observedLatencyMs: latencyMs(index),
+      phaseErrorMs: 0,
+      observedRevision: `free-${index}`,
+      previousRevision: `free-${index}-prev`,
+      phaseControlled: false
+    }));
+
+  it("accepts real poller observations with the achieved phase recorded", () => {
+    const verdict = assertFreeRunningPhaseSamples(freeRunning(30, (index) => 100 + index * 50), 30);
+    expect(verdict.samples).toBe(30);
+    expect(verdict.spanMs).toBeGreaterThan(0);
+    expect(verdict.observedPhaseBucketsMs).toHaveLength(30);
+  });
+
+  it("REJECTS a free-running cell with too few samples", () => {
+    expect(() => assertFreeRunningPhaseSamples(freeRunning(5, () => 500), 10)).toThrow(/at least 10 samples/);
+  });
+
+  it("REJECTS a free-running sample that saw no new revision or a non-poller path", () => {
+    const idle = freeRunning(30, () => 500).map((sample, index) =>
+      index === 3 ? { ...sample, observedRevision: sample.previousRevision } : sample
+    );
+    expect(() => assertFreeRunningPhaseSamples(idle, 10)).toThrow(/no new revision/);
+    const shortcut = freeRunning(30, () => 500).map((sample, index) =>
+      index === 7 ? { ...sample, observedVia: "daemon-direct" } : sample
+    );
+    expect(() => assertFreeRunningPhaseSamples(shortcut, 10)).toThrow(/real API poller path/);
+  });
+
+  it("REJECTS a declared sweep over free-running samples", () => {
+    // The two guards must not be interchangeable: a cell whose phase the harness did
+    // not drive cannot claim the sweep's coverage.
+    expect(() => assertPollPhaseSweep(freeRunning(30, () => 500), INTERVAL)).toThrow(/did not drive/);
   });
 });
 
