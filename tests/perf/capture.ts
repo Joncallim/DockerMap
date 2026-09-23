@@ -1075,7 +1075,7 @@ async function main(): Promise<void> {
     await withFreshBrowserRuns({
       runs,
       launch: () => chromium.launch({ args: launchArgs }),
-      run: async (browser, runIndex) => {
+ run: async (browser: any, runIndex: number) => {
       for (const plan of plans) {
         process.stdout.write(
           `[capture] run ${runIndex + 1}/${runs} fixture ${plan.name} (${plan.containers} containers)\n`
@@ -1318,8 +1318,8 @@ async function main(): Promise<void> {
           context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
           const page = await context.newPage();
           if (process.env.DOCKERMAP_BENCH_DEBUG === "1") {
-            page.on("console", (message) => process.stdout.write(`[browser:${message.type()}] ${message.text()}\n`));
-            page.on("requestfailed", (failed) =>
+ page.on("console", (message: any) => process.stdout.write(`[browser:${message.type()}] ${message.text()}\n`));
+ page.on("requestfailed", (failed: any) =>
               process.stdout.write(`[browser:requestfailed] ${failed.url()} ${failed.failure()?.errorText ?? ""}\n`)
             );
           }
@@ -1642,6 +1642,7 @@ async function main(): Promise<void> {
  } finally {
  rmSync(workRoot, { recursive: true, force: true });
  }
+ }
 
 /* --- Harness evidence ---------------------------------------------------
    * Two things the closed evidence schema deliberately does not carry, written
@@ -1936,7 +1937,5 @@ async function main(): Promise<void> {
  throw error;
  }
  }
-
-}
 
  await main();
