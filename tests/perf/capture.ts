@@ -1640,9 +1640,8 @@ async function main(): Promise<void> {
     preserveRaw(String(error));
     throw error;
  } finally {
-   rmSync(workRoot, { recursive: true, force: true });
+ rmSync(workRoot, { recursive: true, force: true });
  }
-}
 
 /* --- Harness evidence ---------------------------------------------------
    * Two things the closed evidence schema deliberately does not carry, written
