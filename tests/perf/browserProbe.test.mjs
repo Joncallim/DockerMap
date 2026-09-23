@@ -45,10 +45,16 @@ function installProbe() {
   return window;
 }
 
-test("control acceptance ignores a revision accepted between arm and trigger", async () => {
+test("stage-7 control ignores a revision accepted between arm and trigger", async () => {
   const window = installProbe();
   const helpers = window.__dockermapBenchHelpers;
-  helpers.armModelAcceptance({ mode: "acceptance-only", previousSeq: 0, limit: 1_000, awaitPublicationTrigger: true });
+  helpers.armModelAcceptance({
+    mode: "content",
+    previousSeq: 0,
+    limit: 1_000,
+    expectedMetricValue: "16",
+    awaitPublicationTrigger: true
+  });
   // This is the race from the aborted capture: background polling accepts a
   // revision after arming but before the fixture POST. It must not satisfy the
   // control sample.
@@ -57,6 +63,16 @@ test("control acceptance ignores a revision accepted between arm and trigger", a
   window.__dockermapBench.notifyLog.push({ at: 11, revision: "triggered" });
   window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 12, at: 13, revision: "triggered" });
   window.__dockermapBenchAcceptanceSink.push({ seq: 2, at: 14, revision: "triggered" });
+  // This is the stage-7 proof: the selected acceptance must pair with Home
+  // content carrying the same accepted revision and the triggered metric.
+  window.__dockermapBench.commits.push({
+    at: 15,
+    inHome: true,
+    inStory: true,
+    textChanged: true,
+    revision: "triggered",
+    storyValue: "16"
+  });
   const measured = await helpers.awaitModelAcceptance();
   assert.equal(measured.acceptedRevision, "triggered");
   assert.equal(measured.acceptedSequence, 2);
