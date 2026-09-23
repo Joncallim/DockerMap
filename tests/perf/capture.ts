@@ -542,7 +542,9 @@ async function startPublicationTracker(daemonPort: number, initialRevision: stri
         revision = next;
         publications.push(nowMs());
       }
-      await sleep(2);
+      // 5 ms: the detection instant is the publication instant plus at most this,
+      // and the grid fit below averages that jitter across several publications.
+      await sleep(5);
     }
   })();
   return {
@@ -558,12 +560,24 @@ async function startPublicationTracker(daemonPort: number, initialRevision: stri
       }
     },
     periodMs() {
-      const recent = publications.slice(-4);
+      const recent = publications.slice(-8);
       if (recent.length < 2) {
         throw new Error("stage 5 needs at least two observed publications before it can predict the next one");
       }
-      const gaps = recent.slice(1).map((value, index) => value - recent[index]!);
-      return medianOf(gaps);
+      // Least-squares fit of publication index against instant. A single gap is a
+      // poor estimate — it carries one cycle's refresh work plus the tracker's own
+      // start transient — and stage 5's deepest declared phases amplify a period
+      // error one-for-one into phase error, so the estimate has to be tight.
+      const count = recent.length;
+      const meanIndex = (count - 1) / 2;
+      const meanAt = recent.reduce((sum, value) => sum + value, 0) / count;
+      let numerator = 0;
+      let denominator = 0;
+      recent.forEach((at, index) => {
+        numerator += (index - meanIndex) * (at - meanAt);
+        denominator += (index - meanIndex) ** 2;
+      });
+      return numerator / denominator;
     },
     lastPublicationAtMs() {
       const last = publications[publications.length - 1];
@@ -604,7 +618,10 @@ async function observeStageFiveSample(input: {
 }): Promise<{ sample: PollPhaseSweep; revisions: string[] }> {
   const declaredPhaseMs = declaredPhaseForSample(input.runIndex, input.sampleIndex, input.intervalMs);
   const intended = intendedLatencyMs(declaredPhaseMs, input.intervalMs);
-  await input.tracker.waitForPublications(2, 30_000);
+  // Four publications give the grid fit three intervals to work with before the
+  // first sample is placed; the tracker usually satisfies this long before the
+  // browser stages begin.
+  await input.tracker.waitForPublications(4, 60_000);
   const period = input.tracker.periodMs();
 
   // Choose the publication to measure: the next one on the daemon's grid whose
@@ -852,6 +869,7 @@ async function main(): Promise<void> {
         let webServer: any = null;
         let probeServer: any = null;
         let benchAppServer: any = null;
+        let publicationTracker: PublicationTracker | null = null;
         try {
           fixtureChild = spawnOwned(process.execPath, [
             "tests/perf/fake-docker-api.mjs",
@@ -889,6 +907,15 @@ async function main(): Promise<void> {
           });
           daemonChild = startedDaemon.child;
           daemonPort = startedDaemon.port;
+          // Stage 5's phase control needs the daemon's publication grid, and the
+          // tracker needs several publications to fit it. Start it here, with the
+          // daemon, so the grid is known long before the browser stages begin.
+          if (hasStage(plan.name, "publicationToNodeObservationMs")) {
+            publicationTracker = await startPublicationTracker(
+              daemonPort,
+              ((await fetchJson(healthUrl(daemonPort), 5_000))?.modelRevision as string | undefined) ?? ""
+            );
+          }
 
           // Stages 1 and 2 need a CLEAN start per warmed sample, so they are
           // measured by restarting the daemon `samples` times on private ports
@@ -1083,13 +1110,10 @@ async function main(): Promise<void> {
                   "does not contain that shape and an uncontrolled phase must not be measured"
               );
             }
-            // The tracker follows the daemon's publication grid for this run: stage
-            // 5 predicts the next publication from it and drives the phase, instead
-            // of letting the phase fall wherever it lands.
-            const tracker = await startPublicationTracker(
-              daemonPort,
-              ((await fetchJson(healthUrl(daemonPort), 5_000))?.modelRevision as string | undefined) ?? ""
-            );
+            const tracker = publicationTracker;
+            if (!tracker) {
+              throw new Error(`${plan.name} declares stage 5 but its publication tracker was never started`);
+            }
             for (let index = 0; index < samples; index += 1) {
               // Generation `g` stops the fixture's first `g` containers, so the
               // expected Home metric for the publication this sample triggers is
@@ -1312,6 +1336,7 @@ async function main(): Promise<void> {
             await probeContext.close();
           }
         } finally {
+          if (publicationTracker) await publicationTracker.stop();
           stopOwned(apiChild);
           stopOwned(daemonChild);
           stopOwned(fixtureChild);
