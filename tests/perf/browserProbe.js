@@ -206,16 +206,44 @@
       };
       arm.task = (async () => {
         const deadline = arm.startedAt + arm.limit;
-        // Wait for the NEXT accepted coherent model, identified by its monotonic
-        // sequence number. Matching on "revision differs from the last one seen"
-        // would select a stale event whenever a publication lands between arming
-        // and the trigger.
+        // Find the (accepted model, rendered content) pair that belongs to THIS
+        // sample: an acceptance after the armed sequence whose render carries that
+        // revision's stamp AND the expected Home content for the change the harness
+        // triggered. A publication that does not move the Home metric (a
+        // provider-state-only revision, for example) cannot satisfy it, so an
+        // intermediate publication is skipped rather than mis-attributed.
         let event = null;
-        while (performance.now() < deadline && !event) {
-          event = acceptanceSink().find((entry) => entry.revision && entry.seq > arm.previousSeq) || null;
-          if (!event) await frame();
+        let commit = null;
+        while (performance.now() < deadline && !commit) {
+          for (const candidate of acceptanceSink()) {
+            if (!candidate.revision || candidate.seq <= arm.previousSeq) continue;
+            const rendered = bench.commits.find(
+              (entry) =>
+                entry.at > candidate.at &&
+                entry.textChanged &&
+                entry.inStory &&
+                entry.revision === candidate.revision &&
+                entry.storyValue === arm.expectedMetricValue
+            );
+            if (rendered) {
+              event = candidate;
+              commit = rendered;
+              break;
+            }
+          }
+          if (!commit) await frame();
         }
-        if (!event) throw new Error("no accepted coherent model was observed (" + diagnostic() + ")");
+        if (!event || !commit) {
+          throw new Error(
+            "the Home content for the triggered change never rendered (expected " +
+              arm.metricLabel +
+              "=" +
+              arm.expectedMetricValue +
+              "; story=" +
+              JSON.stringify(bench.commits.filter((entry) => entry.inStory).slice(-4)) +
+              ")"
+          );
+        }
         const acceptedAt = event.at;
         const revision = event.revision;
         // Stage 6 starts at the notification of THAT revision, which is not
@@ -233,35 +261,9 @@
           );
         }
         const notifyAt = notified.at;
-
-        // Stage 7: the expected Home content for the newly accepted model, in a
-        // commit that carries that revision's stamp and is strictly later than
-        // acceptance, followed by exactly one bounded frame.
-        let commit = null;
-        while (performance.now() < deadline && !commit) {
-          for (const candidate of bench.commits) {
-            if (candidate.at <= acceptedAt) continue;
-            if (!candidate.textChanged || !candidate.inStory) continue;
-            if (candidate.revision !== revision) continue;
-            if (candidate.storyValue !== arm.expectedMetricValue) continue;
-            commit = candidate;
-            break;
-          }
-          if (!commit) await frame();
-        }
-        if (!commit) {
-          throw new Error(
-            "the Home content for the accepted revision " +
-              revision +
-              " never rendered (expected " +
-              arm.metricLabel +
-              "=" +
-              arm.expectedMetricValue +
-              ", story=" +
-              JSON.stringify(bench.commits.filter((entry) => entry.inStory).slice(-4)) +
-              ")"
-          );
-        }
+        const skippedAcceptances = acceptanceSink().filter(
+          (entry) => entry.revision && entry.seq > arm.previousSeq && entry.seq < event.seq
+        ).length;
         const renderCommitAt = commit.at;
         await frame();
         const presentedAt = performance.now();
@@ -272,6 +274,7 @@
           acceptedSequence: event.seq,
           notifiedRevision: revision,
           latestNotifiedRevision: bench.notifyRevision,
+          skippedAcceptances,
           renderCommitMs: renderCommitAt - acceptedAt,
           presentationFrameMs: presentedAt - renderCommitAt,
           metricLabel: arm.metricLabel,

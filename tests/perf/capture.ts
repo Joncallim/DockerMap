@@ -90,12 +90,6 @@ const FixtureTopologyQueryToken = "fixture-service-0";
  */
 const HomeMetricLabel = "Offline";
 
-/**
- * How long the API observation stream keeps listening after the first change, so
- * that a second publication belonging to the same sample is attributed to it too.
- */
-const OBSERVED_REVISION_WINDOW_MS = 200;
-
 if (!metadataPath || !outputPath) {
   throw new Error(
     "Usage: npm run perf:time-to-answer -- --metadata <pinned-environment.json> --output <artifact.json>"
@@ -413,17 +407,36 @@ async function waitForBenchSamples(path: string, count: number, timeoutMs: numbe
  * Stage 5 — daemon publication committed -> Node observes the new revision
  * through TODAY'S real mechanism, poll wait included.
  *
- * The publication instant is resolved by an external observer (the harness),
- * not by the product; the observation instant comes from the real API's SSE
- * stream. The API's poll interval is part of the pinned environment.
+ * The publication instant is resolved by an external observer (the harness), not
+ * by the product; the observation instant comes from the real API's SSE stream.
+ * The API's poll interval is part of the pinned environment.
+ *
+ * The observer is ARMED before the harness triggers the change and stopped after
+ * the sample's browser measurement resolves, so every revision belonging to the
+ * sample is collected. A single fixture change can publish more than once (the
+ * inventory and provider state can both move), and the browser's accepted
+ * revision must be one of the revisions this observer actually saw.
  */
-async function measurePublicationToNodeObservation(
+interface PublicationObservation {
+  /** Milliseconds from the daemon publishing a new revision to the API emitting it. */
+  ms: number;
+  /** The first new revision the API emitted for this sample. */
+  revision: string;
+  /** Every distinct revision the API emitted for this sample, in order. */
+  revisions: string[];
+}
+
+interface PublicationObserver {
+  stop(): Promise<PublicationObservation>;
+}
+
+async function startPublicationObservation(
   daemonPort: number,
   apiPort: number,
   webOrigin: string,
   previousRevision: string,
   timeoutMs = 45_000
-): Promise<{ ms: number; revision: string; revisions: string[] }> {
+): Promise<PublicationObserver> {
   const healthUrl = `http://127.0.0.1:${daemonPort}/daemon/health`;
 
   let observedAt = 0;
@@ -450,10 +463,6 @@ async function measurePublicationToNodeObservation(
           try {
             const payload = JSON.parse(dataLine.slice(5).trim()) as { modelRevision?: string };
             if (payload.modelRevision && payload.modelRevision !== previousRevision) {
-              // A single fixture change can produce more than one publication (the
-              // inventory and provider state can both move), so every revision the
-              // API observed for this sample is kept: the browser's accepted
-              // revision must be one of them.
               if (!observedRevisions.includes(payload.modelRevision)) observedRevisions.push(payload.modelRevision);
               if (!observedAt) observedAt = nowMs();
             }
@@ -469,30 +478,33 @@ async function measurePublicationToNodeObservation(
 
   let publishAt = 0;
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const health = await fetchJson(healthUrl, 1_000);
-    const revision = health?.modelRevision as string | undefined;
-    if (revision && revision !== previousRevision) {
-      publishAt = nowMs();
-      break;
+  const publishing = (async () => {
+    while (Date.now() < deadline) {
+      const health = await fetchJson(healthUrl, 1_000);
+      const revision = health?.modelRevision as string | undefined;
+      if (revision && revision !== previousRevision) {
+        publishAt = nowMs();
+        return;
+      }
+      await sleep(2);
     }
-    await sleep(2);
-  }
-  while (!observedAt && Date.now() < deadline) await sleep(5);
-  // Keep listening briefly so a second publication belonging to the same sample is
-  // also attributed to it, then close the stream. This does not move the recorded
-  // number: `observedAt` stays the instant the first change was seen.
-  const collectUntil = Date.now() + OBSERVED_REVISION_WINDOW_MS;
-  while (Date.now() < collectUntil) await sleep(10);
-  controller.abort();
-  await reading;
-  if (!publishAt || !observedAt) {
-    throw new Error("did not observe a new revision through both the daemon and the API stream");
-  }
+  })();
+
   return {
-    ms: Math.max(0, observedAt - publishAt),
-    revision: observedRevisions[0]!,
-    revisions: observedRevisions
+    async stop(): Promise<PublicationObservation> {
+      await publishing;
+      while (!observedAt && Date.now() < deadline) await sleep(5);
+      controller.abort();
+      await reading;
+      if (!publishAt || !observedAt) {
+        throw new Error("did not observe a new revision through both the daemon and the API stream");
+      }
+      return {
+        ms: Math.max(0, observedAt - publishAt),
+        revision: observedRevisions[0]!,
+        revisions: observedRevisions
+      };
+    }
   };
 }
 
@@ -821,6 +833,13 @@ async function main(): Promise<void> {
               // nor wait for a second one.
               const beforeTrigger = await fetchJson(healthUrl(daemonPort), 5_000);
               const previousRevision = (beforeTrigger?.modelRevision as string | undefined) ?? "";
+              // Arm BOTH sample-scoped observers before the trigger: the API
+              // observation (stage 5) and the browser acceptance/render measurement
+              // (stages 6/7). Nothing is attributed to a sample it does not belong
+              // to, and no publication can be missed between arming and the trigger.
+              const publication = hasStage(plan.name, "publicationToNodeObservationMs")
+                ? await startPublicationObservation(daemonPort, apiPort, webOrigin, previousRevision)
+                : null;
               if (needsStageSix) {
                 await armStageSixSeven(benchPage, { expectedMetricValue });
               }
@@ -839,13 +858,22 @@ async function main(): Promise<void> {
               // `provider-only-revision-change` and `unavailable-optional-provider`
               // need no trigger: their revision advance comes from provider state
               // alone, which is exactly what those fixtures characterise.
-              let observed: { ms: number; revision: string } | null = null;
-              if (hasStage(plan.name, "publicationToNodeObservationMs")) {
-                observed = await measurePublicationToNodeObservation(daemonPort, apiPort, webOrigin, previousRevision);
-                observationSamples.push(observed.ms);
+              let observed: PublicationObservation | null = null;
+              if (publication && !needsStageSix) {
+                // Nothing else consumes this sample, so the observation can be
+                // closed as soon as the change has propagated through the API.
+                observed = await publication.stop();
               }
               if (needsStageSix) {
-                const measured = await awaitModelAcceptance(benchPage);
+                const measured = await (async () => {
+                  try {
+                    return await awaitModelAcceptance(benchPage);
+                  } finally {
+                    // Closed after the browser measurement resolves, so the
+                    // observation window covers every publication of this sample.
+                    if (publication) observed = await publication.stop();
+                  }
+                })();
                 coherentSamples.push(measured.notificationToCoherentModelMs);
                 if (typeof measured.coherentModelToUsefulRenderMs === "number") {
                   usefulSamples.push(measured.coherentModelToUsefulRenderMs);
@@ -854,11 +882,14 @@ async function main(): Promise<void> {
                 // the harness independently observed through the live API stream for
                 // THIS sample. A mismatch fails the capture rather than recording a
                 // number whose origin is unknown.
-                if (observed && !observed.revisions.includes(measured.acceptedRevision)) {
-                  throw new Error(
-                    `the browser accepted revision ${measured.acceptedRevision}, which the API never observed for this sample ` +
-                      `(observed: ${observed.revisions.join(", ") || "none"})`
-                  );
+                if (observed) {
+                  const seen = observed as PublicationObservation;
+                  if (!seen.revisions.includes(measured.acceptedRevision)) {
+                    throw new Error(
+                      `the browser accepted revision ${measured.acceptedRevision}, which the API never observed for this sample ` +
+                        `(observed: ${seen.revisions.join(", ") || "none"})`
+                    );
+                  }
                 }
                 if (independencePair) {
                   independencePair.normalStageSixMs.push(measured.notificationToCoherentModelMs);
@@ -870,9 +901,11 @@ async function main(): Promise<void> {
                   run: runIndex,
                   sample: index,
                   generation,
-                  delayMs: 0
+                  delayMs: 0,
+                  apiObservedRevisions: observed ? (observed as PublicationObservation).revisions : []
                 });
               }
+              if (observed) observationSamples.push((observed as PublicationObservation).ms);
             }
           }
           if (independencePair) {
