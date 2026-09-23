@@ -878,6 +878,7 @@ async function observeStageFiveSample(input: {
  await reader.cancel().catch(() => undefined);
  await reading;
  }
+}
 
 /**
  * Superseded by `observeStageFiveSample`: the jitter-based observer is gone, and
@@ -1642,7 +1643,6 @@ async function main(): Promise<void> {
  } finally {
  rmSync(workRoot, { recursive: true, force: true });
  }
- }
 
 /* --- Harness evidence ---------------------------------------------------
    * Two things the closed evidence schema deliberately does not carry, written
@@ -1938,4 +1938,4 @@ async function main(): Promise<void> {
  }
  }
 
- await main();
+await main();
