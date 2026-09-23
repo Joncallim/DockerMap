@@ -10,9 +10,13 @@ import {
   TIME_TO_ANSWER_BASELINE,
   TIME_TO_ANSWER_CONTROLLED_RUNS,
   TIME_TO_ANSWER_MATRIX,
+  TIME_TO_ANSWER_METHODOLOGY,
   TIME_TO_ANSWER_WARMED_SAMPLES,
+  TIME_TO_ANSWER_WARM_UP_OBSERVATIONS,
   assertTimeToAnswerPromotion,
+  assertWarmUpStationarity,
   assertDaemonBinaryProvenance,
+  compatibleTimeToAnswerEnvironment,
   isScenarioCell,
   splitWarmedObservations,
   summarizeTimeToAnswerStage,
@@ -41,7 +45,8 @@ const environment = {
   fontEnvironment: "system-default",
   buildMode: "production",
   fixtureRevision: "dockermap-v1/time-to-answer-fixtures-1",
-  sourceRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  sourceRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  methodologyVersion: TIME_TO_ANSWER_METHODOLOGY
 };
 
 /** 15 finite non-negative warmed samples with a per-run offset. */
@@ -75,12 +80,36 @@ describe("time-to-answer promotion gate", () => {
     expect(() => assertTimeToAnswerPromotion(artifact(), candidate())).not.toThrow();
   });
 
-  it("accepts the only environment difference a candidate may carry: sourceRevision", () => {
-    const comparable = candidate({ environment: { sourceRevision: "cccccccccccccccccccccccccccccccccccccccc" } });
-    expect(validateTimeToAnswerEvidence(comparable).environment.sourceRevision).toBe(
-      "cccccccccccccccccccccccccccccccccccccccc"
-    );
+  it("accepts the provenance differences a candidate may carry: source revision, harness revision, rebuilt digest", () => {
+    // Source and harness revisions differ by construction, and the daemon binary is
+    // REBUILT from the candidate checkout — so a byte-identical digest is not even
+    // reproducible across a changed CARGO_HOME. Requiring any of them to match would
+    // make every candidate that touches the product or the harness uncomparable.
+    const comparable = candidate({
+      environment: {
+        sourceRevision: "cccccccccccccccccccccccccccccccccccccccc",
+        harnessRevision: "ab".repeat(20),
+        daemonBinarySha256: "f".repeat(64)
+      }
+    });
     expect(() => assertTimeToAnswerPromotion(artifact(), comparable)).not.toThrow();
+    const baseline = validateTimeToAnswerEvidence(artifact());
+    const validated = validateTimeToAnswerEvidence(comparable);
+    expect(compatibleTimeToAnswerEnvironment(baseline.environment, validated.environment)).toBe(true);
+    expect(validated.environment.daemonBinarySha256).toBe("f".repeat(64));
+  });
+
+  it("rejects a candidate measured under a different methodology version", () => {
+    const other = candidate({ environment: { methodologyVersion: "dockermap-v1/time-to-answer-methodology-1" } });
+    expect(
+      compatibleTimeToAnswerEnvironment(
+        validateTimeToAnswerEvidence(artifact()).environment,
+        validateTimeToAnswerEvidence(other).environment
+      )
+    ).toBe(false);
+    expect(() => assertTimeToAnswerPromotion(artifact(), other)).toThrow(
+      "does not match the pinned baseline environment"
+    );
   });
 
   it("rejects a candidate above the reviewed budget, naming the cell", () => {
@@ -183,19 +212,43 @@ describe("time-to-answer promotion gate", () => {
   });
 
   it("cannot let a cold first observation enter a warmed stage summary", () => {
-    // The daemon's first-ever observation is a cold start, and with 15 recorded
-    // samples nearest-rank p95 IS the maximum — so one cold observation would
-    // become the published number. Exactly one observation is discarded as
-    // warm-up; the rest are recorded unchanged.
-    const observations = [99.9, ...Array.from({ length: 15 }, (_, index) => 2 + index * 0.1)];
-    const { warmUp, recorded } = splitWarmedObservations(observations);
-    expect(warmUp).toBe(99.9);
-    expect(recorded).toEqual(observations.slice(1));
+    // The daemon's first passes are cold, and with 15 recorded samples nearest-rank
+    // p95 IS the maximum — so a surviving cold observation would become the
+    // published number. The protocol discards a FIXED five observations (declared
+    // before the capture), keeps them all for audit, and never trims further.
+    const cold = [99.9, 40.1, 12.2, 3.4, 2.9];
+    const warm = Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, index) => 2 + index * 0.1);
+    const { warmUps, recorded } = splitWarmedObservations([...cold, ...warm]);
+    expect(warmUps).toEqual(cold);
+    expect(warmUps).toHaveLength(TIME_TO_ANSWER_WARM_UP_OBSERVATIONS);
+    expect(recorded).toEqual(warm);
     const summary = summarizeTimeToAnswerStage([recorded, recorded, recorded]);
     expect(summary.runP95Ms.every((value) => value < 10)).toBe(true);
     expect(summary.medianOfThreeRunP95Ms).toBeLessThan(10);
-    // No arbitrary sampling: the whole window is needed, and a short window fails.
-    expect(() => splitWarmedObservations(observations.slice(0, 15))).toThrow();
+    // No arbitrary sampling: the whole window is required and a short window FAILS
+    // rather than being silently trimmed to the declared count.
+    expect(() => splitWarmedObservations([...cold, ...warm].slice(0, cold.length + warm.length - 1))).toThrow();
+  });
+
+  it("invalidates a warmed window whose declared stationarity band is violated", () => {
+    const measured = Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, index) => 2 + index * 0.1);
+    // Warm-ups that never settled: the final pair still sits far above the measured
+    // median, which is what the old single-discard policy published as a sample.
+    const unsettled = [99.9, 40.1, 12.2, 11.6, 11.3];
+    const bad = splitWarmedObservations([...unsettled, ...measured]);
+    expect(() => assertWarmUpStationarity({ label: "reference-100|dockerObservationMs|run0", ...bad })).toThrow(
+      /not stationary/
+    );
+    // A settled window passes and reports its ratio (declared band 0.5x–1.5x).
+    const settled = splitWarmedObservations([99.9, 40.1, 12.2, 3.4, 2.9, ...measured]);
+    const ratio = assertWarmUpStationarity({ label: "reference-100|dockerObservationMs|run0", ...settled });
+    expect(ratio).toBeGreaterThanOrEqual(0.5);
+    expect(ratio).toBeLessThanOrEqual(1.5);
+    // The guard never repairs a window: it rejects, and the sample count must be
+    // exactly the declared 15.
+    expect(() =>
+      assertWarmUpStationarity({ label: "x", warmUps: settled.warmUps, recorded: settled.recorded.slice(0, 14) })
+    ).toThrow(/exactly 15 measured samples/);
   });
 
   it("binds the executed daemon binary to the recorded revision", () => {

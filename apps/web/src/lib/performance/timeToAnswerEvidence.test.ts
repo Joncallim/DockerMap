@@ -35,7 +35,8 @@ const environment: Record<string, unknown> = {
   fontEnvironment: "Noto-Sans-1.0",
   buildMode: "production",
   fixtureRevision: "dockermap-v1/time-to-answer-fixtures-1",
-  sourceRevision: "candidate"
+  sourceRevision: "candidate",
+  methodologyVersion: "dockermap-v1/time-to-answer-methodology-2"
 };
 
 /**

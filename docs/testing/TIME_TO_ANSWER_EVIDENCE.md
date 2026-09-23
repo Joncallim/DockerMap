@@ -127,6 +127,15 @@ the same generator the fixture daemon serves). Earlier revisions of this harness
 gave `docker-topology-change` a fixed one-in-three exited mix; that mix is gone,
 because a constant mix cannot discriminate a stale render from a fresh one.
 
+**Scenario premises are asserted, not named.** The capture fails when
+`provider-only-revision-change`'s Docker inventory changes, when the
+`unavailable-optional-provider` fixture's optional provider is fresh, and when the
+`slow-bounded-compose-projection` project does not actually declare its
+`SLOW_COMPOSE_SERVICES = 400` services — an empty or truncated project would
+otherwise record a cell and look like a fast projection. The `docker-topology-change`
+and reference fixtures need no extra premise: the stage-7 expected-content check
+binds them to the generation the harness triggered.
+
 ## Promotion rules
 
 A candidate passes only when, in an equivalent controlled environment, **every**
@@ -134,6 +143,20 @@ fixture × stage value is at most `max(baseline × 1.25, baseline + 2 ms)`. Limi
 are derived from the measured baseline, never invented as aspirational absolute
 milliseconds. A candidate that fails the environment check fails closed; it is
 not "close enough".
+
+**Provenance is not compatibility.** The environment records 20 pinned fields, and
+they are used in three different ways:
+
+| use | fields | how it is treated |
+| --- | --- | --- |
+| comparison requirements (16) | `runnerClass`, `cpuClass`, `osImage`, `osKernel`, `nodeRevision`, `rustRevision`, `ssePollIntervalMs`, `daemonBinaryBuild`, `cargoRevision`, `browserEngine`, `browserRevision`, `browserFlags`, `fontEnvironment`, `buildMode`, `fixtureRevision`, `methodologyVersion` | must be identical, or the comparison fails closed |
+| provenance/identity (3) | `sourceRevision`, `harnessRevision`, `daemonBinarySha256` | recorded so the artifact identifies exactly what was measured; NEVER required to match |
+| informational (1) | `dockerRevision` | recorded because it is part of the runner's identity; no measured stage exercises the host Docker daemon |
+
+`daemonBinarySha256` in particular must not gate a comparison: the candidate's
+daemon is **rebuilt from the candidate checkout**, so any legitimate change under
+`crates/` — exactly what #336 does — produces a different digest, and a
+byte-identical digest is not reproducible across a changed `CARGO_HOME`.
 
 No optimization claim in #336/#337/#338 (or later) may be accepted without
 comparing against this baseline under this rule.
@@ -165,8 +188,12 @@ The two browser stages answer different questions and must not share a clock.
   the UI renders.
 - **Stage 7 — `coherentModelToUsefulRenderMs`.** Starts at the *stage-6
   timestamp*. Ends when the accepted model's **expected Home content is present**,
-  in a commit the application stamped with that accepted revision, followed by
-  exactly **one bounded `requestAnimationFrame`**. No sleeps are involved.
+  in a commit the application stamped with that accepted revision, followed by a
+  **bounded render/presentation confirmation**: the probe discovers the commit from
+  an animation-frame loop and then awaits a bounded frame after it, so the
+  end-of-stage segment is one or two frames rather than a fixed number. No sleeps
+  are involved, and the raw audit records the commit→end duration of every sample so
+  the mechanism is checkable rather than asserted.
 
 Stage 6 is observed at the **real application seam**: the acceptance point is
 inside `useSystemModel`, at the moment the composed model is published. It is
@@ -285,14 +312,15 @@ pins the artifacts it serves before measuring anything. `npm run
 perf:time-to-answer` is the only command needed; it owns every process it starts.
 
 **Capture discipline.** The capture refuses to start from a dirty worktree, and
-refuses to run if the metadata's `sourceRevision` or `harnessRevision` does not
-match the checked-out commits. A baseline is therefore always reproducible from a
-committed revision: the artifact names both the product revision and the harness
-that measured it. Commit the harness **before** capturing — baseline 1 was
-invalidated precisely because its harness existed only as uncommitted changes.
-`DOCKERMAP_BENCH_DEBUG=1` relaxes only the run/sample counts (for probing a single
-fixture, which can never satisfy the closed matrix and therefore cannot emit an
-artifact).
+refuses to run if the metadata's `sourceRevision`, `harnessRevision` or
+`methodologyVersion` does not match the checked-out commit and the contract. A
+baseline is therefore always reproducible from a committed revision: the artifact
+names both the product revision and the harness that measured it, and the design it
+was measured under. Commit the harness **before** capturing — baseline 1 was
+invalidated precisely because its harness existed only as uncommitted changes — and
+run the focused smoke (`DOCKERMAP_BENCH_DEBUG=1` with `--fixtures`, which relaxes
+only the run/sample counts for probing and can never emit an artifact) before
+spending a full capture.
 
 Procedure notes: stages 8 and 10 run against the benchmark-only module probe
 (`tests/perf/benchVite.config.mjs`, real production modules, real Chromium);
@@ -324,20 +352,37 @@ The distinction is load-bearing, not descriptive, and the contract encodes it in
 - **cold-start** — `daemonStartToListenerMs`, `listenerToFirstDockerModelMs`. The
   first observation *is* the measurement, so nothing is discarded.
 - **warmed-repeated** — every other stage. A repeated steady-state operation. The
-  daemon's first-ever refresh runs before its listener binds, so its first pass
-  through the collection path is a cold start. The capture therefore collects
-  **`samples + 1` observations** for the warmed daemon stages and discards
-  **exactly one** — never an arbitrary slow sample — via `splitWarmedObservations`,
-  which refuses a window shorter than `samples + 1`. With 15 recorded samples,
-  nearest-rank p95 *is* the maximum, so a single cold observation would otherwise
-  become the published number.
+  daemon's first passes through the collection path are cold (its first refresh
+  runs before its listener binds). The protocol therefore declares a **FIXED
+  `TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = 5` warm-up observations BEFORE the capture
+  and collects `samples + 5` observations for the warmed daemon stages, keeping the
+  first five as warm-up and the next 15 as the measured window
+  (`splitWarmedObservations` refuses a shorter window). With 15 recorded samples,
+  nearest-rank p95 *is* the maximum, so a surviving cold observation would
+  otherwise become the published number.
 - **scenario cells** — a warmed stage measured on a scenario fixture
   (`isScenarioCell`). They are declared in the closed matrix only for the fixtures
   that construct the scenario.
 
-The discarded warm-up value is retained separately in the raw audit trail
-(`warmUpObservations`, keyed `fixture|stage`) and never enters a recorded sample,
-a summary, or a promotion comparison.
+**Why five.** The count was fixed from the round-3 raw windows before this
+methodology existed, not chosen afterwards to make data look stationary: in those
+windows the discarded first observation reached 4.01× the window median and the
+SECOND — the first one the old single-discard policy published — still reached
+2.15× in 5 of 30 windows, while every observation from index 5 on stayed within
+1.29×.
+
+**Stationarity is a validity check, never a repair.** `assertWarmUpStationarity`
+compares the median of the final two warm-up observations against the median of the
+measured window and requires a ratio inside the declared `0.5×–1.5×` band (the
+round-3 windows scored 0.81–1.28 at five warm-ups). A window outside that band
+**invalidates the cell/run**; the harness never discards further samples to make a
+window pass, because choosing how many samples to drop after seeing the values
+would turn conditioning into result selection.
+
+Every warm-up observation is retained in the raw audit trail
+(`warmUpObservations`, keyed `fixture|stage|run`) with the whole observation window
+and the stationarity ratio, and none of them ever enters a recorded sample, a
+summary, or a promotion comparison.
 
 ## Capture discipline
 
@@ -363,31 +408,82 @@ sha256(crates/target/release/dockermap-daemon)       # daemonBinarySha256
 ```
 
 `emit-metadata` performs that build and records `daemonBinarySha256`,
-`daemonBinaryBuild` and `cargoRevision`. The capture verifies the digest
-**before** the run and **again after** it, and fails closed on mismatch or on a
-substituted executable (`assertDaemonBinaryProvenance`). This is not a claim that
-Rust builds are bit-for-bit reproducible across machines; it proves which binary
-*this* capture executed.
+`daemonBinaryBuild` and `cargoRevision`. The capture verifies the digest **before**
+the run and **again after** it — the daemon is spawned repeatedly during a long
+capture, so a mid-run substitution or rebuild would otherwise be invisible — and
+fails closed on mismatch or on a substituted executable
+(`assertDaemonBinaryProvenance`). Both digests and the build command are recorded in
+the harness evidence beside the artifact. This proves which binary *this* capture
+executed; it is **provenance, not a promotion compatibility requirement** (see
+"Promotion rules").
 
-## The SSE polling mechanism is unchanged
+## Stage 5 — the deterministic poll-phase sweep
 
 The baseline measures today's real publication→observation mechanism **including
-its poll wait**. The default `DOCKERMAP_SSE_INTERVAL_MS` is 2000 ms, derived from
-the API's own source and passed to the API explicitly so the recorded pin cannot
-drift from the interval that ran. The harness jitters the *trigger* per sample so
-the samples describe the poll-wait distribution instead of one fixed phase offset
-between the daemon's 2 s refresh loop and the API's 2 s poller. That de-correlates
-the **measurement only**; the production cadence is deliberately unchanged, and
-removing this floor is #337's work, not this issue's.
+its poll wait**, and it *drives* the publication phase instead of hoping for one.
 
-`publicationToNodeObservationMs` is therefore **not** a generic network-latency
-figure and must never be described as one.
+Baseline 3 disproved the earlier hope: it slept a uniform random delay before each
+trigger, and reference-25's 45 samples still occupied a **120 ms band of the
+2000 ms interval (6.0 %)** with consecutive differences under 19 ms — because both
+the daemon's refresh loop and the API's poller run on fixed 2 s cycles, so the
+measured gap was their phase offset rather than a sample of any distribution.
+
+The declared design (`timeToAnswerPollPhase.ts`, methodology revision 2):
+
+- the poll interval is divided into **15 equal divisions**, giving one declared
+  phase per recorded sample per run; phase `p` places the publication at
+  `(p + 0.5) × interval / 15`, so the intended latency is `interval − that offset`
+  and no phase sits on a poll tick boundary (where a publication is inherently
+  ambiguous);
+- each controlled run sweeps the phases **ascending**, so every declared phase has
+  exactly three samples per cell and **every raw sample's phase is recoverable from
+  its position in its run** — a reviewer can rebuild the curve from the artifact
+  alone;
+- the harness **controls the phase by choosing when it connects** its observation
+  stream: the API emits to each connected client on a `setInterval` anchored to that
+  connection, so connecting at `predicted publication − declared phase` puts the
+  next poll tick at the intended latency after the publication. The prediction comes
+  from the daemon's own observed publication grid;
+- each sample then **verifies** itself: the observed publication must match the
+  prediction, the observed latency must land on the declared phase within a 60 ms
+  tolerance (the grid step is 133 ms, so adjacent phases stay distinguishable), and
+  the observation must have arrived through the real API stream. The capture also
+  asserts that the application page never contacted the daemon directly.
+
+Before accepting a capture, `assertPollPhaseSweep` requires that every declared
+phase is represented at least twice, that no sample's phase was uncontrolled, that
+all observations travelled the real poller path, that the sweep spans at least half
+the interval, and that the earliest declared phase is faster than the latest by at
+least half an interval. **A sweep confined to a narrow band is rejected** — that is
+a RED test, not an aspiration.
+
+The reported figures are:
+
+- the **phase curve** — declared phase → observed latency (min, max, median per
+  phase), the most direct statement about the existing mechanism; and
+- a **phase-normalized p95**, computed from the predeclared uniform grid by taking
+  the observed median at each declared phase and then nearest-rank p95 over those
+  medians. It weights the declared phases uniformly to characterise the latency the
+  fixed polling mechanism imposes. **It does not claim that real host publications
+  occur uniformly across poll phase**, and it is neither an observed user-traffic
+  distribution nor network latency.
+
+`publicationToNodeObservationMs` must never be described as network latency, and
+the production cadence is deliberately unchanged: removing this floor is #337's
+work, not this issue's.
 
 ## Superseded captures
 
-Baseline 1 and baseline 2 are **REJECTED historical attempts** and are not the
-authority for anything. Their numbers may be cited only to explain methodology
-changes, never as current measurements and never for promotion gating.
+Baseline 1, baseline 2 **and baseline 3** are **REJECTED historical attempts** and
+are not the authority for anything. Their artifacts are kept outside the repository
+in `/srv/jonas/evidence/dockermap/` (baselines 1 and 2) and
+`/srv/jonas/evidence/dockermap/time-to-answer/` (baseline 3, with its harness
+evidence). Their numbers may be cited only to explain methodology changes, never as
+current measurements and never for promotion gating. Baseline 3 was rejected
+because its stage-5 samples were a phase-locked sawtooth rather than a sweep of the
+poll interval, its single discarded warm-up still left a 2.15×-of-median
+observation inside the measured window, it gated promotion on the rebuilt daemon
+digest, and it documented a post-run binary verification the code did not perform.
 
 ## Current state of this slice
 
@@ -415,10 +511,50 @@ Complete and enforced by tests:
   proof (`productionIsolation.test.mjs`);
 - `npm run test:perf` wired into `npm run check:js`.
 
-`docs/testing/TIME_TO_ANSWER_BASELINE.md` records **baseline 3**, captured from
-committed revision `cf77e8ba` on this pinned runner: 44 declared cells × 3
-controlled runs × 15 recorded samples, with the cold/warm split, daemon binary
-provenance, independent stage-6/7 clocks, the enforced independence control and the
-auditable warm-up retention described above. Baseline 3 is the authority for
-#336/#337 **once the round-3 independent review clears it**; until that review
-lands, no optimization may be claimed or implemented against it.
+`docs/testing/TIME_TO_ANSWER_BASELINE.md` is the baseline record. Baseline 3 (from
+committed revision `cf77e8ba`) was **REJECTED** in round-3 review and is not the
+authority for anything: its stage-5 sweep did not sweep, its warm-up policy left a
+cold observation inside the measured window, its promotion gate treated the rebuilt
+daemon digest as a compatibility key, and it documented a post-run binary
+verification the code did not perform.
+
+The response is a **methodology revision** (`TIME_TO_ANSWER_METHODOLOGY =
+dockermap-v1/time-to-answer-methodology-2`), not a retry: the deterministic
+stage-5 poll-phase sweep with its validity guards and phase-normalized summary, a
+fixed five-observation warm-up protocol with a declared stationarity check, the
+provenance/compatibility split, and the implemented before/after binary
+verification. The revised methodology is pinned in the emitted metadata and the
+capture refuses to run when the metadata names a different design.
+
+Complete and enforced by tests:
+
+- the closed contract, the 12 stages and their buckets, the fixture set, the
+  44-cell fixture × stage matrix, the environment allowlist (including the
+  effective SSE poll interval and the methodology version), raw-sample validation,
+  the summary math and the promotion gate;
+- the deterministic fixture topology (whose generation delta is product-visible,
+  so the stage-7 expected-content check is discriminating) and the fixture Docker
+  daemon, proven against the real daemon build;
+- the inert bench-only stage attribution hook for `dockerObservationMs`,
+  `composeEnrichmentMs` and `findingsDerivationMs`;
+- the stage-5 poll-phase design: the declared grid, the driven phase, the
+  per-sample declaration/observation records and the validity guards
+  (`timeToAnswerPollPhase.test.ts`, including the narrow-band RED case);
+- the stage-6 coherent-model acceptance seam in real product source, compiled out
+  of the production build and compiled into the benchmark-mode application build,
+  with the stage-7 expected-content + bounded-presentation end condition and the
+  chain-of-custody check from daemon revision to rendered content;
+- the stage-6/7 independence control, enforced before any artifact is assembled
+  and unit-tested against its RED cases;
+- the fixed warm-up protocol and its stationarity guard, with every warm-up
+  retained in the raw audit trail;
+- the capture's runtime premise assertions (provider-only inventory unchanged,
+  optional provider non-fresh, slow-Compose project really declared, and the
+  application page never reaching the daemon directly);
+- the single documented capture command with its browser probes, the environment
+  emitter, the methodology drift guard and the summarizer;
+- the promotion RED-checks (`timeToAnswerPromotion.test.ts`), the independence
+  RED-checks (`timeToAnswerIndependence.test.ts`), the phase-sweep RED-checks
+  (`timeToAnswerPollPhase.test.ts`) and the production isolation proof
+  (`productionIsolation.test.mjs`);
+- `npm run test:perf` wired into `npm run check:js`.

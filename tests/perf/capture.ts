@@ -33,19 +33,35 @@ import {
   TIME_TO_ANSWER_CONTROLLED_RUNS,
   TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
   TIME_TO_ANSWER_INDEPENDENCE_SAMPLES,
+  TIME_TO_ANSWER_INDEPENDENCE_SETTLE_MS,
   TIME_TO_ANSWER_MATRIX,
+  TIME_TO_ANSWER_METHODOLOGY,
   TIME_TO_ANSWER_REFERENCE_FIXTURES,
   TIME_TO_ANSWER_STAGES,
+  TIME_TO_ANSWER_STAGE_KIND,
   TIME_TO_ANSWER_WARMED_SAMPLES,
+  TIME_TO_ANSWER_WARM_UP_OBSERVATIONS,
+  assertDaemonBinaryProvenance,
   assertStageSixSevenIndependence,
   assertTimeToAnswerEnvironment,
   assertTimeToAnswerPromotion,
-  assertDaemonBinaryProvenance,
+  assertWarmUpStationarity,
+  derivedTimeToAnswerPhaseNormalized,
   splitWarmedObservations,
-  TIME_TO_ANSWER_STAGE_KIND,
   validateTimeToAnswerEvidence
 } from "../../apps/web/src/lib/performance/timeToAnswerEvidence";
-import { FIXTURE_REVISION, buildSlowComposeProject, expectedExitedCount } from "./dockerFixtureTopology.mjs";
+import {
+  POLL_PHASE_CONTROL_TOLERANCE_MS,
+  POLL_PHASE_DIVISIONS,
+  assertPollPhaseSweep,
+  declaredPhaseForSample,
+  intendedLatencyMs,
+  observedPhaseBucketMs,
+  phaseMediansMs,
+  pollPhaseGridMs,
+  type PollPhaseSweep
+} from "../../apps/web/src/lib/performance/timeToAnswerPollPhase";
+import { FIXTURE_REVISION, SLOW_COMPOSE_SERVICES, buildSlowComposeProject, expectedExitedCount } from "./dockerFixtureTopology.mjs";
 import { reservePort, startStaticServer } from "./staticServer.mjs";
 
 const REPO_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -113,8 +129,10 @@ const environment = metadata.environment;
 
 /**
  * The effective SSE poll interval. It is passed to the API explicitly so the
- * recorded pin cannot drift from what actually ran, and it sets the trigger
- * jitter that de-correlates stage 5 from the two fixed 2 s cycles.
+ * recorded pin cannot drift from the interval that ran, and it defines the stage-5
+ * phase grid the harness drives: the publication phase relative to the observation
+ * stream's poll ticks is chosen from a declared grid over this interval, never left
+ * to a random trigger delay.
  */
 const pollIntervalMs = Number(environment.ssePollIntervalMs);
 if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
@@ -145,6 +163,16 @@ if (environment.harnessRevision !== harnessRevision) {
     `metadata harnessRevision (${environment.harnessRevision}) is not the harness commit (${harnessRevision})`
   );
 }
+// The methodology is part of the measurement, not metadata trivia: a candidate is
+// only comparable against a baseline captured under the same design (stage-5 phase
+// control, fixed warm-up protocol, stationarity guard, provenance/compatibility
+// split). A stale metadata file must not silently capture under the old design.
+if (environment.methodologyVersion !== TIME_TO_ANSWER_METHODOLOGY) {
+  throw new Error(
+    `metadata methodologyVersion (${environment.methodologyVersion}) is not the contract's ` +
+      `(${TIME_TO_ANSWER_METHODOLOGY}); re-emit the metadata so the artifact names the design it measured`
+  );
+}
 const daemonBinary = metadata.daemonBinary ?? join(REPO_ROOT, "crates/target/release/dockermap-daemon");
 // Bind the executed binary to the recorded revision before and after the run:
 // stages 1/2/3/4/5/9 all come from this executable, so a stale or substituted
@@ -157,7 +185,7 @@ assertDaemonBinaryProvenance({
   observedSha256: currentDaemonSha256(),
   phase: "before capture"
 });
-const daemonBinarySha256 = currentDaemonSha256();
+const daemonBinarySha256Before = currentDaemonSha256();
 const launchArgs = (environment.browserFlags as string[]).filter(Boolean);
 
 const plans = TIME_TO_ANSWER_REFERENCE_FIXTURES.filter(
@@ -183,6 +211,15 @@ const independencePairs: Array<{
 }> = [];
 /** Per-sample stage 6/7 audit trail: accepted revision, notification, commits. */
 const stageSixSevenAudit: Array<Record<string, unknown>> = [];
+/**
+ * Stage-5 poll-phase sweep records (methodology revision 2). Harness-only: they
+ * carry the declared and observed phase of every recorded stage-5 sample, and are
+ * written beside the artifact rather than inside it, so the closed evidence
+ * schema stays raw numbers only.
+ */
+const stageFiveSweep: Array<PollPhaseSweep & { fixture: string }> = [];
+/** Per-fixture result of the declared phase-sweep validity guards. */
+const stageFiveValidity: Record<string, unknown> = {};
 /**
  * The complete warmed observation window per `fixture|stage`, in the order the
  * daemon produced it (`samples + 1` values). The discarded warm-up is index 0, so
@@ -409,11 +446,15 @@ function writeComposeProject(root: string, scenario: string): void {
 
 const BENCH_STAGE_KEYS = ["dockerObservationMs", "composeEnrichmentMs", "findingsDerivationMs"] as const;
 /**
- * The daemon's first-ever observation runs before its listener binds, so it is a
- * cold start. For warmed stages it is discarded from the recorded samples and
- * kept here instead, so the discard is auditable rather than silent.
+ * The daemon's first-ever observation runs before its listener binds, so its first
+ * passes are a cold start. For warmed stages a FIXED number of warm-up
+ * observations (`TIME_TO_ANSWER_WARM_UP_OBSERVATIONS`, declared before the capture)
+ * is discarded from the recorded samples and kept here instead, so the discard is
+ * auditable rather than silent and never chosen from the data.
  */
-const warmUpObservations: Record<string, number> = {};
+const warmUpObservations: Record<string, number[]> = {};
+/** The declared-stationarity ratio of each warmed window, per `fixture|stage|run`. */
+const warmUpStationarity: Record<string, number> = {};
 
 function readBenchSink(path: string): Record<(typeof BENCH_STAGE_KEYS)[number], number[]> {
   const stages = { dockerObservationMs: [], composeEnrichmentMs: [], findingsDerivationMs: [] } as Record<
@@ -451,56 +492,140 @@ async function waitForBenchSamples(path: string, count: number, timeoutMs: numbe
 }
 
 /**
- * Stage 5 — daemon publication committed -> Node observes the new revision
- * through TODAY'S real mechanism, poll wait included.
+ * Stage 5 — daemon publication committed -> the Node/SSE layer observes the new
+ * revision through TODAY'S real polling mechanism, poll wait included.
  *
- * The publication instant is resolved by an external observer (the harness), not
- * by the product; the observation instant comes from the real API's SSE stream.
- * The API's poll interval is part of the pinned environment.
+ * Methodology revision 2 drives the phase DETERMINISTICALLY instead of sleeping a
+ * uniform random delay and hoping the samples land across the interval. Baseline 3
+ * disproved that hope: reference-25's 45 samples sat in a 120 ms band (6.0 % of the
+ * interval) because both the daemon's refresh loop and the API's poller are fixed
+ * 2 s loops, so the measured gap was their phase offset, not a sample of any
+ * distribution. The design is declared in `timeToAnswerPollPhase.ts`: a fixed grid
+ * of phases spanning the interval, one declared phase per recorded sample, each
+ * run sweeping the grid ascending, so each phase has exactly three samples per
+ * cell and every sample's phase is recoverable from its position in its run.
  *
- * The observer is ARMED before the harness triggers the change and stopped after
- * the sample's browser measurement resolves, so every revision belonging to the
- * sample is collected. A single fixture change can publish more than once (the
- * inventory and provider state can both move), and the browser's accepted
- * revision must be one of the revisions this observer actually saw.
+ * The harness controls the phase by choosing WHEN IT CONNECTS its observation
+ * stream: the API emits to each connected client on a `setInterval` anchored to
+ * that connection, so connecting at `predictedPublication - declaredPhase` puts the
+ * next poll tick at the intended latency after the publication. The prediction
+ * comes from the daemon's own observed publication grid. Each sample then verifies
+ * the result: the observed publication must match the prediction, the observed
+ * latency must land on the declared phase within tolerance, and the observation
+ * must have arrived through the real API stream.
  */
-interface PublicationObservation {
-  /** Milliseconds from the daemon publishing a new revision to the API emitting it. */
-  ms: number;
-  /** The first new revision the API emitted for this sample. */
-  revision: string;
-  /** Every distinct revision the API emitted for this sample, in order. */
-  revisions: string[];
+const PHASE_CONNECT_MARGIN_MS = 30;
+
+interface PublicationTracker {
+  /** Instants at which the daemon's published revision changed. */
+  readonly publications: number[];
+  /** The revision the daemon currently publishes. */
+  revision(): string;
+  waitForPublications(count: number, timeoutMs: number): Promise<void>;
+  /** Mean observed gap between recent publications: the daemon's grid period. */
+  periodMs(): number;
+  lastPublicationAtMs(): number;
+  stop(): Promise<void>;
 }
 
-interface PublicationObserver {
-  /**
-   * Close the observation window. When `expectedRevision` is given, keep listening
-   * (bounded by one poll interval plus a margin) until this connection has emitted
-   * that revision too: every SSE connection polls on its OWN phase, so the
-   * harness's stream can legitimately lag the browser's by up to one interval. The
-   * recorded duration is unaffected — it is fixed at the first emission.
-   */
-  stop(expectedRevision?: string | null): Promise<PublicationObservation>;
+async function startPublicationTracker(daemonPort: number, initialRevision: string): Promise<PublicationTracker> {
+  const url = `http://127.0.0.1:${daemonPort}/daemon/health`;
+  const publications: number[] = [];
+  let revision = initialRevision;
+  let stopped = false;
+  const running = (async () => {
+    while (!stopped) {
+      const health = await fetchJson(url, 1_000);
+      const next = (health?.modelRevision as string | undefined) ?? "";
+      if (next && next !== revision) {
+        revision = next;
+        publications.push(nowMs());
+      }
+      await sleep(2);
+    }
+  })();
+  return {
+    publications,
+    revision: () => revision,
+    async waitForPublications(count: number, timeoutMs: number) {
+      const deadline = Date.now() + timeoutMs;
+      while (publications.length < count && Date.now() < deadline) await sleep(10);
+      if (publications.length < count) {
+        throw new Error(
+          `the daemon published only ${publications.length} revisions; stage 5 needs ${count} to know its publication grid`
+        );
+      }
+    },
+    periodMs() {
+      const recent = publications.slice(-4);
+      if (recent.length < 2) {
+        throw new Error("stage 5 needs at least two observed publications before it can predict the next one");
+      }
+      const gaps = recent.slice(1).map((value, index) => value - recent[index]!);
+      return medianOf(gaps);
+    },
+    lastPublicationAtMs() {
+      const last = publications[publications.length - 1];
+      if (last === undefined) throw new Error("stage 5 has observed no publication yet");
+      return last;
+    },
+    async stop() {
+      stopped = true;
+      await running;
+    }
+  };
 }
 
-async function startPublicationObservation(
-  daemonPort: number,
-  apiPort: number,
-  webOrigin: string,
-  previousRevision: string,
-  timeoutMs = 45_000
-): Promise<PublicationObserver> {
-  const healthUrl = `http://127.0.0.1:${daemonPort}/daemon/health`;
+interface PhaseSamplePlan {
+  declaredPhaseMs: number;
+  intendedLatencyMs: number;
+  predictedPublicationAtMs: number;
+  connectedAtMs: number;
+}
 
-  let observedAt = 0;
-  const observedRevisions: string[] = [];
+/**
+ * Measure one stage-5 sample at its declared phase. `onConnected` runs after the
+ * observation stream is connected and before the publication is awaited, which is
+ * where the caller arms the browser measurement and triggers the fixture change:
+ * both must happen after the connection (so the poll tick carries the change) and
+ * before the publication (so the change is in it).
+ */
+async function observeStageFiveSample(input: {
+  tracker: PublicationTracker;
+  daemonPort: number;
+  apiPort: number;
+  webOrigin: string;
+  intervalMs: number;
+  runIndex: number;
+  sampleIndex: number;
+  onConnected: (plan: PhaseSamplePlan) => Promise<void>;
+  timeoutMs?: number;
+}): Promise<{ sample: PollPhaseSweep; revisions: string[] }> {
+  const declaredPhaseMs = declaredPhaseForSample(input.runIndex, input.sampleIndex, input.intervalMs);
+  const intended = intendedLatencyMs(declaredPhaseMs, input.intervalMs);
+  await input.tracker.waitForPublications(2, 30_000);
+  const period = input.tracker.periodMs();
+
+  // Choose the publication to measure: the next one on the daemon's grid whose
+  // connection instant is still in the future by a safety margin.
+  let predicted = input.tracker.lastPublicationAtMs() + period;
+  while (predicted - declaredPhaseMs < nowMs() + PHASE_CONNECT_MARGIN_MS) predicted += period;
+
+  const connectAt = predicted - declaredPhaseMs;
+  await sleep(Math.max(0, connectAt - nowMs()));
+  const previousRevision = input.tracker.revision();
+  const connectedAtMs = nowMs();
+
+  // The observation stream is opened at the computed instant. Ticks occur every
+  // `intervalMs` from connection, so the first tick after `predicted` lands at
+  // `predicted + intended` — the declared phase's latency.
   const controller = new AbortController();
-  const stream = await fetch(`http://127.0.0.1:${apiPort}/api/events/stream`, {
-    headers: { accept: "text/event-stream", origin: webOrigin },
+  const observed = { at: 0, revisions: [] as string[] };
+  const response = await fetch(`http://127.0.0.1:${input.apiPort}/api/events/stream`, {
+    headers: { accept: "text/event-stream", origin: input.webOrigin },
     signal: controller.signal
   });
-  const reader = stream.body!.getReader();
+  const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   const reading = (async () => {
     let buffer = "";
@@ -516,9 +641,10 @@ async function startPublicationObservation(
           if (!dataLine) continue;
           try {
             const payload = JSON.parse(dataLine.slice(5).trim()) as { modelRevision?: string };
-            if (payload.modelRevision && payload.modelRevision !== previousRevision) {
-              if (!observedRevisions.includes(payload.modelRevision)) observedRevisions.push(payload.modelRevision);
-              if (!observedAt) observedAt = nowMs();
+            const revision = payload.modelRevision;
+            if (revision && revision !== previousRevision) {
+              if (!observed.revisions.includes(revision)) observed.revisions.push(revision);
+              if (!observed.at) observed.at = nowMs();
             }
           } catch {
             // keepalive or non-JSON frame
@@ -530,49 +656,65 @@ async function startPublicationObservation(
     }
   })();
 
-  let publishAt = 0;
-  const deadline = Date.now() + timeoutMs;
-  const publishing = (async () => {
-    while (Date.now() < deadline) {
-      const health = await fetchJson(healthUrl, 1_000);
-      const revision = health?.modelRevision as string | undefined;
-      if (revision && revision !== previousRevision) {
-        publishAt = nowMs();
-        return;
-      }
-      await sleep(2);
-    }
-  })();
+  await input.onConnected({
+    declaredPhaseMs,
+    intendedLatencyMs: intended,
+    predictedPublicationAtMs: predicted,
+    connectedAtMs
+  });
 
+  // The publication instant is resolved by the tracker's own health polling, which
+  // runs continuously and independently of the API stream.
+  const deadline = Date.now() + (input.timeoutMs ?? 45_000);
+  while (Date.now() < deadline && !observed.at) await sleep(2);
+  controller.abort();
+  await reading;
+  if (!observed.at) {
+    throw new Error(
+      `stage 5 did not observe a new revision at declared phase ${declaredPhaseMs.toFixed(1)} ms ` +
+        `(predicted publication ${(predicted - connectedAtMs).toFixed(1)} ms after connection)`
+    );
+  }
+  const publicationAt = input.tracker.publications.find((instant) => instant >= predicted - input.intervalMs / 2);
+  if (publicationAt === undefined) {
+    throw new Error("stage 5 lost the publication instant for this sample");
+  }
+  const observedLatencyMs = Math.max(0, observed.at - publicationAt);
   return {
-    async stop(expectedRevision?: string | null): Promise<PublicationObservation> {
-      await publishing;
-      // Every SSE connection polls on its own phase, so when the caller names the
-      // revision the browser accepted, keep this stream open until it has emitted
-      // that revision too — bounded by one poll interval plus a margin. The
-      // recorded duration is fixed at the first emission and never moves.
-      const collectDeadline = expectedRevision ? Date.now() + pollIntervalMs + 1_500 : deadline;
-      const satisfied = () =>
-        Boolean(observedAt) && (!expectedRevision || observedRevisions.includes(expectedRevision));
-      while (!satisfied() && Date.now() < collectDeadline) await sleep(5);
-      controller.abort();
-      await reading;
-      if (!publishAt || !observedAt) {
-        throw new Error("did not observe a new revision through both the daemon and the API stream");
-      }
-      return {
-        ms: Math.max(0, observedAt - publishAt),
-        revision: observedRevisions[0]!,
-        revisions: observedRevisions
-      };
+    revisions: observed.revisions,
+    sample: {
+      runIndex: input.runIndex,
+      sampleIndex: input.sampleIndex,
+      declaredPhaseMs,
+      intendedLatencyMs: intended,
+      connectedAtMs,
+      predictedPublicationAtMs: predicted,
+      observedPublicationAtMs: publicationAt,
+      observedObservationAtMs: observed.at,
+      observedLatencyMs,
+      observedPhaseBucketMs: observedPhaseBucketMs(observedLatencyMs, input.intervalMs),
+      phaseErrorMs: observedLatencyMs - intended,
+      observedVia: "api-sse",
+      observedRevision: observed.revisions[0] ?? "",
+      previousRevision
     }
   };
+}
+
+/**
+ * Superseded by `observeStageFiveSample`: the jitter-based observer is gone, and
+ * with it any claim that random trigger delays sample the poll interval.
+ */
+function medianOf(values: readonly number[]): number {
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 === 1 ? ordered[middle]! : (ordered[middle - 1]! + ordered[middle]!) / 2;
 }
 
 interface StageSixSeven {
   /** Stage 6: browser notification -> the APPLICATION accepted a coherent model. */
   notificationToCoherentModelMs: number;
-  /** Stage 7: coherent model accepted -> its Home content rendered + one frame. */
+  /** Stage 7: coherent model accepted -> its Home content rendered + presentation. */
   coherentModelToUsefulRenderMs: number | null;
   acceptedRevision: string;
   acceptedSequence: number;
@@ -685,6 +827,20 @@ async function main(): Promise<void> {
         mkdirSync(workdir, { recursive: true });
         const projectRoot = join(workdir, "compose-project");
         writeComposeProject(projectRoot, plan.scenario);
+        // Scenario premise, asserted rather than named: the slow-but-bounded Compose
+        // fixture must actually present the declared project. Without this an empty or
+        // truncated tree would still record a cell and look like a fast projection.
+        if (plan.scenario === "slow-bounded-compose-projection") {
+          const declaredProject = readFileSync(join(projectRoot, "compose.yaml"), "utf8");
+          const serviceCount = declaredProject
+            .split("\n")
+            .filter((line) => /^ {2}[A-Za-z0-9._-]+:$/.test(line)).length;
+          if (serviceCount !== SLOW_COMPOSE_SERVICES) {
+            throw new Error(
+              `the slow-Compose premise failed: the project declares ${serviceCount} services, expected ${SLOW_COMPOSE_SERVICES}`
+            );
+          }
+        }
         const benchSink = join(workdir, "bench.jsonl");
         const fixtureSocket = join(workdir, "fixture.sock");
         const fixtureReady = join(workdir, "fixture.ready");
@@ -780,20 +936,24 @@ async function main(): Promise<void> {
           // Stages 3, 4, 9: bench attribution from the current implementation.
           const needsBench = BENCH_STAGE_KEYS.some((key) => hasStage(plan.name, key));
           if (needsBench) {
-            const benchSamples = await waitForBenchSamples(benchSink, samples + 1, 300_000);
+            const required = samples + TIME_TO_ANSWER_WARM_UP_OBSERVATIONS;
+            const benchSamples = await waitForBenchSamples(benchSink, required, 300_000);
             for (const key of BENCH_STAGE_KEYS) {
               if (!hasStage(plan.name, key)) continue;
               if (TIME_TO_ANSWER_STAGE_KIND[key] !== "warmed-repeated") {
-                record(plan.name, key, benchSamples[key]);
+                record(plan.name, key, benchSamples[key].slice(0, samples));
                 continue;
               }
-              // Exactly one warm-up observation is discarded per warmed daemon
-              // stage — never an arbitrary slow sample — and is retained for the
-              // raw audit trail.
-              const { warmUp, recorded } = splitWarmedObservations(benchSamples[key], samples);
-              warmUpObservations[`${plan.name}|${key}`] = warmUp;
-              warmedObservationWindows[`${plan.name}|${key}|run${runIndex}`] =
-                benchSamples[key].slice(0, samples + 1);
+              // The warm-up count is FIXED by protocol — never chosen from the data
+              // — and the whole window is retained, so the discarded observations
+              // stay auditable. The stationarity guard then decides whether the
+              // window is usable at all: a window whose warm-ups have not settled is
+              // INVALID, never trimmed.
+              const { warmUps, recorded } = splitWarmedObservations(benchSamples[key], samples);
+              const label = `${plan.name}|${key}|run${runIndex}`;
+              warmUpStationarity[label] = assertWarmUpStationarity({ label, warmUps, recorded });
+              warmUpObservations[label] = warmUps;
+              warmedObservationWindows[label] = benchSamples[key].slice(0, required);
               record(plan.name, key, recorded);
             }
           }
@@ -916,83 +1076,91 @@ async function main(): Promise<void> {
           const needsRevisionLoop =
             hasStage(plan.name, "publicationToNodeObservationMs") || needsStageSix;
           if (needsRevisionLoop) {
+            if (!hasStage(plan.name, "publicationToNodeObservationMs")) {
+              throw new Error(
+                `${plan.name} declares a browser stage without the stage-5 poll-phase sweep; the closed matrix ` +
+                  "does not contain that shape and an uncontrolled phase must not be measured"
+              );
+            }
+            // The tracker follows the daemon's publication grid for this run: stage
+            // 5 predicts the next publication from it and drives the phase, instead
+            // of letting the phase fall wherever it lands.
+            const tracker = await startPublicationTracker(
+              daemonPort,
+              ((await fetchJson(healthUrl(daemonPort), 5_000))?.modelRevision as string | undefined) ?? ""
+            );
             for (let index = 0; index < samples; index += 1) {
               // Generation `g` stops the fixture's first `g` containers, so the
               // expected Home metric for the publication this sample triggers is
               // derived from the fixture rather than assumed.
               const generation = index + 1;
               const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
-              // The revision the daemon has already published: the observation
-              // window starts from it, so the harness can neither miss the change
-              // nor wait for a second one.
-              const beforeTrigger = await fetchJson(healthUrl(daemonPort), 5_000);
-              const previousRevision = (beforeTrigger?.modelRevision as string | undefined) ?? "";
-              // Arm BOTH sample-scoped observers before the trigger: the API
-              // observation (stage 5) and the browser acceptance/render measurement
-              // (stages 6/7). Nothing is attributed to a sample it does not belong
-              // to, and no publication can be missed between arming and the trigger.
-              const publication = hasStage(plan.name, "publicationToNodeObservationMs")
-                ? await startPublicationObservation(daemonPort, apiPort, webOrigin, previousRevision)
-                : null;
-              if (needsStageSix) {
-                await armStageSixSeven(benchPage, {
-                  // Provider-only fixtures publish a revision with no inventory
-                  // change: stage 6 ends at acceptance (no Home repaint exists to
-                  // wait for) and stage 7 is not declared for them.
-                  mode: tracksIndependence ? "content" : "acceptance-only",
-                  expectedMetricValue: tracksIndependence ? expectedMetricValue : ""
-                });
-              }
-              // De-correlate the trigger from the two fixed 2 s cycles (the
-              // daemon's refresh loop and the API's poller). Without this the
-              // observed gap is one fixed phase offset between them — a number
-              // that moves by hundreds of ms if the harness simply starts the
-              // daemon a second earlier — instead of a sample of the real
-              // poll-wait distribution.
-              await sleep(Math.random() * pollIntervalMs);
-              if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
-                // A real published inventory change: the fixture daemon serves a
-                // new generation, so the daemon must publish a new revision.
-                await postUnix(fixtureSocket, `/__fixture/topology-generation/${generation}`);
-              }
-              // `provider-only-revision-change` and `unavailable-optional-provider`
-              // need no trigger: their revision advance comes from provider state
-              // alone, which is exactly what those fixtures characterise.
-              let observed: PublicationObservation | null = null;
-              if (publication && !needsStageSix) {
-                // Nothing else consumes this sample, so the observation can be
-                // closed as soon as the change has propagated through the API.
-                observed = await publication.stop();
-              }
-              if (needsStageSix) {
-                let measured: StageSixSeven | null = null;
-                try {
-                  measured = await awaitModelAcceptance(benchPage);
-                } finally {
-                  // Closed after the browser measurement resolves, and held open
-                  // until this stream has seen the revision the browser accepted.
-                  if (publication) observed = await publication.stop(measured?.acceptedRevision ?? null);
+              const { sample, revisions } = await observeStageFiveSample({
+                tracker,
+                daemonPort,
+                apiPort,
+                webOrigin,
+                intervalMs: pollIntervalMs,
+                runIndex,
+                sampleIndex: index,
+                // Runs after the observation stream is connected and before the
+                // publication: arming the browser here means the acceptance this
+                // sample measures is caused by THIS publication, and the generation
+                // trigger is guaranteed to be inside it.
+                onConnected: async () => {
+                  if (needsStageSix) {
+                    await armStageSixSeven(benchPage, {
+                      // Provider-only fixtures publish a revision with no inventory
+                      // change: stage 6 ends at acceptance (no Home repaint exists to
+                      // wait for) and stage 7 is not declared for them.
+                      mode: tracksIndependence ? "content" : "acceptance-only",
+                      expectedMetricValue: tracksIndependence ? expectedMetricValue : ""
+                    });
+                  }
+                  if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
+                    // A real published inventory change: the fixture daemon serves a
+                    // new generation, so the daemon must publish a new revision.
+                    await postUnix(fixtureSocket, `/__fixture/topology-generation/${generation}`);
+                  }
+                  // `provider-only-revision-change` and `unavailable-optional-provider`
+                  // need no trigger: their revision advance comes from provider state
+                  // alone, which is exactly what those fixtures characterise.
                 }
-                if (!measured) throw new Error("model acceptance probe returned no measurement");
+              });
+              stageFiveSweep.push({ ...sample, fixture: plan.name });
+              observationSamples.push(sample.observedLatencyMs);
+              // Fail fast on a control failure: the phase the harness drove did not
+              // produce the latency the design predicted, so this sample is not a
+              // measurement of the declared phase.
+              if (Math.abs(sample.phaseErrorMs) > POLL_PHASE_CONTROL_TOLERANCE_MS) {
+                throw new Error(
+                  `stage 5 declared phase ${sample.declaredPhaseMs.toFixed(1)} ms produced ` +
+                    `${sample.observedLatencyMs.toFixed(1)} ms instead of the intended ` +
+                    `${sample.intendedLatencyMs.toFixed(1)} ms (error ${sample.phaseErrorMs.toFixed(1)} ms): ` +
+                    "the publication phase was not controlled"
+                );
+              }
+              if (needsStageSix) {
+                const measured = await awaitModelAcceptance(benchPage);
                 coherentSamples.push(measured.notificationToCoherentModelMs);
                 if (typeof measured.coherentModelToUsefulRenderMs === "number") {
                   usefulSamples.push(measured.coherentModelToUsefulRenderMs);
                 }
-                const seen: PublicationObservation | null = observed;
                 // Cross-layer attribution. Stage 5 observes revisions as the API's
-                // health stream announced them; the app accepts the revision its own
-                // paired fetches returned, and the daemon is read per request — so the
-                // accepted revision need not appear in this connection's own stream
-                // while the host is churning (each SSE connection also polls on its
-                // own phase). The binding provenance for stage 6 is the browser-side
-                // one the probe records: an API fetch delivered that revision to the
-                // app, and a browser notification preceded that fetch cycle. The
-                // overlap is therefore recorded as evidence, not enforced as a gate.
-                const acceptedInApiStream = Boolean(seen?.revisions.includes(measured.acceptedRevision));
+                // own poller announced them on this connection; the app accepts the
+                // revision its paired fetches returned, and the daemon is read per
+                // request — so the accepted revision need not appear in this
+                // connection's stream while the host is churning (each SSE
+                // connection also polls on its own phase). The binding provenance
+                // for stage 6 is the browser-side one the probe records: an API
+                // fetch delivered that revision to the app, and a browser
+                // notification preceded that fetch cycle. The overlap is therefore
+                // recorded as evidence, not enforced as a gate.
+                const acceptedInApiStream = revisions.includes(measured.acceptedRevision);
                 if (!acceptedInApiStream) {
                   process.stdout.write(
                     `[capture] note: accepted revision ${measured.acceptedRevision} was not on this harness stream's own phase ` +
-                      `(api: ${seen?.revisions.join(", ") || "none"}; browser fetched it via ${measured.fetchDeliveredBy})\n`
+                      `(api: ${revisions.join(", ") || "none"}; browser fetched it via ${measured.fetchDeliveredBy})\n`
                   );
                 }
                 if (independencePair) {
@@ -1006,12 +1174,37 @@ async function main(): Promise<void> {
                   sample: index,
                   generation,
                   delayMs: 0,
-                  apiObservedRevisions: seen?.revisions ?? [],
-                  acceptedRevisionInApiStream: acceptedInApiStream
+                  apiObservedRevisions: revisions,
+                  acceptedRevisionInApiStream: acceptedInApiStream,
+                  stageFiveDeclaredPhaseMs: sample.declaredPhaseMs,
+                  stageFiveObservedLatencyMs: sample.observedLatencyMs,
+                  stageFivePhaseErrorMs: sample.phaseErrorMs
                 });
               }
-              const recorded: PublicationObservation | null = observed;
-              if (recorded) observationSamples.push(recorded.ms);
+            }
+            await tracker.stop();
+            if (benchPage) {
+              // No shortcut: the application must reach the daemon only through the
+              // API, and the notifications feeding stages 6/7 must come from the
+              // API's real SSE endpoint — not from a harness-injected channel.
+              const origins: string[] = await benchPage.evaluate(
+                "window.__dockermapBenchHelpers.requestOrigins()"
+              );
+              const stream: string = await benchPage.evaluate("window.__dockermapBenchHelpers.streamUrl()");
+              const daemonOrigin = `http://127.0.0.1:${daemonPort}`;
+              const apiOrigin = `http://127.0.0.1:${apiPort}`;
+              if (origins.includes(daemonOrigin)) {
+                throw new Error(
+                  `the benchmark-mode page fetched the daemon directly (${daemonOrigin}): the measured path ` +
+                    "is not the real API polling path"
+                );
+              }
+              if (!origins.includes(apiOrigin) || !stream.startsWith(`${apiOrigin}/api/events/stream`)) {
+                throw new Error(
+                  `the page's notification path is not the API's real stream (origins: ${origins.join(", ") || "none"}; ` +
+                    `stream: ${stream || "none"})`
+                );
+              }
             }
           }
           if (independencePair) {
@@ -1025,7 +1218,12 @@ async function main(): Promise<void> {
               const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
               await benchPage.evaluate(`window.__dockermapBenchRenderDelayMs = ${TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS}`);
               await armStageSixSeven(benchPage, { mode: "content", expectedMetricValue });
-              await sleep(Math.random() * pollIntervalMs);
+              // Deterministic settle delay before the control trigger. These samples
+              // measure stages 6/7 only — no poll phase is involved — so the delay
+              // exists solely to keep the arming and the fixture change from being
+              // simultaneous, and it is fixed rather than random so the control is
+              // reproducible too.
+              await sleep(TIME_TO_ANSWER_INDEPENDENCE_SETTLE_MS);
               if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
                 await postUnix(fixtureSocket, `/__fixture/topology-generation/${generation}`);
               }
@@ -1137,20 +1335,47 @@ async function main(): Promise<void> {
    * 1. the stage-6/7 independence control (verdict + per-run sample sets +
    *    per-sample acceptance audit);
    * 2. warm-up retention: for every warmed cell, the COMPLETE observation window
-   *    (`samples + 1`) in the order the daemon produced it, with the discarded
-   *    warm-up at index 0 and the recorded samples proven equal to the artifact's
-   *    stored run. A hidden slow warm-up value cannot survive this.
+   *    in the order the daemon produced it, with the declared warm-up observations
+   *    at the front and the recorded samples proven equal to the artifact's stored
+   *    run, plus the declared-stationarity ratio of each window. A hidden slow
+   *    warm-up value cannot survive this;
+   * 3. the stage-5 poll-phase sweep: every sample's declared and observed phase,
+   *    the observed phase curve, and the validity verdict of the declared design.
    *
-   * A seam that cannot demonstrate independence, or a warmed window that does not
-   * match the artifact, invalidates the capture: no baseline is produced.
+   * A seam that cannot demonstrate independence, a warmed window that does not
+   * match the artifact, or a phase sweep that does not cover the interval
+   * invalidates the capture: no baseline is produced.
    */
+  // After the run, re-hash the SAME executable. The daemon is spawned repeatedly
+  // during a long capture (the resident daemon plus every cold-start probe), so a
+  // substitution or rebuild mid-run would otherwise be invisible.
+  assertDaemonBinaryProvenance({
+    expectedSha256: environment.daemonBinarySha256,
+    observedSha256: currentDaemonSha256(),
+    phase: "after capture"
+  });
+  const daemonBinarySha256After = currentDaemonSha256();
+  const daemonBinaryEvidence = {
+    beforeCapture: daemonBinarySha256Before,
+    afterCapture: daemonBinarySha256After,
+    pinnedSha256: environment.daemonBinarySha256,
+    build: environment.daemonBinaryBuild,
+    cargoRevision: environment.cargoRevision,
+    matches: daemonBinarySha256Before === daemonBinarySha256After
+  };
+  process.stdout.write(
+    `[capture] daemon binary verified before and after the capture: ${daemonBinarySha256After.slice(0, 16)}… ` +
+      `(matches: ${daemonBinaryEvidence.matches})\n`
+  );
   const harnessEvidencePath = `${outputPath}.harness-evidence.json`;
+  const warmUpsPerWindow = TIME_TO_ANSWER_WARM_UP_OBSERVATIONS;
   const warmUpRetention = TIME_TO_ANSWER_MATRIX.flatMap(({ fixture, stage }) => {
     const runs = raw[fixture]?.[stage];
     if (!runs || runs.length === 0) return [];
     const kind = TIME_TO_ANSWER_STAGE_KIND[stage] ?? "warmed-repeated";
     return runs.map((recorded, run) => {
-      const window = warmedObservationWindows[`${fixture}|${stage}|run${run}`] ?? null;
+      const label = `${fixture}|${stage}|run${run}`;
+      const window = warmedObservationWindows[label] ?? null;
       return {
         fixture,
         stage,
@@ -1159,15 +1384,43 @@ async function main(): Promise<void> {
         recordedSampleCount: recorded.length,
         observationWindow: window,
         observationCount: window ? window.length : recorded.length,
-        warmUpIndex: window ? 0 : null,
-        warmUpObservationMs: window ? window[0] : null,
-        warmUpInRecordedWindow: window ? window.slice(1, recorded.length + 1) : null,
+        declaredWarmUpCount: warmUpsPerWindow,
+        warmUpIndexRange: window ? [0, warmUpsPerWindow - 1] : null,
+        warmUps: warmUpObservations[label] ?? null,
+        stationarityRatio: warmUpStationarity[label] ?? null,
+        warmUpsMatchWindow: window
+          ? JSON.stringify(window.slice(0, warmUpsPerWindow)) === JSON.stringify(warmUpObservations[label] ?? null)
+          : true,
         recordedMatchesArtifact: window
-          ? JSON.stringify(window.slice(1, recorded.length + 1)) === JSON.stringify(recorded)
+          ? JSON.stringify(window.slice(warmUpsPerWindow, warmUpsPerWindow + recorded.length)) ===
+            JSON.stringify(recorded)
           : true
       };
     });
   });
+  // Stage-5 poll-phase evidence: every sample's declared and observed phase, the
+  // observed phase curve, and the per-run arrays the shared math consumes.
+  const stageFiveByFixture = new Map<string, Array<PollPhaseSweep & { fixture: string }>>();
+  for (const sample of stageFiveSweep) {
+    stageFiveByFixture.set(sample.fixture, [...(stageFiveByFixture.get(sample.fixture) ?? []), sample]);
+  }
+  const stageFiveEvidence: Record<string, unknown> = {};
+  for (const [fixture, samplesForFixture] of stageFiveByFixture) {
+    const runs = [...new Set(samplesForFixture.map((sample) => sample.runIndex))]
+      .sort((left, right) => left - right)
+      .map((runIndex) =>
+        samplesForFixture
+          .filter((sample) => sample.runIndex === runIndex)
+          .sort((left, right) => left.sampleIndex - right.sampleIndex)
+          .map((sample) => sample.observedLatencyMs)
+      );
+    stageFiveEvidence[fixture] = {
+      changes: POLL_PHASE_DIVISIONS,
+      samples: samplesForFixture,
+      phaseMediansMs: phaseMediansMs(runs, Number(environment.ssePollIntervalMs)),
+      validity: stageFiveValidity[fixture] ?? null
+    };
+  }
   const harnessEvidence: {
     stageSeam: {
       delayMs: number;
@@ -1176,8 +1429,11 @@ async function main(): Promise<void> {
       audit: Array<Record<string, unknown>>;
       error?: string;
     };
-    warmUpObservations: Record<string, number>;
+    warmUpObservations: Record<string, number[]>;
+    warmUpStationarity: Record<string, number>;
     warmUpRetention: typeof warmUpRetention;
+    stageFive: Record<string, unknown>;
+    daemonBinary: typeof daemonBinaryEvidence;
   } = {
     stageSeam: {
       delayMs: TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
@@ -1186,7 +1442,10 @@ async function main(): Promise<void> {
       audit: stageSixSevenAudit
     },
     warmUpObservations,
-    warmUpRetention
+    warmUpStationarity,
+    warmUpRetention,
+    stageFive: stageFiveEvidence,
+    daemonBinary: daemonBinaryEvidence
   };
   const writeHarnessEvidence = (): void => {
     writeFileSync(harnessEvidencePath, `${JSON.stringify(harnessEvidence, null, 2)}\n`);
@@ -1198,9 +1457,10 @@ async function main(): Promise<void> {
   try {
     // Warm-up retention, audited structurally rather than by value coincidence:
     // for every daemon-side warmed stage the complete observation window must be
-    // retained, index 0 must be the discarded warm-up, and the recorded samples
-    // must be exactly that window minus the warm-up. Stages measured elsewhere
-    // (browser and probe stages) keep their own warm-up inside the probe.
+    // retained, its first `declaredWarmUpCount` observations must BE the retained
+    // warm-ups, and the recorded samples must be exactly the window minus those
+    // warm-ups. Stages measured elsewhere (browser and probe stages) keep their own
+    // warm-up inside the probe.
     for (const entry of warmUpRetention) {
       if (entry.recordedSampleCount !== samples) {
         throw new Error(
@@ -1212,21 +1472,63 @@ async function main(): Promise<void> {
       if (entry.observationWindow === null) {
         throw new Error(`no observation window was retained for ${entry.fixture}|${entry.stage} run ${entry.run}`);
       }
-      if (entry.observationCount !== samples + 1) {
+      if (entry.observationCount !== samples + TIME_TO_ANSWER_WARM_UP_OBSERVATIONS) {
         throw new Error(
-          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run} kept ${entry.observationCount} observations, expected ${samples + 1}`
+          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run} kept ${entry.observationCount} observations, ` +
+            `expected ${samples + TIME_TO_ANSWER_WARM_UP_OBSERVATIONS}`
         );
       }
-      if (entry.warmUpIndex !== 0) {
+      if (entry.declaredWarmUpCount !== TIME_TO_ANSWER_WARM_UP_OBSERVATIONS) {
         throw new Error(
-          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run} discarded observation ${entry.warmUpIndex}, expected the first`
+          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run} declares ${entry.declaredWarmUpCount} warm-ups, ` +
+            `expected the protocol's ${TIME_TO_ANSWER_WARM_UP_OBSERVATIONS}`
+        );
+      }
+      if (!entry.warmUpsMatchWindow) {
+        throw new Error(
+          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run}: the retained warm-ups are not the window's first observations`
         );
       }
       if (!entry.recordedMatchesArtifact) {
         throw new Error(
-          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run}: the recorded samples are not the window minus the discarded warm-up`
+          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run}: the recorded samples are not the window minus the declared warm-ups`
         );
       }
+      if (entry.stationarityRatio === null) {
+        throw new Error(
+          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run} has no declared-stationarity verdict`
+        );
+      }
+    }
+    // Stage-5 poll-phase design: every declared phase represented, the publication
+    // phase actually driven to its declared offset, the observation arriving through
+    // the real API poller path, and an observed spread that spans the interval. A
+    // sweep confined to a narrow band fails here.
+    const stageFiveRequired = TIME_TO_ANSWER_REFERENCE_FIXTURES.filter((fixture) =>
+      hasStage(fixture.name, "publicationToNodeObservationMs")
+    )
+      .map((fixture) => fixture.name)
+      .filter((name) => !onlyFixtures || onlyFixtures.includes(name));
+    const stageFiveMissing = stageFiveRequired.filter((name) => !stageFiveByFixture.has(name));
+    if (stageFiveMissing.length > 0) {
+      throw new Error(`the stage-5 poll-phase sweep did not run for ${stageFiveMissing.join(", ")}`);
+    }
+    for (const fixture of stageFiveRequired) {
+      const verdict = assertPollPhaseSweep(
+        stageFiveByFixture.get(fixture)!,
+        Number(environment.ssePollIntervalMs)
+      );
+      stageFiveValidity[fixture] = verdict;
+      stageFiveEvidence[fixture] = {
+        ...(stageFiveEvidence[fixture] as Record<string, unknown>),
+        validity: verdict
+      };
+      process.stdout.write(
+        `[capture] stage 5 sweep ${fixture}: ${verdict.samples} samples over ${verdict.divisions} declared phases, ` +
+          `span ${verdict.spanMs.toFixed(1)} ms (${(verdict.spanShare * 100).toFixed(1)} % of the interval), ` +
+          `worst phase error ${verdict.worstPhaseErrorMs.toFixed(1)} ms, phase medians ` +
+          `${verdict.fastestPhaseMedianMs.toFixed(1)}–${verdict.slowestPhaseMedianMs.toFixed(1)} ms\n`
+      );
     }
     const required = TIME_TO_ANSWER_REFERENCE_FIXTURES.filter(
       (fixture) =>

@@ -1,3 +1,8 @@
+import {
+  phaseMediansMs,
+  phaseNormalizedP95Ms
+} from "./timeToAnswerPollPhase";
+
 /**
  * DockerMap time-to-answer performance contract (#335).
  *
@@ -55,9 +60,9 @@ export const TIME_TO_ANSWER_STAGES = [
     id: "publicationToNodeObservationMs",
     bucket: "transport-notification",
     measures:
-      "Daemon publication until the Node/SSE layer observes that revision. The trigger is jittered by a uniform sub-interval delay per sample so the measurement describes the real poll-wait distribution rather than one fixed phase offset between the daemon's refresh cycle and the API's poller.",
+      "Daemon publication until the Node/SSE layer observes that revision through TODAY'S real polling mechanism, poll wait included. The publication phase within the poll interval is DRIVEN, not hoped for: each recorded sample is assigned a declared phase on an explicit grid spanning the interval, the harness places the publication at that phase relative to its observation stream's poll ticks, and the observed phase is verified against the declared one before the sample is accepted.",
     doesNotProve:
-      "Not browser work, not render, and not a claim about network distance to a remote operator. It also does not prove the daemon and poller are phase-independent at any single observed sample: samples are de-correlated by the harness, and the underlying mechanism still runs on two fixed 2 s cycles.",
+      "Not browser work, not render, and not a claim about network distance to a remote operator. It is a phase response, not an observed user-traffic distribution: the reported phase-normalized summary weights the declared phases uniformly to characterise the latency the fixed polling mechanism imposes, and it does NOT claim that real host publications occur uniformly across poll phase.",
     fixtures: [
       "reference-25",
       "reference-100",
@@ -87,7 +92,7 @@ export const TIME_TO_ANSWER_STAGES = [
     id: "coherentModelToUsefulRenderMs",
     bucket: "rendering",
     measures:
-      "From coherent-model acceptance until the accepted model's expected Home content is present — in a commit the application stamped with that accepted revision — confirmed by exactly one bounded animation frame. It shares no clock with the stage before it.",
+      "From coherent-model acceptance until the accepted model's expected Home content is present — in a commit the application stamped with that accepted revision — followed by a bounded render/presentation confirmation (the probe observes the commit from an animation-frame loop and then awaits a bounded frame after it), and no sleeps. It shares no clock with the stage before it.",
     doesNotProve:
       "Not a visual-quality or accessibility claim, and not a claim that the operator found the answer. It is declared only for fixtures whose published change demonstrably repaints the Home content region; a provider-only or provider-unavailable revision is not guaranteed to repaint it, so measuring it there would be an empty number.",
     fixtures: ["reference-25", "reference-100", "reference-250", "docker-topology-change"]
@@ -142,6 +147,41 @@ export type TimeToAnswerFixture = TimeToAnswerStage["fixtures"][number];
 export const TIME_TO_ANSWER_BASELINE = "dockermap-v1/time-to-answer-baseline-1";
 export const TIME_TO_ANSWER_WARMED_SAMPLES = 15;
 export const TIME_TO_ANSWER_CONTROLLED_RUNS = 3;
+
+/**
+ * The measurement design this contract describes. The baseline id names the
+ * CLOSED ARTIFACT SHAPE; the methodology version names HOW the numbers are
+ * produced — stage-5 deterministic phase control, the fixed warm-up policy, the
+ * stationarity guard, and the provenance/compatibility split. A candidate may
+ * only be compared against a baseline captured under the same methodology
+ * version, because a different design produces a different number for the same
+ * product.
+ */
+export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-2";
+
+/**
+ * Fixed, predeclared warm-up observations per warmed daemon cell per run.
+ *
+ * This is protocol, not a result-driven choice: the number was fixed from the
+ * round-3 raw windows BEFORE this methodology was captured, and it is never
+ * adjusted afterwards to make data look stationary. In those windows the
+ * discarded first observation sat at up to 4.01x the window median and the
+ * SECOND observation — the first one the old policy published — still reached
+ * 2.15x in 5 of 30 windows, while every observation from index 5 on stayed
+ * within 1.29x. Five is the smallest fixed count that leaves no cold observation
+ * inside the measured window.
+ */
+export const TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = 5;
+
+/**
+ * Declared stationarity band: the median of the final two warm-up observations
+ * against the median of the measured window. Calibrated from the round-3 windows
+ * with a five-observation warm-up (observed ratio 0.81–1.28), while the old
+ * single-discard policy left a first-recorded observation at up to 2.15x — a
+ * window the guard rejects.
+ */
+export const TIME_TO_ANSWER_STATIONARITY_MIN_RATIO = 0.5;
+export const TIME_TO_ANSWER_STATIONARITY_MAX_RATIO = 1.5;
 
 /** Reference fixtures (25/100/250 containers) plus the four scenario fixtures. */
 export const TIME_TO_ANSWER_REFERENCE_FIXTURES = [
@@ -198,6 +238,8 @@ export type TimeToAnswerEnvironment = {
   buildMode: "production";
   fixtureRevision: string;
   sourceRevision: string;
+  /** The measurement design (see TIME_TO_ANSWER_METHODOLOGY). Required to match. */
+  methodologyVersion: string;
 };
 
 export interface TimeToAnswerRecord {
@@ -237,7 +279,8 @@ const environmentKeys = [
   "fontEnvironment",
   "buildMode",
   "fixtureRevision",
-  "sourceRevision"
+  "sourceRevision",
+  "methodologyVersion"
 ] as const;
 const evidenceKeys = ["baseline", "environment", "records"] as const;
 const recordKeys = ["fixture", "stage", "runs"] as const;
@@ -309,7 +352,8 @@ export function assertTimeToAnswerEnvironment(
       environment.browserRevision,
       environment.fontEnvironment,
       environment.fixtureRevision,
-      environment.sourceRevision
+      environment.sourceRevision,
+      environment.methodologyVersion
     ].every(safeString) ||
     !Array.isArray(environment.browserFlags) ||
     environment.browserFlags.length === 0 ||
@@ -421,28 +465,70 @@ export function isScenarioCell(fixture: string, stage: string): boolean {
 
 /**
  * Split one warmed daemon measurement window into the discarded warm-up
- * observation and the recorded samples.
+ * observations and the recorded samples.
  *
  * The daemon's first-ever refresh runs before its listener binds, so its first
- * pass through the collection path is a cold start. With 15 recorded samples,
- * nearest-rank p95 is the maximum, so a single cold observation would otherwise
- * *become* the published number. Exactly one observation is discarded — never
- * an arbitrary slow sample — and it is returned for the raw audit trail.
+ * passes through the collection path are cold. The count is FIXED by protocol
+ * (`TIME_TO_ANSWER_WARM_UP_OBSERVATIONS`), never chosen by looking at the data:
+ * with 15 recorded samples, nearest-rank p95 is the maximum, so a surviving cold
+ * observation would otherwise *become* the published number. Every warm-up
+ * observation is returned for the raw audit trail, and none of them enters the
+ * summary.
  */
 export function splitWarmedObservations(
   observations: readonly number[],
   count = TIME_TO_ANSWER_WARMED_SAMPLES
-): { warmUp: number; recorded: number[] } {
-  if (observations.length < count + 1) {
+): { warmUps: number[]; recorded: number[] } {
+  const required = count + TIME_TO_ANSWER_WARM_UP_OBSERVATIONS;
+  if (observations.length < required) {
     throw new Error(
-      `a warmed stage needs at least ${count + 1} observations so exactly one warm-up can be discarded`
+      `a warmed stage needs at least ${required} observations: ${TIME_TO_ANSWER_WARM_UP_OBSERVATIONS} declared ` +
+        `warm-up observations plus ${count} recorded samples`
     );
   }
-  const warmUp = observations[0]!;
-  if (typeof warmUp !== "number" || !Number.isFinite(warmUp) || warmUp < 0) {
-    throw new Error("the warm-up observation must be a finite non-negative number");
+  const warmUps = observations.slice(0, TIME_TO_ANSWER_WARM_UP_OBSERVATIONS);
+  if (
+    [...warmUps, ...observations.slice(0, required)].some(
+      (value) => typeof value !== "number" || !Number.isFinite(value) || value < 0
+    )
+  ) {
+    throw new Error("warm-up and recorded observations must be finite non-negative numbers");
   }
-  return { warmUp, recorded: observations.slice(1, count + 1) as number[] };
+  return { warmUps: [...warmUps], recorded: observations.slice(TIME_TO_ANSWER_WARM_UP_OBSERVATIONS, required) as number[] };
+}
+
+/**
+ * Declared stationarity check for one warmed cell/run. Compares the FINAL
+ * warm-up observations against the measured window using the predeclared band,
+ * and returns the ratio for the audit trail. A window whose warm-ups have not
+ * settled is INVALID — it is never repaired by discarding further samples,
+ * because choosing how many samples to drop after seeing the values would turn
+ * benchmark conditioning into result selection.
+ */
+export function assertWarmUpStationarity(input: {
+  label: string;
+  warmUps: readonly number[];
+  recorded: readonly number[];
+}): number {
+  const { label, warmUps, recorded } = input;
+  if (warmUps.length !== TIME_TO_ANSWER_WARM_UP_OBSERVATIONS) {
+    throw new Error(`${label} must retain exactly ${TIME_TO_ANSWER_WARM_UP_OBSERVATIONS} warm-up observations`);
+  }
+  if (recorded.length !== TIME_TO_ANSWER_WARMED_SAMPLES) {
+    throw new Error(`${label} must record exactly ${TIME_TO_ANSWER_WARMED_SAMPLES} measured samples`);
+  }
+  const ratio = median(warmUps.slice(-2)) / median(recorded);
+  if (!Number.isFinite(ratio) || ratio <= 0) {
+    throw new Error(`${label} has no usable warm-up/measured ratio`);
+  }
+  if (ratio > TIME_TO_ANSWER_STATIONARITY_MAX_RATIO || ratio < TIME_TO_ANSWER_STATIONARITY_MIN_RATIO) {
+    throw new Error(
+      `${label} is not stationary: the final warm-up observations sit at ${ratio.toFixed(2)}x the measured ` +
+        `median, outside the declared ${TIME_TO_ANSWER_STATIONARITY_MIN_RATIO}–` +
+        `${TIME_TO_ANSWER_STATIONARITY_MAX_RATIO}x band`
+    );
+  }
+  return ratio;
 }
 
 /**
@@ -465,18 +551,73 @@ export function assertDaemonBinaryProvenance(input: {
   }
 }
 
+/**
+ * Provenance/identity keys: recorded so a baseline identifies exactly what was
+ * measured, but never a comparison REQUIREMENT. The executable digest and the
+ * source/harness revisions differ by construction for any legitimate candidate
+ * that changes the product or the harness, so requiring them to match would make
+ * comparison impossible — and the daemon binary is rebuilt from the candidate
+ * checkout, so a byte-identical digest is not even reproducible across a changed
+ * `CARGO_HOME`.
+ */
+export const TIME_TO_ANSWER_PROVENANCE_KEYS = [
+  "sourceRevision",
+  "harnessRevision",
+  "daemonBinarySha256"
+] as const;
+
+/**
+ * Recorded but informational: no measured stage exercises the host Docker daemon
+ * (the capture runs against the deterministic fixture daemon), so requiring this
+ * to match would fail a comparison for a dimension this benchmark never touches.
+ */
+export const TIME_TO_ANSWER_INFORMATIONAL_KEYS = ["dockerRevision"] as const;
+
+/**
+ * The keys a candidate must share with the baseline to be comparable at all:
+ * runner/CPU/OS/kernel, Node/Rust toolchain, cargo, browser engine/revision/
+ * flags, fonts, production build mode, fixture revision, the polling
+ * configuration, the daemon build command, and the benchmark methodology
+ * version. A time-to-answer number is only comparable to another number produced
+ * by the same design in the same environment.
+ */
+export const timeToAnswerCompatibilityKeys = environmentKeys.filter(
+  (key) =>
+    !(TIME_TO_ANSWER_PROVENANCE_KEYS as readonly string[]).includes(key) &&
+    !(TIME_TO_ANSWER_INFORMATIONAL_KEYS as readonly string[]).includes(key)
+);
+
 export function compatibleTimeToAnswerEnvironment(
   baseline: TimeToAnswerEnvironment,
   candidate: TimeToAnswerEnvironment
 ): boolean {
-  return environmentKeys
-    // sourceRevision differs by design between a baseline and its candidate.
-    // dockerRevision is INFORMATIONAL: no measured stage exercises the host
-    // Docker daemon (the capture runs against the deterministic fixture daemon),
-    // so requiring it to match would fail a comparison for a dimension this
-    // benchmark never touches. It is still recorded and still pinned.
-    .filter((key) => key !== "sourceRevision" && key !== "dockerRevision")
-    .every((key) => JSON.stringify(baseline[key]) === JSON.stringify(candidate[key]));
+  return timeToAnswerCompatibilityKeys.every(
+    (key) => JSON.stringify(baseline[key]) === JSON.stringify(candidate[key])
+  );
+}
+
+/**
+ * The phase-normalized stage-5 figure (methodology revision 2): the observed
+ * latency median at each DECLARED phase, then nearest-rank p95 over those phase
+ * medians. Uniform weighting over the declared grid is a statement about the
+ * polling MECHANISM — never about real host publication phase or network
+ * distance.
+ */
+export function derivedTimeToAnswerPhaseNormalized(
+  runs: readonly (readonly number[])[],
+  ssePollIntervalMs: string
+): { phaseMediansMs: readonly number[]; phaseNormalizedP95Ms: number } {
+  const intervalMs = Number(ssePollIntervalMs);
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new Error("the pinned SSE poll interval must be a positive number of milliseconds");
+  }
+  if (runs.length !== TIME_TO_ANSWER_CONTROLLED_RUNS) {
+    throw new Error(`stage 5 requires exactly ${TIME_TO_ANSWER_CONTROLLED_RUNS} controlled runs to normalise by phase`);
+  }
+  return {
+    phaseMediansMs: phaseMediansMs(runs, intervalMs),
+    phaseNormalizedP95Ms: phaseNormalizedP95Ms(runs, intervalMs)
+  };
 }
 
 /**
@@ -540,6 +681,13 @@ export const TIME_TO_ANSWER_INDEPENDENCE_SAMPLES = 3;
 export const TIME_TO_ANSWER_INDEPENDENCE_STAGE_SIX_TOLERANCE_MS = 30;
 /** Stage 7 must absorb at least this share of the injected delay. */
 export const TIME_TO_ANSWER_INDEPENDENCE_STAGE_SEVEN_SHARE = 0.7;
+/**
+ * Deterministic settle delay before each control trigger. Control samples measure
+ * stages 6/7 only, so no poll phase is involved: the delay exists solely to keep the
+ * arming and the fixture change from being simultaneous, and it is FIXED rather than
+ * random so the control is reproducible too.
+ */
+export const TIME_TO_ANSWER_INDEPENDENCE_SETTLE_MS = 250;
 
 export interface StageSixSevenIndependence {
   fixture: string;

@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import {
   TIME_TO_ANSWER_STAGES,
+  derivedTimeToAnswerPhaseNormalized,
   derivedTimeToAnswerSummaries,
   validateTimeToAnswerEvidence
 } from "../../apps/web/src/lib/performance/timeToAnswerEvidence";
@@ -48,6 +49,37 @@ for (const fixture of fixtures) {
 }
 
 process.stdout.write(`${rows.join("\n")}\n\n`);
+
+// Stage 5: the declared-phase curve and the phase-normalized figure. Both are
+// recomputed here from the raw samples, using the declared grid — never read from
+// the artifact, which stores raw numbers only.
+const stageFiveFixtures = fixtures.filter((fixture) =>
+  evidence.records.some((record) => record.fixture === fixture && record.stage === "publicationToNodeObservationMs")
+);
+if (stageFiveFixtures.length > 0) {
+  const intervalMs = Number(evidence.environment.ssePollIntervalMs);
+  process.stdout.write(
+    "### stage 5 — publication → Node observation, by declared poll phase\n\n" +
+      "| fixture | declared phases | observed latency median per declared phase (ms, earliest→latest) | phase-normalized p95 (ms) | span (ms) |\n" +
+      "| --- | --- | --- | --- | --- |\n"
+  );
+  for (const fixture of stageFiveFixtures) {
+    const record = evidence.records.find(
+      (entry) => entry.fixture === fixture && entry.stage === "publicationToNodeObservationMs"
+    )!;
+    const normalized = derivedTimeToAnswerPhaseNormalized(record.runs, evidence.environment.ssePollIntervalMs);
+    const flat = record.runs.flat();
+    process.stdout.write(
+      `| ${fixture} | ${normalized.phaseMediansMs.length} | ${normalized.phaseMediansMs
+        .map((value) => value.toFixed(0))
+        .join(", ")} | ${normalized.phaseNormalizedP95Ms.toFixed(2)} | ${(Math.max(...flat) - Math.min(...flat)).toFixed(2)} |\n`
+    );
+  }
+  process.stdout.write(
+    "\nThe phase-normalized figure weights the DECLARED phases uniformly to characterise the latency the fixed " +
+      `${intervalMs} ms polling mechanism imposes. It is not an observed user-traffic distribution and not network latency.\n\n`
+  );
+}
 
 // Bucket roll-up per reference fixture: where the time actually goes.
 const referenceFixtures = fixtures.filter((fixture) => fixture.startsWith("reference-"));

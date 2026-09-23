@@ -23,6 +23,7 @@
     notifyRevision: "",
     notifyLog: [],
     fetchLog: [],
+    requestOrigins: [],
     streamUrl: "",
     opens: 0,
     errors: 0,
@@ -54,6 +55,17 @@
         const url = typeof input === "string" ? input : String((input && input.url) || "");
         const paired = /\/api\/(snapshot|runtime\/map)(?:[?#]|$)/.test(url);
         const startedAt = performance.now();
+        // Every request origin the app used, so the harness can prove the page never
+        // reached the daemon directly: stage 5/6 must travel the API's real poller.
+        try {
+          const resolved = new URL(url, location.href).origin;
+          if (resolved && !bench.requestOrigins.includes(resolved)) {
+            bench.requestOrigins.push(resolved);
+            if (bench.requestOrigins.length > 64) bench.requestOrigins.shift();
+          }
+        } catch (error) {
+          // non-URL request target: ignore
+        }
         const result = originalFetch.apply(this, callArgs);
         if (paired && result && typeof result.then === "function") {
           result
@@ -498,6 +510,16 @@
 
     acceptedEventCount() {
       return acceptanceSink().length;
+    },
+
+    /** Every origin the application fetched from (proof there is no daemon shortcut). */
+    requestOrigins() {
+      return bench.requestOrigins.slice();
+    },
+
+    /** The stream URL the application's real notification path opened. */
+    streamUrl() {
+      return bench.streamUrl;
     }
   };
 })();
