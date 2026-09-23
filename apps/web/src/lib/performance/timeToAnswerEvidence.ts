@@ -185,6 +185,11 @@ export type TimeToAnswerEnvironment = {
    * if both the product and the harness that measured it are identified: a
    * number produced by an uncommitted harness cannot be re-derived by anyone.
    */
+  /** sha256 of the exact release daemon executable this capture ran. */
+  daemonBinarySha256: string;
+  /** The command and profile that produced that binary. */
+  daemonBinaryBuild: string;
+  cargoRevision: string;
   harnessRevision: string;
   browserEngine: "chromium";
   browserRevision: string;
@@ -223,6 +228,9 @@ const environmentKeys = [
   "dockerRevision",
   "ssePollIntervalMs",
   "harnessRevision",
+  "daemonBinarySha256",
+  "daemonBinaryBuild",
+  "cargoRevision",
   "browserEngine",
   "browserRevision",
   "browserFlags",
@@ -295,6 +303,9 @@ export function assertTimeToAnswerEnvironment(
       environment.dockerRevision,
       environment.ssePollIntervalMs,
       environment.harnessRevision,
+      environment.daemonBinarySha256,
+      environment.daemonBinaryBuild,
+      environment.cargoRevision,
       environment.browserRevision,
       environment.fontEnvironment,
       environment.fixtureRevision,
@@ -379,6 +390,81 @@ export function derivedTimeToAnswerSummaries(
 }
 
 /** Source revision deliberately differs between a baseline and its candidate. */
+/**
+ * What kind of measurement each stage is. The distinction is load-bearing, not
+ * descriptive: a warmed stage is a repeated steady-state operation whose first
+ * observation is a cold start, so that observation is recorded separately as
+ * warm-up and never enters the summary. A cold-start stage is the opposite —
+ * its first observation IS the measurement. Scenario-specific stages are only
+ * declared for fixtures that deliberately construct the scenario.
+ */
+export const TIME_TO_ANSWER_STAGE_KIND: Record<string, "cold-start" | "warmed-repeated" | "scenario-specific"> = {
+  daemonStartToListenerMs: "cold-start",
+  listenerToFirstDockerModelMs: "cold-start",
+  dockerObservationMs: "warmed-repeated",
+  composeEnrichmentMs: "warmed-repeated",
+  publicationToNodeObservationMs: "warmed-repeated",
+  notificationToCoherentModelMs: "warmed-repeated",
+  coherentModelToUsefulRenderMs: "warmed-repeated",
+  buildModelMs: "warmed-repeated",
+  findingsDerivationMs: "warmed-repeated",
+  legacyTopologyLayoutMs: "warmed-repeated",
+  commandQueryMs: "warmed-repeated",
+  productionBundleMs: "warmed-repeated"
+};
+
+/** A stage measured on a scenario fixture is scenario-specific for that cell. */
+export function isScenarioCell(fixture: string, stage: string): boolean {
+  const declared = TIME_TO_ANSWER_REFERENCE_FIXTURES.find((entry) => entry.name === fixture);
+  return declared?.kind === "scenario" && TIME_TO_ANSWER_STAGE_KIND[stage] === "warmed-repeated";
+}
+
+/**
+ * Split one warmed daemon measurement window into the discarded warm-up
+ * observation and the recorded samples.
+ *
+ * The daemon's first-ever refresh runs before its listener binds, so its first
+ * pass through the collection path is a cold start. With 15 recorded samples,
+ * nearest-rank p95 is the maximum, so a single cold observation would otherwise
+ * *become* the published number. Exactly one observation is discarded — never
+ * an arbitrary slow sample — and it is returned for the raw audit trail.
+ */
+export function splitWarmedObservations(
+  observations: readonly number[],
+  count = TIME_TO_ANSWER_WARMED_SAMPLES
+): { warmUp: number; recorded: number[] } {
+  if (observations.length < count + 1) {
+    throw new Error(
+      `a warmed stage needs at least ${count + 1} observations so exactly one warm-up can be discarded`
+    );
+  }
+  const warmUp = observations[0]!;
+  if (typeof warmUp !== "number" || !Number.isFinite(warmUp) || warmUp < 0) {
+    throw new Error("the warm-up observation must be a finite non-negative number");
+  }
+  return { warmUp, recorded: observations.slice(1, count + 1) as number[] };
+}
+
+/**
+ * Bind the executed daemon binary to the recorded source revision. The benchmark
+ * does not claim bit-for-bit reproducible Rust builds across machines; it proves
+ * which binary THIS capture executed.
+ */
+export function assertDaemonBinaryProvenance(input: {
+  expectedSha256: string;
+  observedSha256: string;
+  phase: string;
+}): void {
+  if (!/^[0-9a-f]{64}$/.test(input.expectedSha256) || !/^[0-9a-f]{64}$/.test(input.observedSha256)) {
+    throw new Error("daemon binary provenance requires two lowercase sha256 digests");
+  }
+  if (input.expectedSha256 !== input.observedSha256) {
+    throw new Error(
+      `daemon binary provenance failed ${input.phase}: the executable is not the binary this capture pinned`
+    );
+  }
+}
+
 export function compatibleTimeToAnswerEnvironment(
   baseline: TimeToAnswerEnvironment,
   candidate: TimeToAnswerEnvironment

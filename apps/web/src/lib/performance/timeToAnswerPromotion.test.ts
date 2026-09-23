@@ -12,6 +12,12 @@ import {
   TIME_TO_ANSWER_MATRIX,
   TIME_TO_ANSWER_WARMED_SAMPLES,
   assertTimeToAnswerPromotion,
+  assertDaemonBinaryProvenance,
+  isScenarioCell,
+  splitWarmedObservations,
+  summarizeTimeToAnswerStage,
+  TIME_TO_ANSWER_STAGE_KIND,
+  TIME_TO_ANSWER_STAGES,
   timeToAnswerLimit,
   validateTimeToAnswerEvidence
 } from "./timeToAnswerEvidence";
@@ -25,6 +31,9 @@ const environment = {
   rustRevision: "1.88.0",
   dockerRevision: "29.8.1",
   ssePollIntervalMs: "2000",
+  daemonBinarySha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  daemonBinaryBuild: "cargo-build-release-locked-p-dockermap-daemon",
+  cargoRevision: "cargo-1.88.0",
   harnessRevision: "dddddddddddddddddddddddddddddddddddddddd",
   browserEngine: "chromium",
   browserRevision: "1.61.0",
@@ -171,6 +180,55 @@ describe("time-to-answer promotion gate", () => {
       )
     });
     expect(() => assertTimeToAnswerPromotion(artifact(), slowMajority)).toThrow("promotion limit");
+  });
+
+  it("cannot let a cold first observation enter a warmed stage summary", () => {
+    // The daemon's first-ever observation is a cold start, and with 15 recorded
+    // samples nearest-rank p95 IS the maximum — so one cold observation would
+    // become the published number. Exactly one observation is discarded as
+    // warm-up; the rest are recorded unchanged.
+    const observations = [99.9, ...Array.from({ length: 15 }, (_, index) => 2 + index * 0.1)];
+    const { warmUp, recorded } = splitWarmedObservations(observations);
+    expect(warmUp).toBe(99.9);
+    expect(recorded).toEqual(observations.slice(1));
+    const summary = summarizeTimeToAnswerStage([recorded, recorded, recorded]);
+    expect(summary.runP95Ms.every((value) => value < 10)).toBe(true);
+    expect(summary.medianOfThreeRunP95Ms).toBeLessThan(10);
+    // No arbitrary sampling: the whole window is needed, and a short window fails.
+    expect(() => splitWarmedObservations(observations.slice(0, 15))).toThrow();
+  });
+
+  it("binds the executed daemon binary to the recorded revision", () => {
+    const digest = "a".repeat(64);
+    expect(() =>
+      assertDaemonBinaryProvenance({ expectedSha256: digest, observedSha256: digest, phase: "before" })
+    ).not.toThrow();
+    expect(() =>
+      assertDaemonBinaryProvenance({
+        expectedSha256: digest,
+        observedSha256: "b".repeat(64),
+        phase: "before capture"
+      })
+    ).toThrow("daemon binary provenance failed");
+    expect(() =>
+      assertDaemonBinaryProvenance({ expectedSha256: "not-a-digest", observedSha256: digest, phase: "before" })
+    ).toThrow("two lowercase sha256 digests");
+  });
+
+  it("classifies every stage as cold-start, warmed-repeated or scenario-specific", () => {
+    for (const stage of TIME_TO_ANSWER_STAGES) {
+      expect(TIME_TO_ANSWER_STAGE_KIND[stage.id]).toBeDefined();
+    }
+    // Process start is genuinely cold: its first observation IS the measurement.
+    expect(TIME_TO_ANSWER_STAGE_KIND.daemonStartToListenerMs).toBe("cold-start");
+    expect(TIME_TO_ANSWER_STAGE_KIND.listenerToFirstDockerModelMs).toBe("cold-start");
+    // The daemon-side attribution stages are warmed repeated operations.
+    expect(TIME_TO_ANSWER_STAGE_KIND.dockerObservationMs).toBe("warmed-repeated");
+    expect(TIME_TO_ANSWER_STAGE_KIND.composeEnrichmentMs).toBe("warmed-repeated");
+    expect(TIME_TO_ANSWER_STAGE_KIND.findingsDerivationMs).toBe("warmed-repeated");
+    // Scenario cells are declared only for scenario fixtures.
+    expect(isScenarioCell("slow-bounded-compose-projection", "composeEnrichmentMs")).toBe(true);
+    expect(isScenarioCell("reference-25", "composeEnrichmentMs")).toBe(false);
   });
 
   it("rejects a candidate with different browser flags", () => {

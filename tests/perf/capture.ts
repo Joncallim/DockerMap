@@ -21,6 +21,7 @@
  * torn down by process group — never by pattern matching.
  */
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
@@ -36,6 +37,9 @@ import {
   TIME_TO_ANSWER_WARMED_SAMPLES,
   assertTimeToAnswerEnvironment,
   assertTimeToAnswerPromotion,
+  assertDaemonBinaryProvenance,
+  splitWarmedObservations,
+  TIME_TO_ANSWER_STAGE_KIND,
   validateTimeToAnswerEvidence
 } from "../../apps/web/src/lib/performance/timeToAnswerEvidence";
 import { FIXTURE_REVISION, buildSlowComposeProject } from "./dockerFixtureTopology.mjs";
@@ -131,6 +135,18 @@ if (environment.harnessRevision !== harnessRevision) {
   );
 }
 const daemonBinary = metadata.daemonBinary ?? join(REPO_ROOT, "crates/target/release/dockermap-daemon");
+// Bind the executed binary to the recorded revision before and after the run:
+// stages 1/2/3/4/5/9 all come from this executable, so a stale or substituted
+// binary would misattribute every daemon-side number.
+function currentDaemonSha256(): string {
+  return createHash("sha256").update(readFileSync(daemonBinary)).digest("hex");
+}
+assertDaemonBinaryProvenance({
+  expectedSha256: environment.daemonBinarySha256,
+  observedSha256: currentDaemonSha256(),
+  phase: "before capture"
+});
+const daemonBinarySha256 = currentDaemonSha256();
 const launchArgs = (environment.browserFlags as string[]).filter(Boolean);
 
 const plans = TIME_TO_ANSWER_REFERENCE_FIXTURES.filter(
@@ -272,6 +288,12 @@ function writeComposeProject(root: string, scenario: string): void {
 }
 
 const BENCH_STAGE_KEYS = ["dockerObservationMs", "composeEnrichmentMs", "findingsDerivationMs"] as const;
+/**
+ * The daemon's first-ever observation runs before its listener binds, so it is a
+ * cold start. For warmed stages it is discarded from the recorded samples and
+ * kept here instead, so the discard is auditable rather than silent.
+ */
+const warmUpObservations: Record<string, number> = {};
 
 function readBenchSink(path: string): Record<(typeof BENCH_STAGE_KEYS)[number], number[]> {
   const stages = { dockerObservationMs: [], composeEnrichmentMs: [], findingsDerivationMs: [] } as Record<
@@ -536,8 +558,20 @@ async function main(): Promise<void> {
           // Stages 3, 4, 9: bench attribution from the current implementation.
           const needsBench = BENCH_STAGE_KEYS.some((key) => hasStage(plan.name, key));
           if (needsBench) {
-            const benchSamples = await waitForBenchSamples(benchSink, samples, 300_000);
-            for (const key of BENCH_STAGE_KEYS) record(plan.name, key, benchSamples[key]);
+            const benchSamples = await waitForBenchSamples(benchSink, samples + 1, 300_000);
+            for (const key of BENCH_STAGE_KEYS) {
+              if (!hasStage(plan.name, key)) continue;
+              if (TIME_TO_ANSWER_STAGE_KIND[key] !== "warmed-repeated") {
+                record(plan.name, key, benchSamples[key]);
+                continue;
+              }
+              // Exactly one warm-up observation is discarded per warmed daemon
+              // stage — never an arbitrary slow sample — and is retained for the
+              // raw audit trail.
+              const { warmUp, recorded } = splitWarmedObservations(benchSamples[key], samples);
+              warmUpObservations[`${plan.name}|${key}`] = warmUp;
+              record(plan.name, key, recorded);
+            }
           }
 
           const needsApp =

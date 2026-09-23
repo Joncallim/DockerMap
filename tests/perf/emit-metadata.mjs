@@ -10,6 +10,7 @@
  * `fixtureRevision` and `ssePollIntervalMs` are the harness constants.
  */
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -97,6 +98,23 @@ if (!sseDefault) {
   throw new Error("could not derive the API's DOCKERMAP_SSE_INTERVAL_MS default from apps/api/src/index.ts");
 }
 const ssePollIntervalMs = safeToken(sseDefault[1].replace(/_/g, ""));
+// Build the exact daemon binary this capture will run, then pin its digest. The
+// benchmark does not claim bit-for-bit reproducible Rust builds across machines;
+// it proves which binary THIS capture executed.
+const DAEMON_BUILD = "cargo build --release --locked -p dockermap-daemon";
+/** Space-free form for the closed evidence metadata (safe-value constrained). */
+const DAEMON_BUILD_SLUG = "cargo-build-release-locked-p-dockermap-daemon";
+const daemonBinaryPath = resolve(REPO_ROOT, "crates/target/release/dockermap-daemon");
+try {
+  command("bash", ["-lc", `cd ${JSON.stringify(REPO_ROOT)} && cargo ${DAEMON_BUILD.replace(/^cargo /, "")}`]);
+} catch (error) {
+  throw new Error(`the release daemon failed to build (${DAEMON_BUILD}): ${error}`);
+}
+if (!existsSync(daemonBinaryPath)) {
+  throw new Error(`the release daemon is missing after ${DAEMON_BUILD}`);
+}
+const daemonBinarySha256 = createHash("sha256").update(readFileSync(daemonBinaryPath)).digest("hex");
+const cargoRevision = safeToken(command("cargo", ["--version"]));
 if (!existsSync(resolve(REPO_ROOT, "crates/target/release/dockermap-daemon"))) {
   throw new Error(
     "the release daemon is missing: run `npm run build:deploy` (or cargo build --release) before capturing"
@@ -116,6 +134,9 @@ const metadata = {
     // explicitly to the API so the pin and the running interval cannot diverge.
     ssePollIntervalMs,
     harnessRevision: safeToken(harnessRevision),
+    daemonBinarySha256,
+    daemonBinaryBuild: DAEMON_BUILD_SLUG,
+    cargoRevision,
     browserEngine: "chromium",
     browserRevision,
     browserFlags,

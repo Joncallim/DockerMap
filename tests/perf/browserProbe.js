@@ -196,6 +196,7 @@
       // Snapshot the UNFILTERED list: the palette renders every command on open,
       // so "some item exists" would pass even with filtering completely broken.
       const unfiltered = listText();
+      const unfilteredCount = dialog.querySelectorAll("li").length;
       const tokens = unfiltered.match(/[A-Za-z0-9][A-Za-z0-9_.:-]{3,}/g) || [];
       // A query with a known expected result: prefer the fixture-derived token
       // the harness passes in; otherwise take a digit-bearing token from the
@@ -211,7 +212,11 @@
       input.dispatchEvent(new Event("input", { bubbles: true }));
       while (performance.now() < deadline) {
         const current = listText();
-        if (current !== unfiltered && current.includes(token)) {
+        // Success requires the filtered list to have actually narrowed — not just
+        // changed. The palette prepends an "Ask Copilot" item on any query, so a
+        // reorder-only or no-op filter would still change the joined text and
+        // still contain the token. The count must strictly drop.
+        if (current !== unfiltered && current.includes(token) && dialog.querySelectorAll("li").length < unfilteredCount) {
           return performance.now() - started;
         }
         await new Promise((done) => requestAnimationFrame(done));
