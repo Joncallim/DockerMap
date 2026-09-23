@@ -415,9 +415,10 @@ Complete and enforced by tests:
   proof (`productionIsolation.test.mjs`);
 - `npm run test:perf` wired into `npm run check:js`.
 
-`docs/testing/TIME_TO_ANSWER_BASELINE.md` currently holds the two rejected
-captures as methodology history only. **No accepted baseline exists yet**: the
-replacement must be captured from a committed revision, with the cold/warm split,
-daemon binary provenance and independent stage-6/7 clocks, and must pass the
-promotion gate. Until then there is no performance authority for #336/#337, and
-no optimization may be claimed or implemented.
+`docs/testing/TIME_TO_ANSWER_BASELINE.md` records **baseline 3**, captured from
+committed revision `cf77e8ba` on this pinned runner: 44 declared cells × 3
+controlled runs × 15 recorded samples, with the cold/warm split, daemon binary
+provenance, independent stage-6/7 clocks, the enforced independence control and the
+auditable warm-up retention described above. Baseline 3 is the authority for
+#336/#337 **once the round-3 independent review clears it**; until that review
+lands, no optimization may be claimed or implemented against it.

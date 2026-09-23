@@ -1,210 +1,275 @@
-# Time-to-answer baseline — REJECTED historical attempts
+# Time-to-answer baseline 3
 
-**This document is not the authority for anything.** Baseline 1 (the first
-capture) and baseline 2 (the second) were both rejected in independent review and
-are retained only to explain methodology changes. Their numbers must never be
-cited as current measurements and must never be used for promotion gating.
+Status: the measurement authority for issue #335 and its parent epic #333, once the
+round-3 independent review clears it. This is **not** an optimization, a product
+claim, or permission to cut features for a number. Nothing here changes what
+DockerMap collects or publishes. Every number below was **recomputed from the
+stored raw samples** with `npm run perf:summarize -- --artifact <artifact>`; none is
+hand-authored, and the tables in this document are the verbatim output of that
+command.
 
-Baseline 1 was rejected because it measured Cmd-K palette-open instead of
-query-to-results, phase-locked its stage-5 samples to the harness's own startup
-sequence, mixed cold-start probe daemons into stages documented as warmed, and was
-produced by an uncommitted harness.
+- baseline id: `dockermap-v1/time-to-answer-baseline-1` (schema id unchanged; this
+  is capture 3)
+- **product revision: `cf77e8ba67ea3d180b0a05866df30943be502776`**, which is also the harness
+  revision: the harness was committed before the capture and the capture refuses to
+  run from a dirty worktree or a mismatched revision
+- artifact: `/srv/jonas/evidence/dockermap/time-to-answer/time-to-answer-baseline-3.json`
+  — sha256 `ae7a4e913ea29cf1f15dab630080f09e073231f67e88a12ee053491f5fb4f90c`
+- harness evidence (independence control + warm-up retention):
+  `/srv/jonas/evidence/dockermap/time-to-answer/time-to-answer-baseline-3.json.harness-evidence.json`
+  — sha256 `7e4aeebdd47a44dff4f58267dfd659b0e835f36a2762f672678d52d79562e9fb`
+- pinned environment:
+  `/srv/jonas/evidence/dockermap/time-to-answer/time-to-answer-metadata.json` —
+  sha256 `af1397d1a22d42427aa55223ac4a30ed4f418f0ddf64bfb3d16c1f15bb3dc38e`
+- recomputed summary:
+  `/srv/jonas/evidence/dockermap/time-to-answer/summary.md`
+- capture duration: 25.6 minutes; **44 declared cells × 3 controlled runs × 15
+  recorded samples = 1980 raw samples**, plus one discarded warm-up
+  observation per warmed daemon cell per run
+- the artifact is an external reviewed record under the evidence-artifact policy: it
+  lives outside the repository, and what is checked in is the baseline identity, the
+  pinned environment and this document
 
-Baseline 2 fixed those and was rejected for: a cold first observation still inside
-the "warmed" window (so the published stage-3/4 p95 *was* the cold sample), an
-unpinned daemon binary, and a stage 7 that was element-for-element identical to
-stage 6 in all 180 samples.
+Reproduce or audit:
 
-The numbers below are baseline 2 as measured, kept for methodology comparison
-only. A replacement baseline captured from a committed revision, with the
-cold/warm split, binary provenance and independent stage-6/7 clocks, is the
-authority once it exists and passes the promotion gate.
+```
+npm run build:deploy                                             # pinned daemon build
+npm run perf:summarize -- --artifact /srv/jonas/evidence/dockermap/time-to-answer/time-to-answer-baseline-3.json
+```
 
----
+## Pinned environment
 
-This is the corrected controlled baseline for issue #335. Every number below was
-**recomputed from the stored raw samples** with
-`npm run perf:summarize -- --artifact <artifact.json>`; none is hand-authored.
-The artifact stores raw samples only and lives outside the repository under the
-evidence-artifact policy (see `TIME_TO_ANSWER_EVIDENCE.md`).
+| field | value |
+| --- | --- |
+| runnerClass | linux-x86_64-dedicated |
+| cpuClass | cpus-16vcpu |
+| osImage | ubuntu-26.04 |
+| osKernel | 7.0.0-31-generic |
+| nodeRevision | 22.23.2 |
+| rustRevision | 1.88.0 |
+| dockerRevision | 29.8.1 (informational: no measured stage exercises the host Docker daemon) |
+| ssePollIntervalMs | 2000 |
+| sourceRevision | cf77e8ba67ea3d180b0a05866df30943be502776 |
+| harnessRevision | cf77e8ba67ea3d180b0a05866df30943be502776 |
+| daemonBinarySha256 | `5d67fdf26f2c9c5256a20f61f402b6b3b9307a1479d8444126d93ab2eb714ecc` |
+| daemonBinaryBuild | cargo-build-release-locked-p-dockermap-daemon-manifest-path-crates-Cargo-toml |
+| cargoRevision | cargo-1.88.0-873a06493-2025-05-10 |
+| browserEngine / revision | chromium / 1.61.0 |
+| browserFlags | --disable-background-networking --disable-sync --no-first-run --no-default-browser-check |
+| fontEnvironment | system-default |
+| buildMode | production |
+| fixtureRevision | dockermap-v1/time-to-answer-fixtures-1 |
 
-Baseline 1 was rejected in review and is superseded. It measured Cmd-K palette
-open rather than query-to-results, its publication→Node samples were phase-locked
-to the harness's own startup sequence, its "warmed" stage-3/4/9 samples were
-contaminated by 15 transient cold-start probe daemons sharing the bench sink, and
-it was produced by an uncommitted harness so no commit could re-derive it.
+The release daemon was built with
+`cargo build --release --locked -p dockermap-daemon --manifest-path crates/Cargo.toml`
+and its digest verified before **and** after the capture.
 
-- baseline id: `dockermap-v1/time-to-answer-baseline-1` (schema id unchanged;
-  this is capture 2 of it)
-- **product revision: `0714c87a`** (also the harness revision — the harness was
-  committed before the capture, and the capture refuses a dirty worktree)
-- fixture revision: `dockermap-v1/time-to-answer-fixtures-1`
-- artifact sha256: `38e0c650121f81ec69c2dd1ddc18191c98c091836652bd8ecd7570fc0d006197`
-- capture: 3 controlled runs × 15 warmed samples for every declared cell, **44 cells**
-- capture duration: 26.2 min on the pinned runner
-- runner: `linux-x86_64-dedicated` / `cpus-16vcpu` / `ubuntu-26.04` / kernel
-  `7.0.0-31-generic` / Node `22.23.2` / rustc `1.88.0` / Chromium `1.61.0` (flags
-  pinned) / `system-default` fonts / production build
-- effective SSE poll interval: `2000` ms, derived from the API's own source and
-  passed to the API explicitly, so the recorded pin cannot drift from what ran
-- `dockerRevision` is recorded but **informational**: no measured stage exercises
-  the host Docker daemon, so it is not a compatibility key
+## The 44-cell matrix, recomputed from raw
 
-Figures are the **median of the three run p95 values**, in ms.
-
-## The declared matrix
-
-| fixture | stage | run p95 (ms) | median | min | max |
+| fixture | stage | run p95 (ms) | median (ms) | min | max |
 | --- | --- | --- | --- | --- | --- |
-| reference-25 | daemonStartToListenerMs | 44.35 / 43.54 / 32.07 | 43.54 | 25.45 | 44.35 |
-| reference-25 | listenerToFirstDockerModelMs | 14.74 / 13.51 / 9.75 | 13.51 | 3.88 | 14.74 |
-| reference-25 | dockerObservationMs | 8.05 / 7.49 / 7.91 | 7.91 | 1.13 | 8.05 |
-| reference-25 | composeEnrichmentMs | 1.08 / 1.22 / 1.05 | 1.08 | 0.60 | 1.22 |
-| reference-25 | publicationToNodeObservationMs | 1922.63 / 1991.22 / 1971.87 | 1971.87 | 35.03 | 1991.22 |
-| reference-25 | notificationToCoherentModelMs | 17.40 / 15.10 / 15.20 | 15.20 | 1.10 | 17.40 |
-| reference-25 | coherentModelToUsefulRenderMs | 17.40 / 15.10 / 15.20 | 15.20 | 1.10 | 17.40 |
-| reference-25 | buildModelMs | 1.90 / 0.60 / 0.50 | 0.60 | 0.10 | 1.90 |
-| reference-25 | findingsDerivationMs | 0.06 / 0.08 / 0.07 | 0.07 | 0.01 | 0.08 |
-| reference-25 | legacyTopologyLayoutMs | 2.30 / 2.20 / 2.20 | 2.20 | 1.50 | 2.30 |
-| reference-25 | commandQueryMs | 47.10 / 51.40 / 52.50 | 51.40 | 4.80 | 52.50 |
-| reference-25 | productionBundleMs | 53.10 / 48.80 / 62.10 | 53.10 | 38.60 | 62.10 |
-| reference-100 | daemonStartToListenerMs | 119.47 / 108.08 / 132.75 | 119.47 | 64.76 | 132.75 |
-| reference-100 | listenerToFirstDockerModelMs | 39.67 / 54.77 / 60.27 | 54.77 | 15.56 | 60.27 |
-| reference-100 | dockerObservationMs | 9.51 / 8.90 / 9.36 | 9.36 | 2.50 | 9.51 |
-| reference-100 | composeEnrichmentMs | 1.06 / 1.00 / 1.20 | 1.06 | 0.61 | 1.20 |
-| reference-100 | publicationToNodeObservationMs | 1869.08 / 1544.41 / 1828.38 | 1828.38 | 0.34 | 1869.08 |
-| reference-100 | notificationToCoherentModelMs | 21.10 / 18.00 / 19.30 | 19.30 | 1.20 | 21.10 |
-| reference-100 | coherentModelToUsefulRenderMs | 21.10 / 18.00 / 19.30 | 19.30 | 1.20 | 21.10 |
-| reference-100 | buildModelMs | 0.70 / 1.30 / 0.70 | 0.70 | 0.30 | 1.30 |
-| reference-100 | findingsDerivationMs | 0.20 / 0.30 / 0.38 | 0.30 | 0.01 | 0.38 |
-| reference-100 | legacyTopologyLayoutMs | 26.00 / 24.20 / 22.50 | 24.20 | 19.40 | 26.00 |
-| reference-100 | commandQueryMs | 37.60 / 43.80 / 27.90 | 37.60 | 6.40 | 43.80 |
-| reference-100 | productionBundleMs | 55.60 / 55.70 / 47.90 | 55.60 | 36.90 | 55.70 |
-| reference-250 | daemonStartToListenerMs | 234.29 / 272.00 / 226.41 | 234.29 | 107.76 | 272.00 |
-| reference-250 | listenerToFirstDockerModelMs | 156.83 / 127.09 / 163.28 | 156.83 | 54.39 | 163.28 |
-| reference-250 | dockerObservationMs | 12.56 / 15.77 / 15.34 | 15.34 | 4.55 | 15.77 |
-| reference-250 | composeEnrichmentMs | 1.22 / 1.04 / 1.08 | 1.08 | 0.62 | 1.22 |
-| reference-250 | publicationToNodeObservationMs | 1819.21 / 1920.10 / 1918.79 | 1918.79 | 0.27 | 1920.10 |
-| reference-250 | notificationToCoherentModelMs | 31.70 / 60.00 / 52.10 | 52.10 | 21.70 | 60.00 |
-| reference-250 | coherentModelToUsefulRenderMs | 31.70 / 60.00 / 52.10 | 52.10 | 21.70 | 60.00 |
-| reference-250 | buildModelMs | 1.80 / 1.80 / 1.60 | 1.80 | 0.70 | 1.80 |
-| reference-250 | findingsDerivationMs | 0.91 / 1.19 / 0.86 | 0.91 | 0.01 | 1.19 |
-| reference-250 | legacyTopologyLayoutMs | 174.30 / 163.60 / 164.40 | 164.40 | 115.30 | 174.30 |
-| reference-250 | commandQueryMs | 28.90 / 25.20 / 26.60 | 26.60 | 10.90 | 28.90 |
-| reference-250 | productionBundleMs | 63.60 / 61.50 / 45.30 | 61.50 | 38.10 | 63.60 |
+| reference-25 | daemonStartToListenerMs | 41.08 / 41.59 / 39.95 | 41.08 | 33.28 | 41.59 |
+| reference-25 | listenerToFirstDockerModelMs | 10.57 / 11.45 / 15.30 | 11.45 | 9.04 | 15.30 |
+| reference-25 | dockerObservationMs | 2.64 / 2.22 / 2.44 | 2.44 | 1.36 | 2.64 |
+| reference-25 | composeEnrichmentMs | 1.12 / 1.11 / 0.98 | 1.11 | 0.63 | 1.12 |
+| reference-25 | publicationToNodeObservationMs | 863.37 / 856.93 / 816.64 | 856.93 | 743.34 | 863.37 |
+| reference-25 | notificationToCoherentModelMs | 19.20 / 20.50 / 19.70 | 19.70 | 10.70 | 20.50 |
+| reference-25 | coherentModelToUsefulRenderMs | 30.60 / 36.40 / 34.30 | 34.30 | 16.40 | 36.40 |
+| reference-25 | buildModelMs | 0.50 / 0.50 / 0.40 | 0.50 | 0.00 | 0.50 |
+| reference-25 | findingsDerivationMs | 0.08 / 0.07 / 0.07 | 0.07 | 0.04 | 0.08 |
+| reference-25 | legacyTopologyLayoutMs | 2.80 / 2.40 / 2.30 | 2.40 | 1.50 | 2.80 |
+| reference-25 | commandQueryMs | 47.30 / 50.10 / 53.30 | 50.10 | 4.60 | 53.30 |
+| reference-25 | productionBundleMs | 55.80 / 45.10 / 46.30 | 46.30 | 37.10 | 55.80 |
+| reference-100 | daemonStartToListenerMs | 113.37 / 117.34 / 116.75 | 116.75 | 95.79 | 117.34 |
+| reference-100 | listenerToFirstDockerModelMs | 19.60 / 40.57 / 21.27 | 21.27 | 14.77 | 40.57 |
+| reference-100 | dockerObservationMs | 4.43 / 4.43 / 5.27 | 4.43 | 2.35 | 5.27 |
+| reference-100 | composeEnrichmentMs | 1.01 / 0.96 / 1.09 | 1.01 | 0.62 | 1.09 |
+| reference-100 | publicationToNodeObservationMs | 960.46 / 940.42 / 941.50 | 941.50 | 410.81 | 960.46 |
+| reference-100 | notificationToCoherentModelMs | 36.20 / 47.90 / 46.30 | 46.30 | 27.10 | 47.90 |
+| reference-100 | coherentModelToUsefulRenderMs | 61.40 / 61.30 / 64.50 | 61.40 | 27.90 | 64.50 |
+| reference-100 | buildModelMs | 0.80 / 0.70 / 1.10 | 0.80 | 0.20 | 1.10 |
+| reference-100 | findingsDerivationMs | 0.25 / 0.26 / 0.21 | 0.25 | 0.16 | 0.26 |
+| reference-100 | legacyTopologyLayoutMs | 21.10 / 26.80 / 30.00 | 26.80 | 19.10 | 30.00 |
+| reference-100 | commandQueryMs | 39.50 / 19.50 / 45.40 | 39.50 | 7.10 | 45.40 |
+| reference-100 | productionBundleMs | 54.40 / 53.30 / 48.70 | 53.30 | 37.50 | 54.40 |
+| reference-250 | daemonStartToListenerMs | 298.45 / 295.37 / 328.76 | 298.45 | 107.79 | 328.76 |
+| reference-250 | listenerToFirstDockerModelMs | 113.05 / 155.82 / 99.19 | 113.05 | 41.23 | 155.82 |
+| reference-250 | dockerObservationMs | 11.15 / 11.29 / 10.08 | 11.15 | 4.31 | 11.29 |
+| reference-250 | composeEnrichmentMs | 0.94 / 1.08 / 1.09 | 1.08 | 0.60 | 1.09 |
+| reference-250 | publicationToNodeObservationMs | 1808.94 / 1810.23 / 1795.50 | 1808.94 | 0.33 | 1810.23 |
+| reference-250 | notificationToCoherentModelMs | 92.60 / 94.10 / 114.80 | 94.10 | 66.70 | 114.80 |
+| reference-250 | coherentModelToUsefulRenderMs | 214.30 / 235.00 / 204.90 | 214.30 | 139.00 | 235.00 |
+| reference-250 | buildModelMs | 1.80 / 1.80 / 1.70 | 1.80 | 0.70 | 1.80 |
+| reference-250 | findingsDerivationMs | 0.79 / 0.74 / 0.72 | 0.74 | 0.54 | 0.79 |
+| reference-250 | legacyTopologyLayoutMs | 178.40 / 184.30 / 170.00 | 178.40 | 123.30 | 184.30 |
+| reference-250 | commandQueryMs | 170.50 / 154.30 / 26.70 | 154.30 | 12.00 | 170.50 |
+| reference-250 | productionBundleMs | 49.40 / 49.50 / 49.50 | 49.50 | 38.60 | 49.50 |
+| slow-bounded-compose-projection | composeEnrichmentMs | 8.81 / 8.57 / 10.86 | 8.81 | 5.38 | 10.86 |
+| provider-only-revision-change | publicationToNodeObservationMs | 1902.28 / 1933.54 / 1934.33 | 1933.54 | 49.60 | 1934.33 |
+| provider-only-revision-change | notificationToCoherentModelMs | 44.20 / 43.60 / 53.10 | 44.20 | 25.70 | 53.10 |
+| docker-topology-change | publicationToNodeObservationMs | 909.49 / 878.46 / 932.34 | 909.49 | 355.43 | 932.34 |
+| docker-topology-change | notificationToCoherentModelMs | 45.30 / 36.50 / 50.50 | 45.30 | 28.70 | 50.50 |
+| docker-topology-change | coherentModelToUsefulRenderMs | 63.60 / 60.70 / 91.60 | 63.60 | 30.60 | 91.60 |
+| unavailable-optional-provider | publicationToNodeObservationMs | 1886.89 / 1930.69 / 1921.78 | 1921.78 | 102.57 | 1930.69 |
+| unavailable-optional-provider | notificationToCoherentModelMs | 51.10 / 38.20 / 45.90 | 45.90 | 27.80 | 51.10 |
 
-### Scenario fixtures
+## Stage 5 — today's real publication→observation mechanism
 
-| fixture | stage | run p95 (ms) | median | min | max |
+`publicationToNodeObservationMs` measures the mechanism DockerMap ships today,
+**including its poll wait** (the API's own 2 s `DOCKERMAP_SSE_INTERVAL_MS`, pinned
+and passed explicitly). Each sample's trigger is jittered so the samples describe
+the poll-wait distribution rather than one fixed phase offset between the daemon's
+2 s refresh loop and the API's 2 s poller; the spread below is that distribution,
+not noise:
+
+| fixture | n | min | p50 | p95 | max |
 | --- | --- | --- | --- | --- | --- |
-| provider-only-revision-change | publicationToNodeObservationMs | 1753.46 / 1576.95 / 1953.99 | 1753.46 | 0.54 | 1953.99 |
-| provider-only-revision-change | notificationToCoherentModelMs | 21.20 / 23.00 / 19.90 | 21.20 | 12.90 | 23.00 |
-| docker-topology-change | publicationToNodeObservationMs | 1925.64 / 1900.24 / 1977.43 | 1925.64 | 4.11 | 1977.43 |
-| docker-topology-change | notificationToCoherentModelMs | 21.10 / 20.30 / 20.30 | 20.30 | 13.80 | 21.10 |
-| docker-topology-change | coherentModelToUsefulRenderMs | 21.10 / 20.30 / 20.30 | 20.30 | 13.80 | 21.10 |
-| slow-bounded-compose-projection | composeEnrichmentMs | 7.19 / 8.86 / 6.70 | 7.19 | 5.08 | 8.86 |
-| unavailable-optional-provider | publicationToNodeObservationMs | 1970.25 / 1808.82 / 1916.09 | 1916.09 | 47.13 | 1970.25 |
-| unavailable-optional-provider | notificationToCoherentModelMs | 26.20 / 24.50 / 26.30 | 26.20 | 14.50 | 26.30 |
+| reference-25 | 45 | 743.34 | 801.99 | 846.26 | 863.37 |
+| reference-100 | 45 | 410.81 | 705.08 | 941.50 | 960.46 |
+| reference-250 | 45 | 0.33 | 971.66 | 1795.50 | 1810.23 |
+| provider-only-revision-change | 45 | 49.60 | 605.41 | 1902.28 | 1934.33 |
+| docker-topology-change | 45 | 355.43 | 637.91 | 894.82 | 932.34 |
+| unavailable-optional-provider | 45 | 102.57 | 673.82 | 1886.89 | 1930.69 |
 
-`coherentModelToUsefulRenderMs` is declared only for the four fixtures whose
-published change demonstrably repaints Home. A provider-only or
-provider-unavailable revision is not guaranteed to repaint it, so measuring it
-there would be an empty number. The harness asserts each scenario's premise: the
-provider-only fixture fails if its Docker inventory changed during the run, and
-the unavailable-provider fixture fails if no optional provider was non-fresh.
+This is **not** a network-latency figure. Removing the floor is #337's work; the
+production cadence was deliberately left unchanged.
 
-## The ten questions
+## Stage 6 and stage 7
 
-**1. What dominates cold start?** Process bring-up, and it scales with the
-fixture: `daemonStartToListenerMs` 43.5 → 119.5 → 234.3 ms and
-`listenerToFirstDockerModelMs` 13.5 → 54.8 → 156.8 ms. Cold start to first
-authoritative Docker model is roughly **57 / 174 / 391 ms**. Almost none of that
-is Docker work.
+Stage 6 ends when the real application seam accepts one coherent model; stage 7
+begins at that instant and ends when the accepted revision's expected Home content
+has rendered, confirmed by one bounded frame. Medians of the three run p95s:
 
-**2. How much time is Docker observation?** `dockerObservationMs` is **7.9 / 9.4
-/ 15.3 ms** against the deterministic local fixture daemon — about 14% / 5% / 4%
-of cold start. It grows sub-linearly with container count here.
+| fixture | stage 6 (notification → acceptance) | stage 7 (acceptance → rendered content) |
+| --- | --- | --- |
+| reference-25 | 19.20 | 30.60 |
+| reference-100 | 36.20 | 61.40 |
+| reference-250 | 92.60 | 214.30 |
+| docker-topology-change | 45.30 | 63.60 |
+| provider-only-revision-change | 44.20 | not declared (no inventory change to present) |
+| unavailable-optional-provider | 51.10 | not declared |
 
-**3. How much is Compose projection?** `composeEnrichmentMs` is **1.08 / 1.06 /
-1.08 ms** on the reference fixtures and **7.19 ms** on the deliberately large
-bounded project. It still executes *inside* the same Docker publication budget as
-the inventory read — measured, not decoupled; **#336 owns decoupling**. On this
-evidence Compose is a real but small absolute cost (≈8% of
-`listenerToFirstDockerModelMs` at 25 containers, under 1% at 250). #336 should be
-judged against these numbers rather than an assumed large win.
+### Independence control (must hold, or no baseline is emitted)
 
-**4. How much is notification/poll latency?** **The largest single contributor,
-and now measured across the interval rather than at one phase.**
-`publicationToNodeObservationMs` medians are **1971.9 / 1828.4 / 1918.8 ms**, and
-the observed range now spans nearly the whole interval: **35.0–1991.2**,
-**0.34–1869.1**, **0.27–1920.1** ms. Baseline 1 reported 1283–1349 ms for
-reference-25 — a 66 ms band — because the harness triggered each sample from a
-fixed startup sequence, locking the phase between the daemon's 2 s refresh loop
-and the API's 2 s poller. This capture jitters every trigger by a uniform
-sub-interval delay, so the numbers describe the wait a reader actually
-experiences. The two fixed cycles still exist and are unchanged: this de-correlates
-the *measurement*, not the mechanism. **#337 owns removing the floor.**
+3 control samples per fixture with a 250 ms presentation delay injected **after**
+acceptance: stage 6 must not move beyond `max(30 ms, 25%)`, stage 7 must absorb at
+least 70% of the delay.
 
-**5. How much is browser model reconstruction?** Small: stage 6 is **15.2 / 19.3
-/ 52.1 ms**, of which `buildModelMs` is **0.60 / 0.70 / 1.80 ms** and
-`findingsDerivationMs` **0.07 / 0.30 / 0.91 ms** (the latter now correctly
-recorded as backend-collection work that runs in the daemon during publication).
-The fixture topology derives no findings, so that stage measures the
-empty-derivation path at its resolution floor. There is no model-rebuild
-bottleneck at these sizes.
+| fixture | stage 6 normal | stage 6 control | Δ | stage 7 normal | stage 7 control | Δ | control samples |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| reference-25 | 13.50 | 14.30 | +0.80 | 26.20 | 280.70 | +254.50 | 9 |
+| reference-100 | 31.60 | 31.10 | -0.50 | 35.60 | 282.60 | +247.00 | 9 |
+| reference-250 | 76.40 | 72.00 | -4.40 | 160.50 | 406.50 | +246.00 | 9 |
+| docker-topology-change | 32.10 | 33.30 | +1.20 | 40.50 | 284.20 | +243.70 | 9 |
 
-**6. How much is rendering/layout?** `legacyTopologyLayoutMs` is **2.2 / 24.2 /
-164.4 ms** and scales super-linearly (10× the containers costs ~75× the layout
-time). At 250 containers it is the second-largest stage in the matrix and it runs
-on the Home screen. `productionBundleMs` is a flat **53.1 / 55.6 / 61.5 ms**,
-insensitive to container count. #338 owns the legacy-preview decision.
+Every control stage-7 sample exceeded the injected delay, stage 6 moved by at most
+4.4 ms, and each fixture's stage 7 absorbed the delay — the two clocks are
+independent, and stage 7 responds to presentation rather than to acceptance.
 
-**7. How much is search?** `commandQueryMs` — palette open, a query with a known
-expected result typed, and the filtered list observed to change and still contain
-that result — is **51.4 / 37.6 / 26.6 ms**. Baseline 1's 55/45/35 ms measured
-palette open only.
+### Acceptance audit (all 306 samples)
 
-**8. What changes 25 → 100 → 250?** Backend collection grows ~3-12×
-(`daemonStartToListenerMs` 5.4×, `listenerToFirstDockerModelMs` 11.6×); layout
-grows ~75×; model acceptance grows ~3.4×; transport stays poll-bound; search and
-bundle load are flat.
+| fixture | samples | accepted revision also on the harness's own stream | intermediate acceptances skipped | content matched the triggered change |
+| --- | --- | --- | --- | --- |
+| reference-25 | 45 | 45 | 9 | 45 |
+| reference-100 | 45 | 45 | 10 | 45 |
+| reference-250 | 45 | 45 | 14 | 45 |
+| docker-topology-change | 45 | 45 | 4 | 45 |
+| provider-only-revision-change | 45 | 45 | 0 | 0 |
+| unavailable-optional-provider | 45 | 42 | 0 | 0 |
 
-**9. Which stages have high variance?** `publicationToNodeObservationMs` by far —
-its samples now span the full interval (0.27 ms to ~1991 ms). `commandQueryMs`
-(4.8–52.5 ms at 25 containers) and `daemonStartToListenerMs` (25.5–44.4; 64.8–
-132.8; 107.8–272.0) are also wide. Tight: `composeEnrichmentMs` (0.60–1.22),
-`findingsDerivationMs` (0.01–0.08 at 25), `legacyTopologyLayoutMs` (1.50–2.30 at
-25; 19.4–26.0 at 100; 115.3–174.3 at 250), `productionBundleMs`.
+An "intermediate acceptance skipped" is a published revision whose acceptance moved
+no Home metric (for example a provider-state-only publication); the sample is
+attributed to the revision the app fetched from the API and to the notification
+that preceded that fetch, never to the nearest acceptance by time.
 
-**10. Which numbers DO NOT prove production-host performance?** All of them:
-the Docker inventory comes from a **deterministic local fixture daemon**, so
-`dockerObservationMs` says nothing about a real Docker socket, host load, image
-metadata or engine version; DockerMap, the API, the web build and Chromium all
-ran **on one runner over loopback**, so no number is a network claim; the Compose
-trees are **synthetic** (40 and 400 services); the fixtures are synthetic
-topologies; and one runner class is pinned. Stage 5 measures the *current*
-publication-observation mechanism including its poll wait — it is **not** a
-generic network-latency figure.
+## Bucket shares — where the time actually goes
 
-## Top three latency contributors (reference fixtures)
+Sum of the median-of-three stage medians per bucket, per reference fixture:
 
-| bucket (sum of stage medians) | 25 | 100 | 250 |
-| --- | --- | --- | --- |
-| transport-notification | 1971.87 (90.6%) | 1828.38 (84.3%) | 1918.79 (71.4%) |
-| backend-collection | 66.11 (3.0%) | 184.97 (8.5%) | 408.44 (15.2%) |
-| rendering | 70.50 (3.2%) | 99.10 (4.6%) | 278.00 (10.4%) |
-| search | 51.40 (2.4%) | 37.60 (1.7%) | 26.60 (1.0%) |
-| browser-model | 15.80 (0.7%) | 20.00 (0.9%) | 53.90 (2.0%) |
+### reference-25 (1066.40 ms)
+- transport-notification: 856.93 ms (80.4%)
+- rendering: 83.00 ms (7.8%)
+- backend-collection: 56.16 ms (5.3%)
+- search: 50.10 ms (4.7%)
+- browser-model: 20.20 ms (1.9%)
 
-1. **Publication → Node observation (the poll floor)** — 90.6 / 84.3 / 71.4 % of
-   the summed stage medians. #337 owns it.
-2. **Process start plus first Docker publication** — the cold-start pair, growing
-   with inventory size. #336 owns making the first Docker answer independent of
-   Compose and cold-start work.
-3. **Legacy Home topology layout at scale** — 164.4 ms at 250 containers. #338
-   owns whether Home keeps running that preview.
+### reference-100 (1313.31 ms)
+- transport-notification: 941.50 ms (71.7%)
+- backend-collection: 143.71 ms (10.9%)
+- rendering: 141.50 ms (10.8%)
+- browser-model: 47.10 ms (3.6%)
+- search: 39.50 ms (3.0%)
 
-No optimization is claimed or recommended here, and nothing in this document
-justifies changing Compose coupling or the SSE poll interval. A future
-optimization may only be called an improvement by re-running this capture and
-passing the promotion gate in `TIME_TO_ANSWER_EVIDENCE.md`.
+### reference-250 (2925.82 ms)
+- transport-notification: 1808.94 ms (61.8%)
+- rendering: 442.20 ms (15.1%)
+- backend-collection: 424.48 ms (14.5%)
+- search: 154.30 ms (5.3%)
+- browser-model: 95.90 ms (3.3%)
+
+### reference fixtures combined (5305.53 ms)
+- transport-notification: 3607.37 ms (68.0%)
+- rendering: 666.70 ms (12.6%)
+- backend-collection: 624.36 ms (11.8%)
+- search: 243.90 ms (4.6%)
+- browser-model: 163.20 ms (3.1%)
+
+## Top contributors
+
+Largest median-of-three stage medians per reference fixture:
+
+- **reference-25**: publicationToNodeObservation 856.93, commandQuery 50.10,
+  productionBundle 46.30, daemonStartToListener 41.08, coherentModelToUsefulRender 34.30
+- **reference-100**: publicationToNodeObservation 941.50, daemonStartToListener 116.75,
+  coherentModelToUsefulRender 61.40, productionBundle 53.30, notificationToCoherentModel 46.30
+- **reference-250**: publicationToNodeObservation 1808.94, daemonStartToListener 298.45,
+  coherentModelToUsefulRender 214.30, legacyTopologyLayout 178.40, commandQuery 154.30
+
+**Compose contribution.** `composeEnrichmentMs` is measured separately but still
+executes inside the Docker publication budget: 1.11 / 1.01 / 1.08 ms at 25 / 100 /
+250 containers, i.e. 31.3% / 18.6% / 8.9% of the measured Docker+Compose collection
+block. The slow-but-bounded Compose scenario (`slow-bounded-compose-projection`,
+400 declared services) records 8.81 ms for Compose correlation alone. **Nothing is
+decoupled in this baseline**: these are the numbers #336 must improve against.
+
+## Warm-up retention (auditable)
+
+Exactly one observation is discarded per warmed daemon cell per run — always the
+first — and the complete window is retained in the harness evidence file:
+
+- observation windows retained: **30** run-cells, each with
+  `samples + 1 = 16` observations in the order the daemon produced them
+- windows whose recorded samples do **not** equal the window minus the discarded
+  warm-up: **0**
+- discarded index is always the first observation: `True`
+- recorded-sample-count distribution across every cell of the artifact:
+  [15] (the contract requires exactly 15)
+- retained warm-up observations (one per warmed daemon cell, keyed `fixture|stage`):
+  `reference-100|composeEnrichmentMs` = 0.7770 ms, `reference-100|dockerObservationMs` = 8.6390 ms, `reference-100|findingsDerivationMs` = 0.0010 ms, `reference-250|composeEnrichmentMs` = 0.8270 ms, `reference-250|dockerObservationMs` = 12.2060 ms, `reference-250|findingsDerivationMs` = 0.0020 ms, `reference-25|composeEnrichmentMs` = 0.7800 ms, `reference-25|dockerObservationMs` = 6.6540 ms, `reference-25|findingsDerivationMs` = 0.0010 ms, `slow-bounded-compose-projection|composeEnrichmentMs` = 6.8630 ms
+
+The capture refuses to emit an artifact when a window is missing, shorter than
+`samples + 1`, discards anything other than the first observation, or does not
+match the run stored in the artifact, so a slow warm-up value cannot be hidden.
+
+## Rejected attempts (history, not authority)
+
+Baseline 1 (first capture) and baseline 2 (second) were both rejected in
+independent review and are **not the authority for anything**. Their artifacts
+remain in `/srv/jonas/evidence/dockermap/time-to-answer/` as rejected history, and
+none of their numbers appear in this document: baseline 1 measured Cmd-K
+palette-open instead of query-to-results, phase-locked its stage-5 samples to its own
+startup sequence, mixed cold-start probe daemons into stages documented as warmed,
+and was produced by an uncommitted harness; baseline 2 fixed those and was rejected
+because a cold first observation survived inside the "warmed" window, the daemon
+binary was unpinned, and its stage 7 was element-for-element identical to stage 6 in
+all 180 samples — the two stages shared one DOM-derived clock.
+
+## What this baseline is not
+
+- Not a claim about a real Docker daemon's latency: every collection number comes
+  from a deterministic local fixture daemon.
+- Not a claim about a real network: no measured stage leaves the host.
+- Not proof that the model is complete: `listenerToFirstDockerModelMs` and stage 6
+  end at coherence, not at completeness.
+- Not permission to optimize. Any claim in #336/#337/#338 must be compared against
+  this baseline under the promotion rule, in a compatible pinned environment.
