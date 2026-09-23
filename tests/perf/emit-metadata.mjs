@@ -100,10 +100,11 @@ if (!sseDefault) {
 const ssePollIntervalMs = safeToken(sseDefault[1].replace(/_/g, ""));
 // Build the exact daemon binary this capture will run, then pin its digest. The
 // benchmark does not claim bit-for-bit reproducible Rust builds across machines;
-// it proves which binary THIS capture executed.
-const DAEMON_BUILD = "cargo build --release --locked -p dockermap-daemon";
+// it proves which binary THIS capture executed. The cargo workspace lives under
+// crates/, so the manifest path is part of the canonical command.
+const DAEMON_BUILD = "cargo build --release --locked -p dockermap-daemon --manifest-path crates/Cargo.toml";
 /** Space-free form for the closed evidence metadata (safe-value constrained). */
-const DAEMON_BUILD_SLUG = "cargo-build-release-locked-p-dockermap-daemon";
+const DAEMON_BUILD_SLUG = "cargo-build-release-locked-p-dockermap-daemon-manifest-path-crates-Cargo-toml";
 const daemonBinaryPath = resolve(REPO_ROOT, "crates/target/release/dockermap-daemon");
 try {
   command("bash", ["-lc", `cd ${JSON.stringify(REPO_ROOT)} && cargo ${DAEMON_BUILD.replace(/^cargo /, "")}`]);

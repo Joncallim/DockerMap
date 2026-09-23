@@ -327,7 +327,7 @@ artifact by design.
 Stages 1-5 and 9 all come from the release daemon executable, so it is pinned:
 
 ```
-cargo build --release --locked -p dockermap-daemon   # canonical build
+cargo build --release --locked -p dockermap-daemon --manifest-path crates/Cargo.toml
 sha256(crates/target/release/dockermap-daemon)       # daemonBinarySha256
 ```
 
