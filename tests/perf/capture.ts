@@ -1929,12 +1929,14 @@ async function main(): Promise<void> {
     process.stdout.write(
       `[capture] wrote ${outputPath} in ${((Date.now() - startedAt) / 60_000).toFixed(1)} min (fixture revision ${FIXTURE_REVISION})\n`
     );
-  } catch (error) {
-    // Assembly or validation failed: the measurement pass is expensive, so the
-    // raw samples are preserved even though no artifact can be emitted.
-    preserveRaw(String(error));
-    throw error;
-  }
+ } catch (error) {
+ // Assembly or validation failed: the measurement pass is expensive, so the
+ // raw samples are preserved even though no artifact can be emitted.
+ preserveRaw(String(error));
+ throw error;
+ }
+ }
+
 }
 
-await main();
+ await main();
