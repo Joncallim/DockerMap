@@ -53,3 +53,22 @@ test("stage 5 declares a deterministic phase grid, not a random jitter", () => {
  assert.match(docs, /\*\*90 ms\s+tolerance\*\*/);
  assert.match(docs, /repeats phases\s+0–4/);
 });
+
+test("provider-driven stage-5 cells stay free-running and non-authoritative", () => {
+const pollPhase = read("apps/web/src/lib/performance/timeToAnswerPollPhase.ts");
+const controlled = pollPhase.match(
+/export const POLL_PHASE_CONTROLLED_FIXTURES = \[([\s\S]*?)\] as const;/
+);
+assert.ok(controlled, "the controlled fixture set must remain an explicit declaration");
+for (const fixture of ["provider-only-revision-change", "unavailable-optional-provider"]) {
+assert.doesNotMatch(
+controlled[1],
+new RegExp(`"${fixture}"`),
+`${fixture} is structurally phase-pinned and must not enter the controlled sweep`
+);
+}
+const docs = read("docs/testing/TIME_TO_ANSWER_EVIDENCE.md");
+assert.match(docs, /## Free-running provider-driven cells/);
+assert.match(docs, /real API-SSE poller path/);
+assert.match(docs, /excluded from the phase-normalized scalar/);
+});

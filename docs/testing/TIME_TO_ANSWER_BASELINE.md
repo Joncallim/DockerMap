@@ -115,12 +115,22 @@ and its digest verified before **and** after the capture.
 
 ## Stage 5 — today's real publication→observation mechanism
 
-`publicationToNodeObservationMs` measures the mechanism DockerMap ships today,
-**including its poll wait** (the API's own 2 s `DOCKERMAP_SSE_INTERVAL_MS`, pinned
-and passed explicitly). Each sample's trigger is jittered so the samples describe
-the poll-wait distribution rather than one fixed phase offset between the daemon's
-2 s refresh loop and the API's 2 s poller; the spread below is that distribution,
-not noise:
+This rejected capture's stage-5 rows are historical outputs, not a measurement of
+the mechanism DockerMap ships today. Its jitter did not produce a phase sweep, so
+neither the table nor any p95 in it has phase coverage, a span/direction guarantee,
+or promotion authority. In particular, the provider-only and unavailable-optional
+provider rows were provider-driven and free-running: their fixed provider slots
+refresh at 10 s, 15 s, or 60 s, integer multiples of the pinned 2000 ms API poll
+interval. Their observed phase was structurally pinned, not random; the rows do
+not represent real-user latency, random production latency, network latency, or a
+Stage-5 characterisation. They are not a phase-normalized scalar and are excluded
+from the phase-normalized scalar used for #337 comparison. Under the current
+methodology, the two cells measure a new revision through the real API-SSE poller
+path, record their achieved phase, and assert their provider premise; their matrix
+value is that premise coverage plus the applicable stage-6/stage-7 boundary. This
+rejected baseline cannot establish those current, limited claims.
+
+The following historical spread is retained only to explain the rejection:
 
 | fixture | n | min | p50 | p95 | max |
 | --- | --- | --- | --- | --- | --- |

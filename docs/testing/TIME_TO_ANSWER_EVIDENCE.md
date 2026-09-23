@@ -477,6 +477,36 @@ The reported figures are:
 the production cadence is deliberately unchanged: removing this floor is #337's
 work, not this issue's.
 
+### Free-running provider-driven cells
+
+`provider-only-revision-change` and `unavailable-optional-provider` are the two
+**free-running** stage-5 cells. They are deliberately excluded from
+`POLL_PHASE_CONTROLLED_FIXTURES`; all reference fixtures and
+`docker-topology-change` are phase-controlled.
+
+The exclusion is structural, not a missing harness feature. These fixtures obtain
+their new revision from the daemon's fixed host-provider scheduler, while the API
+SSE poller has the pinned 2000 ms interval. The scheduler's completion-relative
+slots are 10 s, 15 s, or 60 s (`slot_interval` in
+`crates/dockermap-daemon/src/runtime_collection.rs`), each an integer multiple of
+2000 ms. Their observed publication phase is therefore structurally pinned to the
+poller cadence; placing it would require changing production provider polling,
+which this read-only measurement work must not do.
+
+For these cells, the harness does claim a real observation through the real
+**API-SSE poller path**: it records the new revision and the phase achieved, and
+asserts the fixture premise (unchanged Docker inventory for
+`provider-only-revision-change`; a non-fresh optional provider for
+`unavailable-optional-provider`). Their matrix value is that premise coverage,
+together with their stage-6 acceptance and stage-7 applicability boundary.
+
+They do **not** claim a phase sweep or phase coverage, a phase-normalized scalar,
+a span or direction guarantee, or p95 authority. They are **excluded from the
+phase-normalized scalar** used for #337 comparison. Nor are their values real-user
+latency, random production latency, network latency, or a Stage-5
+characterisation. `assertFreeRunningPhaseSamples`, rather than
+`assertPollPhaseSweep`, enforces this limited contract.
+
 ## Superseded captures
 
 Baseline 1, baseline 2 **and baseline 3** are **REJECTED historical attempts** and
