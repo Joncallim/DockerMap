@@ -253,6 +253,46 @@ function spawnOwned(command: string, commandArgs: string[], env: NodeJS.ProcessE
   return child;
 }
 
+/**
+ * Start a child that binds a reserved TCP port and waits until it answers.
+ *
+ * reservePort() cannot be race-free (it binds, closes, and the port is handed
+ * back to the pool), so an unrelated process — or one of our own children not yet
+ * reaped — can take the port before the child binds. A collision used to abort an
+ * expensive capture; here it is retried on a fresh port, bounded, and a genuinely
+ * broken child still fails the capture after the attempts are exhausted.
+ */
+async function startChildOnFreePort(input: {
+  name: string;
+  attempts?: number;
+  /** Keep the same port across attempts (required when the port is baked elsewhere). */
+  fixedPort?: number;
+  spawnOn: (port: number) => any;
+  ping: (port: number) => Promise<boolean>;
+}): Promise<{ child: any; port: number }> {
+  const attempts = input.attempts ?? 4;
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const port = input.fixedPort ?? (await reservePort());
+    const child = input.spawnOn(port);
+    const deadline = Date.now() + 60_000;
+    let ready = false;
+    while (Date.now() < deadline && !ready) {
+      if (child.exitCode !== null || child.signalCode) break;
+      ready = await input.ping(port);
+      if (!ready) await sleep(25);
+    }
+    if (ready) return { child, port };
+    stopOwned(child);
+    lastError = new Error(`${input.name} did not become ready on port ${port}`);
+    process.stderr.write(
+      `[capture] ${input.name} failed to bind port ${port}; retrying (attempt ${attempt}/${attempts})\n`
+    );
+    await sleep(250);
+  }
+  throw lastError ?? new Error(`${input.name} never started`);
+}
+
 function stopOwned(child: { pid?: number; exitCode: number | null; signalCode?: NodeJS.Signals | null } | null) {
   if (!child?.pid) return;
   if (child.exitCode !== null || child.signalCode) return;
@@ -638,10 +678,9 @@ async function main(): Promise<void> {
         process.stdout.write(
           `[capture] run ${runIndex + 1}/${runs} fixture ${plan.name} (${plan.containers} containers)\n`
         );
-        const daemonPort = await reservePort();
-        const webPort = await reservePort();
-        const probePort = await reservePort();
-        const benchAppPort = await reservePort();
+        // Only the daemon port is chosen here; every other listener either takes an
+        // atomic OS-assigned port (static servers) or retries on a fresh one.
+        let daemonPort = 0;
         const workdir = join(workRoot, `${plan.name}-${runIndex}`);
         mkdirSync(workdir, { recursive: true });
         const projectRoot = join(workdir, "compose-project");
@@ -680,14 +719,19 @@ async function main(): Promise<void> {
           const daemonEnv = {
             DOCKERMAP_DOCKER_GATEWAY_SOCKET: fixtureSocket,
             DOCKERMAP_BENCH_STAGE_TIMING_PATH: benchSink,
-            DOCKERMAP_DAEMON_PORT: String(daemonPort),
             DOCKERMAP_DAEMON_HOST: "127.0.0.1",
             DOCKERMAP_PROJECT_ROOT: projectRoot,
             ...(plan.name === "unavailable-optional-provider" ? { PATH: emptyPath } : {})
           };
           const healthUrl = (port: number) => `http://127.0.0.1:${port}/daemon/health`;
-          daemonChild = spawnOwned(daemonBinary, [], daemonEnv);
-          await waitForJson(healthUrl(daemonPort), () => true, 60_000);
+          const daemonReady = async (port: number) => Boolean(await fetchJson(healthUrl(port), 1_000));
+          const startedDaemon = await startChildOnFreePort({
+            name: "daemon",
+            spawnOn: (port) => spawnOwned(daemonBinary, [], { ...daemonEnv, DOCKERMAP_DAEMON_PORT: String(port) }),
+            ping: daemonReady
+          });
+          daemonChild = startedDaemon.child;
+          daemonPort = startedDaemon.port;
 
           // Stages 1 and 2 need a CLEAN start per warmed sample, so they are
           // measured by restarting the daemon `samples` times on private ports
@@ -697,29 +741,36 @@ async function main(): Promise<void> {
             const starts: number[] = [];
             const models: number[] = [];
             for (let index = 0; index < samples; index += 1) {
-              const probePort = await reservePort();
-              const startAt = nowMs();
-              const probeChild = spawnOwned(daemonBinary, [], {
-                ...daemonEnv,
-                // These transient cold-start probes must never write into the
-                // warmed attribution sink: their first observation is a
-                // cold-start sample, and mixing it into a stage documented as
-                // "warmed" would be a provenance defect.
-                DOCKERMAP_BENCH_STAGE_TIMING_PATH: join(workdir, "probe-bench.jsonl"),
-                DOCKERMAP_DAEMON_PORT: String(probePort)
+              let startAt = 0;
+              const probe = await startChildOnFreePort({
+                name: "daemon startup probe",
+                spawnOn: (port) => {
+                  // The start instant is taken at the successful spawn: a retried
+                  // attempt never contributes a sample.
+                  startAt = nowMs();
+                  return spawnOwned(daemonBinary, [], {
+                    ...daemonEnv,
+                    // These transient cold-start probes must never write into the
+                    // warmed attribution sink: their first observation is a
+                    // cold-start sample, and mixing it into a stage documented as
+                    // "warmed" would be a provenance defect.
+                    DOCKERMAP_BENCH_STAGE_TIMING_PATH: join(workdir, "probe-bench.jsonl"),
+                    DOCKERMAP_DAEMON_PORT: String(port)
+                  });
+                },
+                ping: daemonReady
               });
               try {
-                await waitForJson(healthUrl(probePort), () => true, 60_000);
                 starts.push(nowMs() - startAt);
                 const readyAt = nowMs();
                 await waitForJson(
-                  healthUrl(probePort),
+                  healthUrl(probe.port),
                   (value) => value.mode === "docker" && Boolean(value.modelRevision),
                   60_000
                 );
                 models.push(nowMs() - readyAt);
               } finally {
-                stopOwned(probeChild);
+                stopOwned(probe.child);
               }
             }
             record(plan.name, "daemonStartToListenerMs", starts);
@@ -768,30 +819,41 @@ async function main(): Promise<void> {
                 controlStageSevenMs: [] as number[]
               }
             : null;
-          webServer = await startStaticServer({ directory: join(REPO_ROOT, "apps/web/dist"), port: webPort });
+          webServer = await startStaticServer({ directory: join(REPO_ROOT, "apps/web/dist"), port: 0 });
           probeServer = await startStaticServer({
             directory: join(REPO_ROOT, "tests/perf/.bench-dist"),
-            port: probePort
+            port: 0
           });
           const webOrigin = webServer.url;
           if (needsStageSix) {
             benchAppServer = await startStaticServer({
               directory: join(REPO_ROOT, "tests/perf/.bench-app-dist"),
-              port: benchAppPort
+              port: 0
             });
           }
-          apiChild = spawnOwned(process.execPath, [join(REPO_ROOT, "node_modules/tsx/dist/cli.mjs"), "apps/api/src/index.ts"], {
-            PORT: String(apiPort),
-            DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemonPort}`,
-            // The API must accept both browser origins: the production build for
-            // Cmd-K and the cold production load, the benchmark-mode build for
-            // coherent-model acceptance.
-            DOCKERMAP_ALLOWED_ORIGINS: [webOrigin, benchAppServer?.url].filter(Boolean).join(","),
-            // Pinned explicitly so the recorded interval and the interval that
-            // actually ran cannot diverge; this is the API's own default.
-            DOCKERMAP_SSE_INTERVAL_MS: String(pollIntervalMs)
+          // The API port is baked into the production build, so it must stay fixed
+          // for the whole capture; the retry therefore re-spawns on the SAME port
+          // (bounded) instead of moving to a new one.
+          const apiHealth = async () =>
+            Boolean(await fetchJson(`http://127.0.0.1:${apiPort}/api/health`, 1_000));
+          const startedApi = await startChildOnFreePort({
+            name: "api",
+            fixedPort: apiPort,
+            spawnOn: () =>
+              spawnOwned(process.execPath, [join(REPO_ROOT, "node_modules/tsx/dist/cli.mjs"), "apps/api/src/index.ts"], {
+                PORT: String(apiPort),
+                DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemonPort}`,
+                // The API must accept both browser origins: the production build for
+                // Cmd-K and the cold production load, the benchmark-mode build for
+                // coherent-model acceptance.
+                DOCKERMAP_ALLOWED_ORIGINS: [webOrigin, benchAppServer?.url].filter(Boolean).join(","),
+                // Pinned explicitly so the recorded interval and the interval that
+                // actually ran cannot diverge; this is the API's own default.
+                DOCKERMAP_SSE_INTERVAL_MS: String(pollIntervalMs)
+              }),
+            ping: apiHealth
           });
-          await waitForJson(`http://127.0.0.1:${apiPort}/api/health`, () => true, 60_000);
+          apiChild = startedApi.child;
 
           // Browser stages. Every browser stage needs `samples` warmed
           // observations per controlled run, so revision-driven stages loop over

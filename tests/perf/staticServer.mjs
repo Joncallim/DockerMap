@@ -52,11 +52,17 @@ export async function startStaticServer({ directory, port, host = "127.0.0.1" })
   });
   await new Promise((done, fail) => {
     server.once("error", fail);
-    server.listen(port, host, done);
+    server.listen(port ?? 0, host, done);
   });
+  // Report the port the OS actually bound. Callers that pass 0 get an atomic
+  // allocation instead of the reserve-then-bind race of reservePort(), where an
+  // unrelated process (or a previous child not yet reaped) can take the port in
+  // between — which aborts an expensive capture with EADDRINUSE.
+  const address = server.address();
+  const boundPort = address && typeof address === "object" ? address.port : port;
   return {
-    port,
-    url: `http://${host}:${port}`,
+    port: boundPort,
+    url: `http://${host}:${boundPort}`,
     async close() {
       await new Promise((done) => server.close(done));
     }
