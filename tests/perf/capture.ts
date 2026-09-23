@@ -427,7 +427,14 @@ interface PublicationObservation {
 }
 
 interface PublicationObserver {
-  stop(): Promise<PublicationObservation>;
+  /**
+   * Close the observation window. When `expectedRevision` is given, keep listening
+   * (bounded by one poll interval plus a margin) until this connection has emitted
+   * that revision too: every SSE connection polls on its OWN phase, so the
+   * harness's stream can legitimately lag the browser's by up to one interval. The
+   * recorded duration is unaffected — it is fixed at the first emission.
+   */
+  stop(expectedRevision?: string | null): Promise<PublicationObservation>;
 }
 
 async function startPublicationObservation(
@@ -491,9 +498,16 @@ async function startPublicationObservation(
   })();
 
   return {
-    async stop(): Promise<PublicationObservation> {
+    async stop(expectedRevision?: string | null): Promise<PublicationObservation> {
       await publishing;
-      while (!observedAt && Date.now() < deadline) await sleep(5);
+      // Every SSE connection polls on its own phase, so when the caller names the
+      // revision the browser accepted, keep this stream open until it has emitted
+      // that revision too — bounded by one poll interval plus a margin. The
+      // recorded duration is fixed at the first emission and never moves.
+      const collectDeadline = expectedRevision ? Date.now() + pollIntervalMs + 1_500 : deadline;
+      const satisfied = () =>
+        Boolean(observedAt) && (!expectedRevision || observedRevisions.includes(expectedRevision));
+      while (!satisfied() && Date.now() < collectDeadline) await sleep(5);
       controller.abort();
       await reading;
       if (!publishAt || !observedAt) {
@@ -865,31 +879,29 @@ async function main(): Promise<void> {
                 observed = await publication.stop();
               }
               if (needsStageSix) {
-                const measured = await (async () => {
-                  try {
-                    return await awaitModelAcceptance(benchPage);
-                  } finally {
-                    // Closed after the browser measurement resolves, so the
-                    // observation window covers every publication of this sample.
-                    if (publication) observed = await publication.stop();
-                  }
-                })();
+                let measured: StageSixSeven | null = null;
+                try {
+                  measured = await awaitModelAcceptance(benchPage);
+                } finally {
+                  // Closed after the browser measurement resolves, and held open
+                  // until this stream has seen the revision the browser accepted.
+                  if (publication) observed = await publication.stop(measured?.acceptedRevision ?? null);
+                }
+                if (!measured) throw new Error("model acceptance probe returned no measurement");
                 coherentSamples.push(measured.notificationToCoherentModelMs);
                 if (typeof measured.coherentModelToUsefulRenderMs === "number") {
                   usefulSamples.push(measured.coherentModelToUsefulRenderMs);
                 }
+                const seen: PublicationObservation | null = observed;
                 // Chain of custody: the revision the browser accepted must be one
                 // the harness independently observed through the live API stream for
                 // THIS sample. A mismatch fails the capture rather than recording a
                 // number whose origin is unknown.
-                if (observed) {
-                  const seen = observed as PublicationObservation;
-                  if (!seen.revisions.includes(measured.acceptedRevision)) {
-                    throw new Error(
-                      `the browser accepted revision ${measured.acceptedRevision}, which the API never observed for this sample ` +
-                        `(observed: ${seen.revisions.join(", ") || "none"})`
-                    );
-                  }
+                if (seen && !seen.revisions.includes(measured.acceptedRevision)) {
+                  throw new Error(
+                    `the browser accepted revision ${measured.acceptedRevision}, which the API never observed for this sample ` +
+                      `(observed: ${seen.revisions.join(", ") || "none"})`
+                  );
                 }
                 if (independencePair) {
                   independencePair.normalStageSixMs.push(measured.notificationToCoherentModelMs);
@@ -902,10 +914,11 @@ async function main(): Promise<void> {
                   sample: index,
                   generation,
                   delayMs: 0,
-                  apiObservedRevisions: observed ? (observed as PublicationObservation).revisions : []
+                  apiObservedRevisions: seen?.revisions ?? []
                 });
               }
-              if (observed) observationSamples.push((observed as PublicationObservation).ms);
+              const recorded: PublicationObservation | null = observed;
+              if (recorded) observationSamples.push(recorded.ms);
             }
           }
           if (independencePair) {
