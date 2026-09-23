@@ -52,8 +52,9 @@ test("stage-7 control ignores a revision accepted between arm and trigger", asyn
     mode: "content",
     previousSeq: 0,
     limit: 1_000,
-    expectedMetricValue: "16",
-    awaitPublicationTrigger: true
+ expectedMetricValue: "16",
+ awaitPublicationTrigger: true,
+ awaitExpectedRevision: true
   });
   // This is the race from the aborted capture: background polling accepts a
   // revision after arming but before the fixture POST. It must not satisfy the
@@ -87,6 +88,10 @@ test("stage-7 control ignores a revision accepted between arm and trigger", asyn
  revision: "other",
  storyValue: "16"
  });
+ // Yield while no target revision is available. Before the revision gate this
+ // candidate completed the probe; the gate must retain it pending the
+ // fixture/API pair's coherent-revision observation.
+ await new Promise((resolve) => setImmediate(resolve));
  window.__dockermapBench.notifyLog.push({ at: 3, revision: "triggered" });
  window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 4, at: 5, revision: "triggered" });
  window.__dockermapBenchAcceptanceSink.push({ seq: 3, at: 6, revision: "triggered" });

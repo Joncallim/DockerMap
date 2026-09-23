@@ -898,7 +898,7 @@ interface StageSixSeven {
  */
 async function armStageSixSeven(
   page: any,
- input: { mode: "content" | "acceptance-only"; expectedMetricValue: string; awaitPublicationTrigger?: boolean }
+ input: { mode: "content" | "acceptance-only"; expectedMetricValue: string; awaitPublicationTrigger?: boolean; awaitExpectedRevision?: boolean }
 ): Promise<void> {
   const previousSeq = await page.evaluate("window.__dockermapBenchHelpers.currentAcceptedSeq()");
   await page.evaluate(
@@ -908,7 +908,8 @@ async function armStageSixSeven(
       limit: 60_000,
  metricLabel: HomeMetricLabel,
  expectedMetricValue: input.expectedMetricValue,
- awaitPublicationTrigger: Boolean(input.awaitPublicationTrigger)
+ awaitPublicationTrigger: Boolean(input.awaitPublicationTrigger),
+ awaitExpectedRevision: Boolean(input.awaitExpectedRevision)
     })}`
   );
   await page.evaluate("window.__dockermapBenchHelpers.armModelAcceptance(window.__benchInput)");
@@ -1465,7 +1466,12 @@ async function main(): Promise<void> {
  const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
  await benchPage.evaluate(`window.__dockermapBenchRenderDelayMs = ${TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS}`);
  try {
- await armStageSixSeven(benchPage, { mode: "content", expectedMetricValue, awaitPublicationTrigger: true });
+ await armStageSixSeven(benchPage, {
+ mode: "content",
+ expectedMetricValue,
+ awaitPublicationTrigger: true,
+ awaitExpectedRevision: true
+ });
  // The checkpoint is immediately before the POST. An acceptance before this
  // point is background churn and cannot be attributed to this control sample.
  const trigger = await markStageSixSevenPublicationTriggered(benchPage);
