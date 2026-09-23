@@ -69,6 +69,6 @@ new RegExp(`"${fixture}"`),
 }
 const docs = read("docs/testing/TIME_TO_ANSWER_EVIDENCE.md");
 assert.match(docs, /## Free-running provider-driven cells/);
-assert.match(docs, /real API-SSE poller path/);
-assert.match(docs, /excluded from the phase-normalized scalar/);
+assert.match(docs, /real\s+\*\*API-SSE poller path\*\*/);
+assert.match(docs, /excluded from the\s+\*\*phase-normalized scalar\*\*/);
 });
