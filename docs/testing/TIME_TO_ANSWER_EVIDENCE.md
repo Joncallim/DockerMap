@@ -27,7 +27,10 @@ the math. It contains no timings. It defines:
 - **raw-sample validation**: 15 warmed samples in each of 3 complete controlled
   runs, nearest-rank p95 per run, median of the three run p95 values;
 - the **promotion gate** `max(baseline × 1.25, baseline + 2 ms)`, compared only
-  between environments that match on every pinned field except `sourceRevision`.
+  between environments that match on every pinned field except `sourceRevision`
+  (which differs by design) and `dockerRevision` (recorded but informational: no
+  measured stage exercises the host Docker daemon). The other 15 fields must
+  match.
 
 Because summaries are recomputed from the raw samples at review time, a supplied
 summary cannot influence a result. An artifact with a fabricated summary field,
@@ -41,7 +44,7 @@ metadata field is rejected — see `timeToAnswerEvidence.test.ts`.
 | --- | --- | --- |
 | backend-collection | daemonStartToListenerMs, listenerToFirstDockerModelMs, dockerObservationMs, composeEnrichmentMs | how long DockerMap takes to have an authoritative answer |
 | transport-notification | publicationToNodeObservationMs | how long a published revision takes to become visible |
-| browser-model | notificationToCoherentModelMs, buildModelMs, findingsDerivationMs | how long the browser needs to turn it into a model |
+| browser-model | notificationToCoherentModelMs, buildModelMs | how long the browser needs to turn it into a model |
 | rendering | coherentModelToUsefulRenderMs, legacyTopologyLayoutMs, productionBundleMs | how long the operator waits for something useful on screen |
 | search | commandQueryMs | how long a direct question takes to answer |
 
@@ -175,6 +178,79 @@ is what stages 8 and 10 run against, and it imports the real production modules;
 `tests/perf/browserProbe.js` is test-only instrumentation loaded before product
 code. `.bench-dist` is generated and gitignored.
 
+## Cold-start versus warmed-repeated stages
+
+The distinction is load-bearing, not descriptive, and the contract encodes it in
+`TIME_TO_ANSWER_STAGE_KIND`:
+
+- **cold-start** — `daemonStartToListenerMs`, `listenerToFirstDockerModelMs`. The
+  first observation *is* the measurement, so nothing is discarded.
+- **warmed-repeated** — every other stage. A repeated steady-state operation. The
+  daemon's first-ever refresh runs before its listener binds, so its first pass
+  through the collection path is a cold start. The capture therefore collects
+  **`samples + 1` observations** for the warmed daemon stages and discards
+  **exactly one** — never an arbitrary slow sample — via `splitWarmedObservations`,
+  which refuses a window shorter than `samples + 1`. With 15 recorded samples,
+  nearest-rank p95 *is* the maximum, so a single cold observation would otherwise
+  become the published number.
+- **scenario cells** — a warmed stage measured on a scenario fixture
+  (`isScenarioCell`). They are declared in the closed matrix only for the fixtures
+  that construct the scenario.
+
+The discarded warm-up value is retained separately in the raw audit trail
+(`warmUpObservations`, keyed `fixture|stage`) and never enters a recorded sample,
+a summary, or a promotion comparison.
+
+## Capture discipline
+
+The capture refuses to start from a dirty worktree and refuses to run when the
+metadata's `sourceRevision` or `harnessRevision` does not match the checked-out
+commits, so a baseline is always reproducible from a **committed** revision:
+
+- `sourceRevision` — the product revision the numbers describe.
+- `harnessRevision` — the last commit touching `tests/perf` and the performance
+  contract, i.e. the harness that produced them.
+
+Reproducing a recorded baseline therefore requires checking out the revision the
+artifact names; re-emitting metadata at a different commit produces a different
+artifact by design.
+
+## Daemon binary provenance
+
+Stages 1-5 and 9 all come from the release daemon executable, so it is pinned:
+
+```
+cargo build --release --locked -p dockermap-daemon   # canonical build
+sha256(crates/target/release/dockermap-daemon)       # daemonBinarySha256
+```
+
+`emit-metadata` performs that build and records `daemonBinarySha256`,
+`daemonBinaryBuild` and `cargoRevision`. The capture verifies the digest
+**before** the run and **again after** it, and fails closed on mismatch or on a
+substituted executable (`assertDaemonBinaryProvenance`). This is not a claim that
+Rust builds are bit-for-bit reproducible across machines; it proves which binary
+*this* capture executed.
+
+## The SSE polling mechanism is unchanged
+
+The baseline measures today's real publication→observation mechanism **including
+its poll wait**. The default `DOCKERMAP_SSE_INTERVAL_MS` is 2000 ms, derived from
+the API's own source and passed to the API explicitly so the recorded pin cannot
+drift from the interval that ran. The harness jitters the *trigger* per sample so
+the samples describe the poll-wait distribution instead of one fixed phase offset
+between the daemon's 2 s refresh loop and the API's 2 s poller. That de-correlates
+the **measurement only**; the production cadence is deliberately unchanged, and
+removing this floor is #337's work, not this issue's.
+
+`publicationToNodeObservationMs` is therefore **not** a generic network-latency
+figure and must never be described as one.
+
+## Superseded captures
+
+Baseline 1 and baseline 2 are **REJECTED historical attempts** and are not the
+authority for anything. Their numbers may be cited only to explain methodology
+changes, never as current measurements and never for promotion gating.
+
 ## Current state of this slice
 
 Complete and enforced by tests:
@@ -193,7 +269,7 @@ Complete and enforced by tests:
 - `npm run test:perf` wired into `npm run check:js`.
 
 The corrected baseline (capture 2) and its interpretation are in
-`docs/testing/TIME_TO_ANSWER_BASELINE.md`: 46 cells, 3 controlled runs × 15
+`docs/testing/TIME_TO_ANSWER_BASELINE.md`: 44 cells, 3 controlled runs × 15
 warmed samples, captured from committed revision `0714c87a` with both the product
 and harness revisions recorded. Baseline 1 was rejected in review — it measured
 Cmd-K palette-open instead of query-to-results, phase-locked stage 5 to the

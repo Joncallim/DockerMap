@@ -1,4 +1,26 @@
-# Time-to-answer baseline 2 — measured results
+# Time-to-answer baseline — REJECTED historical attempts
+
+**This document is not the authority for anything.** Baseline 1 (the first
+capture) and baseline 2 (the second) were both rejected in independent review and
+are retained only to explain methodology changes. Their numbers must never be
+cited as current measurements and must never be used for promotion gating.
+
+Baseline 1 was rejected because it measured Cmd-K palette-open instead of
+query-to-results, phase-locked its stage-5 samples to the harness's own startup
+sequence, mixed cold-start probe daemons into stages documented as warmed, and was
+produced by an uncommitted harness.
+
+Baseline 2 fixed those and was rejected for: a cold first observation still inside
+the "warmed" window (so the published stage-3/4 p95 *was* the cold sample), an
+unpinned daemon binary, and a stage 7 that was element-for-element identical to
+stage 6 in all 180 samples.
+
+The numbers below are baseline 2 as measured, kept for methodology comparison
+only. A replacement baseline captured from a committed revision, with the
+cold/warm split, binary provenance and independent stage-6/7 clocks, is the
+authority once it exists and passes the promotion gate.
+
+---
 
 This is the corrected controlled baseline for issue #335. Every number below was
 **recomputed from the stored raw samples** with
@@ -18,7 +40,7 @@ it was produced by an uncommitted harness so no commit could re-derive it.
   committed before the capture, and the capture refuses a dirty worktree)
 - fixture revision: `dockermap-v1/time-to-answer-fixtures-1`
 - artifact sha256: `38e0c650121f81ec69c2dd1ddc18191c98c091836652bd8ecd7570fc0d006197`
-- capture: 3 controlled runs × 15 warmed samples for every declared cell, **46 cells**
+- capture: 3 controlled runs × 15 warmed samples for every declared cell, **44 cells**
 - capture duration: 26.2 min on the pinned runner
 - runner: `linux-x86_64-dedicated` / `cpus-16vcpu` / `ubuntu-26.04` / kernel
   `7.0.0-31-generic` / Node `22.23.2` / rustc `1.88.0` / Chromium `1.61.0` (flags
