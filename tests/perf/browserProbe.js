@@ -21,6 +21,7 @@
   const bench = {
     notifyAt: 0,
     notifyRevision: "",
+    notifyLog: [],
     streamUrl: "",
     opens: 0,
     errors: 0,
@@ -53,9 +54,15 @@
           } catch (error) {
             revision = "";
           }
-          if (revision) {
+          // Timestamp every NEW notified revision: a publication can advance more
+          // than once per sample (provider state and inventory can both move), so
+          // the notification a later acceptance belongs to must be recoverable
+          // rather than assumed to be the latest one.
+          if (revision && revision !== bench.notifyRevision) {
             bench.notifyAt = performance.now();
             bench.notifyRevision = revision;
+            bench.notifyLog.push({ at: bench.notifyAt, revision });
+            if (bench.notifyLog.length > 256) bench.notifyLog.splice(0, 128);
           }
         };
         source.addEventListener("open", () => {
@@ -187,7 +194,7 @@
      */
     armModelAcceptance(input) {
       const arm = {
-        previous: String(input.previous || ""),
+        previousSeq: Number(input.previousSeq) || 0,
         limit: Number(input.limit) || 60000,
         metricLabel: String(input.metricLabel || "Offline"),
         expectedMetricValue: String(input.expectedMetricValue || ""),
@@ -199,24 +206,33 @@
       };
       arm.task = (async () => {
         const deadline = arm.startedAt + arm.limit;
+        // Wait for the NEXT accepted coherent model, identified by its monotonic
+        // sequence number. Matching on "revision differs from the last one seen"
+        // would select a stale event whenever a publication lands between arming
+        // and the trigger.
         let event = null;
         while (performance.now() < deadline && !event) {
-          event = acceptanceSink().filter((entry) => entry.revision && entry.revision !== arm.previous).pop() || null;
+          event = acceptanceSink().find((entry) => entry.revision && entry.seq > arm.previousSeq) || null;
           if (!event) await frame();
         }
         if (!event) throw new Error("no accepted coherent model was observed (" + diagnostic() + ")");
         const acceptedAt = event.at;
         const revision = event.revision;
-        if (!bench.notifyRevision || bench.notifyRevision !== revision) {
+        // Stage 6 starts at the notification of THAT revision, which is not
+        // necessarily the latest notification the page has seen.
+        const notified = bench.notifyLog.filter((entry) => entry.revision === revision).pop();
+        if (!notified) {
           throw new Error(
             "the accepted revision " +
               revision +
-              " is not the revision the browser was notified of (" +
+              " was never notified to this browser (" +
+              diagnostic() +
+              "; latest=" +
               bench.notifyRevision +
-              "); stage 6 cannot start at a notification that does not belong to the accepted model"
+              ")"
           );
         }
-        const notifyAt = bench.notifyAt;
+        const notifyAt = notified.at;
 
         // Stage 7: the expected Home content for the newly accepted model, in a
         // commit that carries that revision's stamp and is strictly later than
@@ -253,7 +269,9 @@
           notificationToCoherentModelMs: acceptedAt - notifyAt,
           coherentModelToUsefulRenderMs: presentedAt - acceptedAt,
           acceptedRevision: revision,
-          notifiedRevision: bench.notifyRevision,
+          acceptedSequence: event.seq,
+          notifiedRevision: revision,
+          latestNotifiedRevision: bench.notifyRevision,
           renderCommitMs: renderCommitAt - acceptedAt,
           presentationFrameMs: presentedAt - renderCommitAt,
           metricLabel: arm.metricLabel,
@@ -353,6 +371,11 @@
     currentAcceptedRevision() {
       const entries = acceptanceSink().filter((entry) => entry.revision);
       return entries.length ? entries[entries.length - 1].revision : "";
+    },
+
+    currentAcceptedSeq() {
+      const entries = acceptanceSink().filter((entry) => entry.revision);
+      return entries.length ? entries[entries.length - 1].seq : 0;
     },
 
     acceptedEventCount() {

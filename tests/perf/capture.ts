@@ -25,7 +25,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import {
@@ -89,6 +89,12 @@ const FixtureTopologyQueryToken = "fixture-service-0";
  * that belongs to a different revision — cannot satisfy it.
  */
 const HomeMetricLabel = "Offline";
+
+/**
+ * How long the API observation stream keeps listening after the first change, so
+ * that a second publication belonging to the same sample is attributed to it too.
+ */
+const OBSERVED_REVISION_WINDOW_MS = 200;
 
 if (!metadataPath || !outputPath) {
   throw new Error(
@@ -213,6 +219,7 @@ function preserveRaw(reason: string): void {
     ? join(rawDir, "time-to-answer-raw.json")
     : `${outputPath}.raw.json`;
   try {
+    mkdirSync(dirname(destination), { recursive: true });
     writeFileSync(destination, JSON.stringify({ reason, raw }, null, 2));
     process.stderr.write(`[capture] preserved raw samples at ${destination}\n`);
   } catch (error) {
@@ -416,11 +423,11 @@ async function measurePublicationToNodeObservation(
   webOrigin: string,
   previousRevision: string,
   timeoutMs = 45_000
-): Promise<{ ms: number; revision: string }> {
+): Promise<{ ms: number; revision: string; revisions: string[] }> {
   const healthUrl = `http://127.0.0.1:${daemonPort}/daemon/health`;
 
   let observedAt = 0;
-  let observedRevision = "";
+  const observedRevisions: string[] = [];
   const controller = new AbortController();
   const stream = await fetch(`http://127.0.0.1:${apiPort}/api/events/stream`, {
     headers: { accept: "text/event-stream", origin: webOrigin },
@@ -442,9 +449,13 @@ async function measurePublicationToNodeObservation(
           if (!dataLine) continue;
           try {
             const payload = JSON.parse(dataLine.slice(5).trim()) as { modelRevision?: string };
-            if (payload.modelRevision && payload.modelRevision !== previousRevision && !observedAt) {
-              observedAt = nowMs();
-              observedRevision = payload.modelRevision;
+            if (payload.modelRevision && payload.modelRevision !== previousRevision) {
+              // A single fixture change can produce more than one publication (the
+              // inventory and provider state can both move), so every revision the
+              // API observed for this sample is kept: the browser's accepted
+              // revision must be one of them.
+              if (!observedRevisions.includes(payload.modelRevision)) observedRevisions.push(payload.modelRevision);
+              if (!observedAt) observedAt = nowMs();
             }
           } catch {
             // keepalive or non-JSON frame
@@ -468,12 +479,21 @@ async function measurePublicationToNodeObservation(
     await sleep(2);
   }
   while (!observedAt && Date.now() < deadline) await sleep(5);
+  // Keep listening briefly so a second publication belonging to the same sample is
+  // also attributed to it, then close the stream. This does not move the recorded
+  // number: `observedAt` stays the instant the first change was seen.
+  const collectUntil = Date.now() + OBSERVED_REVISION_WINDOW_MS;
+  while (Date.now() < collectUntil) await sleep(10);
   controller.abort();
   await reading;
   if (!publishAt || !observedAt) {
     throw new Error("did not observe a new revision through both the daemon and the API stream");
   }
-  return { ms: Math.max(0, observedAt - publishAt), revision: observedRevision };
+  return {
+    ms: Math.max(0, observedAt - publishAt),
+    revision: observedRevisions[0]!,
+    revisions: observedRevisions
+  };
 }
 
 interface StageSixSeven {
@@ -482,7 +502,9 @@ interface StageSixSeven {
   /** Stage 7: coherent model accepted -> its Home content rendered + one frame. */
   coherentModelToUsefulRenderMs: number | null;
   acceptedRevision: string;
+  acceptedSequence: number;
   notifiedRevision: string;
+  latestNotifiedRevision: string;
   renderCommitMs: number;
   presentationFrameMs: number;
   metricLabel: string;
@@ -495,13 +517,16 @@ interface StageSixSeven {
 /**
  * Arm stages 6/7 BEFORE the publication change is triggered. Arming records the
  * pre-change Home metric value (so "the DOM changed" is measured rather than
- * assumed) and lets the probe wait for the acceptance event that belongs to the
- * revision the harness is about to trigger.
+ * assumed) and lets the probe wait for the NEXT accepted revision, identified by
+ * its monotonic sequence number rather than by "any revision other than the last
+ * one", so a publication that lands between arming and the trigger cannot be
+ * mistaken for the sample's own.
  */
-async function armStageSixSeven(page: any, input: { previous: string; expectedMetricValue: string }): Promise<void> {
+async function armStageSixSeven(page: any, input: { expectedMetricValue: string }): Promise<void> {
+  const previousSeq = await page.evaluate("window.__dockermapBenchHelpers.currentAcceptedSeq()");
   await page.evaluate(
     `window.__benchInput = ${JSON.stringify({
-      previous: input.previous,
+      previousSeq,
       limit: 60_000,
       metricLabel: HomeMetricLabel,
       expectedMetricValue: input.expectedMetricValue
@@ -797,10 +822,7 @@ async function main(): Promise<void> {
               const beforeTrigger = await fetchJson(healthUrl(daemonPort), 5_000);
               const previousRevision = (beforeTrigger?.modelRevision as string | undefined) ?? "";
               if (needsStageSix) {
-                await armStageSixSeven(benchPage, {
-                  previous: await benchPage.evaluate("window.__dockermapBenchHelpers.currentAcceptedRevision()"),
-                  expectedMetricValue
-                });
+                await armStageSixSeven(benchPage, { expectedMetricValue });
               }
               // De-correlate the trigger from the two fixed 2 s cycles (the
               // daemon's refresh loop and the API's poller). Without this the
@@ -828,13 +850,14 @@ async function main(): Promise<void> {
                 if (typeof measured.coherentModelToUsefulRenderMs === "number") {
                   usefulSamples.push(measured.coherentModelToUsefulRenderMs);
                 }
-                // Chain of custody: the revision the harness observed through the
-                // API must be the revision the browser accepted and rendered. A
-                // mismatch fails the capture rather than recording a number whose
-                // origin is unknown.
-                if (observed && measured.acceptedRevision !== observed.revision) {
+                // Chain of custody: the revision the browser accepted must be one
+                // the harness independently observed through the live API stream for
+                // THIS sample. A mismatch fails the capture rather than recording a
+                // number whose origin is unknown.
+                if (observed && !observed.revisions.includes(measured.acceptedRevision)) {
                   throw new Error(
-                    `the browser accepted revision ${measured.acceptedRevision} but the API observed ${observed.revision}`
+                    `the browser accepted revision ${measured.acceptedRevision}, which the API never observed for this sample ` +
+                      `(observed: ${observed.revisions.join(", ") || "none"})`
                   );
                 }
                 if (independencePair) {
