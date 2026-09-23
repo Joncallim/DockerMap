@@ -1639,11 +1639,12 @@ async function main(): Promise<void> {
   } catch (error) {
     preserveRaw(String(error));
     throw error;
-  } finally {
-    rmSync(workRoot, { recursive: true, force: true });
-  }
+ } finally {
+   rmSync(workRoot, { recursive: true, force: true });
+ }
+}
 
-  /* --- Harness evidence ---------------------------------------------------
+/* --- Harness evidence ---------------------------------------------------
    * Two things the closed evidence schema deliberately does not carry, written
    * beside the artifact so a reviewer can audit them without trusting a summary:
    *
