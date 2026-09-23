@@ -235,11 +235,11 @@ before validation:
 
 The verdict, the per-run sample sets and a per-sample audit trail (accepted
 revision, notified revision, render commit offset, metric before/after) are
-written beside the artifact as `<output>.stage-seam.json`. The closed evidence
-schema is unchanged: the control is harness evidence, not artifact content. The
-same rule is unit-tested (`timeToAnswerIndependence.test.ts`), including the RED
-cases "the delayed render does not move stage 7" and "stage 6 moves with the
-delayed presentation".
+written beside the artifact in `<output>.harness-evidence.json`. The closed
+evidence schema is unchanged: the control is harness evidence, not artifact
+content. The same rule is unit-tested (`timeToAnswerIndependence.test.ts`),
+including the RED cases "the delayed render does not move stage 7" and "stage 6
+moves with the delayed presentation".
 
 ## Running the benchmark
 
@@ -282,8 +282,21 @@ stages 6 and 7 run against the benchmark-mode application build
 (`tests/perf/benchAppVite.config.mjs`); stages 11 and 12 run against the ordinary
 production build. `tests/perf/browserProbe.js` is test-only instrumentation loaded
 before product code. `.bench-dist` and `.bench-app-dist` are generated and
-gitignored. Every capture also writes `<output>.stage-seam.json` (the stage-6/7
-independence evidence); it is not part of the closed artifact schema.
+gitignored. Every capture also writes `<output>.harness-evidence.json`, which is
+not part of the closed artifact schema and carries:
+
+- the stage-6/7 independence control (verdict, per-run sample sets, and a
+  per-sample audit of accepted revision, notification, skipped acceptances, render
+  commit offset, frame confirmation and metric before/after);
+- warm-up retention: for every daemon-side warmed cell the **complete**
+  `samples + 1` observation window in the order the daemon produced it, with the
+  discarded warm-up at index 0 and the recorded samples proven equal to the run
+  stored in the artifact;
+- the retained `warmUpObservations` map.
+
+The capture refuses to emit an artifact when a warmed window is missing, shorter
+than `samples + 1`, discards anything other than the first observation, or does not
+match the artifact — so a slow warm-up value cannot be hidden.
 
 ## Cold-start versus warmed-repeated stages
 

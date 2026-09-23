@@ -183,6 +183,13 @@ const independencePairs: Array<{
 }> = [];
 /** Per-sample stage 6/7 audit trail: accepted revision, notification, commits. */
 const stageSixSevenAudit: Array<Record<string, unknown>> = [];
+/**
+ * The complete warmed observation window per `fixture|stage`, in the order the
+ * daemon produced it (`samples + 1` values). The discarded warm-up is index 0, so
+ * the retention rule is verifiable from the raw series instead of being asserted
+ * only by the code that applied it.
+ */
+const warmedObservationWindows: Record<string, number[]> = {};
 const MATRIX = new Set(TIME_TO_ANSWER_MATRIX.map((cell) => `${cell.fixture}|${cell.stage}`));
 /** A cell only exists if the closed contract declares it for this fixture. */
 const hasStage = (fixture: string, stage: string) => MATRIX.has(`${fixture}|${stage}`);
@@ -725,6 +732,8 @@ async function main(): Promise<void> {
               // raw audit trail.
               const { warmUp, recorded } = splitWarmedObservations(benchSamples[key], samples);
               warmUpObservations[`${plan.name}|${key}`] = warmUp;
+              warmedObservationWindows[`${plan.name}|${key}|run${runIndex}`] =
+                benchSamples[key].slice(0, samples + 1);
               record(plan.name, key, recorded);
             }
           }
@@ -1040,32 +1049,104 @@ async function main(): Promise<void> {
     rmSync(workRoot, { recursive: true, force: true });
   }
 
-  /* --- Stage 6/7 independence control ------------------------------------
-   * Enforced BEFORE the artifact is assembled. A seam that cannot demonstrate
-   * that stage 6 stays put under an artificial presentation delay injected AFTER
-   * acceptance — while stage 7 absorbs that delay — is not measuring what the
-   * contract says it measures, and no baseline may be produced from it. The
-   * evidence is written beside the artifact so it cannot be confused with the
-   * closed evidence schema.
+  /* --- Harness evidence ---------------------------------------------------
+   * Two things the closed evidence schema deliberately does not carry, written
+   * beside the artifact so a reviewer can audit them without trusting a summary:
+   *
+   * 1. the stage-6/7 independence control (verdict + per-run sample sets +
+   *    per-sample acceptance audit);
+   * 2. warm-up retention: for every warmed cell, the COMPLETE observation window
+   *    (`samples + 1`) in the order the daemon produced it, with the discarded
+   *    warm-up at index 0 and the recorded samples proven equal to the artifact's
+   *    stored run. A hidden slow warm-up value cannot survive this.
+   *
+   * A seam that cannot demonstrate independence, or a warmed window that does not
+   * match the artifact, invalidates the capture: no baseline is produced.
    */
-  const stageSeamPath = `${outputPath}.stage-seam.json`;
-  const stageSeam: {
-    delayMs: number;
-    samplesPerFixture: number;
-    fixtures: Record<string, unknown>;
-    audit: Array<Record<string, unknown>>;
-    error?: string;
+  const harnessEvidencePath = `${outputPath}.harness-evidence.json`;
+  const warmUpRetention = TIME_TO_ANSWER_MATRIX.flatMap(({ fixture, stage }) => {
+    const runs = raw[fixture]?.[stage];
+    if (!runs || runs.length === 0) return [];
+    const kind = TIME_TO_ANSWER_STAGE_KIND[stage] ?? "warmed-repeated";
+    return runs.map((recorded, run) => {
+      const window = warmedObservationWindows[`${fixture}|${stage}|run${run}`] ?? null;
+      return {
+        fixture,
+        stage,
+        run,
+        kind,
+        recordedSampleCount: recorded.length,
+        observationWindow: window,
+        observationCount: window ? window.length : recorded.length,
+        warmUpIndex: window ? 0 : null,
+        warmUpObservationMs: window ? window[0] : null,
+        warmUpInRecordedWindow: window ? window.slice(1, recorded.length + 1) : null,
+        recordedMatchesArtifact: window
+          ? JSON.stringify(window.slice(1, recorded.length + 1)) === JSON.stringify(recorded)
+          : true
+      };
+    });
+  });
+  const harnessEvidence: {
+    stageSeam: {
+      delayMs: number;
+      samplesPerFixture: number;
+      fixtures: Record<string, unknown>;
+      audit: Array<Record<string, unknown>>;
+      error?: string;
+    };
+    warmUpObservations: Record<string, number>;
+    warmUpRetention: typeof warmUpRetention;
   } = {
-    delayMs: TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
-    samplesPerFixture: TIME_TO_ANSWER_INDEPENDENCE_SAMPLES,
-    fixtures: {},
-    audit: stageSixSevenAudit
+    stageSeam: {
+      delayMs: TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
+      samplesPerFixture: TIME_TO_ANSWER_INDEPENDENCE_SAMPLES,
+      fixtures: {},
+      audit: stageSixSevenAudit
+    },
+    warmUpObservations,
+    warmUpRetention
+  };
+  const writeHarnessEvidence = (): void => {
+    writeFileSync(harnessEvidencePath, `${JSON.stringify(harnessEvidence, null, 2)}\n`);
   };
   const stageSeamByFixture = new Map<string, typeof independencePairs>();
   for (const pair of independencePairs) {
     stageSeamByFixture.set(pair.fixture, [...(stageSeamByFixture.get(pair.fixture) ?? []), pair]);
   }
   try {
+    // Warm-up retention, audited structurally rather than by value coincidence:
+    // for every daemon-side warmed stage the complete observation window must be
+    // retained, index 0 must be the discarded warm-up, and the recorded samples
+    // must be exactly that window minus the warm-up. Stages measured elsewhere
+    // (browser and probe stages) keep their own warm-up inside the probe.
+    for (const entry of warmUpRetention) {
+      if (entry.recordedSampleCount !== samples) {
+        throw new Error(
+          `stage ${entry.fixture}|${entry.stage} run ${entry.run} recorded ${entry.recordedSampleCount} samples, expected ${samples}`
+        );
+      }
+      const isDaemonStage = (BENCH_STAGE_KEYS as readonly string[]).includes(entry.stage);
+      if (!isDaemonStage) continue;
+      if (entry.observationWindow === null) {
+        throw new Error(`no observation window was retained for ${entry.fixture}|${entry.stage} run ${entry.run}`);
+      }
+      if (entry.observationCount !== samples + 1) {
+        throw new Error(
+          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run} kept ${entry.observationCount} observations, expected ${samples + 1}`
+        );
+      }
+      if (entry.warmUpIndex !== 0) {
+        throw new Error(
+          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run} discarded observation ${entry.warmUpIndex}, expected the first`
+        );
+      }
+      if (!entry.recordedMatchesArtifact) {
+        throw new Error(
+          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run}: the recorded samples are not the window minus the discarded warm-up`
+        );
+      }
+    }
     const required = TIME_TO_ANSWER_REFERENCE_FIXTURES.filter(
       (fixture) =>
         hasStage(fixture.name, "notificationToCoherentModelMs") &&
@@ -1087,7 +1168,7 @@ async function main(): Promise<void> {
         controlStageSixMs: pairs.flatMap((pair) => pair.controlStageSixMs),
         controlStageSevenMs: pairs.flatMap((pair) => pair.controlStageSevenMs)
       });
-      stageSeam.fixtures[fixture] = { runs: pairs, verdict };
+      harnessEvidence.stageSeam.fixtures[fixture] = { runs: pairs, verdict };
       process.stdout.write(
         `[capture] stage 6/7 control ${fixture}: stage 6 ${verdict.stageSixMedianMs.toFixed(1)} -> ` +
           `${verdict.stageSixControlMedianMs.toFixed(1)} ms; stage 7 ${verdict.stageSevenMedianMs.toFixed(1)} -> ` +
@@ -1095,13 +1176,13 @@ async function main(): Promise<void> {
       );
     }
   } catch (error) {
-    stageSeam.error = String(error);
-    writeFileSync(stageSeamPath, `${JSON.stringify(stageSeam, null, 2)}\n`);
-    preserveRaw(stageSeam.error);
+    harnessEvidence.stageSeam.error = String(error);
+    writeHarnessEvidence();
+    preserveRaw(harnessEvidence.stageSeam.error);
     throw error;
   }
-  writeFileSync(stageSeamPath, `${JSON.stringify(stageSeam, null, 2)}\n`);
-  process.stdout.write(`[capture] stage 6/7 independence evidence at ${stageSeamPath}\n`);
+  writeHarnessEvidence();
+  process.stdout.write(`[capture] harness evidence at ${harnessEvidencePath}\n`);
 
   try {
     const records = TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => ({
