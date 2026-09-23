@@ -538,13 +538,14 @@ interface StageSixSeven {
   acceptedSequence: number;
   notifiedRevision: string;
   latestNotifiedRevision: string;
-  renderCommitMs: number;
-  presentationFrameMs: number;
+  /** Null for acceptance-only cells (no Home repaint is declared for them). */
+  renderCommitMs: number | null;
+  presentationFrameMs: number | null;
   metricLabel: string;
   beforeMetricValue: string | null;
   afterMetricValue: string | null;
-  expectedMetricValue: string;
-  metricChanged: boolean;
+  expectedMetricValue: string | null;
+  metricChanged: boolean | null;
 }
 
 /**
@@ -555,10 +556,14 @@ interface StageSixSeven {
  * one", so a publication that lands between arming and the trigger cannot be
  * mistaken for the sample's own.
  */
-async function armStageSixSeven(page: any, input: { expectedMetricValue: string }): Promise<void> {
+async function armStageSixSeven(
+  page: any,
+  input: { mode: "content" | "acceptance-only"; expectedMetricValue: string }
+): Promise<void> {
   const previousSeq = await page.evaluate("window.__dockermapBenchHelpers.currentAcceptedSeq()");
   await page.evaluate(
     `window.__benchInput = ${JSON.stringify({
+      mode: input.mode,
       previousSeq,
       limit: 60_000,
       metricLabel: HomeMetricLabel,
@@ -864,7 +869,13 @@ async function main(): Promise<void> {
                 ? await startPublicationObservation(daemonPort, apiPort, webOrigin, previousRevision)
                 : null;
               if (needsStageSix) {
-                await armStageSixSeven(benchPage, { expectedMetricValue });
+                await armStageSixSeven(benchPage, {
+                  // Provider-only fixtures publish a revision with no inventory
+                  // change: stage 6 ends at acceptance (no Home repaint exists to
+                  // wait for) and stage 7 is not declared for them.
+                  mode: tracksIndependence ? "content" : "acceptance-only",
+                  expectedMetricValue: tracksIndependence ? expectedMetricValue : ""
+                });
               }
               // De-correlate the trigger from the two fixed 2 s cycles (the
               // daemon's refresh loop and the API's poller). Without this the
@@ -940,10 +951,7 @@ async function main(): Promise<void> {
               const generation = samples + index + 1;
               const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
               await benchPage.evaluate(`window.__dockermapBenchRenderDelayMs = ${TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS}`);
-              await armStageSixSeven(benchPage, {
-                previous: await benchPage.evaluate("window.__dockermapBenchHelpers.currentAcceptedRevision()"),
-                expectedMetricValue
-              });
+              await armStageSixSeven(benchPage, { mode: "content", expectedMetricValue });
               await sleep(Math.random() * pollIntervalMs);
               if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
                 await postUnix(fixtureSocket, `/__fixture/topology-generation/${generation}`);

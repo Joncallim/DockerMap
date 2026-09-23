@@ -193,7 +193,9 @@
      * metric value, so "the DOM changed" is measured rather than assumed.
      */
     armModelAcceptance(input) {
+      const mode = input.mode === "acceptance-only" ? "acceptance-only" : "content";
       const arm = {
+        mode,
         previousSeq: Number(input.previousSeq) || 0,
         limit: Number(input.limit) || 60000,
         metricLabel: String(input.metricLabel || "Offline"),
@@ -206,6 +208,42 @@
       };
       arm.task = (async () => {
         const deadline = arm.startedAt + arm.limit;
+        /*
+         * acceptance-only: fixtures whose published revision carries NO inventory
+         * change (provider state alone moved). Stage 6 is "notification -> coherent
+         * model accepted", which needs no DOM content, and stage 7 is not declared
+         * for them — requiring a Home repaint there would be an empty number.
+         */
+        if (arm.mode === "acceptance-only") {
+          let accepted = null;
+          while (performance.now() < deadline && !accepted) {
+            accepted = acceptanceSink().find((entry) => entry.revision && entry.seq > arm.previousSeq) || null;
+            if (!accepted) await frame();
+          }
+          if (!accepted) throw new Error("no accepted coherent model was observed (" + diagnostic() + ")");
+          const notified = bench.notifyLog.filter((entry) => entry.revision === accepted.revision).pop();
+          if (!notified) {
+            throw new Error(
+              "the accepted revision " + accepted.revision + " was never notified to this browser (" + diagnostic() + ")"
+            );
+          }
+          return {
+            notificationToCoherentModelMs: accepted.at - notified.at,
+            coherentModelToUsefulRenderMs: null,
+            acceptedRevision: accepted.revision,
+            acceptedSequence: accepted.seq,
+            notifiedRevision: accepted.revision,
+            latestNotifiedRevision: bench.notifyRevision,
+            skippedAcceptances: 0,
+            renderCommitMs: null,
+            presentationFrameMs: null,
+            metricLabel: arm.metricLabel,
+            beforeMetricValue: arm.beforeMetricValue,
+            afterMetricValue: readMetric(arm.metricLabel),
+            expectedMetricValue: null,
+            metricChanged: null
+          };
+        }
         // Find the (accepted model, rendered content) pair that belongs to THIS
         // sample: an acceptance after the armed sequence whose render carries that
         // revision's stamp AND the expected Home content for the change the harness

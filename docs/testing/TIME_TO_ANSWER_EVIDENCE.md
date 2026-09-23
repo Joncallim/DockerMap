@@ -173,6 +173,18 @@ inside `useSystemModel`, at the moment the composed model is published. It is
 never inferred from a DOM mutation — baseline 2 was rejected precisely because
 its stage 7 was element-for-element identical to stage 6 in all 180 samples.
 
+Stage 6 has two measurement modes, and which one applies is decided by the closed
+matrix, never by the sample:
+
+- **content mode** — for every fixture that also declares stage 7: the sample ends
+  only when the (accepted model, rendered content) pair that carries the expected
+  Home content for the triggered change is observed, so an intermediate
+  publication that moves no Home metric cannot be mis-attributed to the sample.
+- **acceptance-only mode** — for the two provider-state fixtures, whose published
+  revision deliberately carries no inventory change: stage 6 ends at the
+  acceptance instant, and stage 7 is not declared for them (requiring a Home
+  repaint there would be an empty number).
+
 **Expected content, not just any repaint.** The fixture's generation delta stops
 the first `g` containers, so generation `g` renders exactly `g` offline/attention
 services. Stage 7 requires the Home metric region to repaint with that exact value
