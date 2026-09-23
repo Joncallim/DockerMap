@@ -35,7 +35,14 @@
  */
 
 /** Equal parts the poll interval is divided into; one declared phase per sample per run. */
-export const POLL_PHASE_DIVISIONS = 15;
+/**
+ * Declared divisions of the poll interval. Ten gives a 200 ms grid step, which is
+ * what the mechanism allows: the observation tick is a Node timer that drifts under
+ * load (measured +52 ms at 250 containers), so the step must exceed the achievable
+ * control precision by a margin or neighbouring phases blur together. Ten divisions
+ * still sweep 90% of the interval (latencies 100–1900 ms).
+ */
+export const POLL_PHASE_DIVISIONS = 10;
 
 /**
  * How far an observed sample may sit from its declared phase before the cell is
@@ -43,7 +50,13 @@ export const POLL_PHASE_DIVISIONS = 15;
  * the tolerance keeps adjacent phases distinguishable while absorbing the few
  * milliseconds of publication-grid drift and detection delay.
  */
-export const POLL_PHASE_CONTROL_TOLERANCE_MS = 60;
+/**
+ * Declared control tolerance: how far the observed latency may sit from the intended
+ * one before a controlled sample is rejected as uncontrolled. Half the grid step
+ * (100 ms) is the mathematical limit — anything larger could bucket into a
+ * neighbouring phase — and 90 ms leaves room for the poll timer's real drift.
+ */
+export const POLL_PHASE_CONTROL_TOLERANCE_MS = 90;
 
 /**
  * The observed sweep must span at least this share of the poll interval, and the
@@ -161,12 +174,13 @@ export function intendedLatencyMs(phaseMs: number, intervalMs: number): number {
 
 /** The declared phase for a sample: run `r` sweeps the grid ascending from index 0. */
 export function declaredPhaseIndexForSample(_runIndex: number, sampleIndex: number): number {
-  if (!Number.isInteger(sampleIndex) || sampleIndex < 0 || sampleIndex >= POLL_PHASE_DIVISIONS) {
-    throw new Error(
-      `stage 5 declares exactly ${POLL_PHASE_DIVISIONS} phases, so a sample index must be within them`
-    );
+  if (!Number.isInteger(sampleIndex) || sampleIndex < 0) {
+    throw new Error("a stage-5 sample index must be a non-negative integer");
   }
-  return sampleIndex;
+  // Fifteen recorded samples against ten declared divisions: each run walks the whole
+  // grid and then repeats its first five phases, so across the three controlled runs
+  // every declared phase carries at least three samples.
+  return sampleIndex % POLL_PHASE_DIVISIONS;
 }
 
 /** The declared phase a raw sample must have produced, from its position in its run. */
@@ -405,13 +419,14 @@ export function assertFreeRunningPhaseSamples(
 
 /** Rebuild per-run sample arrays from sweep records, so the shared math can be reused. */
 function groupRunsByPhase(samples: readonly PollPhaseSweep[], intervalMs: number): number[][] {
+  const grid = pollPhaseGridMs(intervalMs);
   const runIndexes = [...new Set(samples.map((sample) => sample.runIndex))].sort((left, right) => left - right);
   return runIndexes.map((runIndex) => {
-    const run = samples
-      .filter((sample) => sample.runIndex === runIndex)
-      .sort((left, right) => left.sampleIndex - right.sampleIndex);
-    return pollPhaseGridMs(intervalMs).map((_phase, phaseIndex) => {
-      const sample = run.find((entry) => entry.sampleIndex === phaseIndex);
+    const run = samples.filter((sample) => sample.runIndex === runIndex);
+    return grid.map((phase, phaseIndex) => {
+      // The sample's own recorded phase decides its slot, so the shared math cannot
+      // silently disagree with the declaration the capture used.
+      const sample = run.find((entry) => Math.abs(entry.declaredPhaseMs - phase) < 1e-6);
       if (!sample) throw new Error(`run ${runIndex} has no stage-5 sample for declared phase ${phaseIndex + 1}`);
       return sample.observedLatencyMs;
     });

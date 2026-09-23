@@ -67,7 +67,6 @@ describe("stage-5 declared phase grid", () => {
   it("divides the poll interval into the declared number of phases", () => {
     const grid = pollPhaseGridMs(INTERVAL);
     expect(grid).toHaveLength(POLL_PHASE_DIVISIONS);
-    expect(grid).toHaveLength(TIME_TO_ANSWER_WARMED_SAMPLES);
     expect([...grid].sort((left, right) => left - right)).toEqual(grid);
     expect(new Set(grid).size).toBe(grid.length);
     // Every phase sits strictly inside the interval: a publication landing exactly
@@ -88,15 +87,29 @@ describe("stage-5 declared phase grid", () => {
     expect(latencies[latencies.length - 1]!).toBeGreaterThan(0);
   });
 
-  it("assigns one declared phase per sample, identical across runs", () => {
-    for (let index = 0; index < POLL_PHASE_DIVISIONS; index += 1) {
+  it("walks the declared grid once per run and repeats it, identically across runs", () => {
+    const grid = pollPhaseGridMs(INTERVAL);
+    for (let index = 0; index < TIME_TO_ANSWER_WARMED_SAMPLES; index += 1) {
       const runZero = declaredPhaseForSample(0, index, INTERVAL);
       expect(declaredPhaseForSample(1, index, INTERVAL)).toBe(runZero);
       expect(declaredPhaseForSample(2, index, INTERVAL)).toBe(runZero);
-      expect(runZero).toBe(pollPhaseGridMs(INTERVAL)[index]);
+      // Fifteen samples against ten divisions: each run covers the whole grid and then
+      // repeats its opening phases, so no phase is left with a single sample.
+      expect(runZero).toBe(grid[index % POLL_PHASE_DIVISIONS]);
     }
-    expect(() => declaredPhaseForSample(0, POLL_PHASE_DIVISIONS, INTERVAL)).toThrow();
+    const coverage = new Map<number, number>();
+    for (let run = 0; run < 3; run += 1) {
+      for (let index = 0; index < TIME_TO_ANSWER_WARMED_SAMPLES; index += 1) {
+        const phase = declaredPhaseForSample(run, index, INTERVAL);
+        coverage.set(phase, (coverage.get(phase) ?? 0) + 1);
+      }
+    }
+    expect(coverage.size).toBe(POLL_PHASE_DIVISIONS);
+    expect(Math.min(...coverage.values())).toBeGreaterThanOrEqual(
+      POLL_PHASE_MIN_SAMPLES_PER_PHASE
+    );
     expect(() => declaredPhaseForSample(0, -1, INTERVAL)).toThrow();
+    expect(() => declaredPhaseForSample(0, 1.5, INTERVAL)).toThrow();
   });
 
   it("buckets an observed latency to the nearest declared latency", () => {
