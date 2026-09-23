@@ -71,9 +71,8 @@ test("stage-7 control ignores a revision accepted between arm and trigger", asyn
     textChanged: true,
     revision: "background",
     storyValue: "16"
-  });
+ });
  helpers.markModelPublicationTriggered();
- helpers.setExpectedModelRevision("triggered");
  // A later, unrelated revision may carry the same Home content. The control
  // must time the coherent publication the fixture/API pair identified, not
  // merely any post-trigger content match.
@@ -92,6 +91,7 @@ test("stage-7 control ignores a revision accepted between arm and trigger", asyn
  // candidate completed the probe; the gate must retain it pending the
  // fixture/API pair's coherent-revision observation.
  await new Promise((resolve) => setImmediate(resolve));
+ helpers.setExpectedModelRevision("triggered");
  window.__dockermapBench.notifyLog.push({ at: 3, revision: "triggered" });
  window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 4, at: 5, revision: "triggered" });
  window.__dockermapBenchAcceptanceSink.push({ seq: 3, at: 6, revision: "triggered" });
