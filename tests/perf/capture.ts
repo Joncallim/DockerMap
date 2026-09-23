@@ -22,7 +22,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -31,10 +31,13 @@ import { chromium } from "playwright";
 import {
   TIME_TO_ANSWER_BASELINE,
   TIME_TO_ANSWER_CONTROLLED_RUNS,
+  TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
+  TIME_TO_ANSWER_INDEPENDENCE_SAMPLES,
   TIME_TO_ANSWER_MATRIX,
   TIME_TO_ANSWER_REFERENCE_FIXTURES,
   TIME_TO_ANSWER_STAGES,
   TIME_TO_ANSWER_WARMED_SAMPLES,
+  assertStageSixSevenIndependence,
   assertTimeToAnswerEnvironment,
   assertTimeToAnswerPromotion,
   assertDaemonBinaryProvenance,
@@ -42,7 +45,7 @@ import {
   TIME_TO_ANSWER_STAGE_KIND,
   validateTimeToAnswerEvidence
 } from "../../apps/web/src/lib/performance/timeToAnswerEvidence";
-import { FIXTURE_REVISION, buildSlowComposeProject } from "./dockerFixtureTopology.mjs";
+import { FIXTURE_REVISION, buildSlowComposeProject, expectedExitedCount } from "./dockerFixtureTopology.mjs";
 import { reservePort, startStaticServer } from "./staticServer.mjs";
 
 const REPO_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -78,6 +81,14 @@ if (onlyFixtures && process.env.DOCKERMAP_BENCH_DEBUG !== "1") {
  * The poll interval is derived after the environment is parsed, below.
  */
 const FixtureTopologyQueryToken = "fixture-service-0";
+
+/**
+ * The Home metric the stage-7 "expected content" check asserts. The fixture's
+ * generation delta changes exactly this metric (generation `g` stops the first
+ * `g` containers), so the check is discriminating: a stale render — or a render
+ * that belongs to a different revision — cannot satisfy it.
+ */
+const HomeMetricLabel = "Offline";
 
 if (!metadataPath || !outputPath) {
   throw new Error(
@@ -158,6 +169,20 @@ const plans = TIME_TO_ANSWER_REFERENCE_FIXTURES.filter(
 }));
 
 const raw: RawSamples = {};
+/**
+ * Stage 6/7 independence-control evidence. Harness-only: it is written beside the
+ * artifact (never inside it), so the closed evidence schema is unchanged.
+ */
+const independencePairs: Array<{
+  fixture: string;
+  run: number;
+  normalStageSixMs: number[];
+  normalStageSevenMs: number[];
+  controlStageSixMs: number[];
+  controlStageSevenMs: number[];
+}> = [];
+/** Per-sample stage 6/7 audit trail: accepted revision, notification, commits. */
+const stageSixSevenAudit: Array<Record<string, unknown>> = [];
 const MATRIX = new Set(TIME_TO_ANSWER_MATRIX.map((cell) => `${cell.fixture}|${cell.stage}`));
 /** A cell only exists if the closed contract declares it for this fixture. */
 const hasStage = (fixture: string, stage: string) => MATRIX.has(`${fixture}|${stage}`);
@@ -258,6 +283,53 @@ async function waitForJson(url: string, predicate: (value: any) => boolean, time
   throw new Error(`timed out waiting for ${url}`);
 }
 
+/**
+ * The seam's in-page sink identifier. Its presence is what proves an artifact
+ * carries the acceptance seam; its absence is what proves the shipped product
+ * does not.
+ */
+const SEAM_SINK_IDENTIFIER = "__dockermapBenchAcceptanceSink";
+
+function containsSeamIdentifier(directory: string): boolean {
+  let found = false;
+  const visit = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else if (
+        /\.(js|mjs|html)$/.test(entry.name) &&
+        readFileSync(full, "utf8").includes(SEAM_SINK_IDENTIFIER)
+      ) {
+        found = true;
+      }
+    }
+  };
+  visit(directory);
+  return found;
+}
+
+/**
+ * Bind THIS capture to the artifacts it will serve, before anything is measured:
+ * the benchmark-mode application build must carry the acceptance seam (otherwise
+ * stage 6 would be measuring something other than the application's acceptance)
+ * and the shipped production build must not. The same property is checked in CI
+ * by tests/perf/productionIsolation.test.mjs; here it guards the running capture.
+ */
+function assertBuildIsolation(): void {
+  const product = join(REPO_ROOT, "apps/web/dist");
+  const benchmark = join(REPO_ROOT, "tests/perf/.bench-app-dist");
+  if (containsSeamIdentifier(product)) {
+    throw new Error(
+      "the production web build contains the benchmark acceptance seam: refusing to capture from a build whose numbers would not describe the shipped product"
+    );
+  }
+  if (!containsSeamIdentifier(benchmark)) {
+    throw new Error(
+      "the benchmark-mode application build does not contain the acceptance seam: stage 6 would not be the application's coherent-model acceptance"
+    );
+  }
+}
+
 /** POST to a unix-socket HTTP endpoint (fixture daemon control route). */
 function postUnix(socketPath: string, path: string): Promise<string> {
   return new Promise((done, fail) => {
@@ -342,13 +414,13 @@ async function measurePublicationToNodeObservation(
   daemonPort: number,
   apiPort: number,
   webOrigin: string,
+  previousRevision: string,
   timeoutMs = 45_000
-): Promise<number> {
+): Promise<{ ms: number; revision: string }> {
   const healthUrl = `http://127.0.0.1:${daemonPort}/daemon/health`;
-  const start = await waitForJson(healthUrl, (value) => Boolean(value.modelRevision), 30_000);
-  const startRevision = start.modelRevision as string;
 
   let observedAt = 0;
+  let observedRevision = "";
   const controller = new AbortController();
   const stream = await fetch(`http://127.0.0.1:${apiPort}/api/events/stream`, {
     headers: { accept: "text/event-stream", origin: webOrigin },
@@ -370,8 +442,9 @@ async function measurePublicationToNodeObservation(
           if (!dataLine) continue;
           try {
             const payload = JSON.parse(dataLine.slice(5).trim()) as { modelRevision?: string };
-            if (payload.modelRevision && payload.modelRevision !== startRevision && !observedAt) {
+            if (payload.modelRevision && payload.modelRevision !== previousRevision && !observedAt) {
               observedAt = nowMs();
+              observedRevision = payload.modelRevision;
             }
           } catch {
             // keepalive or non-JSON frame
@@ -388,7 +461,7 @@ async function measurePublicationToNodeObservation(
   while (Date.now() < deadline) {
     const health = await fetchJson(healthUrl, 1_000);
     const revision = health?.modelRevision as string | undefined;
-    if (revision && revision !== startRevision) {
+    if (revision && revision !== previousRevision) {
       publishAt = nowMs();
       break;
     }
@@ -400,28 +473,50 @@ async function measurePublicationToNodeObservation(
   if (!publishAt || !observedAt) {
     throw new Error("did not observe a new revision through both the daemon and the API stream");
   }
-  return Math.max(0, observedAt - publishAt);
+  return { ms: Math.max(0, observedAt - publishAt), revision: observedRevision };
 }
 
 interface StageSixSeven {
+  /** Stage 6: browser notification -> the APPLICATION accepted a coherent model. */
   notificationToCoherentModelMs: number;
+  /** Stage 7: coherent model accepted -> its Home content rendered + one frame. */
   coherentModelToUsefulRenderMs: number | null;
+  acceptedRevision: string;
+  notifiedRevision: string;
+  renderCommitMs: number;
+  presentationFrameMs: number;
+  metricLabel: string;
+  beforeMetricValue: string | null;
+  afterMetricValue: string | null;
+  expectedMetricValue: string;
+  metricChanged: boolean;
 }
 
-async function measureModelAcceptance(
-  page: any,
-  initialRevision: string,
-  needHome: boolean,
-  timeoutMs = 60_000
-): Promise<StageSixSeven> {
+/**
+ * Arm stages 6/7 BEFORE the publication change is triggered. Arming records the
+ * pre-change Home metric value (so "the DOM changed" is measured rather than
+ * assumed) and lets the probe wait for the acceptance event that belongs to the
+ * revision the harness is about to trigger.
+ */
+async function armStageSixSeven(page: any, input: { previous: string; expectedMetricValue: string }): Promise<void> {
   await page.evaluate(
-    `window.__benchInput = ${JSON.stringify({ previous: initialRevision, limit: timeoutMs, needHome })}`
+    `window.__benchInput = ${JSON.stringify({
+      previous: input.previous,
+      limit: 60_000,
+      metricLabel: HomeMetricLabel,
+      expectedMetricValue: input.expectedMetricValue
+    })}`
   );
-  const measured = await page.evaluate(
-    "window.__dockermapBenchHelpers.measureModelAcceptance(window.__benchInput.previous, window.__benchInput.limit, window.__benchInput.needHome)"
-  );
+  await page.evaluate("window.__dockermapBenchHelpers.armModelAcceptance(window.__benchInput)");
+  await page.waitForFunction("window.__dockermapBenchHelpers.armed()", undefined, { timeout: 10_000 });
+}
+
+async function awaitModelAcceptance(page: any): Promise<StageSixSeven> {
+  const measured = (await page.evaluate(
+    "window.__dockermapBenchHelpers.awaitModelAcceptance()"
+  )) as StageSixSeven | undefined;
   if (!measured) throw new Error("model acceptance probe returned no measurement");
-  return measured as StageSixSeven;
+  return measured;
 }
 
 async function measureCommandQuery(page: any, preferredToken: string, timeoutMs = 20_000): Promise<number> {
@@ -459,6 +554,13 @@ async function main(): Promise<void> {
     VITE_API_BASE_URL: `http://127.0.0.1:${apiPort}`
   });
   run("npx", ["vite", "build", "--config", "tests/perf/benchVite.config.mjs"]);
+  // Benchmark-MODE application build: the same real app with the acceptance seam
+  // compiled in (see tests/perf/benchAppVite.config.mjs). It is served only to the
+  // page that measures coherent-model acceptance and its independence control.
+  run("npx", ["vite", "build", "--config", "tests/perf/benchAppVite.config.mjs"], {
+    VITE_API_BASE_URL: `http://127.0.0.1:${apiPort}`
+  });
+  assertBuildIsolation();
 
   const browser = await chromium.launch({ args: launchArgs });
   const workRoot = mkdtempSync(join(tmpdir(), "dockermap-bench-"));
@@ -472,6 +574,7 @@ async function main(): Promise<void> {
         const daemonPort = await reservePort();
         const webPort = await reservePort();
         const probePort = await reservePort();
+        const benchAppPort = await reservePort();
         const workdir = join(workRoot, `${plan.name}-${runIndex}`);
         mkdirSync(workdir, { recursive: true });
         const projectRoot = join(workdir, "compose-project");
@@ -485,6 +588,7 @@ async function main(): Promise<void> {
         let apiChild: any = null;
         let webServer: any = null;
         let probeServer: any = null;
+        let benchAppServer: any = null;
         try {
           fixtureChild = spawnOwned(process.execPath, [
             "tests/perf/fake-docker-api.mjs",
@@ -580,16 +684,40 @@ async function main(): Promise<void> {
             hasStage(plan.name, "commandQueryMs") ||
             hasStage(plan.name, "productionBundleMs");
           if (!needsApp) continue;
+          // Stage 6/7 observe the application's coherent-model acceptance, which
+          // only exists in the benchmark-MODE build of the real app. Every other
+          // browser stage is measured on the ordinary production build.
+          const needsStageSix = hasStage(plan.name, "notificationToCoherentModelMs");
+          const tracksIndependence = needsStageSix && hasStage(plan.name, "coherentModelToUsefulRenderMs");
+          const independencePair = tracksIndependence
+            ? {
+                fixture: plan.name,
+                run: runIndex,
+                normalStageSixMs: [] as number[],
+                normalStageSevenMs: [] as number[],
+                controlStageSixMs: [] as number[],
+                controlStageSevenMs: [] as number[]
+              }
+            : null;
           webServer = await startStaticServer({ directory: join(REPO_ROOT, "apps/web/dist"), port: webPort });
           probeServer = await startStaticServer({
             directory: join(REPO_ROOT, "tests/perf/.bench-dist"),
             port: probePort
           });
           const webOrigin = webServer.url;
+          if (needsStageSix) {
+            benchAppServer = await startStaticServer({
+              directory: join(REPO_ROOT, "tests/perf/.bench-app-dist"),
+              port: benchAppPort
+            });
+          }
           apiChild = spawnOwned(process.execPath, [join(REPO_ROOT, "node_modules/tsx/dist/cli.mjs"), "apps/api/src/index.ts"], {
             PORT: String(apiPort),
             DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemonPort}`,
-            DOCKERMAP_ALLOWED_ORIGINS: webOrigin,
+            // The API must accept both browser origins: the production build for
+            // Cmd-K and the cold production load, the benchmark-mode build for
+            // coherent-model acceptance.
+            DOCKERMAP_ALLOWED_ORIGINS: [webOrigin, benchAppServer?.url].filter(Boolean).join(","),
             // Pinned explicitly so the recorded interval and the interval that
             // actually ran cannot diverge; this is the API's own default.
             DOCKERMAP_SSE_INTERVAL_MS: String(pollIntervalMs)
@@ -613,6 +741,27 @@ async function main(): Promise<void> {
             timeout: 90_000
           });
 
+          // The benchmark-mode application page, used only for stages 6 and 7.
+          let benchPage: any = null;
+          let benchContext: any = null;
+          if (needsStageSix) {
+            benchContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+            benchPage = await benchContext.newPage();
+            if (process.env.DOCKERMAP_BENCH_DEBUG === "1") {
+              benchPage.on("console", (message: any) =>
+                process.stdout.write(`[bench:${message.type()}] ${message.text()}\n`)
+              );
+              benchPage.on("requestfailed", (failed: any) =>
+                process.stdout.write(`[bench:requestfailed] ${failed.url()} ${failed.failure()?.errorText ?? ""}\n`)
+              );
+            }
+            await benchPage.addInitScript({ path: join(REPO_ROOT, "tests/perf/browserProbe.js") });
+            await benchPage.goto(`${benchAppServer.url}/`, { waitUntil: "domcontentloaded" });
+            await benchPage.waitForFunction("window.__dockermapBenchHelpers.homeReady()", undefined, {
+              timeout: 90_000
+            });
+          }
+
           const observationSamples: number[] = [];
           // Scenario premises must be asserted: a fixture that silently stops
           // exercising its premise would still record samples and pass the gate.
@@ -634,13 +783,25 @@ async function main(): Promise<void> {
           const querySamples: number[] = [];
           const bundleSamples: number[] = [];
           const needsRevisionLoop =
-            hasStage(plan.name, "publicationToNodeObservationMs") ||
-            hasStage(plan.name, "notificationToCoherentModelMs");
+            hasStage(plan.name, "publicationToNodeObservationMs") || needsStageSix;
           if (needsRevisionLoop) {
             for (let index = 0; index < samples; index += 1) {
-              const initialRevision: string = hasStage(plan.name, "notificationToCoherentModelMs")
-                ? await page.evaluate("window.__dockermapBenchHelpers.currentRevision()")
-                : "";
+              // Generation `g` stops the fixture's first `g` containers, so the
+              // expected Home metric for the publication this sample triggers is
+              // derived from the fixture rather than assumed.
+              const generation = index + 1;
+              const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
+              // The revision the daemon has already published: the observation
+              // window starts from it, so the harness can neither miss the change
+              // nor wait for a second one.
+              const beforeTrigger = await fetchJson(healthUrl(daemonPort), 5_000);
+              const previousRevision = (beforeTrigger?.modelRevision as string | undefined) ?? "";
+              if (needsStageSix) {
+                await armStageSixSeven(benchPage, {
+                  previous: await benchPage.evaluate("window.__dockermapBenchHelpers.currentAcceptedRevision()"),
+                  expectedMetricValue
+                });
+              }
               // De-correlate the trigger from the two fixed 2 s cycles (the
               // daemon's refresh loop and the API's poller). Without this the
               // observed gap is one fixed phase offset between them — a number
@@ -651,28 +812,78 @@ async function main(): Promise<void> {
               if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
                 // A real published inventory change: the fixture daemon serves a
                 // new generation, so the daemon must publish a new revision.
-                await postUnix(fixtureSocket, `/__fixture/topology-generation/${index + 1}`);
+                await postUnix(fixtureSocket, `/__fixture/topology-generation/${generation}`);
               }
               // `provider-only-revision-change` and `unavailable-optional-provider`
               // need no trigger: their revision advance comes from provider state
               // alone, which is exactly what those fixtures characterise.
+              let observed: { ms: number; revision: string } | null = null;
               if (hasStage(plan.name, "publicationToNodeObservationMs")) {
-                observationSamples.push(
-                  await measurePublicationToNodeObservation(daemonPort, apiPort, webOrigin)
-                );
+                observed = await measurePublicationToNodeObservation(daemonPort, apiPort, webOrigin, previousRevision);
+                observationSamples.push(observed.ms);
               }
-              if (hasStage(plan.name, "notificationToCoherentModelMs")) {
-                const measured = await measureModelAcceptance(
-                  page,
-                  initialRevision,
-                  hasStage(plan.name, "coherentModelToUsefulRenderMs")
-                );
+              if (needsStageSix) {
+                const measured = await awaitModelAcceptance(benchPage);
                 coherentSamples.push(measured.notificationToCoherentModelMs);
                 if (typeof measured.coherentModelToUsefulRenderMs === "number") {
                   usefulSamples.push(measured.coherentModelToUsefulRenderMs);
                 }
+                // Chain of custody: the revision the harness observed through the
+                // API must be the revision the browser accepted and rendered. A
+                // mismatch fails the capture rather than recording a number whose
+                // origin is unknown.
+                if (observed && measured.acceptedRevision !== observed.revision) {
+                  throw new Error(
+                    `the browser accepted revision ${measured.acceptedRevision} but the API observed ${observed.revision}`
+                  );
+                }
+                if (independencePair) {
+                  independencePair.normalStageSixMs.push(measured.notificationToCoherentModelMs);
+                  independencePair.normalStageSevenMs.push(measured.coherentModelToUsefulRenderMs as number);
+                }
+                stageSixSevenAudit.push({
+                  ...measured,
+                  fixture: plan.name,
+                  run: runIndex,
+                  sample: index,
+                  generation,
+                  delayMs: 0
+                });
               }
             }
+          }
+          if (independencePair) {
+            // Stage 6/7 independence control. The artificial presentation delay is
+            // injected AFTER coherent-model acceptance, so a stage-6 number that
+            // moves under it would prove the two stages share a clock, and a
+            // stage-7 number that does not move would prove stage 7 is not
+            // measuring presentation of the accepted model.
+            for (let index = 0; index < TIME_TO_ANSWER_INDEPENDENCE_SAMPLES; index += 1) {
+              const generation = samples + index + 1;
+              const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
+              await benchPage.evaluate(`window.__dockermapBenchRenderDelayMs = ${TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS}`);
+              await armStageSixSeven(benchPage, {
+                previous: await benchPage.evaluate("window.__dockermapBenchHelpers.currentAcceptedRevision()"),
+                expectedMetricValue
+              });
+              await sleep(Math.random() * pollIntervalMs);
+              if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
+                await postUnix(fixtureSocket, `/__fixture/topology-generation/${generation}`);
+              }
+              const measured = await awaitModelAcceptance(benchPage);
+              independencePair.controlStageSixMs.push(measured.notificationToCoherentModelMs);
+              independencePair.controlStageSevenMs.push(measured.coherentModelToUsefulRenderMs as number);
+              stageSixSevenAudit.push({
+                ...measured,
+                fixture: plan.name,
+                run: runIndex,
+                sample: `control-${index}`,
+                generation,
+                delayMs: TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS
+              });
+              await benchPage.evaluate("window.__dockermapBenchRenderDelayMs = 0");
+            }
+            independencePairs.push(independencePair);
           }
           if (hasStage(plan.name, "commandQueryMs")) {
             for (let index = 0; index < samples; index += 1) {
@@ -691,6 +902,7 @@ async function main(): Promise<void> {
             }
           }
           await context.close();
+          if (benchContext) await benchContext.close();
           // Assert the scenario premise actually held for this run.
           if (plan.name === "provider-only-revision-change") {
             const after = dockerIds(await fetchJson(`http://127.0.0.1:${daemonPort}/daemon/snapshot`, 30_000));
@@ -747,6 +959,7 @@ async function main(): Promise<void> {
           stopOwned(fixtureChild);
           if (webServer) await webServer.close();
           if (probeServer) await probeServer.close();
+          if (benchAppServer) await benchAppServer.close();
         }
       }
     }
@@ -757,6 +970,69 @@ async function main(): Promise<void> {
     await browser.close();
     rmSync(workRoot, { recursive: true, force: true });
   }
+
+  /* --- Stage 6/7 independence control ------------------------------------
+   * Enforced BEFORE the artifact is assembled. A seam that cannot demonstrate
+   * that stage 6 stays put under an artificial presentation delay injected AFTER
+   * acceptance — while stage 7 absorbs that delay — is not measuring what the
+   * contract says it measures, and no baseline may be produced from it. The
+   * evidence is written beside the artifact so it cannot be confused with the
+   * closed evidence schema.
+   */
+  const stageSeamPath = `${outputPath}.stage-seam.json`;
+  const stageSeam: {
+    delayMs: number;
+    samplesPerFixture: number;
+    fixtures: Record<string, unknown>;
+    audit: Array<Record<string, unknown>>;
+    error?: string;
+  } = {
+    delayMs: TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
+    samplesPerFixture: TIME_TO_ANSWER_INDEPENDENCE_SAMPLES,
+    fixtures: {},
+    audit: stageSixSevenAudit
+  };
+  const stageSeamByFixture = new Map<string, typeof independencePairs>();
+  for (const pair of independencePairs) {
+    stageSeamByFixture.set(pair.fixture, [...(stageSeamByFixture.get(pair.fixture) ?? []), pair]);
+  }
+  try {
+    const required = TIME_TO_ANSWER_REFERENCE_FIXTURES.filter(
+      (fixture) =>
+        hasStage(fixture.name, "notificationToCoherentModelMs") &&
+        hasStage(fixture.name, "coherentModelToUsefulRenderMs")
+    )
+      .map((fixture) => fixture.name)
+      .filter((name) => !onlyFixtures || onlyFixtures.includes(name));
+    const missing = required.filter((name) => !stageSeamByFixture.has(name));
+    if (missing.length > 0) {
+      throw new Error(`the stage-6/7 independence control did not run for ${missing.join(", ")}`);
+    }
+    for (const fixture of required) {
+      const pairs = stageSeamByFixture.get(fixture)!;
+      const verdict = assertStageSixSevenIndependence({
+        fixture,
+        delayMs: TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
+        normalStageSixMs: pairs.flatMap((pair) => pair.normalStageSixMs),
+        normalStageSevenMs: pairs.flatMap((pair) => pair.normalStageSevenMs),
+        controlStageSixMs: pairs.flatMap((pair) => pair.controlStageSixMs),
+        controlStageSevenMs: pairs.flatMap((pair) => pair.controlStageSevenMs)
+      });
+      stageSeam.fixtures[fixture] = { runs: pairs, verdict };
+      process.stdout.write(
+        `[capture] stage 6/7 control ${fixture}: stage 6 ${verdict.stageSixMedianMs.toFixed(1)} -> ` +
+          `${verdict.stageSixControlMedianMs.toFixed(1)} ms; stage 7 ${verdict.stageSevenMedianMs.toFixed(1)} -> ` +
+          `${verdict.stageSevenControlMedianMs.toFixed(1)} ms for a ${verdict.delayMs} ms injected delay\n`
+      );
+    }
+  } catch (error) {
+    stageSeam.error = String(error);
+    writeFileSync(stageSeamPath, `${JSON.stringify(stageSeam, null, 2)}\n`);
+    preserveRaw(stageSeam.error);
+    throw error;
+  }
+  writeFileSync(stageSeamPath, `${JSON.stringify(stageSeam, null, 2)}\n`);
+  process.stdout.write(`[capture] stage 6/7 independence evidence at ${stageSeamPath}\n`);
 
   try {
     const records = TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => ({

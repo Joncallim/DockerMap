@@ -9,7 +9,8 @@ import {
   buildNetworks,
   buildSlowComposeProject,
   buildTopology,
-  buildVolumes
+  buildVolumes,
+  expectedExitedCount
 } from "./dockerFixtureTopology.mjs";
 
 describe("deterministic Docker fixture topology", () => {
@@ -68,6 +69,29 @@ describe("deterministic Docker fixture topology", () => {
     // Networks and volumes are unchanged, so the observed change is Docker topology only.
     assert.deepEqual(before.networks, after.networks);
     assert.deepEqual(before.volumes, after.volumes);
+  });
+
+  it("publishes a strictly monotone, product-visible delta per generation", () => {
+    // Stage 7 asserts the accepted model's expected Home content against the
+    // rendered metrics, which is only discriminating if each generation actually
+    // changes what the product renders: generation `g` stops the first `g`
+    // containers, so the offline/attention count is `g` and always differs from
+    // the previous generation.
+    assert.equal(expectedExitedCount(100, "reference", 0), 0);
+    for (let generation = 1; generation <= 15; generation += 1) {
+      const count = expectedExitedCount(100, "reference", generation);
+      assert.equal(count, generation);
+      assert.notEqual(count, expectedExitedCount(100, "reference", generation - 1));
+    }
+    // Every fixture starts pristine, and the derivation matches the served list.
+    for (const scenario of ["reference", "docker-topology-change", "unavailable-optional-provider"]) {
+      assert.equal(expectedExitedCount(25, scenario, 0), 0);
+      const containers = buildContainers(25, scenario, 4);
+      assert.equal(expectedExitedCount(25, scenario, 4), containers.filter((entry) => entry.State === "exited").length);
+      assert.equal(expectedExitedCount(25, scenario, 4), 4);
+      assert.equal(containers.length, 25);
+    }
+    assert.throws(() => buildContainers(25, "reference", -1), /non-negative integer/);
   });
 
   it("produces a bounded, valid Compose project for the slow-projection scenario", () => {

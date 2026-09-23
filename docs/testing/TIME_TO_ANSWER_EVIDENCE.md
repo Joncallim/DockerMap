@@ -20,12 +20,17 @@ the math. It contains no timings. It defines:
 - the **fixtures**: `reference-25`, `reference-100`, `reference-250`, plus the
   scenario fixtures `provider-only-revision-change`, `docker-topology-change`,
   `slow-bounded-compose-projection` and `unavailable-optional-provider`;
-- the **exact fixture × stage matrix**, derived from each stage's fixture list;
+- the **exact fixture × stage matrix** — **44 cells** — derived from each stage's
+  fixture list, never hand-listed;
 - the **pinned environment allowlist** (runner class, CPU class, OS image and
   kernel, Node/Rust/Docker revisions, Chromium revision and flags, font
   environment, production build mode, fixture revision, source revision);
 - **raw-sample validation**: 15 warmed samples in each of 3 complete controlled
   runs, nearest-rank p95 per run, median of the three run p95 values;
+- the **stage-6/7 independence control** (`assertStageSixSevenIndependence`): a
+  positive artificial presentation delay injected *after* coherent-model
+  acceptance must move stage 7 by at least 70% of that delay and must not move
+  stage 6 beyond `max(30 ms, 25%)`;
 - the **promotion gate** `max(baseline × 1.25, baseline + 2 ms)`, compared only
   between environments that match on every pinned field except `sourceRevision`
   (which differs by design) and `dockerRevision` (recorded but informational: no
@@ -112,6 +117,16 @@ Verified working end to end: the release-built daemon, pointed at the fixture
 socket with 25 containers, reports `mode: docker`, `dockerReachable: true`, and
 publishes 25 containers / 1 network / 5 volumes with a model revision.
 
+**Generation delta.** The harness can advance a fixture's topology generation
+(`POST /__fixture/topology-generation/<n>`), which changes the container
+identities/labels and stops the first `n` containers. Generation 0 is the pristine
+all-running inventory for every fixture; generation `n` therefore makes the
+product render exactly `n` offline/attention services, which is what the stage-7
+expected-content check asserts (`expectedExitedCount` derives the expectation from
+the same generator the fixture daemon serves). Earlier revisions of this harness
+gave `docker-topology-change` a fixed one-in-three exited mix; that mix is gone,
+because a constant mix cannot discriminate a stale render from a fresh one.
+
 ## Promotion rules
 
 A candidate passes only when, in an equivalent controlled environment, **every**
@@ -139,6 +154,93 @@ currently sits inside the Docker critical path. That is the measurement, not a
 fix: **nothing is decoupled here, and #336 owns moving the projection off that
 path** — these are the numbers it must improve against.
 
+## Stage 6 and stage 7: two clocks, and why they cannot be one
+
+The two browser stages answer different questions and must not share a clock.
+
+- **Stage 6 — `notificationToCoherentModelMs`.** Starts when the real stream
+  notifies the browser of a new model revision. Ends when the **application
+  accepts one coherent model** — the instant a fetched snapshot/runtime pair with
+  matching generation, provenance and non-empty model revision becomes the model
+  the UI renders.
+- **Stage 7 — `coherentModelToUsefulRenderMs`.** Starts at the *stage-6
+  timestamp*. Ends when the accepted model's **expected Home content is present**,
+  in a commit the application stamped with that accepted revision, followed by
+  exactly **one bounded `requestAnimationFrame`**. No sleeps are involved.
+
+Stage 6 is observed at the **real application seam**: the acceptance point is
+inside `useSystemModel`, at the moment the composed model is published. It is
+never inferred from a DOM mutation — baseline 2 was rejected precisely because
+its stage 7 was element-for-element identical to stage 6 in all 180 samples.
+
+**Expected content, not just any repaint.** The fixture's generation delta stops
+the first `g` containers, so generation `g` renders exactly `g` offline/attention
+services. Stage 7 requires the Home metric region to repaint with that exact value
+for the accepted revision, so a stale render, an unrelated repaint (such as the
+topbar clock) or a render belonging to a different revision cannot end it. The
+probe records the pre-change metric value as it arms, so "the DOM changed" is
+measured rather than assumed.
+
+**The chain of custody is checked.** For every browser sample the harness
+independently resolves the revision the API observed (`revision` from
+`publicationToNodeObservationMs`) and requires the browser's accepted revision to
+be that same token; a mismatch fails the capture instead of recording a number
+whose origin is unknown.
+
+## Benchmark-mode application build and production isolation
+
+Stage 6 needs a signal that only exists in application code, so the seam is
+**real product source** (`apps/web/src/lib/performance/modelAcceptance.tsx`) and
+the build decides whether it exists:
+
+| build | flag | what it contains |
+| --- | --- | --- |
+| production (`apps/web/vite.config.ts`) | `__DOCKERMAP_BENCH_ACCEPTANCE__ = "false"` | no seam, no event identifier, no probe entry, no delay machinery |
+| benchmark mode (`tests/perf/benchAppVite.config.mjs`) | `__DOCKERMAP_BENCH_ACCEPTANCE__ = "true"` | the same real app **with** the acceptance seam |
+| benchmark probe (`tests/perf/benchVite.config.mjs`) | — | stages 8 and 10 (real `buildModel`/`layout` modules, in Chromium) |
+
+The application source is never copied or forked: the same files are built twice.
+The product build eliminates every benchmark branch by dead-code elimination
+before minification, and that is asserted against the built artifact — the
+production bundle must not contain `__dockermapBenchAcceptanceSink`,
+`__dockermapBenchRenderDelayMs`, `dockermapAcceptedRevision` or any harness
+identifier (`tests/perf/productionIsolation.test.mjs`), and the capture refuses to
+run at all unless the benchmark-mode build carries the seam and the production
+build does not (`assertBuildIsolation`). The production Vite config must define
+the flag as the literal `"false"`, which the same suite checks by reading it.
+
+Which build serves which stage: stages **6 and 7** are measured on the
+benchmark-mode application build, **stage 11 (Cmd-K)** and **stage 12 (production
+bundle/startup)** on the ordinary production build, and **stages 8 and 10** on the
+benchmark-only module probe. The seam emits only an opaque timestamp plus the
+model revision token, into an in-memory page sink, and stamps the same opaque
+token on the document root so a DOM repaint can be attributed to a revision.
+There is no product payload, no network call, no telemetry and no analytics, and
+the seam adds no route, no API field and no public schema.
+
+## Stage 6/7 independence control
+
+A capture may not produce a baseline unless it can show the two clocks are
+independent. After the normal samples for each fixture that declares both stages,
+the harness runs `TIME_TO_ANSWER_INDEPENDENCE_SAMPLES` (3) control samples in
+which `__dockermapBenchRenderDelayMs = TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS`
+(250 ms) withholds a *newly accepted* publication from the render tree — an
+artificial presentation delay injected **after** acceptance. The rule enforced
+before validation:
+
+- **stage 6 must not move** by more than `max(30 ms, 25% of its median)`;
+- **stage 7 must absorb** at least 70% of the injected delay;
+- no control stage-7 sample may be shorter than the injected delay (which would
+  mean the delay never reached the page).
+
+The verdict, the per-run sample sets and a per-sample audit trail (accepted
+revision, notified revision, render commit offset, metric before/after) are
+written beside the artifact as `<output>.stage-seam.json`. The closed evidence
+schema is unchanged: the control is harness evidence, not artifact content. The
+same rule is unit-tested (`timeToAnswerIndependence.test.ts`), including the RED
+cases "the delayed render does not move stage 7" and "stage 6 moves with the
+delayed presentation".
+
 ## Running the benchmark
 
 ```
@@ -160,8 +262,9 @@ npm run perf:time-to-answer -- \
 
 Prerequisites: a release daemon (`cargo build --release -p dockermap-daemon`),
 Chromium for Playwright, and a built web app — the capture performs the contract,
-web and probe builds itself. `npm run perf:time-to-answer` is the only command
-needed; it owns every process it starts.
+production web, benchmark-mode application and module-probe builds itself, and
+pins the artifacts it serves before measuring anything. `npm run
+perf:time-to-answer` is the only command needed; it owns every process it starts.
 
 **Capture discipline.** The capture refuses to start from a dirty worktree, and
 refuses to run if the metadata's `sourceRevision` or `harnessRevision` does not
@@ -173,10 +276,14 @@ invalidated precisely because its harness existed only as uncommitted changes.
 fixture, which can never satisfy the closed matrix and therefore cannot emit an
 artifact).
 
-Procedure notes: the benchmark-only Vite build (`tests/perf/benchVite.config.mjs`)
-is what stages 8 and 10 run against, and it imports the real production modules;
-`tests/perf/browserProbe.js` is test-only instrumentation loaded before product
-code. `.bench-dist` is generated and gitignored.
+Procedure notes: stages 8 and 10 run against the benchmark-only module probe
+(`tests/perf/benchVite.config.mjs`, real production modules, real Chromium);
+stages 6 and 7 run against the benchmark-mode application build
+(`tests/perf/benchAppVite.config.mjs`); stages 11 and 12 run against the ordinary
+production build. `tests/perf/browserProbe.js` is test-only instrumentation loaded
+before product code. `.bench-dist` and `.bench-app-dist` are generated and
+gitignored. Every capture also writes `<output>.stage-seam.json` (the stage-6/7
+independence evidence); it is not part of the closed artifact schema.
 
 ## Cold-start versus warmed-repeated stages
 
@@ -256,16 +363,25 @@ changes, never as current measurements and never for promotion gating.
 Complete and enforced by tests:
 
 - the closed contract, the 12 stages and their buckets, the fixture set, the
-  fixture × stage matrix, the environment allowlist (including the effective SSE
-  poll interval), raw-sample validation, the summary math and the promotion gate;
-- the deterministic fixture topology and the fixture Docker daemon, proven
-  against the real daemon build;
+  44-cell fixture × stage matrix, the environment allowlist (including the
+  effective SSE poll interval), raw-sample validation, the summary math and the
+  promotion gate;
+- the deterministic fixture topology (whose generation delta is product-visible,
+  so the stage-7 expected-content check is discriminating) and the fixture Docker
+  daemon, proven against the real daemon build;
 - the inert bench-only stage attribution hook for `dockerObservationMs`,
   `composeEnrichmentMs` and `findingsDerivationMs`;
-- the single documented capture command with its benchmark-only browser probes,
-  the environment emitter and the summarizer;
-- the promotion RED-checks (`timeToAnswerPromotion.test.ts`) and the production
-  isolation proof (`productionIsolation.test.mjs`);
+- the stage-6 coherent-model acceptance seam in real product source, compiled out
+  of the production build and compiled into the benchmark-mode application build,
+  with the stage-7 expected-content + single-frame end condition and the
+  chain-of-custody check from daemon revision to rendered content;
+- the stage-6/7 independence control, enforced before any artifact is assembled
+  and unit-tested against its RED cases;
+- the single documented capture command with its browser probes, the environment
+  emitter and the summarizer;
+- the promotion RED-checks (`timeToAnswerPromotion.test.ts`), the independence
+  RED-checks (`timeToAnswerIndependence.test.ts`) and the production isolation
+  proof (`productionIsolation.test.mjs`);
 - `npm run test:perf` wired into `npm run check:js`.
 
 `docs/testing/TIME_TO_ANSWER_BASELINE.md` currently holds the two rejected

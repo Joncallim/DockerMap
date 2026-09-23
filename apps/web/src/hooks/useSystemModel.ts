@@ -5,6 +5,7 @@ import { projectRuntimeMap } from "../lib/atlas/project";
 import type { AtlasEnvelope } from "../lib/atlas/types";
 import type { EvidenceMode, ModelProvenance } from "../lib/evidence";
 import { modelProvenanceForMode } from "../lib/evidence";
+import { recordModelAcceptance, useDeliveredModel } from "../lib/performance/modelAcceptance";
 import { useApiResource } from "./useApiResource";
 
 export interface SystemModelState {
@@ -62,6 +63,12 @@ export function useSystemModel(refreshTick: number, evidenceMode: EvidenceMode |
     const built = buildModel(snapshot.data, runtimeMap.data);
     lastModel.current = built;
     lastProvenance.current = snapshot.provenance;
+    // The acceptance seam (#335). This is the exact point at which a fetched
+    // resource/revision pair BECOMES the coherent model the UI renders, so it is
+    // where the benchmark's stage-6 clock starts. It is compile-time gated and
+    // carries only an opaque timestamp + revision token; see
+    // lib/performance/modelAcceptance.tsx.
+    if (__DOCKERMAP_BENCH_ACCEPTANCE__) recordModelAcceptance(built.modelRevision);
     return built;
   }, [snapshot.data, snapshot.generation, snapshot.provenance, runtimeMap.data, runtimeMap.generation, runtimeMap.provenance]);
 
@@ -103,10 +110,16 @@ export function useSystemModel(refreshTick: number, evidenceMode: EvidenceMode |
   }, [snapshot.data, snapshot.generation, snapshot.provenance, runtimeMap.data, runtimeMap.generation, runtimeMap.provenance]);
 
   return {
-    model,
-    atlas,
-    findings,
-    modelProvenance,
+    /**
+     * The publication seam (#335). In the product build `useDeliveredModel` is
+     * the identity function — no state, no effects, no behavioural difference.
+     * The benchmark application build defines the compile-time flag, which is
+     * where the artificial presentation-delay control withholds a newly accepted
+     * publication from the render tree. One publication (model + atlas +
+     * findings + provenance) is delayed as a unit so the render tree can never
+     * observe a split state.
+     */
+    ...useDeliveredModel({ model, atlas, findings, modelProvenance }, model?.modelRevision ?? null),
     loading: snapshot.loading || runtimeMap.loading,
     error: snapshot.error ?? runtimeMap.error
   };

@@ -13,6 +13,7 @@ import { AppContext } from "../context";
 import Icon, { type IconName } from "./Icon";
 import CommandPalette from "./CommandPalette";
 import RouteFocusManager from "./RouteFocusManager";
+import { ModelAcceptanceStamp } from "../lib/performance/modelAcceptance";
 import { StateDot, Tag } from "./primitives";
 import { UNAVAILABLE_USER } from "../lib/identity";
 
@@ -274,6 +275,14 @@ export default function AppShell({ onBearerSignOut }: { onBearerSignOut: () => v
         </div>
         <RouteFocusManager />
       </div>
+
+      {/*
+        Benchmark-only acceptance stamp (#335). It renders nothing and has no
+        effect in the product build; the benchmark application build stamps the
+        accepted revision token in the same commit that renders the accepted
+        model, so the capture can attribute a DOM repaint to a revision.
+      */}
+      <ModelAcceptanceStamp revision={model?.modelRevision ?? null} />
 
       <CommandPalette open={commandOpen} onClose={() => setCommandOpen(false)} model={model} />
     </AppContext.Provider>

@@ -2,9 +2,14 @@
  * Test-only browser instrumentation for the time-to-answer benchmark (#335).
  *
  * Loaded by the capture harness with `page.addInitScript({ path })`, so it runs
- * before any product code. It records timestamps only: when the real stream
- * notifies the browser of a new model revision, and when the product commits
- * model-derived DOM.
+ * before any product code. It records timestamps only:
+ *
+ *   - when the real stream notifies the browser of a new model revision;
+ *   - when the application ACCEPTS a coherent model (read from the
+ *     benchmark-only acceptance sink the real application seam writes to — this
+ *     is application state, never a DOM mutation);
+ *   - when the product commits model-derived DOM text, together with the
+ *     accepted revision the document was stamped with at that commit.
  *
  * It is plain JavaScript on purpose. A TS-authored init script is serialised
  * through esbuild's `keepNames` helper (__name), which does not exist in the
@@ -24,7 +29,8 @@
     installed: false,
     initError: "",
     observerError: "",
-    commits: []
+    commits: [],
+    arm: null
   };
   window.__dockermapBench = bench;
 
@@ -77,11 +83,31 @@
     bench.initError = String(error);
   }
 
+  const readMetric = (label) => {
+    const metrics = Array.from(document.querySelectorAll("main .story .metric"));
+    for (const metric of metrics) {
+      const name = metric.querySelector(".metric-label");
+      if (name && (name.textContent || "").trim() === label) {
+        const value = metric.querySelector(".metric-value");
+        return value ? (value.textContent || "").trim() : "";
+      }
+    }
+    return null;
+  };
+
+  const acceptedRevision = () => {
+    const root = document.documentElement;
+    return (root && root.dataset && root.dataset.dockermapAcceptedRevision) || "";
+  };
+
   try {
     const observer = new MutationObserver((records) => {
       for (const record of records) {
         const node = record.target;
         const element = node instanceof Element ? node : node.parentElement;
+        // The Home content regions. `main .story` is the metrics band; `main
+        // .stack` is Home's right column (attention list, map preview, feed).
+        const inStory = Boolean(element && element.closest("main .story"));
         const inHome = Boolean(element && element.closest("main .story, main .stack"));
         // A commit only counts as model content reaching the DOM if it alters
         // rendered text. Attribute-only or node-shuffling churn does not.
@@ -98,7 +124,15 @@
             }
           }
         }
-        bench.commits.push({ at: performance.now(), inHome, textChanged });
+        const commit = { at: performance.now(), inHome, inStory, textChanged, revision: "" };
+        if (textChanged && inHome) {
+          // Stamped by the application in the same commit that rendered the
+          // accepted model, and the live metric band value at that commit.
+          commit.revision = acceptedRevision();
+          commit.storyValue = readMetric("Offline");
+          commit.servicesValue = readMetric("Services");
+        }
+        bench.commits.push(commit);
         if (bench.commits.length > 5000) bench.commits.splice(0, 2500);
       }
     });
@@ -119,60 +153,138 @@
     bench.observerError = String(error);
   }
 
+  const frame = () => new Promise((done) => requestAnimationFrame(done));
+  const acceptanceSink = () => window.__dockermapBenchAcceptanceSink || [];
+  const diagnostic = () =>
+    "opens=" +
+    bench.opens +
+    " errors=" +
+    bench.errors +
+    " events=" +
+    bench.events +
+    " installed=" +
+    bench.installed +
+    " esType=" +
+    typeof window.EventSource +
+    " initError=" +
+    bench.initError +
+    " observerError=" +
+    bench.observerError +
+    " accepted=" +
+    acceptanceSink().length;
+
   /*
    * Measurement helpers. The harness calls these by NAME through a raw string
-   * expression (`page.evaluate("async (input) => window.__dockermapBenchHelpers...")`),
-   * because a TS-authored function is re-emitted with esbuild's `__name` helper
-   * that does not exist in the page realm.
+   * expression (`page.evaluate("window.__dockermapBenchHelpers...")`), because a
+   * TS-authored function is re-emitted with esbuild's `__name` helper that does
+   * not exist in the page realm.
    */
   window.__dockermapBenchHelpers = {
-    async measureModelAcceptance(previous, limit, needHome) {
-      const deadline = performance.now() + limit;
-      const isNew = () => Boolean(bench.notifyRevision) && bench.notifyRevision !== previous;
-      while (performance.now() < deadline && !isNew()) {
-        await new Promise((done) => requestAnimationFrame(done));
-      }
-      if (!isNew()) {
-        throw new Error(
-          "no new notification observed (opens=" +
-            bench.opens +
-            " errors=" +
-            bench.errors +
-            " events=" +
-            bench.events +
-            " installed=" +
-            bench.installed +
-            " esType=" +
-            typeof window.EventSource +
-            " initError=" +
-            bench.initError +
-            " observerError=" +
-            bench.observerError +
-            ")"
-        );
-      }
-      const notifyAt = bench.notifyAt;
-      let firstText = 0;
-      let firstHomeText = 0;
-      while (performance.now() < deadline && (!firstText || (needHome && !firstHomeText))) {
-        for (const commit of bench.commits) {
-          if (commit.at < notifyAt || !commit.textChanged) continue;
-          if (!firstText) firstText = commit.at;
-          if (commit.inHome && !firstHomeText) firstHomeText = commit.at;
-        }
-        if (firstText && (!needHome || firstHomeText)) break;
-        await new Promise((done) => requestAnimationFrame(done));
-      }
-      if (!firstText) {
-        throw new Error("no text-changing DOM commit was observed after the notification");
-      }
-      if (needHome && !firstHomeText) {
-        throw new Error("Home content region never repainted with changed text after the notification");
-      }
-      return {
-        notificationToCoherentModelMs: firstText - notifyAt,
-        coherentModelToUsefulRenderMs: needHome ? firstHomeText - notifyAt : null
+    /*
+     * Arm the stage-6/7 measurement BEFORE the harness triggers a publication
+     * change, then await it afterwards. Arming records the pre-change Home
+     * metric value, so "the DOM changed" is measured rather than assumed.
+     */
+    armModelAcceptance(input) {
+      const arm = {
+        previous: String(input.previous || ""),
+        limit: Number(input.limit) || 60000,
+        metricLabel: String(input.metricLabel || "Offline"),
+        expectedMetricValue: String(input.expectedMetricValue || ""),
+        beforeMetricValue: readMetric(String(input.metricLabel || "Offline")),
+        startedAt: performance.now(),
+        armed: true,
+        result: null,
+        error: null
       };
+      arm.task = (async () => {
+        const deadline = arm.startedAt + arm.limit;
+        let event = null;
+        while (performance.now() < deadline && !event) {
+          event = acceptanceSink().filter((entry) => entry.revision && entry.revision !== arm.previous).pop() || null;
+          if (!event) await frame();
+        }
+        if (!event) throw new Error("no accepted coherent model was observed (" + diagnostic() + ")");
+        const acceptedAt = event.at;
+        const revision = event.revision;
+        if (!bench.notifyRevision || bench.notifyRevision !== revision) {
+          throw new Error(
+            "the accepted revision " +
+              revision +
+              " is not the revision the browser was notified of (" +
+              bench.notifyRevision +
+              "); stage 6 cannot start at a notification that does not belong to the accepted model"
+          );
+        }
+        const notifyAt = bench.notifyAt;
+
+        // Stage 7: the expected Home content for the newly accepted model, in a
+        // commit that carries that revision's stamp and is strictly later than
+        // acceptance, followed by exactly one bounded frame.
+        let commit = null;
+        while (performance.now() < deadline && !commit) {
+          for (const candidate of bench.commits) {
+            if (candidate.at <= acceptedAt) continue;
+            if (!candidate.textChanged || !candidate.inStory) continue;
+            if (candidate.revision !== revision) continue;
+            if (candidate.storyValue !== arm.expectedMetricValue) continue;
+            commit = candidate;
+            break;
+          }
+          if (!commit) await frame();
+        }
+        if (!commit) {
+          throw new Error(
+            "the Home content for the accepted revision " +
+              revision +
+              " never rendered (expected " +
+              arm.metricLabel +
+              "=" +
+              arm.expectedMetricValue +
+              ", story=" +
+              JSON.stringify(bench.commits.filter((entry) => entry.inStory).slice(-4)) +
+              ")"
+          );
+        }
+        const renderCommitAt = commit.at;
+        await frame();
+        const presentedAt = performance.now();
+        return {
+          notificationToCoherentModelMs: acceptedAt - notifyAt,
+          coherentModelToUsefulRenderMs: presentedAt - acceptedAt,
+          acceptedRevision: revision,
+          notifiedRevision: bench.notifyRevision,
+          renderCommitMs: renderCommitAt - acceptedAt,
+          presentationFrameMs: presentedAt - renderCommitAt,
+          metricLabel: arm.metricLabel,
+          beforeMetricValue: arm.beforeMetricValue,
+          afterMetricValue: readMetric(arm.metricLabel),
+          expectedMetricValue: arm.expectedMetricValue,
+          metricChanged: arm.beforeMetricValue !== arm.expectedMetricValue
+        };
+      })();
+      arm.task.catch((error) => {
+        arm.error = String(error && error.message ? error.message : error);
+      });
+      bench.arm = arm;
+      return true;
+    },
+
+    armed() {
+      return Boolean(bench.arm && bench.arm.armed);
+    },
+
+    async awaitModelAcceptance() {
+      const arm = bench.arm;
+      if (!arm || !arm.task) throw new Error("model acceptance was not armed");
+      try {
+        arm.result = await arm.task;
+      } catch (error) {
+        throw new Error(arm.error || String(error && error.message ? error.message : error));
+      } finally {
+        arm.armed = false;
+      }
+      return arm.result;
     },
 
     async commandQuery(limit, preferredToken) {
@@ -181,7 +293,7 @@
       const palette = () => document.querySelector('[aria-label="Command palette"]');
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }));
       while (performance.now() < deadline && !palette()) {
-        await new Promise((done) => requestAnimationFrame(done));
+        await frame();
       }
       const dialog = palette();
       if (!dialog) throw new Error("command palette did not open");
@@ -219,7 +331,7 @@
         if (current !== unfiltered && current.includes(token) && dialog.querySelectorAll("li").length < unfilteredCount) {
           return performance.now() - started;
         }
-        await new Promise((done) => requestAnimationFrame(done));
+        await frame();
       }
       throw new Error("query " + token + " never produced a filtered list containing it");
     },
@@ -230,15 +342,21 @@
     },
 
     homeReady() {
-      const metrics = Array.from(document.querySelectorAll(".metric"));
-      const services = metrics.find(
-        (metric) => metric.querySelector(".metric-label") && metric.querySelector(".metric-label").textContent === "Services"
-      );
-      return Boolean(services && (services.querySelector(".metric-value").textContent || "").trim() !== "");
+      const value = readMetric("Services");
+      return value !== null && value !== "";
     },
 
     currentRevision() {
       return bench.notifyRevision || "";
+    },
+
+    currentAcceptedRevision() {
+      const entries = acceptanceSink().filter((entry) => entry.revision);
+      return entries.length ? entries[entries.length - 1].revision : "";
+    },
+
+    acceptedEventCount() {
+      return acceptanceSink().length;
     }
   };
 })();

@@ -61,9 +61,14 @@ function pad(value) {
 /**
  * Build the container summary list for a size and scenario.
  *
- * `topologyGeneration` lets the docker-topology-change scenario publish a
- * changed inventory from the SAME fixture daemon without touching anything
- * else, so the only difference the daemon observes is the Docker model.
+ * `topologyGeneration` lets a scenario publish a changed inventory from the
+ * SAME fixture daemon without touching anything else, so the only difference the
+ * daemon observes is the Docker model. Generation `g` stops the first `g`
+ * containers: a bounded, deterministic, strictly monotone inventory delta whose
+ * effect is visible in the product (the Home attention/offline metrics change on
+ * every generation), which is what makes the stage-7 "expected content for the
+ * newly accepted model" check discriminating rather than vacuous. Generation 0 is
+ * the pristine, all-running inventory for every fixture.
  */
 export function buildContainers(
   containers,
@@ -75,6 +80,9 @@ export function buildContainers(
     throw new Error("Fixture container count must be an integer between 1 and 250.");
   }
   if (!SCENARIOS.includes(scenario)) throw new Error(`Unknown fixture scenario: ${scenario}`);
+  if (!Number.isInteger(topologyGeneration) || topologyGeneration < 0) {
+    throw new Error("Fixture topology generation must be a non-negative integer.");
+  }
   const suffix = topologyGeneration === 0 ? "" : `-g${topologyGeneration}`;
   const list = [];
   for (let index = 0; index < containers; index += 1) {
@@ -135,7 +143,7 @@ export function buildContainers(
       labels["com.docker.compose.config-hash"] = digest(`config-hash/${index % 40}`).slice(0, 64);
       labels["com.docker.compose.project.config_files"] = `${projectRoot}/compose.yaml`;
     }
-    const exited = scenario === "docker-topology-change" && index % 3 === 0;
+    const exited = index < topologyGeneration;
     list.push({
       Id: id(`container/${base}`),
       Names: [`/${name(index)}`],
@@ -228,4 +236,23 @@ export function buildTopology({
     networks: buildNetworks(containers),
     volumes: buildVolumes(containers)
   };
+}
+
+/**
+ * How many containers the fixture reports as exited for a generation, i.e. how
+ * many services the product must present as offline / needing attention.
+ *
+ * Derived from `buildContainers` rather than reimplemented, so the harness
+ * expectation the stage-7 check asserts against the rendered Home metrics can
+ * never drift from the inventory the fixture daemon actually served.
+ */
+export function expectedExitedCount(
+  containers,
+  scenario = "reference",
+  topologyGeneration = 0,
+  projectRoot = "/srv/dockermap-fixture"
+) {
+  return buildContainers(containers, scenario, topologyGeneration, projectRoot).filter(
+    (container) => container.State === "exited"
+  ).length;
 }

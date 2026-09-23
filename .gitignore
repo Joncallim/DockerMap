@@ -14,3 +14,4 @@ target
 !.codex/agents/
 !.codex/agents/*.toml
 tests/perf/.bench-dist
+tests/perf/.bench-app-dist

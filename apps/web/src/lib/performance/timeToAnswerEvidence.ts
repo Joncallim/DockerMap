@@ -71,9 +71,9 @@ export const TIME_TO_ANSWER_STAGES = [
     id: "notificationToCoherentModelMs",
     bucket: "browser-model",
     measures:
-      "Browser notification until the app commits a change that alters rendered text, i.e. model-derived content actually reaching the DOM rather than an attribute-only or churn-only mutation.",
+      "Browser notification until the REAL application seam accepts one coherent model: the instant the fetched snapshot/runtime pair becomes the model the UI renders. It is observed at the application's own acceptance point, never derived from a DOM mutation.",
     doesNotProve:
-      "Not a health judgement and not a statement that every evidence domain is current; it ends when coherent model content is committed, not when the model is complete. It is not attribution to a specific revision — the probe cannot see which revision produced the commit.",
+      "Not a health judgement and not a statement that every evidence domain is current: it ends when a coherent model is accepted, not when the model is complete. It contains no rendering and says nothing about whether the operator saw anything.",
     fixtures: [
       "reference-25",
       "reference-100",
@@ -87,9 +87,9 @@ export const TIME_TO_ANSWER_STAGES = [
     id: "coherentModelToUsefulRenderMs",
     bucket: "rendering",
     measures:
-      "Browser notification until the Home content region repaints with changed rendered text — a distinct boundary from stage 6, which ends on the first text-changing commit anywhere in the document.",
+      "From coherent-model acceptance until the accepted model's expected Home content is present — in a commit the application stamped with that accepted revision — confirmed by exactly one bounded animation frame. It shares no clock with the stage before it.",
     doesNotProve:
-      "Not a visual-quality or accessibility claim, and not a claim that the operator found the answer. It is declared only for fixtures whose published change demonstrably repaints Home; a provider-only or provider-unavailable revision is not guaranteed to repaint it, so measuring it there would be an empty number.",
+      "Not a visual-quality or accessibility claim, and not a claim that the operator found the answer. It is declared only for fixtures whose published change demonstrably repaints the Home content region; a provider-only or provider-unavailable revision is not guaranteed to repaint it, so measuring it there would be an empty number.",
     fixtures: ["reference-25", "reference-100", "reference-250", "docker-topology-change"]
   },
   {
@@ -515,4 +515,122 @@ export function assertTimeToAnswerPromotion(baselineRaw: unknown, candidateRaw: 
       throw new Error(`Time-to-answer candidate exceeds the reviewed promotion limit for ${key}.`);
     }
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Stage 6 / stage 7 independence control (#335)
+ *
+ * Stage 6 ends when the APPLICATION accepts a coherent model; stage 7 begins
+ * at that instant and ends when the accepted model's expected Home content has
+ * rendered (and one bounded frame has confirmed presentation). If the two
+ * numbers came from one clock, an artificial presentation delay injected AFTER
+ * acceptance would move both. The control therefore arms exactly that delay and
+ * requires stage 6 to stay put while stage 7 grows by the injected amount.
+ * ------------------------------------------------------------------ */
+
+/** The artificial presentation delay injected after coherent-model acceptance. */
+export const TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS = 250;
+/** Control samples per fixture that declares stages 6 and 7. */
+export const TIME_TO_ANSWER_INDEPENDENCE_SAMPLES = 3;
+/**
+ * Stage 6 must not move more than this. The allowance is generous relative to
+ * the delay: it exists to absorb ordinary run-to-run variance in a number that
+ * the control cannot legitimately affect, not to permit a shared clock.
+ */
+export const TIME_TO_ANSWER_INDEPENDENCE_STAGE_SIX_TOLERANCE_MS = 30;
+/** Stage 7 must absorb at least this share of the injected delay. */
+export const TIME_TO_ANSWER_INDEPENDENCE_STAGE_SEVEN_SHARE = 0.7;
+
+export interface StageSixSevenIndependence {
+  fixture: string;
+  delayMs: number;
+  normalStageSixMs: readonly number[];
+  normalStageSevenMs: readonly number[];
+  controlStageSixMs: readonly number[];
+  controlStageSevenMs: readonly number[];
+  stageSixMedianMs: number;
+  stageSixControlMedianMs: number;
+  stageSevenMedianMs: number;
+  stageSevenControlMedianMs: number;
+  stageSixDeltaMs: number;
+  stageSevenDeltaMs: number;
+}
+
+function median(values: readonly number[]): number {
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 === 1 ? ordered[middle]! : (ordered[middle - 1]! + ordered[middle]!) / 2;
+}
+
+function assertSampleSet(label: string, values: readonly number[]): void {
+  if (values.length === 0) throw new Error(`${label} requires at least one sample`);
+  if (values.some((value) => typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+    throw new Error(`${label} requires finite non-negative samples`);
+  }
+}
+
+/**
+ * Enforce the independence control. Throws when the injected presentation delay
+ * fails to move stage 7 (the seam is measuring something other than
+ * presentation) or when it also moves stage 6 (both stages share a clock). A
+ * capture that cannot demonstrate this must not produce a baseline.
+ */
+export function assertStageSixSevenIndependence(input: {
+  fixture: string;
+  delayMs?: number;
+  normalStageSixMs: readonly number[];
+  normalStageSevenMs: readonly number[];
+  controlStageSixMs: readonly number[];
+  controlStageSevenMs: readonly number[];
+}): StageSixSevenIndependence {
+  const delayMs = input.delayMs ?? TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS;
+  if (!Number.isFinite(delayMs) || delayMs <= 0) {
+    throw new Error("the independence control requires a positive injected delay");
+  }
+  assertSampleSet("stage 6 normal samples", input.normalStageSixMs);
+  assertSampleSet("stage 7 normal samples", input.normalStageSevenMs);
+  assertSampleSet("stage 6 control samples", input.controlStageSixMs);
+  assertSampleSet("stage 7 control samples", input.controlStageSevenMs);
+
+  const stageSixMedianMs = median(input.normalStageSixMs);
+  const stageSixControlMedianMs = median(input.controlStageSixMs);
+  const stageSevenMedianMs = median(input.normalStageSevenMs);
+  const stageSevenControlMedianMs = median(input.controlStageSevenMs);
+  const stageSixDeltaMs = stageSixControlMedianMs - stageSixMedianMs;
+  const stageSevenDeltaMs = stageSevenControlMedianMs - stageSevenMedianMs;
+
+  const stageSixAllowance = Math.max(
+    TIME_TO_ANSWER_INDEPENDENCE_STAGE_SIX_TOLERANCE_MS,
+    stageSixMedianMs * 0.25
+  );
+  if (stageSixDeltaMs > stageSixAllowance) {
+    throw new Error(
+      `stage 6 moved by ${stageSixDeltaMs.toFixed(1)} ms under an artificial delay injected AFTER acceptance ` +
+        `(allowance ${stageSixAllowance.toFixed(1)} ms): stage 6 is not independent of presentation`
+    );
+  }
+  const requiredStageSevenDelta = delayMs * TIME_TO_ANSWER_INDEPENDENCE_STAGE_SEVEN_SHARE;
+  if (stageSevenDeltaMs < requiredStageSevenDelta) {
+    throw new Error(
+      `stage 7 only moved by ${stageSevenDeltaMs.toFixed(1)} ms for a ${delayMs} ms artificial delay ` +
+        `(required at least ${requiredStageSevenDelta.toFixed(1)} ms): stage 7 does not measure presentation of the accepted model`
+    );
+  }
+  if (input.controlStageSevenMs.some((value) => value < delayMs)) {
+    throw new Error("a control stage-7 sample is shorter than the injected delay, so the delay was not applied");
+  }
+  return {
+    fixture: input.fixture,
+    delayMs,
+    normalStageSixMs: input.normalStageSixMs,
+    normalStageSevenMs: input.normalStageSevenMs,
+    controlStageSixMs: input.controlStageSixMs,
+    controlStageSevenMs: input.controlStageSevenMs,
+    stageSixMedianMs,
+    stageSixControlMedianMs,
+    stageSevenMedianMs,
+    stageSevenControlMedianMs,
+    stageSixDeltaMs,
+    stageSevenDeltaMs
+  };
 }
