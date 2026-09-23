@@ -245,27 +245,33 @@
    * preceded that fetch's start. Fails closed with both logs when the chain cannot
    * be established.
    */
-  const attributeNotification = (revision, acceptedAt) => {
-    const delivered = bench.fetchLog
-      .filter((entry) => entry.revision === revision && entry.at <= acceptedAt)
+ const attributeNotification = (revision, acceptedAt, notBeforeAt = 0) => {
+ const delivered = bench.fetchLog
+ .filter((entry) => entry.revision === revision && entry.at <= acceptedAt && entry.startedAt >= notBeforeAt)
       .pop();
     if (!delivered) {
-      return {
+ return {
         error:
           "no paired API fetch delivered the accepted revision " +
           revision +
-          " before acceptance (fetch=" +
+ " before acceptance after the trigger checkpoint " +
+ notBeforeAt +
+ " (fetch=" +
           JSON.stringify(bench.fetchLog.slice(-6)) +
           ")"
       };
     }
-    const notified = bench.notifyLog.filter((entry) => entry.at <= delivered.startedAt).pop();
+ const notified = bench.notifyLog
+ .filter((entry) => entry.at <= delivered.startedAt && entry.at >= notBeforeAt)
+ .pop();
     if (!notified) {
       return {
         error:
           "no browser notification preceded the fetch cycle that delivered the accepted revision " +
           revision +
-          " (notify=" +
+ " after the trigger checkpoint " +
+ notBeforeAt +
+ " (notify=" +
           JSON.stringify(bench.notifyLog.slice(-6)) +
           ")"
       };
@@ -291,22 +297,37 @@
      * change, then await it afterwards. Arming records the pre-change Home
      * metric value, so "the DOM changed" is measured rather than assumed.
      */
-    armModelAcceptance(input) {
+ armModelAcceptance(input) {
       const mode = input.mode === "acceptance-only" ? "acceptance-only" : "content";
       const arm = {
         mode,
         previousSeq: Number(input.previousSeq) || 0,
         limit: Number(input.limit) || 60000,
         metricLabel: String(input.metricLabel || "Offline"),
-        expectedMetricValue: String(input.expectedMetricValue || ""),
-        beforeMetricValue: readMetric(String(input.metricLabel || "Offline")),
-        startedAt: performance.now(),
+ expectedMetricValue: String(input.expectedMetricValue || ""),
+ awaitPublicationTrigger: Boolean(input.awaitPublicationTrigger),
+ beforeMetricValue: readMetric(String(input.metricLabel || "Offline")),
+ startedAt: performance.now(),
         armed: true,
         result: null,
-        error: null
-      };
-      arm.task = (async () => {
-        const deadline = arm.startedAt + arm.limit;
+ error: null
+ };
+ arm.trigger = null;
+ arm.task = (async () => {
+ let deadline = arm.startedAt + arm.limit;
+ if (arm.awaitPublicationTrigger) {
+ while (!arm.trigger && performance.now() < deadline) await frame();
+ if (!arm.trigger) {
+ throw new Error(
+ "the model acceptance probe was armed but the publication trigger was never marked " +
+ "(arm=" + JSON.stringify({ startedAt: arm.startedAt, previousSeq: arm.previousSeq }) + "; " + diagnostic() + ")"
+ );
+ }
+ // The measurement deadline belongs to the publication being measured, not
+ // to the short pre-trigger arming handshake.
+ deadline = performance.now() + arm.limit;
+ }
+ const trigger = arm.trigger || { at: 0, acceptedSequence: arm.previousSeq, revision: "", fetchLogLength: 0, notifyLogLength: 0 };
         /*
          * acceptance-only: fixtures whose published revision carries NO inventory
          * change (provider state alone moved). Stage 6 is "notification -> coherent
@@ -316,11 +337,11 @@
         if (arm.mode === "acceptance-only") {
           let accepted = null;
           while (performance.now() < deadline && !accepted) {
-            accepted = acceptanceSink().find((entry) => entry.revision && entry.seq > arm.previousSeq) || null;
+ accepted = acceptanceSink().find((entry) => entry.revision && entry.seq > trigger.acceptedSequence) || null;
             if (!accepted) await frame();
           }
           if (!accepted) throw new Error("no accepted coherent model was observed (" + diagnostic() + ")");
-          const attribution = attributeNotification(accepted.revision, accepted.at);
+ const attribution = attributeNotification(accepted.revision, accepted.at, trigger.at);
           if (attribution.error) throw new Error(attribution.error + " (" + diagnostic() + ")");
           return {
             notificationToCoherentModelMs: accepted.at - attribution.notifyAt,
@@ -338,8 +359,11 @@
             beforeMetricValue: arm.beforeMetricValue,
             afterMetricValue: readMetric(arm.metricLabel),
             expectedMetricValue: null,
-            metricChanged: null
-          };
+ metricChanged: null,
+ triggerAt: trigger.at,
+ triggerAcceptedSequence: trigger.acceptedSequence,
+ triggerRevision: trigger.revision
+ };
         }
         // Find the (accepted model, rendered content) pair that belongs to THIS
         // sample: an acceptance after the armed sequence whose render carries that
@@ -351,7 +375,7 @@
         let commit = null;
         while (performance.now() < deadline && !commit) {
           for (const candidate of acceptanceSink()) {
-            if (!candidate.revision || candidate.seq <= arm.previousSeq) continue;
+ if (!candidate.revision || candidate.seq <= trigger.acceptedSequence) continue;
             const rendered = bench.commits.find(
               (entry) =>
                 entry.at > candidate.at &&
@@ -381,7 +405,7 @@
               "; accepted=" +
               JSON.stringify(acceptanceSink().slice(-3)) +
               "; latest accepted seq=" +
-              arm.previousSeq +
+ trigger.acceptedSequence +
               "->" +
               (acceptanceSink().length ? acceptanceSink()[acceptanceSink().length - 1].seq : 0) +
               "; notifications=" +
@@ -391,19 +415,25 @@
               " latest notified=" +
               bench.notifyRevision +
               " " +
-              JSON.stringify(bench.notifyLog.slice(-3)) +
-              ")"
+ JSON.stringify(bench.notifyLog.slice(-3)) +
+ "; trigger=" +
+ JSON.stringify(trigger) +
+ "; arm=" +
+ JSON.stringify({ startedAt: arm.startedAt, previousSeq: arm.previousSeq, beforeMetricValue: arm.beforeMetricValue }) +
+ "; paired fetches=" +
+ JSON.stringify(bench.fetchLog.slice(-6)) +
+ ")"
           );
         }
         const acceptedAt = event.at;
         const revision = event.revision;
         // Stage 6 starts at the notification that caused the fetch cycle which
         // delivered this accepted revision. See attributeNotification().
-        const attribution = attributeNotification(revision, acceptedAt);
+ const attribution = attributeNotification(revision, acceptedAt, trigger.at);
         if (attribution.error) throw new Error(attribution.error + " (" + diagnostic() + ")");
         const notifyAt = attribution.notifyAt;
         const skippedAcceptances = acceptanceSink().filter(
-          (entry) => entry.revision && entry.seq > arm.previousSeq && entry.seq < event.seq
+ (entry) => entry.revision && entry.seq > trigger.acceptedSequence && entry.seq < event.seq
         ).length;
         const renderCommitAt = commit.at;
         await frame();
@@ -424,8 +454,11 @@
           beforeMetricValue: arm.beforeMetricValue,
           afterMetricValue: readMetric(arm.metricLabel),
           expectedMetricValue: arm.expectedMetricValue,
-          metricChanged: arm.beforeMetricValue !== arm.expectedMetricValue
-        };
+ metricChanged: arm.beforeMetricValue !== arm.expectedMetricValue,
+ triggerAt: trigger.at,
+ triggerAcceptedSequence: trigger.acceptedSequence,
+ triggerRevision: trigger.revision
+ };
       })();
       arm.task.catch((error) => {
         arm.error = String(error && error.message ? error.message : error);
@@ -434,9 +467,24 @@
       return true;
     },
 
-    armed() {
+ armed() {
       return Boolean(bench.arm && bench.arm.armed);
-    },
+ },
+
+ markModelPublicationTriggered() {
+ const arm = bench.arm;
+ if (!arm || !arm.task || !arm.armed) throw new Error("model acceptance was not armed");
+ if (arm.trigger) throw new Error("the model publication trigger was already marked");
+ const accepted = acceptanceSink().filter((entry) => entry.revision).slice(-1)[0] || null;
+ arm.trigger = {
+ at: performance.now(),
+ acceptedSequence: accepted ? accepted.seq : arm.previousSeq,
+ revision: accepted ? accepted.revision : "",
+ fetchLogLength: bench.fetchLog.length,
+ notifyLogLength: bench.notifyLog.length
+ };
+ return arm.trigger;
+ },
 
     async awaitModelAcceptance() {
       const arm = bench.arm;

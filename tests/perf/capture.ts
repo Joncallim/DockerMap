@@ -33,7 +33,6 @@ import {
   TIME_TO_ANSWER_CONTROLLED_RUNS,
   TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
   TIME_TO_ANSWER_INDEPENDENCE_SAMPLES,
-  TIME_TO_ANSWER_INDEPENDENCE_SETTLE_MS,
   TIME_TO_ANSWER_MATRIX,
   TIME_TO_ANSWER_METHODOLOGY,
   TIME_TO_ANSWER_REFERENCE_FIXTURES,
@@ -883,7 +882,10 @@ interface StageSixSeven {
   beforeMetricValue: string | null;
   afterMetricValue: string | null;
   expectedMetricValue: string | null;
-  metricChanged: boolean | null;
+ metricChanged: boolean | null;
+ triggerAt?: number;
+ triggerAcceptedSequence?: number;
+ triggerRevision?: string;
 }
 
 /**
@@ -896,7 +898,7 @@ interface StageSixSeven {
  */
 async function armStageSixSeven(
   page: any,
-  input: { mode: "content" | "acceptance-only"; expectedMetricValue: string }
+ input: { mode: "content" | "acceptance-only"; expectedMetricValue: string; awaitPublicationTrigger?: boolean }
 ): Promise<void> {
   const previousSeq = await page.evaluate("window.__dockermapBenchHelpers.currentAcceptedSeq()");
   await page.evaluate(
@@ -904,12 +906,67 @@ async function armStageSixSeven(
       mode: input.mode,
       previousSeq,
       limit: 60_000,
-      metricLabel: HomeMetricLabel,
-      expectedMetricValue: input.expectedMetricValue
+ metricLabel: HomeMetricLabel,
+ expectedMetricValue: input.expectedMetricValue,
+ awaitPublicationTrigger: Boolean(input.awaitPublicationTrigger)
     })}`
   );
   await page.evaluate("window.__dockermapBenchHelpers.armModelAcceptance(window.__benchInput)");
   await page.waitForFunction("window.__dockermapBenchHelpers.armed()", undefined, { timeout: 10_000 });
+}
+
+async function markStageSixSevenPublicationTriggered(page: any): Promise<Record<string, unknown>> {
+ return (await page.evaluate("window.__dockermapBenchHelpers.markModelPublicationTriggered()")) as Record<string, unknown>;
+}
+
+/**
+ * Observe the exact publication a control trigger is meant to cause. This is a
+ * bounded observation, not a delay: fixture, daemon and API must all expose the
+ * expected inventory before the sample is accepted as control evidence.
+ */
+async function observeControlPublication(input: {
+ fixtureSocket: string;
+ daemonPort: number;
+ apiPort: number;
+ expectedExited: number;
+ generation: number;
+ timeoutMs?: number;
+}): Promise<Record<string, unknown>> {
+ const startedAt = nowMs();
+ const deadline = Date.now() + (input.timeoutMs ?? 60_000);
+ let fixtureExited = -1;
+ let daemonExited = -1;
+ let apiExited = -1;
+ let daemonRevision = "";
+ let apiRevision = "";
+ while (Date.now() < deadline) {
+ const fixture = await getUnix(input.fixtureSocket, "/containers/json");
+ const daemon = await fetchJson(`http://127.0.0.1:${input.daemonPort}/daemon/snapshot`, 3_000);
+ const api = await fetchJson(`http://127.0.0.1:${input.apiPort}/api/snapshot`, 3_000);
+ fixtureExited = countExited(fixture);
+ daemonExited = countExited(JSON.stringify(daemon));
+ apiExited = countExited(JSON.stringify(api));
+ daemonRevision = String(daemon?.modelRevision ?? "");
+ apiRevision = String(api?.modelRevision ?? "");
+ if (fixtureExited === input.expectedExited && daemonExited === input.expectedExited && apiExited === input.expectedExited) {
+ return {
+ generation: input.generation,
+ expectedExited: input.expectedExited,
+ fixtureExited,
+ daemonExited,
+ apiExited,
+ daemonRevision,
+ apiRevision,
+ observedAtMs: nowMs(),
+ elapsedMs: nowMs() - startedAt
+ };
+ }
+ await sleep(25);
+ }
+ throw new Error(
+ `control ${input.generation} publication did not converge to ${input.expectedExited} exited within ${input.timeoutMs ?? 60_000} ms ` +
+ `(fixture=${fixtureExited}, daemon=${daemonExited}@${daemonRevision || "none"}, api=${apiExited}@${apiRevision || "none"})`
+ );
 }
 
 async function awaitModelAcceptance(page: any): Promise<StageSixSeven> {
@@ -1271,18 +1328,18 @@ async function main(): Promise<void> {
                 // trigger is guaranteed to be inside it.
                 onConnected: async () => {
                   if (needsStageSix) {
-                    await armStageSixSeven(benchPage, {
+ await armStageSixSeven(benchPage, {
                       // Provider-only fixtures publish a revision with no inventory
                       // change: stage 6 ends at acceptance (no Home repaint exists to
                       // wait for) and stage 7 is not declared for them.
                       mode: tracksIndependence ? "content" : "acceptance-only",
                       expectedMetricValue: tracksIndependence ? expectedMetricValue : ""
-                    });
-                  }
-                  if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
+ });
+ }
+ if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
                     // A real published inventory change: the fixture daemon serves a
                     // new generation, so the daemon must publish a new revision.
-                    await setFixtureGeneration(fixtureSocket, generation);
+ await setFixtureGeneration(fixtureSocket, generation);
                   }
                   // `provider-only-revision-change` and `unavailable-optional-provider`
                   // need no trigger: their revision advance comes from provider state
@@ -1382,42 +1439,44 @@ async function main(): Promise<void> {
             // stage-7 number that does not move would prove stage 7 is not
             // measuring presentation of the accepted model.
             for (let index = 0; index < TIME_TO_ANSWER_INDEPENDENCE_SAMPLES; index += 1) {
-              const generation = samples + index + 1;
-              const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
-              await benchPage.evaluate(`window.__dockermapBenchRenderDelayMs = ${TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS}`);
-              await armStageSixSeven(benchPage, { mode: "content", expectedMetricValue });
-              // Deterministic settle delay before the control trigger. These samples
-              // measure stages 6/7 only — no poll phase is involved — so the delay
-              // exists solely to keep the arming and the fixture change from being
-              // simultaneous, and it is fixed rather than random so the control is
-              // reproducible too.
-              await sleep(TIME_TO_ANSWER_INDEPENDENCE_SETTLE_MS);
-              if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
-                await setFixtureGeneration(fixtureSocket, generation);
-                // Confirm the whole pipeline for this control sample, not just the
-                // trigger: the fixture's new generation must reach the daemon before the
-                // browser can be expected to render it, and a stale hop here would make
-                // the control look like an application failure.
-                await sleep(2_500);
-                const served = countExited(await getUnix(fixtureSocket, "/containers/json"));
-                const snapshot = JSON.stringify(await fetchJson(`http://127.0.0.1:${daemonPort}/daemon/snapshot`, 3_000));
-                process.stdout.write(
-                  `[capture] control ${generation}: fixture served ${served} exited, daemon published ${countExited(snapshot)}\n`
-                );
-              }
-              const measured = await awaitModelAcceptance(benchPage);
-              independencePair.controlStageSixMs.push(measured.notificationToCoherentModelMs);
-              independencePair.controlStageSevenMs.push(measured.coherentModelToUsefulRenderMs as number);
-              stageSixSevenAudit.push({
+ const generation = samples + index + 1;
+ const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
+ await benchPage.evaluate(`window.__dockermapBenchRenderDelayMs = ${TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS}`);
+ try {
+ await armStageSixSeven(benchPage, { mode: "content", expectedMetricValue, awaitPublicationTrigger: true });
+ // The checkpoint is immediately before the POST. An acceptance before this
+ // point is background churn and cannot be attributed to this control sample.
+ const trigger = await markStageSixSevenPublicationTriggered(benchPage);
+ if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
+ await setFixtureGeneration(fixtureSocket, generation);
+ const publication = await observeControlPublication({
+ fixtureSocket,
+ daemonPort,
+ apiPort,
+ expectedExited: Number(expectedMetricValue),
+ generation
+ });
+ process.stdout.write(
+ `[capture] control ${generation}: fixture ${publication.fixtureExited} exited, daemon ${publication.daemonExited}, api ${publication.apiExited}\n`
+ );
+ const measured = await awaitModelAcceptance(benchPage);
+ independencePair.controlStageSixMs.push(measured.notificationToCoherentModelMs);
+ independencePair.controlStageSevenMs.push(measured.coherentModelToUsefulRenderMs as number);
+ stageSixSevenAudit.push({
                 ...measured,
                 fixture: plan.name,
                 run: runIndex,
-                sample: `control-${index}`,
-                generation,
-                delayMs: TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS
-              });
-              await benchPage.evaluate("window.__dockermapBenchRenderDelayMs = 0");
-            }
+ sample: `control-${index}`,
+ generation,
+ delayMs: TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
+ trigger,
+ publication
+ });
+ }
+ } finally {
+ await benchPage.evaluate("window.__dockermapBenchRenderDelayMs = 0");
+ }
+ }
             independencePairs.push(independencePair);
           }
           if (hasStage(plan.name, "commandQueryMs")) {
