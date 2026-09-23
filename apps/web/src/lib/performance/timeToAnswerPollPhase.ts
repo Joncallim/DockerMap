@@ -199,7 +199,11 @@ export function phaseMediansMs(runs: readonly (readonly number[])[], intervalMs:
  * not arrive through the real API poller path, or when the observed spread is
  * too narrow to characterise a sawtooth whose range is one poll interval.
  */
-export function assertPollPhaseSweep(samples: readonly PollPhaseSweep[], intervalMs: number): PollPhaseValidity {
+export function assertPollPhaseSweep(
+  samples: readonly PollPhaseSweep[],
+  intervalMs: number,
+  minSamplesPerPhase = POLL_PHASE_MIN_SAMPLES_PER_PHASE
+): PollPhaseValidity {
   assertInterval(intervalMs);
   if (samples.length === 0) throw new Error("the stage-5 phase sweep has no samples");
   const grid = pollPhaseGridMs(intervalMs);
@@ -256,10 +260,10 @@ export function assertPollPhaseSweep(samples: readonly PollPhaseSweep[], interva
 
   const sparse = samplesPerPhase
     .map((count, index) => ({ count, index }))
-    .filter((entry) => entry.count < POLL_PHASE_MIN_SAMPLES_PER_PHASE);
+    .filter((entry) => entry.count < minSamplesPerPhase);
   if (sparse.length > 0) {
     throw new Error(
-      `the stage-5 sweep must cover every declared phase at least ${POLL_PHASE_MIN_SAMPLES_PER_PHASE} times; ` +
+      `the stage-5 sweep must cover every declared phase at least ${minSamplesPerPhase} times; ` +
         `missing or thin phases: ${sparse.map((entry) => entry.index + 1).join(", ")}`
     );
   }

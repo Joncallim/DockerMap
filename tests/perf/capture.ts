@@ -53,6 +53,7 @@ import {
 import {
   POLL_PHASE_CONTROL_TOLERANCE_MS,
   POLL_PHASE_DIVISIONS,
+  POLL_PHASE_MIN_SAMPLES_PER_PHASE,
   assertPollPhaseSweep,
   declaredPhaseForSample,
   intendedLatencyMs,
@@ -1516,7 +1517,12 @@ async function main(): Promise<void> {
     for (const fixture of stageFiveRequired) {
       const verdict = assertPollPhaseSweep(
         stageFiveByFixture.get(fixture)!,
-        Number(environment.ssePollIntervalMs)
+        Number(environment.ssePollIntervalMs),
+        // Debug runs may declare a single controlled run, which cannot reach the
+        // three-samples-per-phase the full protocol requires. The declared minimum is
+        // therefore relaxed ONLY for probing runs, which can never emit an artifact
+        // (the closed matrix requires three runs); every other guard still applies.
+        runs >= TIME_TO_ANSWER_CONTROLLED_RUNS ? POLL_PHASE_MIN_SAMPLES_PER_PHASE : 1
       );
       stageFiveValidity[fixture] = verdict;
       stageFiveEvidence[fixture] = {
