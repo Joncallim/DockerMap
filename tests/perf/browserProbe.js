@@ -22,6 +22,7 @@
     notifyAt: 0,
     notifyRevision: "",
     notifyLog: [],
+    fetchLog: [],
     streamUrl: "",
     opens: 0,
     errors: 0,
@@ -34,6 +35,52 @@
     arm: null
   };
   window.__dockermapBench = bench;
+
+  /*
+   * Fetch attribution. The application does NOT accept whatever the stream
+   * announces: it accepts the coherent snapshot/runtime-map pair its own fetches
+   * returned. The daemon is read per request, so `/daemon/health` (what the stream
+   * carries) and `/daemon/snapshot` (what the pair carries) can legitimately hold
+   * different revisions while the host is churning. The harness therefore records
+   * which revision each paired fetch actually delivered, so stage 6 can start at
+   * the notification that caused THAT fetch cycle instead of assuming the accepted
+   * revision was announced by the stream.
+   */
+  try {
+    const originalFetch = window.fetch;
+    if (typeof originalFetch === "function") {
+      window.fetch = function (...callArgs) {
+        const input = callArgs[0];
+        const url = typeof input === "string" ? input : String((input && input.url) || "");
+        const paired = /\/api\/(snapshot|runtime\/map)(?:[?#]|$)/.test(url);
+        const startedAt = performance.now();
+        const result = originalFetch.apply(this, callArgs);
+        if (paired && result && typeof result.then === "function") {
+          result
+            .then((response) => {
+              try {
+                const clone = response.clone();
+                return clone.json().then((payload) => {
+                  bench.fetchLog.push({
+                    url: /runtime\/map/.test(url) ? "runtime-map" : "snapshot",
+                    startedAt,
+                    at: performance.now(),
+                    revision: payload && payload.modelRevision ? String(payload.modelRevision) : ""
+                  });
+                  if (bench.fetchLog.length > 512) bench.fetchLog.splice(0, 256);
+                });
+              } catch (error) {
+                return undefined;
+              }
+            })
+            .catch(() => undefined);
+        }
+        return result;
+      };
+    }
+  } catch (error) {
+    bench.initError = bench.initError || String(error);
+  }
 
   try {
     const Original = window.EventSource;
@@ -181,6 +228,46 @@
     acceptanceSink().length;
 
   /*
+   * Attribute an accepted revision to the notification that caused it: the paired
+   * fetch that DELIVERED that revision, then the browser notification that
+   * preceded that fetch's start. Fails closed with both logs when the chain cannot
+   * be established.
+   */
+  const attributeNotification = (revision, acceptedAt) => {
+    const delivered = bench.fetchLog
+      .filter((entry) => entry.revision === revision && entry.at <= acceptedAt)
+      .pop();
+    if (!delivered) {
+      return {
+        error:
+          "no paired API fetch delivered the accepted revision " +
+          revision +
+          " before acceptance (fetch=" +
+          JSON.stringify(bench.fetchLog.slice(-6)) +
+          ")"
+      };
+    }
+    const notified = bench.notifyLog.filter((entry) => entry.at <= delivered.startedAt).pop();
+    if (!notified) {
+      return {
+        error:
+          "no browser notification preceded the fetch cycle that delivered the accepted revision " +
+          revision +
+          " (notify=" +
+          JSON.stringify(bench.notifyLog.slice(-6)) +
+          ")"
+      };
+    }
+    return {
+      notifyAt: notified.at,
+      notifiedRevision: notified.revision,
+      fetchStartedAt: delivered.startedAt,
+      fetchDeliveredAt: delivered.at,
+      deliveredBy: delivered.url
+    };
+  };
+
+  /*
    * Measurement helpers. The harness calls these by NAME through a raw string
    * expression (`page.evaluate("window.__dockermapBenchHelpers...")`), because a
    * TS-authored function is re-emitted with esbuild's `__name` helper that does
@@ -221,19 +308,17 @@
             if (!accepted) await frame();
           }
           if (!accepted) throw new Error("no accepted coherent model was observed (" + diagnostic() + ")");
-          const notified = bench.notifyLog.filter((entry) => entry.revision === accepted.revision).pop();
-          if (!notified) {
-            throw new Error(
-              "the accepted revision " + accepted.revision + " was never notified to this browser (" + diagnostic() + ")"
-            );
-          }
+          const attribution = attributeNotification(accepted.revision, accepted.at);
+          if (attribution.error) throw new Error(attribution.error + " (" + diagnostic() + ")");
           return {
-            notificationToCoherentModelMs: accepted.at - notified.at,
+            notificationToCoherentModelMs: accepted.at - attribution.notifyAt,
             coherentModelToUsefulRenderMs: null,
             acceptedRevision: accepted.revision,
             acceptedSequence: accepted.seq,
-            notifiedRevision: accepted.revision,
+            notifiedRevision: attribution.notifiedRevision,
             latestNotifiedRevision: bench.notifyRevision,
+            fetchDeliveredBy: attribution.deliveredBy,
+            fetchStartedAt: attribution.fetchStartedAt,
             skippedAcceptances: 0,
             renderCommitMs: null,
             presentationFrameMs: null,
@@ -284,21 +369,11 @@
         }
         const acceptedAt = event.at;
         const revision = event.revision;
-        // Stage 6 starts at the notification of THAT revision, which is not
-        // necessarily the latest notification the page has seen.
-        const notified = bench.notifyLog.filter((entry) => entry.revision === revision).pop();
-        if (!notified) {
-          throw new Error(
-            "the accepted revision " +
-              revision +
-              " was never notified to this browser (" +
-              diagnostic() +
-              "; latest=" +
-              bench.notifyRevision +
-              ")"
-          );
-        }
-        const notifyAt = notified.at;
+        // Stage 6 starts at the notification that caused the fetch cycle which
+        // delivered this accepted revision. See attributeNotification().
+        const attribution = attributeNotification(revision, acceptedAt);
+        if (attribution.error) throw new Error(attribution.error + " (" + diagnostic() + ")");
+        const notifyAt = attribution.notifyAt;
         const skippedAcceptances = acceptanceSink().filter(
           (entry) => entry.revision && entry.seq > arm.previousSeq && entry.seq < event.seq
         ).length;
@@ -310,8 +385,10 @@
           coherentModelToUsefulRenderMs: presentedAt - acceptedAt,
           acceptedRevision: revision,
           acceptedSequence: event.seq,
-          notifiedRevision: revision,
+          notifiedRevision: attribution.notifiedRevision,
           latestNotifiedRevision: bench.notifyRevision,
+          fetchDeliveredBy: attribution.deliveredBy,
+          fetchStartedAt: attribution.fetchStartedAt,
           skippedAcceptances,
           renderCommitMs: renderCommitAt - acceptedAt,
           presentationFrameMs: presentedAt - renderCommitAt,

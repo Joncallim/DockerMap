@@ -193,11 +193,17 @@ topbar clock) or a render belonging to a different revision cannot end it. The
 probe records the pre-change metric value as it arms, so "the DOM changed" is
 measured rather than assumed.
 
-**The chain of custody is checked.** For every browser sample the harness
-independently resolves the revision the API observed (`revision` from
-`publicationToNodeObservationMs`) and requires the browser's accepted revision to
-be that same token; a mismatch fails the capture instead of recording a number
-whose origin is unknown.
+**The chain of custody is checked.** For every browser sample the harness records
+which paired API fetch delivered the accepted revision and which notification
+preceded that fetch cycle, so stage 6 starts at a notification that provably caused
+the fetch the model came from. It does **not** require the accepted revision to
+equal a revision this harness's own stream announced: the daemon is read per
+request, so `/daemon/health` (what the stream carries) and `/daemon/snapshot` (what
+the accepted pair carries) can hold different revisions while a host is churning,
+and every SSE connection polls on its own phase. The overlap with the harness's own
+stream is recorded as evidence (`acceptedRevisionInApiStream`), and for every cell
+that declares stage 7 the accepted revision is additionally bound to the fixture's
+triggered generation by the expected-content check.
 
 ## Benchmark-mode application build and production isolation
 
