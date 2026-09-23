@@ -192,9 +192,11 @@ Complete and enforced by tests:
   isolation proof (`productionIsolation.test.mjs`);
 - `npm run test:perf` wired into `npm run check:js`.
 
-The first baseline has been captured and interpreted in
-`docs/testing/TIME_TO_ANSWER_BASELINE.md`. Baseline 1 identifies the
-publication→Node observation floor, cold start and the legacy topology layout as
-the dominant costs, and records Composite projection as a measured, currently
-coupled cost. No optimization may be claimed until a candidate passes the
-promotion gate.
+The corrected baseline (capture 2) and its interpretation are in
+`docs/testing/TIME_TO_ANSWER_BASELINE.md`: 46 cells, 3 controlled runs × 15
+warmed samples, captured from committed revision `0714c87a` with both the product
+and harness revisions recorded. Baseline 1 was rejected in review — it measured
+Cmd-K palette-open instead of query-to-results, phase-locked stage 5 to the
+harness's own startup sequence, mixed cold-start probes into "warmed" attribution
+samples, and was produced by an uncommitted harness — and is superseded.
+No optimization may be claimed until a candidate passes the promotion gate.
