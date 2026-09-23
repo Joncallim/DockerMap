@@ -418,6 +418,36 @@ function assertBuildIsolation(): void {
   }
 }
 
+/**
+ * Advance the fixture's topology generation and CONFIRM it landed. The read-back is
+ * the point: a trigger that silently did not reach the fixture daemon would leave the
+ * publication grid and the stage-7 expectation describing a change that never
+ * happened, and the stage-7 check would then blame the application for it.
+ */
+async function setFixtureGeneration(socketPath: string, generation: number): Promise<void> {
+  await postUnix(socketPath, `/__fixture/topology-generation/${generation}`);
+  const state = JSON.parse(await getUnix(socketPath, "/__fixture/state")) as { generation?: number };
+  if (state.generation !== generation) {
+    throw new Error(
+      `the fixture trigger did not land: asked for generation ${generation}, fixture reports ${String(state.generation)}`
+    );
+  }
+}
+
+function getUnix(socketPath: string, path: string): Promise<string> {
+  return new Promise((done, fail) => {
+    const call = request({ socketPath, path, method: "GET" }, (response) => {
+      let body = "";
+      response.on("data", (chunk) => (body += chunk));
+      response.on("end", () =>
+        response.statusCode === 200 ? done(body) : fail(new Error(`fixture read ${response.statusCode}`))
+      );
+    });
+    call.on("error", fail);
+    call.end();
+  });
+}
+
 /** POST to a unix-socket HTTP endpoint (fixture daemon control route). */
 function postUnix(socketPath: string, path: string): Promise<string> {
   return new Promise((done, fail) => {
@@ -1235,7 +1265,7 @@ async function main(): Promise<void> {
                   if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
                     // A real published inventory change: the fixture daemon serves a
                     // new generation, so the daemon must publish a new revision.
-                    await postUnix(fixtureSocket, `/__fixture/topology-generation/${generation}`);
+                    await setFixtureGeneration(fixtureSocket, generation);
                   }
                   // `provider-only-revision-change` and `unavailable-optional-provider`
                   // need no trigger: their revision advance comes from provider state
@@ -1346,7 +1376,7 @@ async function main(): Promise<void> {
               // reproducible too.
               await sleep(TIME_TO_ANSWER_INDEPENDENCE_SETTLE_MS);
               if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
-                await postUnix(fixtureSocket, `/__fixture/topology-generation/${generation}`);
+                await setFixtureGeneration(fixtureSocket, generation);
               }
               const measured = await awaitModelAcceptance(benchPage);
               independencePair.controlStageSixMs.push(measured.notificationToCoherentModelMs);
