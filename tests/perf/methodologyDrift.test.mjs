@@ -30,10 +30,20 @@ test("the metadata emitter's methodology version matches the contract", () => {
 });
 
 test("the warm-up protocol is declared in the contract, not derived at runtime", () => {
-  const contract = read("apps/web/src/lib/performance/timeToAnswerEvidence.ts");
-  assert.match(contract, /export const TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = (\d+);/);
+ const contract = read("apps/web/src/lib/performance/timeToAnswerEvidence.ts");
+ assert.match(contract, /export const TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = 10;/);
   assert.match(contract, /export const TIME_TO_ANSWER_STATIONARITY_MIN_RATIO = [\d.]+;/);
   assert.match(contract, /export const TIME_TO_ANSWER_STATIONARITY_MAX_RATIO = [\d.]+;/);
+});
+
+test("a failed stationarity gate retains its complete warmed window before aborting", () => {
+ const capture = read("tests/perf/capture.ts");
+ const retainedBeforeGate = capture.match(
+ /warmUpObservations\[label\] = warmUps;[\s\S]*?warmedObservationWindows\[label\] = benchSamples\[key\]\.slice\(0, required\);[\s\S]*?assertWarmUpStationarity\(\{ label, warmUps, recorded \}\)/
+ );
+ assert.ok(retainedBeforeGate, "warm-ups and their complete window must be retained before stationarity can throw");
+ assert.match(capture, /warmUpStationarityFailures\[label\] = \{[\s\S]*?fixture: plan\.name,[\s\S]*?stage: key,[\s\S]*?run: runIndex,[\s\S]*?warmUps,[\s\S]*?measuredSamples: recorded,[\s\S]*?calculation: \{[\s\S]*?finalWarmUpMedian:[\s\S]*?measuredMedian:[\s\S]*?ratio: calculation\.ratio,[\s\S]*?bounds:[\s\S]*?reason: String\(error\)/);
+ assert.match(capture, /JSON\.stringify\([\s\S]*?warmedObservationWindows,[\s\S]*?warmUpObservations,[\s\S]*?warmUpStationarity,[\s\S]*?warmUpStationarityFailures/);
 });
 
 test("stage 5 declares a deterministic phase grid, not a random jitter", () => {

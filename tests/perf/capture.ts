@@ -43,11 +43,14 @@ import {
   assertDaemonBinaryProvenance,
   assertStageSixSevenIndependence,
   assertTimeToAnswerEnvironment,
-  assertTimeToAnswerPromotion,
-  assertWarmUpStationarity,
-  derivedTimeToAnswerPhaseNormalized,
-  splitWarmedObservations,
-  validateTimeToAnswerEvidence
+ assertTimeToAnswerPromotion,
+ assertWarmUpStationarity,
+ derivedTimeToAnswerPhaseNormalized,
+ splitWarmedObservations,
+ validateTimeToAnswerEvidence,
+ warmUpStationarityCalculation,
+ TIME_TO_ANSWER_STATIONARITY_MAX_RATIO,
+ TIME_TO_ANSWER_STATIONARITY_MIN_RATIO
 } from "../../apps/web/src/lib/performance/timeToAnswerEvidence";
 import {
   POLL_PHASE_CONTROL_TOLERANCE_MS,
@@ -225,7 +228,7 @@ const stageFiveValidity: Record<string, unknown> = {};
 /**
  * The complete warmed observation window per `fixture|stage`, in the order the
  * daemon produced it (`samples + TIME_TO_ANSWER_WARM_UP_OBSERVATIONS` values).
- * The fixed warm-ups are indices 0–4, so the retention rule is verifiable from
+ * The fixed warm-ups occupy the declared leading indices, so the retention rule is verifiable from
  * the raw series instead of being asserted only by the code that applied it.
  */
 const warmedObservationWindows: Record<string, number[]> = {};
@@ -260,7 +263,21 @@ function preserveRaw(reason: string): void {
     : `${outputPath}.raw.json`;
   try {
     mkdirSync(dirname(destination), { recursive: true });
-    writeFileSync(destination, JSON.stringify({ reason, raw }, null, 2));
+ writeFileSync(
+ destination,
+ JSON.stringify(
+ {
+ reason,
+ raw,
+ warmedObservationWindows,
+ warmUpObservations,
+ warmUpStationarity,
+ warmUpStationarityFailures
+ },
+ null,
+ 2
+ )
+ );
     process.stderr.write(`[capture] preserved raw samples at ${destination}\n`);
   } catch (error) {
     process.stderr.write(`[capture] could not preserve raw samples: ${String(error)}\n`);
@@ -503,6 +520,8 @@ const BENCH_STAGE_KEYS = ["dockerObservationMs", "composeEnrichmentMs", "finding
 const warmUpObservations: Record<string, number[]> = {};
 /** The declared-stationarity ratio of each warmed window, per `fixture|stage|run`. */
 const warmUpStationarity: Record<string, number> = {};
+/** Failed stationarity gates retain complete diagnostic evidence before aborting. */
+const warmUpStationarityFailures: Record<string, Record<string, unknown>> = {};
 
 function readBenchSink(path: string): Record<(typeof BENCH_STAGE_KEYS)[number], number[]> {
   const stages = { dockerObservationMs: [], composeEnrichmentMs: [], findingsDerivationMs: [] } as Record<
@@ -898,7 +917,7 @@ interface StageSixSeven {
  */
 async function armStageSixSeven(
   page: any,
- input: { mode: "content" | "acceptance-only"; expectedMetricValue: string; awaitPublicationTrigger?: boolean; awaitExpectedRevision?: boolean }
+ input: { mode: "content" | "acceptance-only"; expectedMetricValue: string; awaitPublicationTrigger?: boolean }
 ): Promise<void> {
   const previousSeq = await page.evaluate("window.__dockermapBenchHelpers.currentAcceptedSeq()");
   await page.evaluate(
@@ -908,8 +927,7 @@ async function armStageSixSeven(
       limit: 60_000,
  metricLabel: HomeMetricLabel,
  expectedMetricValue: input.expectedMetricValue,
- awaitPublicationTrigger: Boolean(input.awaitPublicationTrigger),
- awaitExpectedRevision: Boolean(input.awaitExpectedRevision)
+ awaitPublicationTrigger: Boolean(input.awaitPublicationTrigger)
     })}`
   );
   await page.evaluate("window.__dockermapBenchHelpers.armModelAcceptance(window.__benchInput)");
@@ -1192,12 +1210,35 @@ async function main(): Promise<void> {
               // stay auditable. The stationarity guard then decides whether the
               // window is usable at all: a window whose warm-ups have not settled is
               // INVALID, never trimmed.
-              const { warmUps, recorded } = splitWarmedObservations(benchSamples[key], samples);
-              const label = `${plan.name}|${key}|run${runIndex}`;
-              warmUpStationarity[label] = assertWarmUpStationarity({ label, warmUps, recorded });
-              warmUpObservations[label] = warmUps;
-              warmedObservationWindows[label] = benchSamples[key].slice(0, required);
-              record(plan.name, key, recorded);
+ const { warmUps, recorded } = splitWarmedObservations(benchSamples[key], samples);
+ const label = `${plan.name}|${key}|run${runIndex}`;
+ // Retain every observation BEFORE the validity check. A failed gate aborts the
+ // capture, but must never erase the evidence that explains why it failed.
+ warmUpObservations[label] = warmUps;
+ warmedObservationWindows[label] = benchSamples[key].slice(0, required);
+ const calculation = warmUpStationarityCalculation(warmUps, recorded);
+ try {
+ warmUpStationarity[label] = assertWarmUpStationarity({ label, warmUps, recorded });
+ } catch (error) {
+ warmUpStationarityFailures[label] = {
+ fixture: plan.name,
+ stage: key,
+ run: runIndex,
+ observationWindow: warmedObservationWindows[label],
+ warmUps,
+ measuredSamples: recorded,
+ calculation: {
+ formula: "median(final two warm-up observations) / median(measured samples)",
+ finalWarmUpMedian: calculation.finalWarmUpMedian,
+ measuredMedian: calculation.measuredMedian
+ },
+ ratio: calculation.ratio,
+ bounds: { min: TIME_TO_ANSWER_STATIONARITY_MIN_RATIO, max: TIME_TO_ANSWER_STATIONARITY_MAX_RATIO },
+ reason: String(error)
+ };
+ throw error;
+ }
+ record(plan.name, key, recorded);
             }
           }
 
@@ -1466,12 +1507,7 @@ async function main(): Promise<void> {
  const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
  await benchPage.evaluate(`window.__dockermapBenchRenderDelayMs = ${TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS}`);
  try {
- await armStageSixSeven(benchPage, {
- mode: "content",
- expectedMetricValue,
- awaitPublicationTrigger: true,
- awaitExpectedRevision: true
- });
+ await armStageSixSeven(benchPage, { mode: "content", expectedMetricValue, awaitPublicationTrigger: true });
  // The checkpoint is immediately before the POST. An acceptance before this
  // point is background churn and cannot be attributed to this control sample.
  const trigger = await markStageSixSevenPublicationTriggered(benchPage);

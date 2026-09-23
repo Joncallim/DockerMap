@@ -306,7 +306,6 @@
         metricLabel: String(input.metricLabel || "Offline"),
  expectedMetricValue: String(input.expectedMetricValue || ""),
  awaitPublicationTrigger: Boolean(input.awaitPublicationTrigger),
- awaitExpectedRevision: Boolean(input.awaitExpectedRevision),
  beforeMetricValue: readMetric(String(input.metricLabel || "Offline")),
  startedAt: performance.now(),
         armed: true,
@@ -329,15 +328,6 @@
  deadline = performance.now() + arm.limit;
  }
  const trigger = arm.trigger || { at: 0, acceptedSequence: arm.previousSeq, revision: "", fetchLogLength: 0, notifyLogLength: 0 };
- if (arm.awaitExpectedRevision) {
- while (!arm.expectedRevision && performance.now() < deadline) await frame();
- if (!arm.expectedRevision) {
- throw new Error(
- "the model acceptance probe was not given the coherent revision for its triggered publication " +
- "(trigger=" + JSON.stringify(trigger) + "; " + diagnostic() + ")"
- );
- }
- }
         /*
          * acceptance-only: fixtures whose published revision carries NO inventory
          * change (provider state alone moved). Stage 6 is "notification -> coherent

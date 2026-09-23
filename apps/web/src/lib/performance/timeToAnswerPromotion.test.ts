@@ -239,9 +239,9 @@ describe("time-to-answer promotion gate", () => {
   it("cannot let a cold first observation enter a warmed stage summary", () => {
     // The daemon's first passes are cold, and with 15 recorded samples nearest-rank
     // p95 IS the maximum — so a surviving cold observation would become the
-    // published number. The protocol discards a FIXED five observations (declared
+ // published number. The protocol discards a FIXED ten observations (declared
     // before the capture), keeps them all for audit, and never trims further.
-    const cold = [99.9, 40.1, 12.2, 3.4, 2.9];
+ const cold = [99.9, 40.1, 12.2, 8.8, 6.7, 5.4, 4.2, 3.4, 2.9, 2.8];
     const warm = Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, index) => 2 + index * 0.1);
     const { warmUps, recorded } = splitWarmedObservations([...cold, ...warm]);
     expect(warmUps).toEqual(cold);
@@ -259,13 +259,13 @@ describe("time-to-answer promotion gate", () => {
     const measured = Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, index) => 2 + index * 0.1);
     // Warm-ups that never settled: the final pair still sits far above the measured
     // median, which is what the old single-discard policy published as a sample.
-    const unsettled = [99.9, 40.1, 12.2, 11.6, 11.3];
+ const unsettled = [99.9, 40.1, 12.2, 11.6, 11.3, 11.1, 11, 10.9, 10.8, 10.7];
     const bad = splitWarmedObservations([...unsettled, ...measured]);
     expect(() => assertWarmUpStationarity({ label: "reference-100|dockerObservationMs|run0", ...bad })).toThrow(
       /not stationary/
     );
     // A settled window passes and reports its ratio (declared band 0.5x–1.5x).
-    const settled = splitWarmedObservations([99.9, 40.1, 12.2, 3.4, 2.9, ...measured]);
+ const settled = splitWarmedObservations([99.9, 40.1, 12.2, 8.8, 6.7, 5.4, 4.2, 3.4, 2.9, 2.8, ...measured]);
     const ratio = assertWarmUpStationarity({ label: "reference-100|dockerObservationMs|run0", ...settled });
     expect(ratio).toBeGreaterThanOrEqual(0.5);
     expect(ratio).toBeLessThanOrEqual(1.5);

@@ -344,13 +344,13 @@ not part of the closed artifact schema and carries:
   per-sample audit of accepted revision, notification, skipped acceptances, render
   commit offset, frame confirmation and metric before/after);
 - warm-up retention: for every daemon-side warmed cell the **complete**
-  `samples + 5` observation window in the order the daemon produced it, with the
-  fixed warm-ups at indices 0–4 and the recorded samples proven equal to the run
+`samples + 10` observation window in the order the daemon produced it, with the
+fixed warm-ups at indices 0–9 and the recorded samples proven equal to the run
   stored in the artifact;
 - the retained `warmUpObservations` map.
 
 The capture refuses to emit an artifact when a daemon-side warmed window is missing,
-shorter than `samples + 5`, retains anything other than the fixed first five
+shorter than `samples + 10`, retains anything other than the fixed first ten
 observations, or does not match the artifact — so a slow warm-up value cannot be
 hidden. Browser and probe stages perform their own warm-up inside their test-only
 probes and cannot retain daemon observation windows because no daemon bench sink
@@ -366,9 +366,9 @@ The distinction is load-bearing, not descriptive, and the contract encodes it in
 - **warmed-repeated** — every other stage. A repeated steady-state operation. The
   daemon's first passes through the collection path are cold (its first refresh
   runs before its listener binds). The protocol therefore declares a **FIXED
-  `TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = 5` warm-up observations BEFORE the capture
-  and collects `samples + 5` observations for the warmed daemon stages, keeping the
-  first five as warm-up and the next 15 as the measured window
+`TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = 10` warm-up observations BEFORE the capture
+and collects `samples + 10` observations for the warmed daemon stages, keeping the
+first ten as warm-up and the next 15 as the measured window
   (`splitWarmedObservations` refuses a shorter window). With 15 recorded samples,
   nearest-rank p95 *is* the maximum, so a surviving cold observation would
   otherwise become the published number.
@@ -376,17 +376,16 @@ The distinction is load-bearing, not descriptive, and the contract encodes it in
   (`isScenarioCell`). They are declared in the closed matrix only for the fixtures
   that construct the scenario.
 
-**Why five.** The count was fixed from the round-3 raw windows before this
-methodology existed, not chosen afterwards to make data look stationary: in those
-windows the discarded first observation reached 4.01× the window median and the
-SECOND — the first one the old single-discard policy published — still reached
-2.15× in 5 of 30 windows, while every observation from index 5 on stayed within
-1.29×.
+**Why ten.** This is a conservative protocol revision after the fixed-five
+protocol proved marginal at its stationarity gate. It is fixed before capture and
+is not chosen or extended from observed values. The historical Baseline 3
+artifacts do not retain enough warm-up evidence to claim that ten was
+statistically derived from that baseline.
 
 **Stationarity is a validity check, never a repair.** `assertWarmUpStationarity`
 compares the median of the final two warm-up observations against the median of the
-measured window and requires a ratio inside the declared `0.5×–1.5×` band (the
-round-3 windows scored 0.81–1.28 at five warm-ups). A window outside that band
+measured window and requires a ratio inside the declared `0.5×–1.5×` band. A
+window outside that unchanged band
 **invalidates the cell/run**; the harness never discards further samples to make a
 window pass, because choosing how many samples to drop after seeing the values
 would turn conditioning into result selection.
@@ -394,7 +393,10 @@ would turn conditioning into result selection.
 Every warm-up observation is retained in the raw audit trail
 (`warmUpObservations`, keyed `fixture|stage|run`) with the whole observation window
 and the stationarity ratio, and none of them ever enters a recorded sample, a
-summary, or a promotion comparison.
+summary, or a promotion comparison. This retention also applies when stationarity
+fails: the failure raw evidence retains fixture/stage/run identity, all ten
+warm-ups, measured samples gathered for that window, the median/reference
+calculation, ratio, unchanged bounds, and failure reason before capture aborts.
 
 ## Capture discipline
 
@@ -562,9 +564,10 @@ daemon digest as a compatibility key, and it documented a post-run binary
 verification the code did not perform.
 
 The response is a **methodology revision** (`TIME_TO_ANSWER_METHODOLOGY =
-dockermap-v1/time-to-answer-methodology-2`), not a retry: the deterministic
+dockermap-v1/time-to-answer-methodology-3`), not a retry: the deterministic
 stage-5 poll-phase sweep with its validity guards and phase-normalized summary, a
-fixed five-observation warm-up protocol with a declared stationarity check, the
+fixed ten-observation warm-up protocol with a declared stationarity check and
+failed-gate retention guarantee, the
 provenance/compatibility split, and the implemented before/after binary
 verification. The revised methodology is pinned in the emitted metadata and the
 capture refuses to run when the metadata names a different design.

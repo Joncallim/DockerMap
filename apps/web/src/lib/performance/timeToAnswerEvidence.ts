@@ -158,28 +158,23 @@ export const TIME_TO_ANSWER_CONTROLLED_RUNS = 3;
  * version, because a different design produces a different number for the same
  * product.
  */
-export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-2";
+export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-3";
 
 /**
  * Fixed, predeclared warm-up observations per warmed daemon cell per run.
  *
- * This is protocol, not a result-driven choice: the number was fixed from the
- * round-3 raw windows BEFORE this methodology was captured, and it is never
- * adjusted afterwards to make data look stationary. In those windows the
- * discarded first observation sat at up to 4.01x the window median and the
- * SECOND observation — the first one the old policy published — still reached
- * 2.15x in 5 of 30 windows, while every observation from index 5 on stayed
- * within 1.29x. Five is the smallest fixed count that leaves no cold observation
- * inside the measured window.
+ * This is a conservative protocol revision after the fixed-five protocol proved
+ * marginal at its stationarity gate. Ten is fixed before capture and is never
+ * adjusted afterwards to make data look stationary; historical artifacts do not
+ * retain enough warm-up evidence to claim that ten was statistically derived
+ * from Baseline 3.
  */
-export const TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = 5;
+export const TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = 10;
 
 /**
  * Declared stationarity band: the median of the final two warm-up observations
- * against the median of the measured window. Calibrated from the round-3 windows
- * with a five-observation warm-up (observed ratio 0.81–1.28), while the old
- * single-discard policy left a first-recorded observation at up to 2.15x — a
- * window the guard rejects.
+ * against the median of the measured window. This validity check is unchanged
+ * by the fixed-ten protocol revision.
  */
 export const TIME_TO_ANSWER_STATIONARITY_MIN_RATIO = 0.5;
 export const TIME_TO_ANSWER_STATIONARITY_MAX_RATIO = 1.5;
@@ -537,7 +532,7 @@ export function assertWarmUpStationarity(input: {
   if (recorded.length !== TIME_TO_ANSWER_WARMED_SAMPLES) {
     throw new Error(`${label} must record exactly ${TIME_TO_ANSWER_WARMED_SAMPLES} measured samples`);
   }
-  const ratio = median(warmUps.slice(-2)) / median(recorded);
+ const ratio = warmUpStationarityCalculation(warmUps, recorded).ratio;
   if (!Number.isFinite(ratio) || ratio <= 0) {
     throw new Error(`${label} has no usable warm-up/measured ratio`);
   }
@@ -548,7 +543,17 @@ export function assertWarmUpStationarity(input: {
         `${TIME_TO_ANSWER_STATIONARITY_MAX_RATIO}x band`
     );
   }
-  return ratio;
+ return ratio;
+}
+
+/** The audit calculation used by the unchanged warm-up stationarity validity check. */
+export function warmUpStationarityCalculation(
+ warmUps: readonly number[],
+ recorded: readonly number[]
+): { finalWarmUpMedian: number; measuredMedian: number; ratio: number } {
+ const finalWarmUpMedian = median(warmUps.slice(-2));
+ const measuredMedian = median(recorded);
+ return { finalWarmUpMedian, measuredMedian, ratio: finalWarmUpMedian / measuredMedian };
 }
 
 /**

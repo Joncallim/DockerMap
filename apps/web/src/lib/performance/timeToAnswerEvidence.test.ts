@@ -36,7 +36,7 @@ const environment: Record<string, unknown> = {
   buildMode: "production",
   fixtureRevision: "dockermap-v1/time-to-answer-fixtures-1",
   sourceRevision: "candidate",
-  methodologyVersion: "dockermap-v1/time-to-answer-methodology-2"
+ methodologyVersion: "dockermap-v1/time-to-answer-methodology-3"
 };
 
 /**
