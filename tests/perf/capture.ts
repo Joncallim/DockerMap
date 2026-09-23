@@ -68,6 +68,7 @@ import {
 } from "../../apps/web/src/lib/performance/timeToAnswerPollPhase";
 import { FIXTURE_REVISION, SLOW_COMPOSE_SERVICES, buildSlowComposeProject, expectedExitedCount } from "./dockerFixtureTopology.mjs";
 import { reservePort, startStaticServer } from "./staticServer.mjs";
+import { withFreshBrowserRuns } from "./browserLifecycle.mjs";
 
 const REPO_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -364,7 +365,7 @@ function stopOwned(child: { pid?: number; exitCode: number | null; signalCode?: 
 }
 
 async function fetchJson(url: string, timeoutMs = 5_000): Promise<any | null> {
-  const controller = new AbortController();
+ const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, { signal: controller.signal });
@@ -772,7 +773,11 @@ async function observeStageFiveSample(input: {
     headers: { accept: "text/event-stream", origin: input.webOrigin },
     signal: controller.signal
   });
-  const reader = response.body!.getReader();
+ if (!response.ok || !response.body) {
+ controller.abort();
+ throw new Error(`stage 5 observation stream did not open (HTTP ${response.status})`);
+ }
+ const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const reading = (async () => {
     let buffer = "";
@@ -807,7 +812,8 @@ async function observeStageFiveSample(input: {
     }
   })();
 
-  await input.onConnected({
+ try {
+ await input.onConnected({
     declaredPhaseMs,
     intendedLatencyMs: intended,
     predictedPublicationAtMs: predicted,
@@ -817,9 +823,7 @@ async function observeStageFiveSample(input: {
   // The publication instant is resolved by the tracker's own health polling, which
   // runs continuously and independently of the API stream.
   const deadline = Date.now() + (input.timeoutMs ?? 45_000);
-  while (Date.now() < deadline && !observed.at) await sleep(2);
-  controller.abort();
-  await reading;
+ while (Date.now() < deadline && !observed.at) await sleep(2);
   if (!observed.at) {
     throw new Error(
       `stage 5 did not observe a new revision at declared phase ${declaredPhaseMs.toFixed(1)} ms ` +
@@ -866,10 +870,14 @@ async function observeStageFiveSample(input: {
       observedVia: "api-sse",
       observedRevision: observed.revisions[0] ?? "",
       previousRevision,
-      phaseControlled
-    }
-  };
-}
+ phaseControlled
+ }
+ };
+ } finally {
+ controller.abort();
+ await reader.cancel().catch(() => undefined);
+ await reading;
+ }
 
 /**
  * Superseded by `observeStageFiveSample`: the jitter-based observer is gone, and
@@ -1061,11 +1069,13 @@ async function main(): Promise<void> {
   });
   assertBuildIsolation();
 
-  const browser = await chromium.launch({ args: launchArgs });
-  const workRoot = mkdtempSync(join(tmpdir(), "dockermap-bench-"));
+ const workRoot = mkdtempSync(join(tmpdir(), "dockermap-bench-"));
 
-  try {
-    for (let runIndex = 0; runIndex < runs; runIndex += 1) {
+ try {
+    await withFreshBrowserRuns({
+      runs,
+      launch: () => chromium.launch({ args: launchArgs }),
+      run: async (browser, runIndex) => {
       for (const plan of plans) {
         process.stdout.write(
           `[capture] run ${runIndex + 1}/${runs} fixture ${plan.name} (${plan.containers} containers)\n`
@@ -1102,6 +1112,9 @@ async function main(): Promise<void> {
         let probeServer: any = null;
         let benchAppServer: any = null;
         let publicationTracker: PublicationTracker | null = null;
+        let context: any = null;
+        let benchContext: any = null;
+        let probeContext: any = null;
         try {
           fixtureChild = spawnOwned(process.execPath, [
             "tests/perf/fake-docker-api.mjs",
@@ -1302,7 +1315,7 @@ async function main(): Promise<void> {
           // Browser stages. Every browser stage needs `samples` warmed
           // observations per controlled run, so revision-driven stages loop over
           // real published revision changes instead of being measured once.
-          const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+          context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
           const page = await context.newPage();
           if (process.env.DOCKERMAP_BENCH_DEBUG === "1") {
             page.on("console", (message) => process.stdout.write(`[browser:${message.type()}] ${message.text()}\n`));
@@ -1318,7 +1331,6 @@ async function main(): Promise<void> {
 
           // The benchmark-mode application page, used only for stages 6 and 7.
           let benchPage: any = null;
-          let benchContext: any = null;
           if (needsStageSix) {
             benchContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
             benchPage = await benchContext.newPage();
@@ -1560,8 +1572,6 @@ async function main(): Promise<void> {
               bundleSamples.push(await measureProductionBundle(browser, webOrigin));
             }
           }
-          await context.close();
-          if (benchContext) await benchContext.close();
           // Assert the scenario premise actually held for this run.
           if (plan.name === "provider-only-revision-change") {
             const after = dockerIds(await fetchJson(`http://127.0.0.1:${daemonPort}/daemon/snapshot`, 30_000));
@@ -1595,7 +1605,7 @@ async function main(): Promise<void> {
             const snapshot = await fetchJson(`http://127.0.0.1:${apiPort}/api/snapshot`, 30_000);
             const runtimeMap = await fetchJson(`http://127.0.0.1:${apiPort}/api/runtime/map`, 30_000);
             if (!snapshot || !runtimeMap) throw new Error("could not read the fixture model from the API");
-            const probeContext = await browser.newContext();
+            probeContext = await browser.newContext();
             const probePage = await probeContext.newPage();
             await probePage.goto(`${probeServer.url}/index.html`, { waitUntil: "domcontentloaded" });
             await probePage.waitForFunction("Boolean(window.__dockermapProbe)", undefined, {
@@ -1610,9 +1620,11 @@ async function main(): Promise<void> {
             if (!measured) throw new Error("module probe returned no measurement");
             record(plan.name, "buildModelMs", measured.buildModelMs);
             record(plan.name, "legacyTopologyLayoutMs", measured.legacyTopologyLayoutMs);
-            await probeContext.close();
           }
         } finally {
+          if (probeContext) await probeContext.close();
+          if (benchContext) await benchContext.close();
+          if (context) await context.close();
           if (publicationTracker) await publicationTracker.stop();
           stopOwned(apiChild);
           stopOwned(daemonChild);
@@ -1622,12 +1634,12 @@ async function main(): Promise<void> {
           if (benchAppServer) await benchAppServer.close();
         }
       }
-    }
+      }
+    });
   } catch (error) {
     preserveRaw(String(error));
     throw error;
   } finally {
-    await browser.close();
     rmSync(workRoot, { recursive: true, force: true });
   }
 
