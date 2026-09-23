@@ -376,6 +376,7 @@
         while (performance.now() < deadline && !commit) {
           for (const candidate of acceptanceSink()) {
  if (!candidate.revision || candidate.seq <= trigger.acceptedSequence) continue;
+ if (arm.expectedRevision && candidate.revision !== arm.expectedRevision) continue;
             const rendered = bench.commits.find(
               (entry) =>
                 entry.at > candidate.at &&
@@ -483,7 +484,17 @@
  fetchLogLength: bench.fetchLog.length,
  notifyLogLength: bench.notifyLog.length
  };
- return arm.trigger;
+  return arm.trigger;
+ },
+
+ setExpectedModelRevision(revision) {
+ const arm = bench.arm;
+ if (!arm || !arm.task || !arm.armed) throw new Error("model acceptance was not armed");
+ if (typeof revision !== "string" || revision.length === 0) {
+ throw new Error("the control publication did not supply a non-empty target model revision");
+ }
+ arm.expectedRevision = revision;
+ return revision;
  },
 
     async awaitModelAcceptance() {

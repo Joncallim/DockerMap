@@ -71,10 +71,25 @@ test("stage-7 control ignores a revision accepted between arm and trigger", asyn
     revision: "background",
     storyValue: "16"
   });
-  helpers.markModelPublicationTriggered();
-  window.__dockermapBench.notifyLog.push({ at: 3, revision: "triggered" });
-  window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 4, at: 5, revision: "triggered" });
-  window.__dockermapBenchAcceptanceSink.push({ seq: 2, at: 6, revision: "triggered" });
+ helpers.markModelPublicationTriggered();
+ helpers.setExpectedModelRevision("triggered");
+ // A later, unrelated revision may carry the same Home content. The control
+ // must time the coherent publication the fixture/API pair identified, not
+ // merely any post-trigger content match.
+ window.__dockermapBench.notifyLog.push({ at: 1, revision: "other" });
+ window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 1.1, at: 1.2, revision: "other" });
+ window.__dockermapBenchAcceptanceSink.push({ seq: 2, at: 1.3, revision: "other" });
+ window.__dockermapBench.commits.push({
+ at: 1.4,
+ inHome: true,
+ inStory: true,
+ textChanged: true,
+ revision: "other",
+ storyValue: "16"
+ });
+ window.__dockermapBench.notifyLog.push({ at: 3, revision: "triggered" });
+ window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 4, at: 5, revision: "triggered" });
+ window.__dockermapBenchAcceptanceSink.push({ seq: 3, at: 6, revision: "triggered" });
   // This is the stage-7 proof: the selected acceptance must pair with Home
   // content carrying the same accepted revision and the triggered metric.
   window.__dockermapBench.commits.push({
@@ -87,6 +102,6 @@ test("stage-7 control ignores a revision accepted between arm and trigger", asyn
   });
   const measured = await helpers.awaitModelAcceptance();
   assert.equal(measured.acceptedRevision, "triggered");
-  assert.equal(measured.acceptedSequence, 2);
+ assert.equal(measured.acceptedSequence, 3);
   assert.equal(measured.triggerAcceptedSequence, 1);
 });

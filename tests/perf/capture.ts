@@ -919,6 +919,11 @@ async function markStageSixSevenPublicationTriggered(page: any): Promise<Record<
  return (await page.evaluate("window.__dockermapBenchHelpers.markModelPublicationTriggered()")) as Record<string, unknown>;
 }
 
+async function expectStageSixSevenModelRevision(page: any, revision: string): Promise<void> {
+ await page.evaluate(`window.__benchInput = ${JSON.stringify({ revision })}`);
+ await page.evaluate("window.__dockermapBenchHelpers.setExpectedModelRevision(window.__benchInput.revision)");
+}
+
 /**
  * Observe the exact publication a control trigger is meant to cause. This is a
  * bounded observation, not a delay: fixture, daemon and API must all expose the
@@ -939,16 +944,30 @@ async function observeControlPublication(input: {
  let apiExited = -1;
  let daemonRevision = "";
  let apiRevision = "";
+ let daemonRuntimeRevision = "";
+ let apiRuntimeRevision = "";
  while (Date.now() < deadline) {
  const fixture = await getUnix(input.fixtureSocket, "/containers/json");
  const daemon = await fetchJson(`http://127.0.0.1:${input.daemonPort}/daemon/snapshot`, 3_000);
+ const daemonRuntime = await fetchJson(`http://127.0.0.1:${input.daemonPort}/daemon/runtime/map`, 3_000);
  const api = await fetchJson(`http://127.0.0.1:${input.apiPort}/api/snapshot`, 3_000);
+ const apiRuntime = await fetchJson(`http://127.0.0.1:${input.apiPort}/api/runtime/map`, 3_000);
  fixtureExited = countExited(fixture);
  daemonExited = countExited(JSON.stringify(daemon));
  apiExited = countExited(JSON.stringify(api));
  daemonRevision = String(daemon?.modelRevision ?? "");
  apiRevision = String(api?.modelRevision ?? "");
- if (fixtureExited === input.expectedExited && daemonExited === input.expectedExited && apiExited === input.expectedExited) {
+ daemonRuntimeRevision = String(daemonRuntime?.modelRevision ?? "");
+ apiRuntimeRevision = String(apiRuntime?.modelRevision ?? "");
+ if (
+ fixtureExited === input.expectedExited &&
+ daemonExited === input.expectedExited &&
+ apiExited === input.expectedExited &&
+ daemonRevision.length > 0 &&
+ daemonRevision === daemonRuntimeRevision &&
+ apiRevision.length > 0 &&
+ apiRevision === apiRuntimeRevision
+ ) {
  return {
  generation: input.generation,
  expectedExited: input.expectedExited,
@@ -957,6 +976,8 @@ async function observeControlPublication(input: {
  apiExited,
  daemonRevision,
  apiRevision,
+ daemonRuntimeRevision,
+ apiRuntimeRevision,
  observedAtMs: nowMs(),
  elapsedMs: nowMs() - startedAt
  };
@@ -965,7 +986,8 @@ async function observeControlPublication(input: {
  }
  throw new Error(
  `control ${input.generation} publication did not converge to ${input.expectedExited} exited within ${input.timeoutMs ?? 60_000} ms ` +
- `(fixture=${fixtureExited}, daemon=${daemonExited}@${daemonRevision || "none"}, api=${apiExited}@${apiRevision || "none"})`
+ `(fixture=${fixtureExited}, daemon=${daemonExited}@${daemonRevision || "none"}/${daemonRuntimeRevision || "none"}, ` +
+ `api=${apiExited}@${apiRevision || "none"}/${apiRuntimeRevision || "none"})`
  );
 }
 
@@ -1456,6 +1478,7 @@ async function main(): Promise<void> {
  expectedExited: Number(expectedMetricValue),
  generation
  });
+ await expectStageSixSevenModelRevision(benchPage, String(publication.apiRevision));
  process.stdout.write(
  `[capture] control ${generation}: fixture ${publication.fixtureExited} exited, daemon ${publication.daemonExited}, api ${publication.apiExited}\n`
  );
