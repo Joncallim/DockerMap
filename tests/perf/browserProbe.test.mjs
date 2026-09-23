@@ -58,15 +58,27 @@ test("stage-7 control ignores a revision accepted between arm and trigger", asyn
   // This is the race from the aborted capture: background polling accepts a
   // revision after arming but before the fixture POST. It must not satisfy the
   // control sample.
-  window.__dockermapBenchAcceptanceSink.push({ seq: 1, at: 10, revision: "background" });
+  window.__dockermapBench.notifyLog.push({ at: 0.1, revision: "background" });
+  window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 0.2, at: 0.3, revision: "background" });
+  window.__dockermapBenchAcceptanceSink.push({ seq: 1, at: 0.4, revision: "background" });
+  // It deliberately also has the expected content. Without the trigger fence,
+  // content matching alone would select this pre-trigger revision.
+  window.__dockermapBench.commits.push({
+    at: 0.5,
+    inHome: true,
+    inStory: true,
+    textChanged: true,
+    revision: "background",
+    storyValue: "16"
+  });
   helpers.markModelPublicationTriggered();
-  window.__dockermapBench.notifyLog.push({ at: 11, revision: "triggered" });
-  window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 12, at: 13, revision: "triggered" });
-  window.__dockermapBenchAcceptanceSink.push({ seq: 2, at: 14, revision: "triggered" });
+  window.__dockermapBench.notifyLog.push({ at: 3, revision: "triggered" });
+  window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 4, at: 5, revision: "triggered" });
+  window.__dockermapBenchAcceptanceSink.push({ seq: 2, at: 6, revision: "triggered" });
   // This is the stage-7 proof: the selected acceptance must pair with Home
   // content carrying the same accepted revision and the triggered metric.
   window.__dockermapBench.commits.push({
-    at: 15,
+    at: 7,
     inHome: true,
     inStory: true,
     textChanged: true,

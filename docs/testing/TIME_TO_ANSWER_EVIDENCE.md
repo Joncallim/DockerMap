@@ -287,6 +287,14 @@ content. The same rule is unit-tested (`timeToAnswerIndependence.test.ts`),
 including the RED cases "the delayed render does not move stage 7" and "stage 6
 moves with the delayed presentation".
 
+Each control sample first arms the browser probe, then records an explicit
+publication-trigger checkpoint immediately before advancing the fixture
+generation. The probe excludes all accepted revisions, notifications and paired
+fetches preceding that checkpoint. The harness then uses a bounded observation
+of fixture, daemon and API inventory (including counts and revisions) rather
+than a fixed sleep; its audit records the trigger checkpoint and publication
+observation with the normal acceptance/render evidence.
+
 ## Running the benchmark
 
 ```

@@ -701,14 +701,6 @@ export const TIME_TO_ANSWER_INDEPENDENCE_SAMPLES = 3;
 export const TIME_TO_ANSWER_INDEPENDENCE_STAGE_SIX_TOLERANCE_MS = 30;
 /** Stage 7 must absorb at least this share of the injected delay. */
 export const TIME_TO_ANSWER_INDEPENDENCE_STAGE_SEVEN_SHARE = 0.7;
-/**
- * Deterministic settle delay before each control trigger. Control samples measure
- * stages 6/7 only, so no poll phase is involved: the delay exists solely to keep the
- * arming and the fixture change from being simultaneous, and it is FIXED rather than
- * random so the control is reproducible too.
- */
-export const TIME_TO_ANSWER_INDEPENDENCE_SETTLE_MS = 250;
-
 export interface StageSixSevenIndependence {
   fixture: string;
   delayMs: number;
