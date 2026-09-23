@@ -518,18 +518,41 @@ async function waitForBenchSamples(path: string, count: number, timeoutMs: numbe
 const PHASE_CONNECT_MARGIN_MS = 30;
 
 interface PublicationTracker {
-  /** Instants at which the daemon's published revision changed. */
+  /** Every instant a revision change was detected, in order. */
   readonly publications: number[];
+  /** Instants of the refresh CYCLES that carried a revision change. */
+  cycles(): number[];
   /** The revision the daemon currently publishes. */
   revision(): string;
   waitForPublications(count: number, timeoutMs: number): Promise<void>;
-  /** Mean observed gap between recent publications: the daemon's grid period. */
+  /** Mean observed gap between recent publication cycles: the daemon's grid period. */
   periodMs(): number;
-  lastPublicationAtMs(): number;
+  lastCycleAtMs(): number;
   stop(): Promise<void>;
 }
 
-async function startPublicationTracker(daemonPort: number, initialRevision: string): Promise<PublicationTracker> {
+/**
+ * A refresh cycle can publish more than one revision (the inventory publication and
+ * a provider-state publication follow each other), and those intra-cycle changes are
+ * milliseconds apart. The phase grid must be fitted over CYCLE instants: fitting it
+ * over every revision change would fold extra publications into the grid and skew
+ * the period, which stage 5's deepest declared phases amplify one-for-one.
+ */
+function cycleLeaders(publications: readonly number[], intervalMs: number): number[] {
+  const leaders: number[] = [];
+  const separationMs = intervalMs / 4;
+  for (const instant of publications) {
+    const previous = leaders[leaders.length - 1];
+    if (previous === undefined || instant - previous > separationMs) leaders.push(instant);
+  }
+  return leaders;
+}
+
+async function startPublicationTracker(
+  daemonPort: number,
+  initialRevision: string,
+  intervalMs: number
+): Promise<PublicationTracker> {
   const url = `http://127.0.0.1:${daemonPort}/daemon/health`;
   const publications: number[] = [];
   let revision = initialRevision;
@@ -543,31 +566,33 @@ async function startPublicationTracker(daemonPort: number, initialRevision: stri
         publications.push(nowMs());
       }
       // 5 ms: the detection instant is the publication instant plus at most this,
-      // and the grid fit below averages that jitter across several publications.
+      // and the grid fit below averages that jitter across several cycles.
       await sleep(5);
     }
   })();
+  const leaders = () => cycleLeaders(publications, intervalMs);
   return {
     publications,
+    cycles: leaders,
     revision: () => revision,
     async waitForPublications(count: number, timeoutMs: number) {
       const deadline = Date.now() + timeoutMs;
-      while (publications.length < count && Date.now() < deadline) await sleep(10);
-      if (publications.length < count) {
+      while (leaders().length < count && Date.now() < deadline) await sleep(10);
+      if (leaders().length < count) {
         throw new Error(
-          `the daemon published only ${publications.length} revisions; stage 5 needs ${count} to know its publication grid`
+          `the daemon published only ${leaders().length} refresh cycles; stage 5 needs ${count} to know its publication grid`
         );
       }
     },
     periodMs() {
-      const recent = publications.slice(-8);
+      const recent = leaders().slice(-8);
       if (recent.length < 2) {
-        throw new Error("stage 5 needs at least two observed publications before it can predict the next one");
+        throw new Error("stage 5 needs at least two observed publication cycles before it can predict the next one");
       }
-      // Least-squares fit of publication index against instant. A single gap is a
-      // poor estimate — it carries one cycle's refresh work plus the tracker's own
-      // start transient — and stage 5's deepest declared phases amplify a period
-      // error one-for-one into phase error, so the estimate has to be tight.
+      // Least-squares fit of cycle index against instant. A single gap is a poor
+      // estimate — it carries one cycle's refresh work plus the tracker's own start
+      // transient — and stage 5's deepest declared phases amplify a period error
+      // one-for-one into phase error, so the estimate has to be tight.
       const count = recent.length;
       const meanIndex = (count - 1) / 2;
       const meanAt = recent.reduce((sum, value) => sum + value, 0) / count;
@@ -579,9 +604,9 @@ async function startPublicationTracker(daemonPort: number, initialRevision: stri
       });
       return numerator / denominator;
     },
-    lastPublicationAtMs() {
-      const last = publications[publications.length - 1];
-      if (last === undefined) throw new Error("stage 5 has observed no publication yet");
+    lastCycleAtMs() {
+      const last = leaders()[leaders().length - 1];
+      if (last === undefined) throw new Error("stage 5 has observed no publication cycle yet");
       return last;
     },
     async stop() {
@@ -624,9 +649,9 @@ async function observeStageFiveSample(input: {
   await input.tracker.waitForPublications(4, 60_000);
   const period = input.tracker.periodMs();
 
-  // Choose the publication to measure: the next one on the daemon's grid whose
+  // Choose the publication cycle to measure: the next one on the daemon's grid whose
   // connection instant is still in the future by a safety margin.
-  let predicted = input.tracker.lastPublicationAtMs() + period;
+  let predicted = input.tracker.lastCycleAtMs() + period;
   while (predicted - declaredPhaseMs < nowMs() + PHASE_CONNECT_MARGIN_MS) predicted += period;
 
   const connectAt = predicted - declaredPhaseMs;
@@ -693,8 +718,8 @@ async function observeStageFiveSample(input: {
         `(predicted publication ${(predicted - connectedAtMs).toFixed(1)} ms after connection)`
     );
   }
-  const publicationAt = input.tracker.publications.find((instant) => instant >= predicted - input.intervalMs / 2);
-  if (publicationAt === undefined) {
+  const publicationAt = nearestPublication(input.tracker.publications, predicted);
+  if (publicationAt === null) {
     throw new Error("stage 5 lost the publication instant for this sample");
   }
   const observedLatencyMs = Math.max(0, observed.at - publicationAt);
@@ -717,6 +742,26 @@ async function observeStageFiveSample(input: {
       previousRevision
     }
   };
+}
+
+/**
+ * The detected revision change that carries this sample: the one nearest the
+ * predicted cycle instant. Selecting the nearest (rather than, say, the earliest
+ * after some threshold) keeps a second publication from being attributed to the
+ * sample it does not belong to, and any misplacement shows up as the declared-phase
+ * error the guards already enforce.
+ */
+function nearestPublication(publications: readonly number[], predicted: number): number | null {
+  let best: number | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const instant of publications) {
+    const distance = Math.abs(instant - predicted);
+    if (distance < bestDistance) {
+      best = instant;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 /**
@@ -913,7 +958,8 @@ async function main(): Promise<void> {
           if (hasStage(plan.name, "publicationToNodeObservationMs")) {
             publicationTracker = await startPublicationTracker(
               daemonPort,
-              ((await fetchJson(healthUrl(daemonPort), 5_000))?.modelRevision as string | undefined) ?? ""
+              ((await fetchJson(healthUrl(daemonPort), 5_000))?.modelRevision as string | undefined) ?? "",
+              pollIntervalMs
             );
           }
 
@@ -1162,7 +1208,12 @@ async function main(): Promise<void> {
                   `stage 5 declared phase ${sample.declaredPhaseMs.toFixed(1)} ms produced ` +
                     `${sample.observedLatencyMs.toFixed(1)} ms instead of the intended ` +
                     `${sample.intendedLatencyMs.toFixed(1)} ms (error ${sample.phaseErrorMs.toFixed(1)} ms): ` +
-                    "the publication phase was not controlled"
+                    "the publication phase was not controlled " +
+                    `[connected at ${sample.connectedAtMs.toFixed(1)}, predicted publication ` +
+                    `${sample.predictedPublicationAtMs.toFixed(1)} (${(sample.predictedPublicationAtMs - sample.connectedAtMs).toFixed(1)} ms after connect), ` +
+                    `observed publication ${sample.observedPublicationAtMs.toFixed(1)} ` +
+                    `(${(sample.observedPublicationAtMs - sample.predictedPublicationAtMs).toFixed(1)} ms from the prediction), ` +
+                    `observed poll tick ${sample.observedObservationAtMs.toFixed(1)}]`
                 );
               }
               if (needsStageSix) {
