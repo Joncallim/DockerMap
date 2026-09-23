@@ -223,11 +223,16 @@ export function phaseNormalizedP95Ms(runs: readonly (readonly number[])[], inter
 
 /** Median observed latency per declared phase, ascending by phase. */
 export function phaseMediansMs(runs: readonly (readonly number[])[], intervalMs: number): number[] {
-  const grid = pollPhaseGridMs(intervalMs);
-  return grid.map((_phase, phaseIndex) => {
-    const samples = runs
-      .map((run) => run[phaseIndex])
-      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+ const grid = pollPhaseGridMs(intervalMs);
+ return grid.map((_phase, phaseIndex) => {
+ const samples = runs.flatMap((run, runIndex) =>
+ run.filter(
+ (value, sampleIndex): value is number =>
+ declaredPhaseIndexForSample(runIndex, sampleIndex) === phaseIndex &&
+ typeof value === "number" &&
+ Number.isFinite(value)
+ )
+ );
     if (samples.length === 0) {
       throw new Error(`no samples exist for declared phase ${phaseIndex + 1}/${POLL_PHASE_DIVISIONS}`);
     }
@@ -419,16 +424,23 @@ export function assertFreeRunningPhaseSamples(
 
 /** Rebuild per-run sample arrays from sweep records, so the shared math can be reused. */
 function groupRunsByPhase(samples: readonly PollPhaseSweep[], intervalMs: number): number[][] {
-  const grid = pollPhaseGridMs(intervalMs);
-  const runIndexes = [...new Set(samples.map((sample) => sample.runIndex))].sort((left, right) => left - right);
-  return runIndexes.map((runIndex) => {
-    const run = samples.filter((sample) => sample.runIndex === runIndex);
-    return grid.map((phase, phaseIndex) => {
-      // The sample's own recorded phase decides its slot, so the shared math cannot
-      // silently disagree with the declaration the capture used.
-      const sample = run.find((entry) => Math.abs(entry.declaredPhaseMs - phase) < 1e-6);
-      if (!sample) throw new Error(`run ${runIndex} has no stage-5 sample for declared phase ${phaseIndex + 1}`);
-      return sample.observedLatencyMs;
-    });
-  });
+ const runIndexes = [...new Set(samples.map((sample) => sample.runIndex))].sort((left, right) => left - right);
+ return runIndexes.map((runIndex) => {
+ const run = samples
+ .filter((sample) => sample.runIndex === runIndex)
+ .sort((left, right) => left.sampleIndex - right.sampleIndex);
+ const values: number[] = [];
+ for (const sample of run) {
+ if (sample.sampleIndex !== values.length) {
+ throw new Error(`run ${runIndex} has a missing or duplicate declared phase sample index`);
+ }
+ // The sample's own recorded phase decides its slot, so the shared math cannot
+ // silently disagree with the declaration the capture used.
+ if (Math.abs(sample.declaredPhaseMs - declaredPhaseForSample(runIndex, sample.sampleIndex, intervalMs)) >= 1e-6) {
+ throw new Error(`run ${runIndex} has an incorrectly declared stage-5 phase`);
+ }
+ values.push(sample.observedLatencyMs);
+ }
+ return values;
+ });
 }

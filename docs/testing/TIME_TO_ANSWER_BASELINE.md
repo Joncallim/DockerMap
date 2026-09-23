@@ -1,12 +1,12 @@
 # Time-to-answer baseline 3
 
-Status: the measurement authority for issue #335 and its parent epic #333, once the
-round-3 independent review clears it. This is **not** an optimization, a product
-claim, or permission to cut features for a number. Nothing here changes what
-DockerMap collects or publishes. Every number below was **recomputed from the
-stored raw samples** with `npm run perf:summarize -- --artifact <artifact>`; none is
-hand-authored, and the tables in this document are the verbatim output of that
-command.
+Status: **REJECTED historical capture**. Baselines 1, 2, and 3 are not measurement
+authority, must not be used for promotion gating, and cannot support product or
+optimization claims. This document is retained only as an audit record explaining
+why methodology revision 2 exists: its free-running jitter did not sweep polling
+phase, it retained only one warm-up, it treated daemon binary provenance as a
+compatibility key, and it lacked after-capture binary verification. The numbers below
+are historical outputs, not a prospective authority.
 
 - baseline id: `dockermap-v1/time-to-answer-baseline-1` (schema id unchanged; this
   is capture 3)

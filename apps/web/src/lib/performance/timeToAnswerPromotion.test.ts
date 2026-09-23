@@ -23,7 +23,7 @@ import {
   TIME_TO_ANSWER_STAGE_KIND,
   TIME_TO_ANSWER_STAGES,
   timeToAnswerLimit,
-  validateTimeToAnswerEvidence
+ validateTimeToAnswerEvidence
 } from "./timeToAnswerEvidence";
 
 const environment = {
@@ -172,7 +172,7 @@ describe("time-to-answer promotion gate", () => {
     ).not.toThrow();
   });
 
-  it("pins the median-of-three aggregation, not the first run or the pooled mean", () => {
+ it("pins the median-of-three aggregation, not the first run or the pooled mean", () => {
     // One slow run and two fast runs: the median must pass, while a first-run
     // p95 or a pooled mean would exceed the budget.
     const slowFirst = candidate({
@@ -189,8 +189,9 @@ describe("time-to-answer promotion gate", () => {
             }
           : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
       )
-    });
-    expect(() => assertTimeToAnswerPromotion(artifact(), slowFirst)).not.toThrow();
+ });
+
+ expect(() => assertTimeToAnswerPromotion(artifact(), slowFirst)).not.toThrow();
 
     // Two slow runs and one fast run: the median is slow, so it must fail.
     const slowMajority = candidate({
@@ -208,8 +209,32 @@ describe("time-to-answer promotion gate", () => {
           : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
       )
     });
-    expect(() => assertTimeToAnswerPromotion(artifact(), slowMajority)).toThrow("promotion limit");
-  });
+ expect(() => assertTimeToAnswerPromotion(artifact(), slowMajority)).toThrow("promotion limit");
+ });
+
+ it("uses phase-normalized p95 as the controlled stage-5 promotion authority", () => {
+ const stageFiveRuns = (repeatedValue: number) =>
+ Array.from({ length: TIME_TO_ANSWER_CONTROLLED_RUNS }, () =>
+ Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, index) => (index < 10 ? 10 : repeatedValue))
+ );
+ const baseline = artifact({
+ records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+ fixture === "reference-25" && stage === "publicationToNodeObservationMs"
+ ? { fixture, stage, runs: stageFiveRuns(10) }
+ : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+ )
+ });
+ const candidateStageFiveSlow = candidate({
+ records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+ fixture === "reference-25" && stage === "publicationToNodeObservationMs"
+ ? { fixture, stage, runs: stageFiveRuns(100) }
+ : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+ )
+ });
+ // Ordinary per-run p95 is 100 in both artifacts, but all-repeat phase medians
+ // make the normalized figure rise from 10 to 55 and reject promotion.
+ expect(() => assertTimeToAnswerPromotion(baseline, candidateStageFiveSlow)).toThrow("promotion limit");
+ });
 
   it("cannot let a cold first observation enter a warmed stage summary", () => {
     // The daemon's first passes are cold, and with 15 recorded samples nearest-rank

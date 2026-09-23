@@ -26,7 +26,8 @@ the math. It contains no timings. It defines:
   kernel, Node/Rust/Docker revisions, Chromium revision and flags, font
   environment, production build mode, fixture revision, source revision);
 - **raw-sample validation**: 15 warmed samples in each of 3 complete controlled
-  runs, nearest-rank p95 per run, median of the three run p95 values;
+  runs, nearest-rank p95 per run, median of the three run p95 values except that
+  controlled stage 5 is reviewed and promoted by its phase-normalized p95;
 - the **stage-6/7 independence control** (`assertStageSixSevenIndependence`): a
   positive artificial presentation delay injected *after* coherent-model
   acceptance must move stage 7 by at least 70% of that delay and must not move
@@ -335,14 +336,17 @@ not part of the closed artifact schema and carries:
   per-sample audit of accepted revision, notification, skipped acceptances, render
   commit offset, frame confirmation and metric before/after);
 - warm-up retention: for every daemon-side warmed cell the **complete**
-  `samples + 1` observation window in the order the daemon produced it, with the
-  discarded warm-up at index 0 and the recorded samples proven equal to the run
+  `samples + 5` observation window in the order the daemon produced it, with the
+  fixed warm-ups at indices 0–4 and the recorded samples proven equal to the run
   stored in the artifact;
 - the retained `warmUpObservations` map.
 
-The capture refuses to emit an artifact when a warmed window is missing, shorter
-than `samples + 1`, discards anything other than the first observation, or does not
-match the artifact — so a slow warm-up value cannot be hidden.
+The capture refuses to emit an artifact when a daemon-side warmed window is missing,
+shorter than `samples + 5`, retains anything other than the fixed first five
+observations, or does not match the artifact — so a slow warm-up value cannot be
+hidden. Browser and probe stages perform their own warm-up inside their test-only
+probes and cannot retain daemon observation windows because no daemon bench sink
+produces those stages.
 
 ## Cold-start versus warmed-repeated stages
 
@@ -430,23 +434,23 @@ measured gap was their phase offset rather than a sample of any distribution.
 
 The declared design (`timeToAnswerPollPhase.ts`, methodology revision 2):
 
-- the poll interval is divided into **15 equal divisions**, giving one declared
-  phase per recorded sample per run; phase `p` places the publication at
-  `(p + 0.5) × interval / 15`, so the intended latency is `interval − that offset`
-  and no phase sits on a poll tick boundary (where a publication is inherently
-  ambiguous);
-- each controlled run sweeps the phases **ascending**, so every declared phase has
-  exactly three samples per cell and **every raw sample's phase is recoverable from
-  its position in its run** — a reviewer can rebuild the curve from the artifact
-  alone;
+- the poll interval is divided into **10 equal divisions**; phase `p` places the
+  publication at `(p + 0.5) × interval / 10`, so the intended latency is
+  `interval − that offset` and no phase sits on a poll tick boundary (where a
+  publication is inherently ambiguous);
+- each controlled 15-sample run sweeps the phases **ascending** and repeats phases
+  0–4. Every raw sample's phase is recoverable from its position in its run; every
+  phase is represented at least twice, and repeated phases contribute all their
+  observations to that phase's median without giving that phase extra weight in the
+  normalized result;
 - the harness **controls the phase by choosing when it connects** its observation
   stream: the API emits to each connected client on a `setInterval` anchored to that
   connection, so connecting at `predicted publication − declared phase` puts the
   next poll tick at the intended latency after the publication. The prediction comes
   from the daemon's own observed publication grid;
 - each sample then **verifies** itself: the observed publication must match the
-  prediction, the observed latency must land on the declared phase within a 60 ms
-  tolerance (the grid step is 133 ms, so adjacent phases stay distinguishable), and
+  prediction, the observed latency must land on the declared phase within a **90 ms
+  tolerance** (the grid step is 200 ms, so adjacent phases stay distinguishable), and
   the observation must have arrived through the real API stream. The capture also
   asserts that the application page never contacted the daemon directly.
 
@@ -462,8 +466,9 @@ The reported figures are:
 - the **phase curve** — declared phase → observed latency (min, max, median per
   phase), the most direct statement about the existing mechanism; and
 - a **phase-normalized p95**, computed from the predeclared uniform grid by taking
-  the observed median at each declared phase and then nearest-rank p95 over those
-  medians. It weights the declared phases uniformly to characterise the latency the
+  observed median at each declared phase and then nearest-rank p95 over those
+  medians. It is the controlled stage-5 review and promotion authority; ordinary
+  per-run p95 remains diagnostic only. It weights the declared phases uniformly to characterise the latency the
   fixed polling mechanism imposes. **It does not claim that real host publications
   occur uniformly across poll phase**, and it is neither an observed user-traffic
   distribution nor network latency.

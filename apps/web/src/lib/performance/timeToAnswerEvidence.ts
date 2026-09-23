@@ -1,6 +1,7 @@
 import {
-  phaseMediansMs,
-  phaseNormalizedP95Ms
+ isPhaseControlledFixture,
+ phaseMediansMs,
+ phaseNormalizedP95Ms
 } from "./timeToAnswerPollPhase";
 
 /**
@@ -256,8 +257,11 @@ export interface TimeToAnswerEvidence {
 }
 
 export interface TimeToAnswerStageSummary {
-  runP95Ms: readonly number[];
-  medianOfThreeRunP95Ms: number;
+ runP95Ms: readonly number[];
+ medianOfThreeRunP95Ms: number;
+ /** The authority used for review and promotion of this record. */
+ reviewedMs: number;
+ reviewedAggregation: "median-of-three-run-p95" | "phase-normalized-p95";
 }
 
 const environmentKeys = [
@@ -325,7 +329,12 @@ export function summarizeTimeToAnswerStage(
   }
   const runP95Ms = runs.map(timeToAnswerP95);
   const ordered = [...runP95Ms].sort((left, right) => left - right);
-  return { runP95Ms, medianOfThreeRunP95Ms: ordered[1]! };
+ return {
+ runP95Ms,
+ medianOfThreeRunP95Ms: ordered[1]!,
+ reviewedMs: ordered[1]!,
+ reviewedAggregation: "median-of-three-run-p95"
+ };
 }
 
 export function assertTimeToAnswerEnvironment(
@@ -423,14 +432,25 @@ export function validateTimeToAnswerEvidence(value: unknown): TimeToAnswerEviden
 }
 
 export function derivedTimeToAnswerSummaries(
-  evidence: TimeToAnswerEvidence
+ evidence: TimeToAnswerEvidence
 ): ReadonlyMap<string, TimeToAnswerStageSummary> {
-  return new Map(
-    evidence.records.map((record) => [
-      `${record.fixture}\u0000${record.stage}`,
-      summarizeTimeToAnswerStage(record.runs)
-    ])
-  );
+ return new Map(
+ evidence.records.map((record) => {
+ const summary = summarizeTimeToAnswerStage(record.runs);
+ if (record.stage === "publicationToNodeObservationMs" && isPhaseControlledFixture(record.fixture)) {
+ const normalized = derivedTimeToAnswerPhaseNormalized(record.runs, evidence.environment.ssePollIntervalMs);
+ return [
+ `${record.fixture}\u0000${record.stage}`,
+ {
+ ...summary,
+ reviewedMs: normalized.phaseNormalizedP95Ms,
+ reviewedAggregation: "phase-normalized-p95" as const
+ }
+ ];
+ }
+ return [`${record.fixture}\u0000${record.stage}`, summary];
+ })
+ );
 }
 
 /** Source revision deliberately differs between a baseline and its candidate. */
@@ -649,8 +669,8 @@ export function assertTimeToAnswerPromotion(baselineRaw: unknown, candidateRaw: 
     if (
       !baselineSummary ||
       !withinTimeToAnswerPromotionLimit(
-        baselineSummary.medianOfThreeRunP95Ms,
-        candidateSummary.medianOfThreeRunP95Ms
+ baselineSummary.reviewedMs,
+ candidateSummary.reviewedMs
       )
     ) {
       throw new Error(`Time-to-answer candidate exceeds the reviewed promotion limit for ${key}.`);

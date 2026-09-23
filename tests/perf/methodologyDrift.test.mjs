@@ -37,12 +37,19 @@ test("the warm-up protocol is declared in the contract, not derived at runtime",
 });
 
 test("stage 5 declares a deterministic phase grid, not a random jitter", () => {
-  const pollPhase = read("apps/web/src/lib/performance/timeToAnswerPollPhase.ts");
-  assert.match(pollPhase, /export const POLL_PHASE_DIVISIONS = \d+;/);
+ const pollPhase = read("apps/web/src/lib/performance/timeToAnswerPollPhase.ts");
+ assert.match(pollPhase, /export const POLL_PHASE_DIVISIONS = 10;/);
+ assert.match(pollPhase, /export const POLL_PHASE_CONTROL_TOLERANCE_MS = 90;/);
+ assert.match(pollPhase, /export const POLL_PHASE_MIN_DIRECTION_SHARE = 0\.5;/);
+ assert.match(pollPhase, /return sampleIndex % POLL_PHASE_DIVISIONS;/);
   assert.match(pollPhase, /export function pollPhaseGridMs/);
   assert.match(pollPhase, /export function assertPollPhaseSweep/);
   const capture = read("tests/perf/capture.ts");
   // The random-jitter design is gone: no sample may be positioned by Math.random.
   assert.doesNotMatch(capture, /Math\.random\(\) \* pollIntervalMs/);
-  assert.match(capture, /observeStageFiveSample/);
+ assert.match(capture, /observeStageFiveSample/);
+ const docs = read("docs/testing/TIME_TO_ANSWER_EVIDENCE.md");
+ assert.match(docs, /\*\*10 equal divisions\*\*/);
+ assert.match(docs, /\*\*90 ms\s+tolerance\*\*/);
+ assert.match(docs, /repeats phases\s+0–4/);
 });

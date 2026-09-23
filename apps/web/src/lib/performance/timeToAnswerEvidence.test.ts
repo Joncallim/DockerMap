@@ -118,15 +118,19 @@ describe("time-to-answer evidence contract", () => {
     expect(TIME_TO_ANSWER_WARMED_SAMPLES).toBe(15);
     expect(timeToAnswerP95(Array.from({ length: 15 }, (_, index) => index))).toBe(14);
     const warmed = Array.from({ length: 15 }, (_, index) => index + 1);
-    expect(summarizeTimeToAnswerStage([warmed, warmed, warmed])).toEqual({
-      runP95Ms: [15, 15, 15],
-      medianOfThreeRunP95Ms: 15
-    });
+ expect(summarizeTimeToAnswerStage([warmed, warmed, warmed])).toEqual({
+ runP95Ms: [15, 15, 15],
+ medianOfThreeRunP95Ms: 15,
+ reviewedMs: 15,
+ reviewedAggregation: "median-of-three-run-p95"
+ });
     const first = TIME_TO_ANSWER_MATRIX[0]!;
-    expect(summaries.get(`${first.fixture}\u0000${first.stage}`)).toEqual({
-      runP95Ms: [15, 25, 35],
-      medianOfThreeRunP95Ms: 25
-    });
+ expect(summaries.get(`${first.fixture}\u0000${first.stage}`)).toEqual({
+ runP95Ms: [15, 25, 35],
+ medianOfThreeRunP95Ms: 25,
+ reviewedMs: 25,
+ reviewedAggregation: "median-of-three-run-p95"
+ });
   });
 
   it("fails closed on fabricated, incomplete or hostile artifacts", () => {

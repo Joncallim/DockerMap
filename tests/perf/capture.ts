@@ -225,9 +225,9 @@ const stageFiveSweep: Array<PollPhaseSweep & { fixture: string; tickCarriedNewer
 const stageFiveValidity: Record<string, unknown> = {};
 /**
  * The complete warmed observation window per `fixture|stage`, in the order the
- * daemon produced it (`samples + 1` values). The discarded warm-up is index 0, so
- * the retention rule is verifiable from the raw series instead of being asserted
- * only by the code that applied it.
+ * daemon produced it (`samples + TIME_TO_ANSWER_WARM_UP_OBSERVATIONS` values).
+ * The fixed warm-ups are indices 0–4, so the retention rule is verifiable from
+ * the raw series instead of being asserted only by the code that applied it.
  */
 const warmedObservationWindows: Record<string, number[]> = {};
 const MATRIX = new Set(TIME_TO_ANSWER_MATRIX.map((cell) => `${cell.fixture}|${cell.stage}`));
@@ -498,7 +498,7 @@ const BENCH_STAGE_KEYS = ["dockerObservationMs", "composeEnrichmentMs", "finding
  * The daemon's first-ever observation runs before its listener binds, so its first
  * passes are a cold start. For warmed stages a FIXED number of warm-up
  * observations (`TIME_TO_ANSWER_WARM_UP_OBSERVATIONS`, declared before the capture)
- * is discarded from the recorded samples and kept here instead, so the discard is
+ * are excluded from recorded samples and retained here instead, so conditioning is
  * auditable rather than silent and never chosen from the data.
  */
 const warmUpObservations: Record<string, number[]> = {};
@@ -550,9 +550,10 @@ async function waitForBenchSamples(path: string, count: number, timeoutMs: numbe
  * interval) because both the daemon's refresh loop and the API's poller are fixed
  * 2 s loops, so the measured gap was their phase offset, not a sample of any
  * distribution. The design is declared in `timeToAnswerPollPhase.ts`: a fixed grid
- * of phases spanning the interval, one declared phase per recorded sample, each
- * run sweeping the grid ascending, so each phase has exactly three samples per
- * cell and every sample's phase is recoverable from its position in its run.
+ * of ten phases spanning the interval. Each 15-sample run sweeps the grid
+ * ascending and repeats phases 0–4; every sample's phase is recoverable from its
+ * position in its run, every phase has at least two observations, and phase
+ * normalization weights each phase equally rather than weighting repeats more.
  *
  * The harness controls the phase by choosing WHEN IT CONNECTS its observation
  * stream: the API emits to each connected client on a `setInterval` anchored to
@@ -1719,7 +1720,7 @@ async function main(): Promise<void> {
         samplesForFixture,
         Number(environment.ssePollIntervalMs),
         // Debug runs may declare a single controlled run, which cannot reach the
-        // three-samples-per-phase the full protocol requires. The declared minimum is
+ // two-samples-per-phase the full protocol requires. The declared minimum is
         // therefore relaxed ONLY for probing runs, which can never emit an artifact
         // (the closed matrix requires three runs); every other guard still applies.
         runs >= TIME_TO_ANSWER_CONTROLLED_RUNS ? POLL_PHASE_MIN_SAMPLES_PER_PHASE : 1

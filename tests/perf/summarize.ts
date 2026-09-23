@@ -35,7 +35,7 @@ const fixtures = [...new Set(evidence.records.map((record) => record.fixture))];
 const order = [...new Set(evidence.records.map((record) => record.stage))];
 
 const rows: string[] = [];
-rows.push("| fixture | stage | run p95 (ms) | median (ms) | min | max |");
+rows.push("| fixture | stage | run p95 (ms) | reviewed aggregation | reviewed (ms) | min | max |");
 rows.push("| --- | --- | --- | --- | --- | --- |");
 for (const fixture of fixtures) {
   for (const stage of order) {
@@ -44,7 +44,7 @@ for (const fixture of fixtures) {
     const record = evidence.records.find((entry) => entry.fixture === fixture && entry.stage === stage)!;
     const all = record.runs.flat();
     rows.push(
-      `| ${fixture} | ${stage} | ${summary.runP95Ms.map((value) => value.toFixed(2)).join(" / ")} | ${summary.medianOfThreeRunP95Ms.toFixed(2)} | ${Math.min(...all).toFixed(2)} | ${Math.max(...all).toFixed(2)} |`
+ `| ${fixture} | ${stage} | ${summary.runP95Ms.map((value) => value.toFixed(2)).join(" / ")} | ${summary.reviewedAggregation} | ${summary.reviewedMs.toFixed(2)} | ${Math.min(...all).toFixed(2)} | ${Math.max(...all).toFixed(2)} |`
     );
   }
 }
@@ -95,10 +95,10 @@ for (const fixture of referenceFixtures) {
     const summary = summaries.get(`${fixture}\u0000${stage.id}`);
     if (!summary) continue;
     const definition = stageById.get(stage.id)!;
-    bucketTotals.set(definition.bucket, (bucketTotals.get(definition.bucket) ?? 0) + summary.medianOfThreeRunP95Ms);
-    total += summary.medianOfThreeRunP95Ms;
+ bucketTotals.set(definition.bucket, (bucketTotals.get(definition.bucket) ?? 0) + summary.reviewedMs);
+ total += summary.reviewedMs;
   }
-  process.stdout.write(`\n### ${fixture} buckets (sum of stage medians: ${total.toFixed(2)} ms)\n`);
+ process.stdout.write(`\n### ${fixture} buckets (sum of reviewed stage figures: ${total.toFixed(2)} ms)\n`);
   for (const [bucket, value] of [...bucketTotals.entries()].sort((left, right) => right[1] - left[1])) {
     process.stdout.write(
       `- ${bucket}: ${value.toFixed(2)} ms (${((value / total) * 100).toFixed(1)}%)\n`

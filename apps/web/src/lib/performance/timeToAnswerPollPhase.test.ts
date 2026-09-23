@@ -261,6 +261,20 @@ describe("stage-5 phase-normalized summary", () => {
     // Nearest-rank p95 over 15 phase medians is the largest phase median, so the
     // normalized figure equals the slowest declared phase's median.
     expect(normalized).toBe(Math.max(...medians));
-    expect(normalized).toBe(medians[0]);
-  });
+ expect(normalized).toBe(medians[0]);
+ });
+
+ it("uses every repeated positional sample for its declared phase", () => {
+ // Samples 10–14 repeat phases 0–4. Their deliberately large values make a
+ // first-occurrence-only implementation observably wrong.
+ const runs = Array.from({ length: TIME_TO_ANSWER_CONTROLLED_RUNS }, (_, run) =>
+ Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, sample) =>
+ sample < POLL_PHASE_DIVISIONS ? sample * 10 + run : 1_000 + (sample - POLL_PHASE_DIVISIONS) * 10 + run
+ )
+ );
+ const medians = phaseMediansMs(runs, INTERVAL);
+ expect(medians.slice(0, 5)).toEqual([501, 511, 521, 531, 541]);
+ expect(medians.slice(5)).toEqual([51, 61, 71, 81, 91]);
+ expect(phaseNormalizedP95Ms(runs, INTERVAL)).toBe(541);
+ });
 });
