@@ -678,8 +678,25 @@ async function observeStageFiveSample(input: {
   // Free-running cells cannot place the publication (their revisions advance from the
   // daemon's own host provider collection), so the observation is started now and the
   // phase the sample achieves is recorded rather than driven.
-  const previousRevision = input.tracker.revision();
+  //
+  // The revision that was current before the sample is read FRESH rather than taken
+  // from the tracker's last poll: the API emits the current revision immediately on
+  // connect, so a stale local copy makes that connect frame look like the sample's
+  // observation.
+  const previousRevision =
+    (
+      (await fetchJson(`http://127.0.0.1:${input.daemonPort}/daemon/health`, 1_000)) as {
+        modelRevision?: string;
+      } | null
+    )?.modelRevision ?? input.tracker.revision();
   const connectedAtMs = nowMs();
+  // Only frames that arrive after the publication this sample measures can be this
+  // sample's observation. For a controlled sample that is the predicted cycle — its
+  // poll tick can only land at or after it, while the connect frame precedes it by the
+  // declared phase. For a free-running sample it is a margin after the connect, which
+  // excludes the connect frame while leaving every real tick (a full interval later).
+  const minimumObservationAtMs = phaseControlled ? predicted : connectedAtMs + PHASE_CONNECT_MARGIN_MS;
+  let ignoredEarlyFrames = 0;
 
   // The observation stream is opened at the computed instant. Ticks occur every
   // `intervalMs` from connection, so the first tick after `predicted` lands at
@@ -708,6 +725,10 @@ async function observeStageFiveSample(input: {
             const payload = JSON.parse(dataLine.slice(5).trim()) as { modelRevision?: string };
             const revision = payload.modelRevision;
             if (revision && revision !== previousRevision) {
+              if (!observed.at && nowMs() < minimumObservationAtMs) {
+                ignoredEarlyFrames += 1;
+                continue;
+              }
               if (!observed.revisions.includes(revision)) observed.revisions.push(revision);
               if (!observed.at) observed.at = nowMs();
             }
