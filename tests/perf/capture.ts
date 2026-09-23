@@ -448,6 +448,22 @@ function getUnix(socketPath: string, path: string): Promise<string> {
   });
 }
 
+/** Count the containers a fixture or daemon payload reports as exited/offline. */
+function countExited(body: string): number {
+  try {
+    const parsed = JSON.parse(body) as { containers?: Array<{ state?: string; status?: string; State?: string }> };
+    const containers = parsed.containers ?? (parsed as unknown as Array<{ state?: string; status?: string; State?: string }>);
+    if (!Array.isArray(containers)) return -1;
+    return containers.filter((container) => {
+      const state = String(container.state ?? container.State ?? "").toLowerCase();
+      const status = String(container.status ?? "").toLowerCase();
+      return state === "offline" || state === "exited" || status.includes("exited");
+    }).length;
+  } catch {
+    return -1;
+  }
+}
+
 /** POST to a unix-socket HTTP endpoint (fixture daemon control route). */
 function postUnix(socketPath: string, path: string): Promise<string> {
   return new Promise((done, fail) => {
@@ -1377,6 +1393,16 @@ async function main(): Promise<void> {
               await sleep(TIME_TO_ANSWER_INDEPENDENCE_SETTLE_MS);
               if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
                 await setFixtureGeneration(fixtureSocket, generation);
+                // Confirm the whole pipeline for this control sample, not just the
+                // trigger: the fixture's new generation must reach the daemon before the
+                // browser can be expected to render it, and a stale hop here would make
+                // the control look like an application failure.
+                await sleep(2_500);
+                const served = countExited(await getUnix(fixtureSocket, "/containers/json"));
+                const snapshot = JSON.stringify(await fetchJson(`http://127.0.0.1:${daemonPort}/daemon/snapshot`, 3_000));
+                process.stdout.write(
+                  `[capture] control ${generation}: fixture served ${served} exited, daemon published ${countExited(snapshot)}\n`
+                );
               }
               const measured = await awaitModelAcceptance(benchPage);
               independencePair.controlStageSixMs.push(measured.notificationToCoherentModelMs);
