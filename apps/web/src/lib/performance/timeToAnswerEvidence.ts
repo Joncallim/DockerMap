@@ -54,9 +54,10 @@ export const TIME_TO_ANSWER_STAGES = [
   {
     id: "publicationToNodeObservationMs",
     bucket: "transport-notification",
-    measures: "Daemon publication until the Node/SSE layer observes that revision.",
+    measures:
+      "Daemon publication until the Node/SSE layer observes that revision. The trigger is jittered by a uniform sub-interval delay per sample so the measurement describes the real poll-wait distribution rather than one fixed phase offset between the daemon's refresh cycle and the API's poller.",
     doesNotProve:
-      "Not browser work, not render, and not a claim about network distance to a remote operator.",
+      "Not browser work, not render, and not a claim about network distance to a remote operator. It also does not prove the daemon and poller are phase-independent at any single observed sample: samples are de-correlated by the harness, and the underlying mechanism still runs on two fixed 2 s cycles.",
     fixtures: [
       "reference-25",
       "reference-100",
@@ -69,9 +70,10 @@ export const TIME_TO_ANSWER_STAGES = [
   {
     id: "notificationToCoherentModelMs",
     bucket: "browser-model",
-    measures: "Browser notification until a coherent, revision-matched model is accepted by the app.",
+    measures:
+      "Browser notification until the app commits a change that alters rendered text, i.e. model-derived content actually reaching the DOM rather than an attribute-only or churn-only mutation.",
     doesNotProve:
-      "Not a health judgement and not a statement that every evidence domain is current; it ends when the model is coherent, not when it is complete.",
+      "Not a health judgement and not a statement that every evidence domain is current; it ends when coherent model content is committed, not when the model is complete. It is not attribution to a specific revision — the probe cannot see which revision produced the commit.",
     fixtures: [
       "reference-25",
       "reference-100",
@@ -84,17 +86,11 @@ export const TIME_TO_ANSWER_STAGES = [
   {
     id: "coherentModelToUsefulRenderMs",
     bucket: "rendering",
-    measures: "Coherent model accepted until Home/Review shows useful content.",
+    measures:
+      "Browser notification until the Home content region repaints with changed rendered text — a distinct boundary from stage 6, which ends on the first text-changing commit anywhere in the document.",
     doesNotProve:
-      "Not a visual-quality or accessibility claim, and not a claim that the operator found the answer.",
-    fixtures: [
-      "reference-25",
-      "reference-100",
-      "reference-250",
-      "provider-only-revision-change",
-      "docker-topology-change",
-      "unavailable-optional-provider"
-    ]
+      "Not a visual-quality or accessibility claim, and not a claim that the operator found the answer. It is declared only for fixtures whose published change demonstrably repaints Home; a provider-only or provider-unavailable revision is not guaranteed to repaint it, so measuring it there would be an empty number.",
+    fixtures: ["reference-25", "reference-100", "reference-250", "docker-topology-change"]
   },
   {
     id: "buildModelMs",
@@ -105,10 +101,11 @@ export const TIME_TO_ANSWER_STAGES = [
   },
   {
     id: "findingsDerivationMs",
-    bucket: "browser-model",
-    measures: "Findings derivation for the fixture's representative topology and evidence sizes.",
+    bucket: "backend-collection",
+    measures:
+      "Findings derivation for the fixture's representative topology and evidence sizes. This runs in the daemon during publication, not in the browser.",
     doesNotProve:
-      "Not a rule-quality claim, and it says nothing about a host with conditions the fixture does not contain.",
+      "Not a rule-quality claim, and it says nothing about a host with conditions the fixture does not contain. The fixture topology derives no findings, so this measures the empty-derivation path at its resolution floor.",
     fixtures: ["reference-25", "reference-100", "reference-250"]
   },
   {
@@ -182,6 +179,13 @@ export type TimeToAnswerEnvironment = {
    * that changed it has not been measured against the same mechanism.
    */
   ssePollIntervalMs: string;
+  /**
+   * The revision of the benchmark harness itself (latest commit touching
+   * `tests/perf` and the performance contract). A baseline is only reproducible
+   * if both the product and the harness that measured it are identified: a
+   * number produced by an uncommitted harness cannot be re-derived by anyone.
+   */
+  harnessRevision: string;
   browserEngine: "chromium";
   browserRevision: string;
   browserFlags: readonly string[];
@@ -218,6 +222,7 @@ const environmentKeys = [
   "rustRevision",
   "dockerRevision",
   "ssePollIntervalMs",
+  "harnessRevision",
   "browserEngine",
   "browserRevision",
   "browserFlags",
@@ -289,6 +294,7 @@ export function assertTimeToAnswerEnvironment(
       environment.rustRevision,
       environment.dockerRevision,
       environment.ssePollIntervalMs,
+      environment.harnessRevision,
       environment.browserRevision,
       environment.fontEnvironment,
       environment.fixtureRevision,
@@ -378,7 +384,12 @@ export function compatibleTimeToAnswerEnvironment(
   candidate: TimeToAnswerEnvironment
 ): boolean {
   return environmentKeys
-    .filter((key) => key !== "sourceRevision")
+    // sourceRevision differs by design between a baseline and its candidate.
+    // dockerRevision is INFORMATIONAL: no measured stage exercises the host
+    // Docker daemon (the capture runs against the deterministic fixture daemon),
+    // so requiring it to match would fail a comparison for a dimension this
+    // benchmark never touches. It is still recorded and still pinned.
+    .filter((key) => key !== "sourceRevision" && key !== "dockerRevision")
     .every((key) => JSON.stringify(baseline[key]) === JSON.stringify(candidate[key]));
 }
 

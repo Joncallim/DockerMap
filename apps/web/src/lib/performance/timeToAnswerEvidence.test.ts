@@ -25,6 +25,7 @@ const environment: Record<string, unknown> = {
   rustRevision: "1.88.0",
   dockerRevision: "29.0.0",
   ssePollIntervalMs: "2000",
+  harnessRevision: "dddddddddddddddddddddddddddddddddddddddd",
   browserEngine: "chromium",
   browserRevision: "1234567",
   browserFlags: ["--disable-background-networking"],
@@ -199,7 +200,13 @@ describe("time-to-answer evidence contract", () => {
     expect(compatibleTimeToAnswerEnvironment(baseline, { ...baseline, browserRevision: "9" })).toBe(
       false
     );
+    // dockerRevision is informational: no measured stage exercises the host
+    // Docker daemon, so a host engine upgrade must not invalidate a comparison.
     expect(compatibleTimeToAnswerEnvironment(baseline, { ...baseline, dockerRevision: "30.0.0" })).toBe(
+      true
+    );
+    // A dimension this benchmark really pins still has to match.
+    expect(compatibleTimeToAnswerEnvironment(baseline, { ...baseline, osImage: "debian-13" })).toBe(
       false
     );
     expect(compatibleTimeToAnswerEnvironment(baseline, { ...baseline, fixtureRevision: "v2" })).toBe(
@@ -226,7 +233,7 @@ describe("time-to-answer evidence contract", () => {
     );
 
     const wrongEnvironment = rawEvidence();
-    wrongEnvironment.environment = { ...wrongEnvironment.environment, dockerRevision: "30.0.0" };
+    wrongEnvironment.environment = { ...wrongEnvironment.environment, osImage: "debian-13" };
     expect(() => assertTimeToAnswerPromotion(rawEvidence(), wrongEnvironment)).toThrow(
       "does not match the pinned baseline environment"
     );

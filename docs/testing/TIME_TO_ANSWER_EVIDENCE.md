@@ -160,6 +160,16 @@ Chromium for Playwright, and a built web app — the capture performs the contra
 web and probe builds itself. `npm run perf:time-to-answer` is the only command
 needed; it owns every process it starts.
 
+**Capture discipline.** The capture refuses to start from a dirty worktree, and
+refuses to run if the metadata's `sourceRevision` or `harnessRevision` does not
+match the checked-out commits. A baseline is therefore always reproducible from a
+committed revision: the artifact names both the product revision and the harness
+that measured it. Commit the harness **before** capturing — baseline 1 was
+invalidated precisely because its harness existed only as uncommitted changes.
+`DOCKERMAP_BENCH_DEBUG=1` relaxes only the run/sample counts (for probing a single
+fixture, which can never satisfy the closed matrix and therefore cannot emit an
+artifact).
+
 Procedure notes: the benchmark-only Vite build (`tests/perf/benchVite.config.mjs`)
 is what stages 8 and 10 run against, and it imports the real production modules;
 `tests/perf/browserProbe.js` is test-only instrumentation loaded before product

@@ -64,6 +64,16 @@ const rawDir = args["raw-dir"];
 const runs = Number(args.runs ?? TIME_TO_ANSWER_CONTROLLED_RUNS);
 const samples = Number(args.samples ?? TIME_TO_ANSWER_WARMED_SAMPLES);
 const onlyFixtures = args.fixtures ? args.fixtures.split(",").map((name) => name.trim()) : null;
+if (onlyFixtures && process.env.DOCKERMAP_BENCH_DEBUG !== "1") {
+  throw new Error(
+    "--fixtures only exists for probing individual fixtures during development; a partial run can never satisfy the closed matrix, so gate it behind DOCKERMAP_BENCH_DEBUG=1."
+  );
+}
+/**
+ * Fixture-derived Cmd-K query token: container 0 always carries this name.
+ * The poll interval is derived after the environment is parsed, below.
+ */
+const FixtureTopologyQueryToken = "fixture-service-0";
 
 if (!metadataPath || !outputPath) {
   throw new Error(
@@ -85,6 +95,41 @@ const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {
 };
 assertTimeToAnswerEnvironment(metadata.environment);
 const environment = metadata.environment;
+
+/**
+ * The effective SSE poll interval. It is passed to the API explicitly so the
+ * recorded pin cannot drift from what actually ran, and it sets the trigger
+ * jitter that de-correlates stage 5 from the two fixed 2 s cycles.
+ */
+const pollIntervalMs = Number(environment.ssePollIntervalMs);
+if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+  throw new Error("the pinned ssePollIntervalMs must be a positive number");
+}
+
+// A baseline is only reproducible if the code that measured it is committed.
+// The refusal is deliberate: an uncommitted harness produces numbers nobody can
+// re-derive, which is exactly how baseline 1 was invalidated in review.
+function gitOutput(gitArgs: string[]): string {
+  return run("git", gitArgs).trim();
+}
+const dirtyTree = gitOutput(["status", "--porcelain"]);
+if (dirtyTree !== "") {
+  throw new Error(
+    `refusing to capture from a dirty worktree — commit the harness first so the baseline is reproducible:\n${dirtyTree}`
+  );
+}
+const productRevision = gitOutput(["rev-parse", "HEAD"]);
+if (environment.sourceRevision !== productRevision) {
+  throw new Error(
+    `metadata sourceRevision (${environment.sourceRevision}) is not the checked-out commit (${productRevision}); re-emit the metadata so the artifact names the revision it actually measured`
+  );
+}
+const harnessRevision = gitOutput(["log", "-1", "--format=%H", "--", "tests/perf", "apps/web/src/lib/performance"]);
+if (environment.harnessRevision !== harnessRevision) {
+  throw new Error(
+    `metadata harnessRevision (${environment.harnessRevision}) is not the harness commit (${harnessRevision})`
+  );
+}
 const daemonBinary = metadata.daemonBinary ?? join(REPO_ROOT, "crates/target/release/dockermap-daemon");
 const launchArgs = (environment.browserFlags as string[]).filter(Boolean);
 
@@ -338,24 +383,29 @@ async function measurePublicationToNodeObservation(
 
 interface StageSixSeven {
   notificationToCoherentModelMs: number;
-  coherentModelToUsefulRenderMs: number;
+  coherentModelToUsefulRenderMs: number | null;
 }
 
-async function measureModelAcceptance(page: any, initialRevision: string, timeoutMs = 45_000): Promise<StageSixSeven> {
+async function measureModelAcceptance(
+  page: any,
+  initialRevision: string,
+  needHome: boolean,
+  timeoutMs = 60_000
+): Promise<StageSixSeven> {
   await page.evaluate(
-    `window.__benchInput = ${JSON.stringify({ previous: initialRevision, limit: timeoutMs })}`
+    `window.__benchInput = ${JSON.stringify({ previous: initialRevision, limit: timeoutMs, needHome })}`
   );
   const measured = await page.evaluate(
-    "window.__dockermapBenchHelpers.measureModelAcceptance(window.__benchInput.previous, window.__benchInput.limit)"
+    "window.__dockermapBenchHelpers.measureModelAcceptance(window.__benchInput.previous, window.__benchInput.limit, window.__benchInput.needHome)"
   );
   if (!measured) throw new Error("model acceptance probe returned no measurement");
   return measured as StageSixSeven;
 }
 
-async function measureCommandQuery(page: any, timeoutMs = 15_000): Promise<number> {
-  await page.evaluate(`window.__benchInput = ${JSON.stringify({ limit: timeoutMs })}`);
+async function measureCommandQuery(page: any, preferredToken: string, timeoutMs = 20_000): Promise<number> {
+  await page.evaluate(`window.__benchInput = ${JSON.stringify({ limit: timeoutMs, preferredToken })}`);
   const measured = await page.evaluate(
-    "window.__dockermapBenchHelpers.commandQuery(window.__benchInput.limit)"
+    "window.__dockermapBenchHelpers.commandQuery(window.__benchInput.limit, window.__benchInput.preferredToken)"
   );
   if (!measured) throw new Error("command query probe returned no measurement");
   return measured as number;
@@ -458,6 +508,11 @@ async function main(): Promise<void> {
               const startAt = nowMs();
               const probeChild = spawnOwned(daemonBinary, [], {
                 ...daemonEnv,
+                // These transient cold-start probes must never write into the
+                // warmed attribution sink: their first observation is a
+                // cold-start sample, and mixing it into a stage documented as
+                // "warmed" would be a provenance defect.
+                DOCKERMAP_BENCH_STAGE_TIMING_PATH: join(workdir, "probe-bench.jsonl"),
                 DOCKERMAP_DAEMON_PORT: String(probePort)
               });
               try {
@@ -500,7 +555,10 @@ async function main(): Promise<void> {
           apiChild = spawnOwned(process.execPath, [join(REPO_ROOT, "node_modules/tsx/dist/cli.mjs"), "apps/api/src/index.ts"], {
             PORT: String(apiPort),
             DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemonPort}`,
-            DOCKERMAP_ALLOWED_ORIGINS: webOrigin
+            DOCKERMAP_ALLOWED_ORIGINS: webOrigin,
+            // Pinned explicitly so the recorded interval and the interval that
+            // actually ran cannot diverge; this is the API's own default.
+            DOCKERMAP_SSE_INTERVAL_MS: String(pollIntervalMs)
           });
           await waitForJson(`http://127.0.0.1:${apiPort}/api/health`, () => true, 60_000);
 
@@ -522,6 +580,21 @@ async function main(): Promise<void> {
           });
 
           const observationSamples: number[] = [];
+          // Scenario premises must be asserted: a fixture that silently stops
+          // exercising its premise would still record samples and pass the gate.
+          const dockerIds = (snapshot: any) =>
+            (snapshot?.containers ?? [])
+              .map((container: any) => container.id ?? container.name)
+              .sort()
+              .join(",");
+          const premiseDockerIds =
+            plan.name === "provider-only-revision-change"
+              ? dockerIds(await fetchJson(`http://127.0.0.1:${daemonPort}/daemon/snapshot`, 30_000))
+              : "";
+          const premiseProviderStates =
+            plan.name === "unavailable-optional-provider"
+              ? JSON.stringify(await fetchJson(`http://127.0.0.1:${daemonPort}/daemon/runtime/map`, 30_000) ?? {})
+              : "";
           const coherentSamples: number[] = [];
           const usefulSamples: number[] = [];
           const querySamples: number[] = [];
@@ -534,6 +607,13 @@ async function main(): Promise<void> {
               const initialRevision: string = hasStage(plan.name, "notificationToCoherentModelMs")
                 ? await page.evaluate("window.__dockermapBenchHelpers.currentRevision()")
                 : "";
+              // De-correlate the trigger from the two fixed 2 s cycles (the
+              // daemon's refresh loop and the API's poller). Without this the
+              // observed gap is one fixed phase offset between them — a number
+              // that moves by hundreds of ms if the harness simply starts the
+              // daemon a second earlier — instead of a sample of the real
+              // poll-wait distribution.
+              await sleep(Math.random() * pollIntervalMs);
               if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
                 // A real published inventory change: the fixture daemon serves a
                 // new generation, so the daemon must publish a new revision.
@@ -548,9 +628,15 @@ async function main(): Promise<void> {
                 );
               }
               if (hasStage(plan.name, "notificationToCoherentModelMs")) {
-                const measured = await measureModelAcceptance(page, initialRevision);
+                const measured = await measureModelAcceptance(
+                  page,
+                  initialRevision,
+                  hasStage(plan.name, "coherentModelToUsefulRenderMs")
+                );
                 coherentSamples.push(measured.notificationToCoherentModelMs);
-                usefulSamples.push(measured.coherentModelToUsefulRenderMs);
+                if (typeof measured.coherentModelToUsefulRenderMs === "number") {
+                  usefulSamples.push(measured.coherentModelToUsefulRenderMs);
+                }
               }
             }
           }
@@ -562,7 +648,7 @@ async function main(): Promise<void> {
               await page.waitForFunction("window.__dockermapBenchHelpers.homeReady()", undefined, {
                 timeout: 90_000
               });
-              querySamples.push(await measureCommandQuery(page));
+              querySamples.push(await measureCommandQuery(page, FixtureTopologyQueryToken));
             }
           }
           if (hasStage(plan.name, "productionBundleMs")) {
@@ -571,6 +657,22 @@ async function main(): Promise<void> {
             }
           }
           await context.close();
+          // Assert the scenario premise actually held for this run.
+          if (plan.name === "provider-only-revision-change") {
+            const after = dockerIds(await fetchJson(`http://127.0.0.1:${daemonPort}/daemon/snapshot`, 30_000));
+            if (after !== premiseDockerIds) {
+              throw new Error(
+                "provider-only-revision-change measured a Docker-driven revision: the fixture inventory changed during the run"
+              );
+            }
+          }
+          if (plan.name === "unavailable-optional-provider") {
+            if (!/"state":"(unavailable|disabled|error|stale|collecting)"/.test(premiseProviderStates)) {
+              throw new Error(
+                "unavailable-optional-provider measured a fully-provided model: no optional provider was non-fresh"
+              );
+            }
+          }
           if (observationSamples.length > 0) record(plan.name, "publicationToNodeObservationMs", observationSamples);
           if (coherentSamples.length > 0) {
             record(plan.name, "notificationToCoherentModelMs", coherentSamples);

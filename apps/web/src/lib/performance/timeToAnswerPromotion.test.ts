@@ -25,6 +25,7 @@ const environment = {
   rustRevision: "1.88.0",
   dockerRevision: "29.8.1",
   ssePollIntervalMs: "2000",
+  harnessRevision: "dddddddddddddddddddddddddddddddddddddddd",
   browserEngine: "chromium",
   browserRevision: "1.61.0",
   browserFlags: ["--disable-background-networking"],
@@ -115,7 +116,6 @@ describe("time-to-answer promotion gate", () => {
     ["node revision", "nodeRevision", "20.11.0"],
     ["rust revision", "rustRevision", "1.80.0"],
     ["chromium revision", "browserRevision", "1.50.0"],
-    ["docker revision", "dockerRevision", "28.0.0"],
     ["fixture revision", "fixtureRevision", "dockermap-v1/other-fixtures"],
     ["sse poll interval", "ssePollIntervalMs", "1000"],
     ["font environment", "fontEnvironment", "different-fonts"]
@@ -123,6 +123,54 @@ describe("time-to-answer promotion gate", () => {
     expect(() => assertTimeToAnswerPromotion(artifact(), candidate({ environment: { [key]: value } }))).toThrow(
       "does not match the pinned baseline environment"
     );
+  });
+
+  it("treats dockerRevision as informational: a host engine change must not fail a comparison", () => {
+    // No measured stage exercises the host Docker daemon — the capture runs
+    // against the deterministic fixture daemon — so pinning it as a
+    // compatibility key would reject a candidate for an untouched dimension.
+    expect(() =>
+      assertTimeToAnswerPromotion(artifact(), candidate({ environment: { dockerRevision: "30.1.0" } }))
+    ).not.toThrow();
+  });
+
+  it("pins the median-of-three aggregation, not the first run or the pooled mean", () => {
+    // One slow run and two fast runs: the median must pass, while a first-run
+    // p95 or a pooled mean would exceed the budget.
+    const slowFirst = candidate({
+      records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+        fixture === "reference-250" && stage === "commandQueryMs"
+          ? {
+              fixture,
+              stage,
+              runs: [
+                [...Array(15).fill(500)],
+                [...Array(15).fill(10)],
+                [...Array(15).fill(10)]
+              ]
+            }
+          : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+      )
+    });
+    expect(() => assertTimeToAnswerPromotion(artifact(), slowFirst)).not.toThrow();
+
+    // Two slow runs and one fast run: the median is slow, so it must fail.
+    const slowMajority = candidate({
+      records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+        fixture === "reference-250" && stage === "commandQueryMs"
+          ? {
+              fixture,
+              stage,
+              runs: [
+                [...Array(15).fill(10)],
+                [...Array(15).fill(500)],
+                [...Array(15).fill(500)]
+              ]
+            }
+          : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+      )
+    });
+    expect(() => assertTimeToAnswerPromotion(artifact(), slowMajority)).toThrow("promotion limit");
   });
 
   it("rejects a candidate with different browser flags", () => {

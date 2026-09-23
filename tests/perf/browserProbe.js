@@ -83,7 +83,22 @@
         const node = record.target;
         const element = node instanceof Element ? node : node.parentElement;
         const inHome = Boolean(element && element.closest("main .story, main .stack"));
-        bench.commits.push({ at: performance.now(), inHome });
+        // A commit only counts as model content reaching the DOM if it alters
+        // rendered text. Attribute-only or node-shuffling churn does not.
+        let textChanged = record.type === "characterData";
+        if (!textChanged) {
+          const list = (record.addedNodes || []).length
+            ? record.addedNodes
+            : record.removedNodes || [];
+          for (const added of list) {
+            const text = added.textContent || "";
+            if (text.trim() !== "") {
+              textChanged = true;
+              break;
+            }
+          }
+        }
+        bench.commits.push({ at: performance.now(), inHome, textChanged });
         if (bench.commits.length > 5000) bench.commits.splice(0, 2500);
       }
     });
@@ -111,7 +126,7 @@
    * that does not exist in the page realm.
    */
   window.__dockermapBenchHelpers = {
-    async measureModelAcceptance(previous, limit) {
+    async measureModelAcceptance(previous, limit, needHome) {
       const deadline = performance.now() + limit;
       const isNew = () => Boolean(bench.notifyRevision) && bench.notifyRevision !== previous;
       while (performance.now() < deadline && !isNew()) {
@@ -137,46 +152,71 @@
         );
       }
       const notifyAt = bench.notifyAt;
-      let firstCommit = 0;
-      let firstHomeCommit = 0;
-      while (performance.now() < deadline && (!firstCommit || !firstHomeCommit)) {
+      let firstText = 0;
+      let firstHomeText = 0;
+      while (performance.now() < deadline && (!firstText || (needHome && !firstHomeText))) {
         for (const commit of bench.commits) {
-          if (commit.at < notifyAt) continue;
-          if (!firstCommit) firstCommit = commit.at;
-          if (commit.inHome && !firstHomeCommit) firstHomeCommit = commit.at;
+          if (commit.at < notifyAt || !commit.textChanged) continue;
+          if (!firstText) firstText = commit.at;
+          if (commit.inHome && !firstHomeText) firstHomeText = commit.at;
         }
-        if (firstCommit && firstHomeCommit) break;
+        if (firstText && (!needHome || firstHomeText)) break;
         await new Promise((done) => requestAnimationFrame(done));
       }
-      if (!firstCommit) throw new Error("coherent model was never committed to the DOM");
+      if (!firstText) {
+        throw new Error("no text-changing DOM commit was observed after the notification");
+      }
+      if (needHome && !firstHomeText) {
+        throw new Error("Home content region never repainted with changed text after the notification");
+      }
       return {
-        notificationToCoherentModelMs: firstCommit - notifyAt,
-        // Where Home's visible content does not repaint (a provider-only
-        // change), the first root commit stands in and the interpretation says so.
-        coherentModelToUsefulRenderMs: (firstHomeCommit || firstCommit) - notifyAt
+        notificationToCoherentModelMs: firstText - notifyAt,
+        coherentModelToUsefulRenderMs: needHome ? firstHomeText - notifyAt : null
       };
     },
 
-    async commandQuery(limit) {
+    async commandQuery(limit, preferredToken) {
       const started = performance.now();
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }));
       const deadline = performance.now() + limit;
       const palette = () => document.querySelector('[aria-label="Command palette"]');
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }));
       while (performance.now() < deadline && !palette()) {
         await new Promise((done) => requestAnimationFrame(done));
       }
-      const input = palette() && palette().querySelector("input");
-      if (!input) throw new Error("command palette did not open");
+      const dialog = palette();
+      if (!dialog) throw new Error("command palette did not open");
+      const input = dialog.querySelector("input");
+      if (!input) throw new Error("command palette has no query input");
+      const listText = () => {
+        const items = dialog.querySelectorAll("li");
+        return Array.from(items)
+          .map((item) => item.textContent || "")
+          .join("|");
+      };
+      // Snapshot the UNFILTERED list: the palette renders every command on open,
+      // so "some item exists" would pass even with filtering completely broken.
+      const unfiltered = listText();
+      const tokens = unfiltered.match(/[A-Za-z0-9][A-Za-z0-9_.:-]{3,}/g) || [];
+      // A query with a known expected result: prefer the fixture-derived token
+      // the harness passes in; otherwise take a digit-bearing token from the
+      // rendered list itself. Either way the filtered list must still contain it.
+      const token =
+        preferredToken && tokens.includes(preferredToken)
+          ? preferredToken
+          : tokens.filter((value) => /\d/.test(value)).sort((left, right) => right.length - left.length)[0] ||
+            tokens[0];
+      if (!token) throw new Error("no queryable token exists in the unfiltered command list");
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-      setter.call(input, "8080");
+      setter.call(input, token);
       input.dispatchEvent(new Event("input", { bubbles: true }));
       while (performance.now() < deadline) {
-        if (document.querySelectorAll('[aria-label="Command palette"] li').length > 0) {
+        const current = listText();
+        if (current !== unfiltered && current.includes(token)) {
           return performance.now() - started;
         }
         await new Promise((done) => requestAnimationFrame(done));
       }
-      throw new Error("command palette produced no results for the representative query");
+      throw new Error("query " + token + " never produced a filtered list containing it");
     },
 
     navigationDuration() {

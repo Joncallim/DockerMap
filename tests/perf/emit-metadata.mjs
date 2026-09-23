@@ -76,6 +76,27 @@ if (!sourceRevision) {
     sourceRevision = "uncommitted";
   }
 }
+// The harness revision is the last commit that touched the benchmark itself, so
+// a baseline names both the product and the harness that measured it.
+let harnessRevision = args["harness-revision"];
+if (!harnessRevision) {
+  try {
+    harnessRevision = command("git", ["log", "-1", "--format=%H", "--", "tests/perf", "apps/web/src/lib/performance"]);
+  } catch {
+    harnessRevision = "uncommitted";
+  }
+}
+if (!harnessRevision) {
+  throw new Error("could not resolve the benchmark harness revision; pass --harness-revision");
+}
+// Derived from the API source rather than assumed, so the pin cannot silently
+// drift from the interval the API actually uses.
+const apiSource = readFileSync(resolve(REPO_ROOT, "apps/api/src/index.ts"), "utf8");
+const sseDefault = apiSource.match(/DOCKERMAP_SSE_INTERVAL_MS,\s*([0-9_]+)/);
+if (!sseDefault) {
+  throw new Error("could not derive the API's DOCKERMAP_SSE_INTERVAL_MS default from apps/api/src/index.ts");
+}
+const ssePollIntervalMs = safeToken(sseDefault[1].replace(/_/g, ""));
 if (!existsSync(resolve(REPO_ROOT, "crates/target/release/dockermap-daemon"))) {
   throw new Error(
     "the release daemon is missing: run `npm run build:deploy` (or cargo build --release) before capturing"
@@ -91,9 +112,10 @@ const metadata = {
     nodeRevision,
     rustRevision,
     dockerRevision,
-    // The API's own default; the capture never overrides it, because stage 5
-    // measures today's real publication-observation mechanism.
-    ssePollIntervalMs: "2000",
+    // Derived from the API's own source default; the capture passes this value
+    // explicitly to the API so the pin and the running interval cannot diverge.
+    ssePollIntervalMs,
+    harnessRevision: safeToken(harnessRevision),
     browserEngine: "chromium",
     browserRevision,
     browserFlags,
