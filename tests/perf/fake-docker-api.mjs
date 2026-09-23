@@ -30,6 +30,7 @@ if (!socketPath || socketPath.startsWith("--")) {
 }
 const containers = Number(args.containers ?? 25);
 const scenario = args.scenario ?? "reference";
+const projectRoot = args["project-root"] ?? "/srv/dockermap-fixture";
 if (!Number.isInteger(containers) || containers < 1 || containers > 250) {
   throw new Error("--containers must be an integer between 1 and 250.");
 }
@@ -108,7 +109,7 @@ const server = createServer((request, response) => {
     return;
   }
   if (route === "/containers/json") {
-    json(response, 200, buildContainers(containers, scenario, state.generation));
+    json(response, 200, buildContainers(containers, scenario, state.generation, projectRoot));
     return;
   }
   if (route === "/networks") {

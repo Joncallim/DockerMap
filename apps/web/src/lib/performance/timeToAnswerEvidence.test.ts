@@ -24,6 +24,7 @@ const environment: Record<string, unknown> = {
   nodeRevision: "22.23.2",
   rustRevision: "1.88.0",
   dockerRevision: "29.0.0",
+  ssePollIntervalMs: "2000",
   browserEngine: "chromium",
   browserRevision: "1234567",
   browserFlags: ["--disable-background-networking"],

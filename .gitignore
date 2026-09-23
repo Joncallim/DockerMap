@@ -13,3 +13,4 @@ target
 .codex/*
 !.codex/agents/
 !.codex/agents/*.toml
+tests/perf/.bench-dist

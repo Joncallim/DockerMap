@@ -175,6 +175,13 @@ export type TimeToAnswerEnvironment = {
   nodeRevision: string;
   rustRevision: string;
   dockerRevision: string;
+  /**
+   * The effective `DOCKERMAP_SSE_INTERVAL_MS` the API ran with. Stage 5
+   * measures today's real publication-observation mechanism, poll wait
+   * included, so the interval is part of the pinned environment: a candidate
+   * that changed it has not been measured against the same mechanism.
+   */
+  ssePollIntervalMs: string;
   browserEngine: "chromium";
   browserRevision: string;
   browserFlags: readonly string[];
@@ -210,6 +217,7 @@ const environmentKeys = [
   "nodeRevision",
   "rustRevision",
   "dockerRevision",
+  "ssePollIntervalMs",
   "browserEngine",
   "browserRevision",
   "browserFlags",
@@ -280,6 +288,7 @@ export function assertTimeToAnswerEnvironment(
       environment.nodeRevision,
       environment.rustRevision,
       environment.dockerRevision,
+      environment.ssePollIntervalMs,
       environment.browserRevision,
       environment.fontEnvironment,
       environment.fixtureRevision,

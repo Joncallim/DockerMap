@@ -65,7 +65,12 @@ function pad(value) {
  * changed inventory from the SAME fixture daemon without touching anything
  * else, so the only difference the daemon observes is the Docker model.
  */
-export function buildContainers(containers, scenario = "reference", topologyGeneration = 0) {
+export function buildContainers(
+  containers,
+  scenario = "reference",
+  topologyGeneration = 0,
+  projectRoot = "/srv/dockermap-fixture"
+) {
   if (!Number.isInteger(containers) || containers < 1 || containers > 250) {
     throw new Error("Fixture container count must be an integer between 1 and 250.");
   }
@@ -128,7 +133,7 @@ export function buildContainers(containers, scenario = "reference", topologyGene
       labels["com.docker.compose.project"] = "dockermap-fixture";
       labels["com.docker.compose.service"] = `fixture-service-${index % 40}`;
       labels["com.docker.compose.config-hash"] = digest(`config-hash/${index % 40}`).slice(0, 64);
-      labels["com.docker.compose.project.config_files"] = "/srv/dockermap-fixture/compose.yaml";
+      labels["com.docker.compose.project.config_files"] = `${projectRoot}/compose.yaml`;
     }
     const exited = scenario === "docker-topology-change" && index % 3 === 0;
     list.push({
@@ -210,11 +215,16 @@ export function buildSlowComposeProject(services = SLOW_COMPOSE_SERVICES) {
   return `${lines.join("\n")}\n`;
 }
 
-export function buildTopology({ containers, scenario = "reference", topologyGeneration = 0 }) {
+export function buildTopology({
+  containers,
+  scenario = "reference",
+  topologyGeneration = 0,
+  projectRoot = "/srv/dockermap-fixture"
+}) {
   return {
     revision: FIXTURE_REVISION,
     scenario,
-    containers: buildContainers(containers, scenario, topologyGeneration),
+    containers: buildContainers(containers, scenario, topologyGeneration, projectRoot),
     networks: buildNetworks(containers),
     volumes: buildVolumes(containers)
   };
