@@ -4,5 +4,5 @@
     "types": ["node"],
     "allowJs": true
   },
- "include": ["capture.ts", "summarize.ts", "preconditioning.ts"]
+  "include": ["capture.ts", "summarize.ts", "preconditioning.ts", "phaseControl.ts"]
 }

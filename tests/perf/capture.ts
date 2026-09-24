@@ -70,6 +70,7 @@ import {
 import { FIXTURE_REVISION, SLOW_COMPOSE_SERVICES, buildSlowComposeProject, expectedExitedCount } from "./dockerFixtureTopology.mjs";
 import { reservePort, startStaticServer } from "./staticServer.mjs";
 import { withFreshBrowserRuns } from "./browserLifecycle.mjs";
+import { startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
 
 const REPO_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -406,6 +407,28 @@ async function fetchJson(url: string, timeoutMs = 5_000): Promise<any | null> {
   }
 }
 
+async function postControl(url: string, body: Record<string, unknown>): Promise<any> {
+ const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+ const payload = await response.json();
+ if (!response.ok) throw new Error(`stage-5 publication controller rejected ${url}: ${JSON.stringify(payload)}`);
+ return payload;
+}
+
+async function waitForPublicationAcknowledgement(url: string, triggerId: string, timeoutMs: number): Promise<{ at: number; revision: string; releasedAtMs: number; pollAtMs: number }> {
+ const deadline = Date.now() + timeoutMs;
+ while (Date.now() < deadline) {
+ const response = await fetch(`${url}/__stage-five-control/ack`);
+ if (response.status === 200) {
+ const ack = await response.json();
+ if (ack.triggerId !== triggerId) throw new Error("stage 5 publication acknowledgement has the wrong trigger identity");
+ return { at: ack.releasedAtMs, revision: ack.revision, releasedAtMs: ack.releasedAtMs, pollAtMs: ack.pollAtMs };
+ }
+ if (response.status >= 400) throw new Error(`stage 5 publication controller rejected ${triggerId}: ${await response.text()}`);
+ await sleep(2);
+ }
+ throw new Error(`stage 5 publication controller did not acknowledge ${triggerId}`);
+}
+
 async function waitForJson(url: string, predicate: (value: any) => boolean, timeoutMs: number) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -603,14 +626,11 @@ async function waitForBenchSamples(path: string, count: number, timeoutMs: numbe
  * position in its run, every phase has at least two observations, and phase
  * normalization weights each phase equally rather than weighting repeats more.
  *
- * The harness controls the phase by choosing WHEN IT CONNECTS its observation
- * stream: the API emits to each connected client on a `setInterval` anchored to
- * that connection, so connecting at `predictedPublication - declaredPhase` puts the
- * next poll tick at the intended latency after the publication. The prediction
- * comes from the daemon's own observed publication grid. Each sample then verifies
- * the result: the observed publication must match the prediction, the observed
- * latency must land on the declared phase within tolerance, and the observation
- * must have arrived through the real API stream.
+ * The harness arms a benchmark-only fixture controller before triggering its
+ * generation. The controller observes an actual API health poll, releases the
+ * exact armed revision at the declared offset, and acknowledges that identity.
+ * Each sample verifies that exact revision through the real API stream; no daemon
+ * grid prediction is used.
  */
 const PHASE_CONNECT_MARGIN_MS = 30;
 
@@ -758,28 +778,15 @@ async function observeStageFiveSample(input: {
   intervalMs: number;
   runIndex: number;
   sampleIndex: number;
-  mode: "phase-controlled" | "free-running";
+mode: "phase-controlled" | "free-running";
+ controllerUrl?: string;
  onConnected: (plan: PhaseSamplePlan) => Promise<{ triggeredAtMs?: number }>;
   timeoutMs?: number;
 }): Promise<{ sample: PollPhaseSweep; revisions: string[]; tickCarriedNewerRevision: boolean }> {
   const phaseControlled = input.mode === "phase-controlled";
   const declaredPhaseMs = declaredPhaseForSample(input.runIndex, input.sampleIndex, input.intervalMs);
   const intended = intendedLatencyMs(declaredPhaseMs, input.intervalMs);
-  let predicted = 0;
-  let connectAt = nowMs();
-  if (phaseControlled) {
-    // Four cycles give the grid fit three intervals to work with before the first
-    // sample is placed; the tracker usually satisfies this long before the browser
-    // stages begin.
-    await input.tracker.waitForCycles(4, 60_000);
-    const period = input.tracker.periodMs();
-    // Choose the publication cycle to measure: the next one on the daemon's grid whose
-    // connection instant is still in the future by a safety margin.
-    predicted = input.tracker.lastCycleAtMs() + period;
-    while (predicted - declaredPhaseMs < nowMs() + PHASE_CONNECT_MARGIN_MS) predicted += period;
-    connectAt = predicted - declaredPhaseMs;
-    await sleep(Math.max(0, connectAt - nowMs()));
-  }
+ let predicted = 0;
   // Free-running cells cannot place the publication (their revisions advance from the
   // daemon's own host provider collection), so the observation is started now and the
   // phase the sample achieves is recorded rather than driven.
@@ -793,19 +800,20 @@ async function observeStageFiveSample(input: {
       (await fetchJson(`http://127.0.0.1:${input.daemonPort}/daemon/health`, 1_000)) as {
         modelRevision?: string;
       } | null
-    )?.modelRevision ?? input.tracker.revision();
+ )?.modelRevision ?? input.tracker.revision();
+ const triggerId = `stage-five-r${input.runIndex}-s${input.sampleIndex}-${Date.now()}`;
+ if (phaseControlled) {
+ if (!input.controllerUrl) throw new Error("controlled stage-5 sample has no publication controller");
+ await postControl(`${input.controllerUrl}/__stage-five-control/arm`, { triggerId, requestedPhaseMs: declaredPhaseMs, previousRevision });
+ }
   const connectedAtMs = nowMs();
-  // Only frames that arrive after the publication this sample measures can be this
-  // sample's observation. For a controlled sample that is the predicted cycle — its
-  // poll tick can only land at or after it, while the connect frame precedes it by the
-  // declared phase. For a free-running sample it is a margin after the connect, which
-  // excludes the connect frame while leaving every real tick (a full interval later).
-  const minimumObservationAtMs = phaseControlled ? predicted : connectedAtMs + PHASE_CONNECT_MARGIN_MS;
+ // Controlled publications are held by the fixture controller until a real API
+ // poll has occurred; free-running cells retain their connection-frame guard.
+ const minimumObservationAtMs = phaseControlled ? connectedAtMs : connectedAtMs + PHASE_CONNECT_MARGIN_MS;
   let ignoredEarlyFrames = 0;
 
-  // The observation stream is opened at the computed instant. Ticks occur every
-  // `intervalMs` from connection, so the first tick after `predicted` lands at
-  // `predicted + intended` — the declared phase's latency.
+ // The real API stream owns the unchanged 2000 ms cadence. The fixture controller,
+ // not a predicted daemon grid, releases an armed publication relative to its poll.
   const controller = new AbortController();
   const observed = { at: 0, revisions: [] as string[] };
   const response = await fetch(`http://127.0.0.1:${input.apiPort}/api/events/stream`, {
@@ -852,15 +860,18 @@ async function observeStageFiveSample(input: {
   })();
 
  try {
- const trigger = await input.onConnected({
+ await input.onConnected({
     declaredPhaseMs,
     intendedLatencyMs: intended,
     predictedPublicationAtMs: predicted,
     connectedAtMs
-  });
+});
+ if (phaseControlled) {
+ await postControl(`${input.controllerUrl}/__stage-five-control/mark`, { triggerId });
+ }
 
-  // The publication instant is resolved by the tracker's own health polling, which
-  // runs continuously and independently of the API stream.
+ // The exact release acknowledgement is resolved by the fixture controller, while
+ // the stream remains the only Stage-5 observation path.
   const deadline = Date.now() + (input.timeoutMs ?? 45_000);
  while (Date.now() < deadline && !observed.at) await sleep(2);
   if (!observed.at) {
@@ -869,11 +880,10 @@ async function observeStageFiveSample(input: {
         `(predicted publication ${(predicted - connectedAtMs).toFixed(1)} ms after connection)`
     );
   }
- // The predicted grid schedules the connection only. Controlled cells require a
- // witness of the actual daemon revision after this trigger; choosing the nearest
- // grid boundary after the fact would manufacture phase control under load.
+ // Controlled cells require the exact acknowledged trigger revision; no later or
+ // nearest revision may be substituted.
  const actualPublication = phaseControlled
- ? await input.tracker.waitForRevisionAfter(previousRevision, trigger.triggeredAtMs ?? connectedAtMs, input.timeoutMs ?? 45_000)
+ ? await waitForPublicationAcknowledgement(input.controllerUrl!, triggerId, input.timeoutMs ?? 45_000)
  : null;
  const publicationAt = actualPublication?.at ?? input.tracker.boundaryAtOrBefore(observed.at);
  if (publicationAt === null) {
@@ -881,7 +891,7 @@ async function observeStageFiveSample(input: {
  }
  const publicationAtMs = publicationAt;
  const observedLatencyMs = Math.max(0, observed.at - publicationAtMs);
- const observedPhaseMs = publicationAtMs - connectedAtMs;
+ const observedPhaseMs = phaseControlled ? actualPublication!.releasedAtMs - actualPublication!.pollAtMs : publicationAtMs - connectedAtMs;
   // Recorded for the audit: whether the tick carried a revision published AFTER the
   // boundary (an intra-cycle provider publication). The measurement stays the
   // boundary's, because the declared stage-5 question is the publication the harness
@@ -900,9 +910,9 @@ async function observeStageFiveSample(input: {
  if (phaseControlled && actualPublication!.revision !== observed.revisions[0]) {
  throw new Error("stage 5 observed a revision other than the triggered publication; the cell is invalidated");
  }
- if (phaseControlled && Math.abs(publicationAtMs - predicted) > POLL_PHASE_CONTROL_TOLERANCE_MS) {
+ if (phaseControlled && Math.abs(observedPhaseMs - declaredPhaseMs) > POLL_PHASE_CONTROL_TOLERANCE_MS) {
  throw new Error(
- `stage 5 actual publication was ${(publicationAtMs - predicted).toFixed(1)} ms from its intended phase; ` +
+ `stage 5 actual publication was ${(observedPhaseMs - declaredPhaseMs).toFixed(1)} ms from its intended phase; ` +
  "phase control could not be established and the cell is invalidated"
  );
  }
@@ -1124,8 +1134,12 @@ recordLifecycle("context_create", "production_bundle");
 }
 
 async function main(): Promise<void> {
-  const startedAt = Date.now();
-  // One private API port for the whole capture: the production web build bakes
+const startedAt = Date.now();
+ // A full artifact is forbidden until both independent controls have cleared:
+ // lifecycle longevity and the Stage-5 exact-publication phase mechanism.
+ run("npm", ["run", "perf:preconditioning"]);
+ run("npm", ["run", "perf:phase-control"]);
+// One private API port for the whole capture: the production web build bakes
   // its API origin at build time. It is reserved from the OS, not fixed.
   const apiPort = await reservePort();
   process.stdout.write(`[capture] preflight builds (api origin http://127.0.0.1:${apiPort})\n`);
@@ -1194,7 +1208,8 @@ run: async (browser: any, runIndex: number) => {
         let webServer: any = null;
         let probeServer: any = null;
         let benchAppServer: any = null;
-        let publicationTracker: PublicationTracker | null = null;
+let publicationTracker: PublicationTracker | null = null;
+ let publicationController: Awaited<ReturnType<typeof startStageFivePublicationController>> | null = null;
         let context: any = null;
         let benchContext: any = null;
         let probeContext: any = null;
@@ -1234,7 +1249,10 @@ run: async (browser: any, runIndex: number) => {
             ping: daemonReady
           });
           daemonChild = startedDaemon.child;
-          daemonPort = startedDaemon.port;
+daemonPort = startedDaemon.port;
+ // Test-fixture-only barrier: the production API keeps its ordinary 2000 ms
+ // poller and sees the daemon through this loopback proxy only during capture.
+ publicationController = await startStageFivePublicationController({ upstream: `http://127.0.0.1:${daemonPort}` });
           // Stage 5's phase control needs the daemon's publication grid, and the
           // tracker needs several publications to fit it. Start it here, with the
           // daemon, so the grid is known long before the browser stages begin.
@@ -1382,7 +1400,7 @@ run: async (browser: any, runIndex: number) => {
             spawnOn: () =>
               spawnOwned(process.execPath, [join(REPO_ROOT, "node_modules/tsx/dist/cli.mjs"), "apps/api/src/index.ts"], {
                 PORT: String(apiPort),
-                DOCKERMAP_DAEMON_URL: `http://127.0.0.1:${daemonPort}`,
+ DOCKERMAP_DAEMON_URL: publicationController.url,
                 // The API must accept both browser origins: the production build for
                 // Cmd-K and the cold production load, the benchmark-mode build for
                 // coherent-model acceptance.
@@ -1486,7 +1504,8 @@ recordLifecycle("navigate", "benchmark_app");
                 intervalMs: pollIntervalMs,
                 runIndex,
                 sampleIndex: index,
-                mode: phaseControlled ? "phase-controlled" : "free-running",
+mode: phaseControlled ? "phase-controlled" : "free-running",
+ controllerUrl: phaseControlled ? publicationController?.url : undefined,
                 // Runs after the observation stream is connected and before the
                 // publication: arming the browser here means the acceptance this
                 // sample measures is caused by THIS publication, and the generation
@@ -1737,8 +1756,9 @@ recordLifecycle("teardown_start", "fixture_run");
  await cleanup("benchmark_app_context_and_page", benchContext ? () => benchContext.close() : undefined);
  await cleanup("production_app_context_and_page", context ? () => context.close() : undefined);
  const trackerToClose = publicationTracker;
- await cleanup("publication_tracker", trackerToClose ? () => trackerToClose.stop() : undefined);
-          stopOwned(apiChild);
+await cleanup("publication_tracker", trackerToClose ? () => trackerToClose.stop() : undefined);
+ await cleanup("stage_five_publication_controller", publicationController ? () => publicationController!.close() : undefined);
+stopOwned(apiChild);
           stopOwned(daemonChild);
           stopOwned(fixtureChild);
           if (webServer) await webServer.close();

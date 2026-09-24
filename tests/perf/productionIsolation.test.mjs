@@ -31,7 +31,9 @@ const HARNESS_IDENTIFIERS = [
   "benchVite.config",
   "benchAppVite.config",
   "perf:time-to-answer",
-  "__dockermapBenchHelpers"
+"__dockermapBenchHelpers"
+ ,"__stage-five-control"
+ ,"stageFivePublicationControl"
 ];
 
 /**

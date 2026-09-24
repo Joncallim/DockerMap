@@ -466,11 +466,10 @@ The declared design (`timeToAnswerPollPhase.ts`, methodology revision 2):
   phase is represented at least twice, and repeated phases contribute all their
   observations to that phase's median without giving that phase extra weight in the
   normalized result;
-- the harness **controls the phase by choosing when it connects** its observation
-  stream: the API emits to each connected client on a `setInterval` anchored to that
-  connection, so connecting at `predicted publication − declared phase` puts the
-  next poll tick at the intended latency after the publication. The prediction comes
-  from the daemon's own observed publication grid;
+- the benchmark-only fixture proxy **arms a unique trigger identity before the
+measurement window**, witnesses and retains its exact daemon revision, then releases
+that revision at the declared offset after an actual API `/daemon/health` poll. The
+following real 2000 ms API poll observes it; no predicted daemon grid is used;
 - each sample then **verifies** itself: the observed publication must match the
   prediction, the observed latency must land on the declared phase within a **90 ms
   tolerance** (the grid step is 200 ms, so adjacent phases stay distinguishable), and
@@ -568,6 +567,10 @@ Complete and enforced by tests:
   RED-checks (`timeToAnswerIndependence.test.ts`) and the production isolation
   proof (`productionIsolation.test.mjs`);
 - `npm run test:perf` wired into `npm run check:js`.
+- `npm run perf:phase-control` is a separate pre-gate for `reference-25` and
+  `reference-100`: it exercises the whole declared grid against the actual Node
+  poll cadence, records intended and observed phase, trigger identity, phase error
+  and grid span, and fails RED on a substituted or uncontrolled publication.
 
 `docs/testing/TIME_TO_ANSWER_BASELINE.md` is the baseline record. Baseline 3 (from
 committed revision `cf77e8ba`) was **REJECTED** in round-3 review and is not the
