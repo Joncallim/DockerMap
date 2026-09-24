@@ -97,7 +97,11 @@ export interface PollPhaseSweep {
   runIndex: number;
   sampleIndex: number;
   /** Declared publication offset after the enclosing poll tick. */
-  declaredPhaseMs: number;
+ declaredPhaseMs: number;
+ /** Explicit audit name for the phase the harness requested. */
+ intendedPhaseMs: number;
+ /** Publication phase actually witnessed from the connected observation stream. */
+ observedPhaseMs: number;
   /** Latency the declared phase should produce. */
   intendedLatencyMs: number;
   /** When the harness connected its observation stream, relative to the run clock. */
@@ -108,7 +112,9 @@ export interface PollPhaseSweep {
   observedPublicationAtMs: number;
   /** Observed poll tick that carried the revision, relative to the run clock. */
   observedObservationAtMs: number;
-  observedLatencyMs: number;
+ observedLatencyMs: number;
+ /** Publication-to-observation latency on the real API poller path. */
+ publicationLatencyMs: number;
   /** The declared phase whose intended latency is nearest to the observed latency. */
   observedPhaseBucketMs: number;
   /** Observed minus intended latency. */
@@ -124,6 +130,31 @@ export interface PollPhaseSweep {
    * excluded from the sweep's coverage and direction guards.
    */
   phaseControlled: boolean;
+}
+
+/**
+ * Fail closed before a controlled sample is recorded. A phase-controlled cell
+ * may only claim control when the witnessed publication phase and poll latency
+ * both match the requested phase within the declared tolerance.
+ */
+export function assertControlledPhaseEvidence(evidence: Pick<PollPhaseSweep,
+ "intendedPhaseMs" | "observedPhaseMs" | "publicationLatencyMs" | "phaseErrorMs"
+>): void {
+ const values = {
+ intendedPhaseMs: evidence.intendedPhaseMs,
+ observedPhaseMs: evidence.observedPhaseMs,
+ publicationLatencyMs: evidence.publicationLatencyMs,
+ phaseErrorMs: evidence.phaseErrorMs
+ };
+ for (const [name, value] of Object.entries(values)) {
+ if (!Number.isFinite(value)) throw new Error(`stage-5 ${name} is not finite`);
+ }
+ if (Math.abs(evidence.observedPhaseMs - evidence.intendedPhaseMs) > POLL_PHASE_CONTROL_TOLERANCE_MS) {
+ throw new Error("stage-5 requested publication phase could not be established; the cell is invalidated");
+ }
+ if (Math.abs(evidence.phaseErrorMs) > POLL_PHASE_CONTROL_TOLERANCE_MS) {
+ throw new Error("stage-5 requested poll phase could not be established; the cell is invalidated");
+ }
 }
 
 export interface PollPhaseValidity {
@@ -263,11 +294,11 @@ export function assertPollPhaseSweep(
   let minObservedLatencyMs = Number.POSITIVE_INFINITY;
   let maxObservedLatencyMs = Number.NEGATIVE_INFINITY;
 
-  for (const sample of samples) {
+ for (const sample of samples) {
     if (!Number.isFinite(sample.observedLatencyMs) || sample.observedLatencyMs < 0) {
       throw new Error("a stage-5 sample has a non-finite observed latency");
     }
-    if (!sample.phaseControlled) {
+ if (!sample.phaseControlled) {
       throw new Error(
         "the declared phase sweep was applied to a sample the harness did not drive; " +
           "free-running cells use the free-running guard instead"
@@ -434,6 +465,7 @@ function groupRunsByPhase(samples: readonly PollPhaseSweep[], intervalMs: number
  if (sample.sampleIndex !== values.length) {
  throw new Error(`run ${runIndex} has a missing or duplicate declared phase sample index`);
  }
+ assertControlledPhaseEvidence(sample);
  // The sample's own recorded phase decides its slot, so the shared math cannot
  // silently disagree with the declaration the capture used.
  if (Math.abs(sample.declaredPhaseMs - declaredPhaseForSample(runIndex, sample.sampleIndex, intervalMs)) >= 1e-6) {

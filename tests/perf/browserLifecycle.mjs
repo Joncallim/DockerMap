@@ -18,7 +18,7 @@ export async function withFreshBrowserRuns({ runs, launch, run, lifecycle = (...
  try {
  await browser.close();
  closed.add(id);
- lifecycle("closure", "browser");
+ lifecycle("closure", "browser", id);
 } catch (error) {
 lifecycle("exception", "browser_close", error);
 throw error;

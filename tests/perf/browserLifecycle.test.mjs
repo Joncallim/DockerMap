@@ -51,7 +51,28 @@ test("reports browser closure without changing fresh-browser ownership", async (
  run: async () => {},
  lifecycle: (...event) => events.push(event)
  });
- assert.deepEqual(events, [["create", "browser", "browser-0"], ["closure", "browser"]]);
+ assert.deepEqual(events, [["create", "browser", "browser-0"], ["closure", "browser", "browser-0"]]);
+});
+
+test("a sustained preconditioning run balances browser and stage-5 reader lifecycles", async () => {
+ const { runSequentialPreconditioning } = await import("./preconditioningLifecycle.mjs");
+ const result = await runSequentialPreconditioning({ runs: 12 });
+ assert.equal(result.events.filter((event) => event.event === "create").length,
+ result.events.filter((event) => event.event === "teardown").length);
+ assert.ok(result.events.some((event) => event.generation === 16));
+ assert.ok(result.events.some((event) => event.generation === 17));
+ assert.ok(result.events.some((event) => event.generation === 18));
+});
+
+test("a leaked stage-5 reader fails the sustained preconditioning lifecycle gate", async () => {
+ const { runSequentialPreconditioning } = await import("./preconditioningLifecycle.mjs");
+ await assert.rejects(
+ runSequentialPreconditioning({
+ runs: 9,
+ createReader: async () => ({ async cancel() { throw new Error("reader leak"); } })
+ }),
+ /reader leak/
+ );
 });
 
 test("fails immediately when a browser close leaks", async () => {

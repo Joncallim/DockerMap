@@ -15,7 +15,8 @@ import {
   POLL_PHASE_CONTROL_TOLERANCE_MS,
   POLL_PHASE_DIVISIONS,
   POLL_PHASE_MIN_SAMPLES_PER_PHASE,
-  assertFreeRunningPhaseSamples,
+ assertFreeRunningPhaseSamples,
+ assertControlledPhaseEvidence,
   assertPollPhaseSweep,
   declaredPhaseForSample,
   intendedLatencyMs,
@@ -44,19 +45,22 @@ function goodSweep(intervalMs = INTERVAL, errorMs = 4): PollPhaseSweep[] {
       samples.push({
         runIndex: run,
         sampleIndex: index,
-        declaredPhaseMs,
-        intendedLatencyMs: intended,
+ declaredPhaseMs,
+ intendedPhaseMs: declaredPhaseMs,
+ observedPhaseMs: declaredPhaseMs,
+ intendedLatencyMs: intended,
         connectedAtMs: 0,
         predictedPublicationAtMs: 1000,
         observedPublicationAtMs: 1000,
         observedObservationAtMs: 1000 + observed,
-        observedLatencyMs: observed,
+ observedLatencyMs: observed,
+ publicationLatencyMs: observed,
         observedPhaseBucketMs: observedPhaseBucketMs(observed, intervalMs),
         phaseErrorMs: observed - intended,
         observedVia: "api-sse",
         observedRevision: `rev-${run}-${index}`,
         previousRevision: `rev-${run}-${index}-prev`,
-        phaseControlled: true
+ phaseControlled: true
       });
     }
   }
@@ -64,7 +68,26 @@ function goodSweep(intervalMs = INTERVAL, errorMs = 4): PollPhaseSweep[] {
 }
 
 describe("stage-5 declared phase grid", () => {
-  it("divides the poll interval into the declared number of phases", () => {
+ it("INVALIDATES a controlled cell when the requested publication phase was not established", () => {
+ expect(() => assertControlledPhaseEvidence({
+ intendedPhaseMs: 500,
+ observedPhaseMs: 900,
+ publicationLatencyMs: 1500,
+ phaseErrorMs: 0
+ })).toThrow(/could not be established; the cell is invalidated/);
+ });
+
+ it("records the complete controlled-phase audit evidence", () => {
+ const sample = goodSweep()[0]!;
+ expect(sample).toMatchObject({
+ intendedPhaseMs: sample.declaredPhaseMs,
+ observedPhaseMs: sample.declaredPhaseMs,
+ publicationLatencyMs: sample.observedLatencyMs,
+ phaseErrorMs: sample.observedLatencyMs - sample.intendedLatencyMs
+ });
+ });
+
+ it("divides the poll interval into the declared number of phases", () => {
     const grid = pollPhaseGridMs(INTERVAL);
     expect(grid).toHaveLength(POLL_PHASE_DIVISIONS);
     expect([...grid].sort((left, right) => left - right)).toEqual(grid);

@@ -56,7 +56,8 @@ import {
   POLL_PHASE_CONTROL_TOLERANCE_MS,
   POLL_PHASE_DIVISIONS,
   POLL_PHASE_MIN_SAMPLES_PER_PHASE,
-  assertFreeRunningPhaseSamples,
+ assertFreeRunningPhaseSamples,
+ assertControlledPhaseEvidence,
   assertPollPhaseSweep,
   declaredPhaseForSample,
   intendedLatencyMs,
@@ -139,7 +140,7 @@ function recordLifecycle(event: "browser_launch" | "context_create" | "page_crea
 async function drainLayerDiagnostics(page: any, fixture: string): Promise<void> {
  try {
  const records = await page.evaluate("window.__dockermapBenchLayerSink ? window.__dockermapBenchLayerSink.splice(0) : []");
- if (Array.isArray(records)) for (const record of records) appendDiagnostic("layers.jsonl", { fixture, ...record });
+ if (Array.isArray(records)) for (const record of records) appendDiagnostic("layers.jsonl", { ...record, fixture });
  } catch (error) {
  recordLifecycle("exception", "drain_layer_diagnostics", error);
  }
@@ -880,6 +881,7 @@ async function observeStageFiveSample(input: {
  }
  const publicationAtMs = publicationAt;
  const observedLatencyMs = Math.max(0, observed.at - publicationAtMs);
+ const observedPhaseMs = publicationAtMs - connectedAtMs;
   // Recorded for the audit: whether the tick carried a revision published AFTER the
   // boundary (an intra-cycle provider publication). The measurement stays the
   // boundary's, because the declared stage-5 question is the publication the harness
@@ -894,6 +896,7 @@ async function observeStageFiveSample(input: {
  ? declaredPhaseMs
  : input.intervalMs - observedPhaseBucketMs(observedLatencyMs, input.intervalMs);
  const recordedIntended = phaseControlled ? intended : input.intervalMs - recordedPhaseMs;
+ const phaseErrorMs = observedLatencyMs - recordedIntended;
  if (phaseControlled && actualPublication!.revision !== observed.revisions[0]) {
  throw new Error("stage 5 observed a revision other than the triggered publication; the cell is invalidated");
  }
@@ -903,21 +906,32 @@ async function observeStageFiveSample(input: {
  "phase control could not be established and the cell is invalidated"
  );
  }
+ if (phaseControlled) {
+ assertControlledPhaseEvidence({
+ intendedPhaseMs: declaredPhaseMs,
+ observedPhaseMs,
+ publicationLatencyMs: observedLatencyMs,
+ phaseErrorMs
+ });
+ }
  return {
     revisions: observed.revisions,
     tickCarriedNewerRevision,
     sample: {
       runIndex: input.runIndex,
       sampleIndex: input.sampleIndex,
-      declaredPhaseMs: recordedPhaseMs,
-      intendedLatencyMs: recordedIntended,
+ declaredPhaseMs: recordedPhaseMs,
+ intendedPhaseMs: phaseControlled ? declaredPhaseMs : recordedPhaseMs,
+ observedPhaseMs,
+ intendedLatencyMs: recordedIntended,
       connectedAtMs,
  predictedPublicationAtMs: phaseControlled ? predicted : publicationAtMs,
  observedPublicationAtMs: publicationAtMs,
       observedObservationAtMs: observed.at,
-      observedLatencyMs,
+ observedLatencyMs,
+ publicationLatencyMs: observedLatencyMs,
       observedPhaseBucketMs: observedPhaseBucketMs(observedLatencyMs, input.intervalMs),
-      phaseErrorMs: observedLatencyMs - recordedIntended,
+ phaseErrorMs,
       observedVia: "api-sse",
       observedRevision: observed.revisions[0] ?? "",
  previousRevision,
