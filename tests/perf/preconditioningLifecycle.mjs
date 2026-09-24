@@ -23,13 +23,21 @@ export function assertBalancedLifecycle(events) {
 
 export async function runSequentialPreconditioning({
  runs = PRECONDITIONING_RUNS,
+ launch,
  createReader = async () => ({ async cancel() {} })
 } = {}) {
+ if (!Number.isInteger(runs) || runs < 9 || runs > 16) {
+ throw new Error(`preconditioning requires 9-16 sequential runs, got ${runs}`);
+ }
+ const launchBrowser = launch ?? (async () => {
+ const { chromium } = await import("playwright");
+ return chromium.launch();
+ });
  const events = [];
  let readerSequence = 0;
  await withFreshBrowserRuns({
  runs,
- launch: async () => ({ async close() {} }),
+ launch: launchBrowser,
  lifecycle: (event, _kind, id) => {
  if (event === "create") events.push({ event: "create", id });
  if (event === "closure") events.push({ event: "teardown", id });
