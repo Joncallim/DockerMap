@@ -120,7 +120,7 @@ if (!metadataPath || !outputPath) {
 // Diagnostics are deliberately outside the closed artifact and all measurement
 // calculations. A failed append must never affect a capture result.
 const diagnosticDirectory = process.env.DOCKERMAP_BENCH_DIAG_DIR || rawDir || dirname(outputPath);
-function appendDiagnostic(file: "layers.jsonl" | "lifecycle.jsonl", record: Record<string, unknown>): void {
+function appendDiagnostic(file: "layers.jsonl" | "lifecycle.jsonl" | "fixture-identity.jsonl", record: Record<string, unknown>): void {
  try {
  mkdirSync(diagnosticDirectory, { recursive: true });
  appendFileSync(join(diagnosticDirectory, file), `${JSON.stringify(record)}\n`);
@@ -136,10 +136,10 @@ function recordLifecycle(event: "browser_launch" | "context_create" | "page_crea
  monotonic_timestamp: nowMs()
  });
 }
-async function drainLayerDiagnostics(page: any): Promise<void> {
+async function drainLayerDiagnostics(page: any, fixture: string): Promise<void> {
  try {
  const records = await page.evaluate("window.__dockermapBenchLayerSink ? window.__dockermapBenchLayerSink.splice(0) : []");
- if (Array.isArray(records)) for (const record of records) appendDiagnostic("layers.jsonl", record);
+ if (Array.isArray(records)) for (const record of records) appendDiagnostic("layers.jsonl", { fixture, ...record });
  } catch (error) {
  recordLifecycle("exception", "drain_layer_diagnostics", error);
  }
@@ -468,14 +468,15 @@ function assertBuildIsolation(): void {
  * publication grid and the stage-7 expectation describing a change that never
  * happened, and the stage-7 check would then blame the application for it.
  */
-async function setFixtureGeneration(socketPath: string, generation: number): Promise<void> {
+async function setFixtureGeneration(socketPath: string, generation: number): Promise<Record<string, unknown>> {
   await postUnix(socketPath, `/__fixture/topology-generation/${generation}`);
-  const state = JSON.parse(await getUnix(socketPath, "/__fixture/state")) as { generation?: number };
-  if (state.generation !== generation) {
+ const state = JSON.parse(await getUnix(socketPath, "/__fixture/state")) as Record<string, unknown> & { generation?: number };
+ if (state.generation !== generation) {
     throw new Error(
       `the fixture trigger did not land: asked for generation ${generation}, fixture reports ${String(state.generation)}`
-    );
-  }
+ );
+ }
+ return state;
 }
 
 function getUnix(socketPath: string, path: string): Promise<string> {
@@ -623,8 +624,9 @@ interface PublicationTracker {
   /** Least-squares fit of the cycle grid: the daemon's refresh period. */
   periodMs(): number;
   lastCycleAtMs(): number;
-  /** The cycle boundary a poll tick carried: the last one at or before it. */
-  boundaryAtOrBefore(instant: number): number | null;
+ /** The cycle boundary a poll tick carried: the last one at or before it. */
+ boundaryAtOrBefore(instant: number): number | null;
+ waitForRevisionAfter(previousRevision: string, afterMs: number, timeoutMs: number): Promise<{ at: number; revision: string }>;
   stop(): Promise<void>;
 }
 
@@ -710,14 +712,23 @@ async function startPublicationTracker(
       if (last === undefined) throw new Error("stage 5 has observed no publication cycle yet");
       return last;
     },
-    boundaryAtOrBefore(instant: number) {
-      let latest: number | null = null;
+ boundaryAtOrBefore(instant: number) {
+ let latest: number | null = null;
       for (const candidate of cycles) {
         if (candidate <= instant) latest = candidate;
       }
-      return latest;
-    },
-    async stop() {
+ return latest;
+ },
+ async waitForRevisionAfter(previousRevision: string, afterMs: number, timeoutMs: number) {
+ const deadline = Date.now() + timeoutMs;
+ while (Date.now() < deadline) {
+ const publication = revisionChanges.find((change) => change.revision !== previousRevision && change.at >= afterMs);
+ if (publication) return publication;
+ await sleep(2);
+ }
+ throw new Error("stage 5 could not witness the triggered daemon publication; the cell is invalidated");
+ },
+ async stop() {
       stopped = true;
       await running;
     }
@@ -747,7 +758,7 @@ async function observeStageFiveSample(input: {
   runIndex: number;
   sampleIndex: number;
   mode: "phase-controlled" | "free-running";
-  onConnected: (plan: PhaseSamplePlan) => Promise<void>;
+ onConnected: (plan: PhaseSamplePlan) => Promise<{ triggeredAtMs?: number }>;
   timeoutMs?: number;
 }): Promise<{ sample: PollPhaseSweep; revisions: string[]; tickCarriedNewerRevision: boolean }> {
   const phaseControlled = input.mode === "phase-controlled";
@@ -840,7 +851,7 @@ async function observeStageFiveSample(input: {
   })();
 
  try {
- await input.onConnected({
+ const trigger = await input.onConnected({
     declaredPhaseMs,
     intendedLatencyMs: intended,
     predictedPublicationAtMs: predicted,
@@ -857,29 +868,42 @@ async function observeStageFiveSample(input: {
         `(predicted publication ${(predicted - connectedAtMs).toFixed(1)} ms after connection)`
     );
   }
-  // Attribution is CAUSAL: the API's poll tick emits the revision that is current at
-  // tick time, so the publication this sample measured is the last refresh-cycle
-  // boundary at or before the tick.
-  const publicationAt = input.tracker.boundaryAtOrBefore(observed.at);
-  if (publicationAt === null) {
-    throw new Error("stage 5 lost the publication instant for this sample");
-  }
-  const observedLatencyMs = Math.max(0, observed.at - publicationAt);
+ // The predicted grid schedules the connection only. Controlled cells require a
+ // witness of the actual daemon revision after this trigger; choosing the nearest
+ // grid boundary after the fact would manufacture phase control under load.
+ const actualPublication = phaseControlled
+ ? await input.tracker.waitForRevisionAfter(previousRevision, trigger.triggeredAtMs ?? connectedAtMs, input.timeoutMs ?? 45_000)
+ : null;
+ const publicationAt = actualPublication?.at ?? input.tracker.boundaryAtOrBefore(observed.at);
+ if (publicationAt === null) {
+ throw new Error("stage 5 lost the publication instant for this sample");
+ }
+ const publicationAtMs = publicationAt;
+ const observedLatencyMs = Math.max(0, observed.at - publicationAtMs);
   // Recorded for the audit: whether the tick carried a revision published AFTER the
   // boundary (an intra-cycle provider publication). The measurement stays the
   // boundary's, because the declared stage-5 question is the publication the harness
   // triggered, not the newest bytes the API happened to hold.
   const tickCarriedNewerRevision = input.tracker.revisionChanges.some(
-    (change) => change.at > publicationAt && change.at <= observed.at
+ (change) => change.at > publicationAtMs && change.at <= observed.at
   );
   // Free-running samples record the phase they ACHIEVED: the declared phase is the
   // bucket the observation landed in, so the sample cannot claim a phase it did not
   // drive. Controlled samples keep the declared phase they were driven to.
-  const recordedPhaseMs = phaseControlled
-    ? declaredPhaseMs
-    : input.intervalMs - observedPhaseBucketMs(observedLatencyMs, input.intervalMs);
-  const recordedIntended = phaseControlled ? intended : input.intervalMs - recordedPhaseMs;
-  return {
+ const recordedPhaseMs = phaseControlled
+ ? declaredPhaseMs
+ : input.intervalMs - observedPhaseBucketMs(observedLatencyMs, input.intervalMs);
+ const recordedIntended = phaseControlled ? intended : input.intervalMs - recordedPhaseMs;
+ if (phaseControlled && actualPublication!.revision !== observed.revisions[0]) {
+ throw new Error("stage 5 observed a revision other than the triggered publication; the cell is invalidated");
+ }
+ if (phaseControlled && Math.abs(publicationAtMs - predicted) > POLL_PHASE_CONTROL_TOLERANCE_MS) {
+ throw new Error(
+ `stage 5 actual publication was ${(publicationAtMs - predicted).toFixed(1)} ms from its intended phase; ` +
+ "phase control could not be established and the cell is invalidated"
+ );
+ }
+ return {
     revisions: observed.revisions,
     tickCarriedNewerRevision,
     sample: {
@@ -888,15 +912,15 @@ async function observeStageFiveSample(input: {
       declaredPhaseMs: recordedPhaseMs,
       intendedLatencyMs: recordedIntended,
       connectedAtMs,
-      predictedPublicationAtMs: phaseControlled ? predicted : publicationAt,
-      observedPublicationAtMs: publicationAt,
+ predictedPublicationAtMs: phaseControlled ? predicted : publicationAtMs,
+ observedPublicationAtMs: publicationAtMs,
       observedObservationAtMs: observed.at,
       observedLatencyMs,
       observedPhaseBucketMs: observedPhaseBucketMs(observedLatencyMs, input.intervalMs),
       phaseErrorMs: observedLatencyMs - recordedIntended,
       observedVia: "api-sse",
       observedRevision: observed.revisions[0] ?? "",
-      previousRevision,
+ previousRevision,
  phaseControlled
  }
  };
@@ -1067,19 +1091,22 @@ async function measureProductionBundle(browser: any, webOrigin: string): Promise
   // Cold context: no cache, fresh navigation, production build.
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
 recordLifecycle("context_create", "production_bundle");
-const page = await context.newPage();
-recordLifecycle("page_create", "production_bundle");
-await page.goto(`${webOrigin}/`, { waitUntil: "load" });
-recordLifecycle("navigate", "production_bundle");
-  // The cold context deliberately has no instrumentation: this stage measures
-  // the production load itself, so it reads the Navigation Timing entry only.
-  const duration = await page.evaluate(
-    "(() => { const entry = performance.getEntriesByType('navigation')[0]; return entry ? entry.duration : 0; })()"
-  );
-await context.close();
-recordLifecycle("closure", "production_bundle_context");
-  if (!duration) throw new Error("could not read the production navigation duration");
-  return duration;
+ try {
+ const page = await context.newPage();
+ recordLifecycle("page_create", "production_bundle");
+ await page.goto(`${webOrigin}/`, { waitUntil: "load" });
+ recordLifecycle("navigate", "production_bundle");
+ // The cold context deliberately has no instrumentation: this stage measures
+ // the production load itself, so it reads the Navigation Timing entry only.
+ const duration = await page.evaluate(
+ "(() => { const entry = performance.getEntriesByType('navigation')[0]; return entry ? entry.duration : 0; })()"
+ );
+ if (!duration) throw new Error("could not read the production navigation duration");
+ return duration;
+ } finally {
+ await context.close();
+ recordLifecycle("closure", "production_bundle_context_and_page");
+ }
 }
 
 async function main(): Promise<void> {
@@ -1450,7 +1477,7 @@ recordLifecycle("navigate", "benchmark_app");
                 // publication: arming the browser here means the acceptance this
                 // sample measures is caused by THIS publication, and the generation
                 // trigger is guaranteed to be inside it.
-                onConnected: async () => {
+ onConnected: async () => {
                   if (needsStageSix) {
  await armStageSixSeven(benchPage, {
                       // Provider-only fixtures publish a revision with no inventory
@@ -1463,12 +1490,22 @@ recordLifecycle("navigate", "benchmark_app");
 if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
                     // A real published inventory change: the fixture daemon serves a
                     // new generation, so the daemon must publish a new revision.
-await benchPage.evaluate(`window.__dockermapBenchFixtureGeneration = ${generation}`);
-await setFixtureGeneration(fixtureSocket, generation);
+ const fixtureState = await setFixtureGeneration(fixtureSocket, generation);
+ appendDiagnostic("fixture-identity.jsonl", {
+ fixture: plan.name,
+ run: runIndex,
+ generation,
+ fixtureRevision: FIXTURE_REVISION,
+ fixtureState,
+ expectedExited: Number(expectedMetricValue),
+ monotonicTimestamp: nowMs()
+ });
+ return { triggeredAtMs: nowMs() };
                   }
-                  // `provider-only-revision-change` and `unavailable-optional-provider`
-                  // need no trigger: their revision advance comes from provider state
-                  // alone, which is exactly what those fixtures characterise.
+ // `provider-only-revision-change` and `unavailable-optional-provider`
+ // need no fixture trigger: their revision advance comes from provider state
+ // alone, which is exactly what those fixtures characterise.
+ return { triggeredAtMs: nowMs() };
                 }
               });
               stageFiveSweep.push({ ...sample, fixture: plan.name, tickCarriedNewerRevision });
@@ -1492,7 +1529,7 @@ await setFixtureGeneration(fixtureSocket, generation);
               }
               if (needsStageSix) {
 const measured = await awaitModelAcceptance(benchPage);
-await drainLayerDiagnostics(benchPage);
+ await drainLayerDiagnostics(benchPage, plan.name);
                 coherentSamples.push(measured.notificationToCoherentModelMs);
                 if (typeof measured.coherentModelToUsefulRenderMs === "number") {
                   usefulSamples.push(measured.coherentModelToUsefulRenderMs);
@@ -1574,8 +1611,8 @@ await drainLayerDiagnostics(benchPage);
  // point is background churn and cannot be attributed to this control sample.
  const trigger = await markStageSixSevenPublicationTriggered(benchPage);
 if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
-await benchPage.evaluate(`window.__dockermapBenchFixtureGeneration = ${generation}`);
-await setFixtureGeneration(fixtureSocket, generation);
+ const fixtureState = await setFixtureGeneration(fixtureSocket, generation);
+ appendDiagnostic("fixture-identity.jsonl", { fixture: plan.name, run: runIndex, generation, fixtureRevision: FIXTURE_REVISION, fixtureState, expectedExited: Number(expectedMetricValue), monotonicTimestamp: nowMs() });
  const publication = await observeControlPublication({
  fixtureSocket,
  daemonPort,
@@ -1588,7 +1625,7 @@ await setFixtureGeneration(fixtureSocket, generation);
  `[capture] control ${generation}: fixture ${publication.fixtureExited} exited, daemon ${publication.daemonExited}, api ${publication.apiExited}\n`
  );
 const measured = await awaitModelAcceptance(benchPage);
-await drainLayerDiagnostics(benchPage);
+ await drainLayerDiagnostics(benchPage, plan.name);
  independencePair.controlStageSixMs.push(measured.notificationToCoherentModelMs);
  independencePair.controlStageSevenMs.push(measured.coherentModelToUsefulRenderMs as number);
  stageSixSevenAudit.push({
@@ -1678,10 +1715,15 @@ recordLifecycle("navigate", "module_probe");
           }
 } finally {
 recordLifecycle("teardown_start", "fixture_run");
-if (probeContext) { await probeContext.close(); recordLifecycle("closure", "module_probe_context_and_page"); }
-if (benchContext) { await benchContext.close(); recordLifecycle("closure", "benchmark_app_context_and_page"); }
-if (context) { await context.close(); recordLifecycle("closure", "production_app_context_and_page"); }
-          if (publicationTracker) await publicationTracker.stop();
+ const cleanup = async (label: string, close: (() => Promise<void>) | undefined) => {
+ if (!close) return;
+ try { await close(); recordLifecycle("closure", label); } catch (error) { recordLifecycle("exception", `${label}_close`, error); }
+ };
+ await cleanup("module_probe_context_and_page", probeContext ? () => probeContext.close() : undefined);
+ await cleanup("benchmark_app_context_and_page", benchContext ? () => benchContext.close() : undefined);
+ await cleanup("production_app_context_and_page", context ? () => context.close() : undefined);
+ const trackerToClose = publicationTracker;
+ await cleanup("publication_tracker", trackerToClose ? () => trackerToClose.stop() : undefined);
           stopOwned(apiChild);
           stopOwned(daemonChild);
           stopOwned(fixtureChild);

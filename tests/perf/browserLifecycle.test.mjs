@@ -51,5 +51,16 @@ test("reports browser closure without changing fresh-browser ownership", async (
  run: async () => {},
  lifecycle: (...event) => events.push(event)
  });
- assert.deepEqual(events, [["closure", "browser"]]);
+ assert.deepEqual(events, [["create", "browser", "browser-0"], ["closure", "browser"]]);
+});
+
+test("fails immediately when a browser close leaks", async () => {
+ await assert.rejects(
+ withFreshBrowserRuns({
+ runs: 1,
+ launch: async () => ({ async close() { throw new Error("close failed"); } }),
+ run: async () => {}
+ }),
+ /close failed/
+ );
 });
