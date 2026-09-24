@@ -40,5 +40,16 @@ test("a failed run still closes its browser before the next clean run", async ()
   /control failed/
  );
  assert.equal(browsers.length, 1);
- assert.equal(browsers[0].closed, true);
+assert.equal(browsers[0].closed, true);
+});
+
+test("reports browser closure without changing fresh-browser ownership", async () => {
+ const events = [];
+ await withFreshBrowserRuns({
+ runs: 1,
+ launch: async () => ({ async close() {} }),
+ run: async () => {},
+ lifecycle: (...event) => events.push(event)
+ });
+ assert.deepEqual(events, [["closure", "browser"]]);
 });

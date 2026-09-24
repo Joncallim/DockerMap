@@ -23,6 +23,8 @@
  * the accepted revision's render. Nothing leaves the page; nothing is uploaded.
  */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
+import type { DockerSnapshot, RuntimeMap } from "@dockermap/contracts";
+import { summarize, type SystemModel } from "../model";
 
 /** One accepted coherent model: opaque timings only. */
 export interface ModelAcceptanceEvent {
@@ -34,16 +36,35 @@ export interface ModelAcceptanceEvent {
   revision: string;
 }
 
+/** Benchmark-only diagnostic payload; it is drained by the capture harness. */
+export interface ModelLayerDiagnostic {
+ snapshot_revision: string;
+ runtime_map_revision: string;
+ snapshot_offline_count: number;
+ runtime_map_relevant_state: { revision: string; offline_or_not_running_service_count: number; offline_or_not_running_container_count: number };
+ coherent_pair_accepted: { accepted: boolean; snapshot_revision: string; runtime_map_revision: string };
+ derived_model_offline_value: number;
+ story_offline_value_pre_render: number;
+ rendered_home_offline_value: number | null;
+ fixture_generation: number | null;
+ monotonic_timestamp: number;
+}
+
 declare global {
-  interface Window {
+interface Window {
     /** Benchmark build only. Absent from the production bundle. */
     __dockermapBenchAcceptanceSink?: ModelAcceptanceEvent[];
     /** Benchmark build only: artificial presentation delay in ms (0/absent = off). */
-    __dockermapBenchRenderDelayMs?: number;
+__dockermapBenchRenderDelayMs?: number;
+ /** Benchmark build only. Drained synchronously by the capture harness. */
+ __dockermapBenchLayerSink?: ModelLayerDiagnostic[];
+ /** Benchmark build only. Set by the harness before it advances a fixture. */
+ __dockermapBenchFixtureGeneration?: number;
   }
 }
 
 const sink: ModelAcceptanceEvent[] = [];
+const layerSink: ModelLayerDiagnostic[] = [];
 let sequence = 0;
 let lastAcceptedRevision: string | null = null;
 
@@ -64,6 +85,31 @@ export function recordModelAcceptance(revision: string | null): void {
   // Bounded: the sink keeps only a recent window on a long-lived page.
   if (sink.length > 256) sink.splice(0, 128);
   window.__dockermapBenchAcceptanceSink = sink;
+}
+
+/** Records the actual inputs and model value at the coherent-publication seam. */
+export function recordModelLayers(snapshot: DockerSnapshot, runtimeMap: RuntimeMap, model: SystemModel): void {
+ if (!__DOCKERMAP_BENCH_ACCEPTANCE__) return;
+ const runtimeStates = runtimeMap.nodes.filter((node) => /offline|stopped|dead|down|exited|not.running/i.test(`${node.status ?? ""} ${node.service?.status ?? ""}`));
+ const diagnostic: ModelLayerDiagnostic = {
+ snapshot_revision: snapshot.modelRevision,
+ runtime_map_revision: runtimeMap.modelRevision,
+ snapshot_offline_count: snapshot.containers.filter((container) => /offline|stopped|dead|down|exited|not.running/i.test(container.status)).length,
+ runtime_map_relevant_state: {
+ revision: runtimeMap.modelRevision,
+ offline_or_not_running_service_count: runtimeStates.filter((node) => node.service !== undefined && node.service !== null).length,
+ offline_or_not_running_container_count: runtimeStates.filter((node) => node.type === "container").length
+ },
+ coherent_pair_accepted: { accepted: snapshot.modelRevision === runtimeMap.modelRevision, snapshot_revision: snapshot.modelRevision, runtime_map_revision: runtimeMap.modelRevision },
+ derived_model_offline_value: summarize(model).offline,
+ story_offline_value_pre_render: summarize(model).offline,
+ rendered_home_offline_value: null,
+ fixture_generation: window.__dockermapBenchFixtureGeneration ?? null,
+ monotonic_timestamp: performance.now()
+ };
+ layerSink.push(diagnostic);
+ if (layerSink.length > 256) layerSink.splice(0, 128);
+ window.__dockermapBenchLayerSink = layerSink;
 }
 
 /**
@@ -92,11 +138,22 @@ export function ModelAcceptanceStamp({ revision }: { revision: string | null }):
 }
 
 function AcceptedRevisionStamp({ revision }: { revision: string | null }): null {
-  useLayoutEffect(() => {
+useLayoutEffect(() => {
     const root = document.documentElement;
     if (revision && revision.length > 0) root.dataset.dockermapAcceptedRevision = revision;
-    else delete root.dataset.dockermapAcceptedRevision;
-  }, [revision]);
+else delete root.dataset.dockermapAcceptedRevision;
+ // This runs in the commit containing Home. Read its displayed metric instead
+ // of deriving a value from the revision or fixture generation.
+ const metric = [...document.querySelectorAll(".metric")].find((element) =>
+ element.querySelector(".metric-label")?.textContent?.trim() === "Offline"
+ );
+ const displayed = metric?.querySelector(".metric-value")?.textContent?.trim();
+ const latest = layerSink[layerSink.length - 1];
+ if (latest && latest.snapshot_revision === revision && displayed !== undefined && displayed !== "") {
+ const parsed = Number(displayed);
+ latest.rendered_home_offline_value = Number.isFinite(parsed) ? parsed : null;
+ }
+}, [revision]);
   return null;
 }
 

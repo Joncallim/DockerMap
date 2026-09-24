@@ -45,7 +45,11 @@ const SEAM_IDENTIFIERS = [
   "dockermapAcceptedRevision",
   "recordModelAcceptance",
   "useDeliveredModel",
-  "ModelAcceptanceStamp"
+"ModelAcceptanceStamp"
+,
+"__dockermapBenchLayerSink",
+"__dockermapBenchFixtureGeneration",
+"recordModelLayers"
 ];
 
 const SEAM_MODULE = "apps/web/src/lib/performance/modelAcceptance.tsx";

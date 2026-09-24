@@ -22,7 +22,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
@@ -116,6 +116,33 @@ if (!metadataPath || !outputPath) {
   throw new Error(
     "Usage: npm run perf:time-to-answer -- --metadata <pinned-environment.json> --output <artifact.json>"
   );
+}
+// Diagnostics are deliberately outside the closed artifact and all measurement
+// calculations. A failed append must never affect a capture result.
+const diagnosticDirectory = process.env.DOCKERMAP_BENCH_DIAG_DIR || rawDir || dirname(outputPath);
+function appendDiagnostic(file: "layers.jsonl" | "lifecycle.jsonl", record: Record<string, unknown>): void {
+ try {
+ mkdirSync(diagnosticDirectory, { recursive: true });
+ appendFileSync(join(diagnosticDirectory, file), `${JSON.stringify(record)}\n`);
+ } catch {
+ // Diagnostics are observational only and must not throw into measurement.
+ }
+}
+function recordLifecycle(event: "browser_launch" | "context_create" | "page_create" | "navigate" | "teardown_start" | "teardown_end" | "exception" | "closure", step?: string, error?: unknown): void {
+ appendDiagnostic("lifecycle.jsonl", {
+ event,
+ step: step ?? null,
+ error_text: error === undefined ? null : String(error),
+ monotonic_timestamp: nowMs()
+ });
+}
+async function drainLayerDiagnostics(page: any): Promise<void> {
+ try {
+ const records = await page.evaluate("window.__dockermapBenchLayerSink ? window.__dockermapBenchLayerSink.splice(0) : []");
+ if (Array.isArray(records)) for (const record of records) appendDiagnostic("layers.jsonl", record);
+ } catch (error) {
+ recordLifecycle("exception", "drain_layer_diagnostics", error);
+ }
 }
 if (
   (runs !== TIME_TO_ANSWER_CONTROLLED_RUNS || samples !== TIME_TO_ANSWER_WARMED_SAMPLES) &&
@@ -1038,15 +1065,19 @@ async function measureCommandQuery(page: any, preferredToken: string, timeoutMs 
 
 async function measureProductionBundle(browser: any, webOrigin: string): Promise<number> {
   // Cold context: no cache, fresh navigation, production build.
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  const page = await context.newPage();
-  await page.goto(`${webOrigin}/`, { waitUntil: "load" });
+const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+recordLifecycle("context_create", "production_bundle");
+const page = await context.newPage();
+recordLifecycle("page_create", "production_bundle");
+await page.goto(`${webOrigin}/`, { waitUntil: "load" });
+recordLifecycle("navigate", "production_bundle");
   // The cold context deliberately has no instrumentation: this stage measures
   // the production load itself, so it reads the Navigation Timing entry only.
   const duration = await page.evaluate(
     "(() => { const entry = performance.getEntriesByType('navigation')[0]; return entry ? entry.duration : 0; })()"
   );
-  await context.close();
+await context.close();
+recordLifecycle("closure", "production_bundle_context");
   if (!duration) throw new Error("could not read the production navigation duration");
   return duration;
 }
@@ -1073,10 +1104,20 @@ async function main(): Promise<void> {
  const workRoot = mkdtempSync(join(tmpdir(), "dockermap-bench-"));
 
  try {
-    await withFreshBrowserRuns({
-      runs,
-      launch: () => chromium.launch({ args: launchArgs }),
- run: async (browser: any, runIndex: number) => {
+await withFreshBrowserRuns({
+runs,
+launch: async () => {
+ try {
+ const browser = await chromium.launch({ args: launchArgs });
+ recordLifecycle("browser_launch", "fresh_browser_run");
+ return browser;
+ } catch (error) {
+ recordLifecycle("exception", "browser_launch", error);
+ throw error;
+ }
+},
+lifecycle: (event: "browser_launch" | "context_create" | "page_create" | "navigate" | "teardown_start" | "teardown_end" | "exception" | "closure", step?: string, error?: unknown) => recordLifecycle(event, step, error),
+run: async (browser: any, runIndex: number) => {
       for (const plan of plans) {
         process.stdout.write(
           `[capture] run ${runIndex + 1}/${runs} fixture ${plan.name} (${plan.containers} containers)\n`
@@ -1316,8 +1357,10 @@ async function main(): Promise<void> {
           // Browser stages. Every browser stage needs `samples` warmed
           // observations per controlled run, so revision-driven stages loop over
           // real published revision changes instead of being measured once.
-          context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-          const page = await context.newPage();
+context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+recordLifecycle("context_create", "production_app");
+const page = await context.newPage();
+recordLifecycle("page_create", "production_app");
           if (process.env.DOCKERMAP_BENCH_DEBUG === "1") {
  page.on("console", (message: any) => process.stdout.write(`[browser:${message.type()}] ${message.text()}\n`));
  page.on("requestfailed", (failed: any) =>
@@ -1325,7 +1368,8 @@ async function main(): Promise<void> {
             );
           }
           await page.addInitScript({ path: join(REPO_ROOT, "tests/perf/browserProbe.js") });
-          await page.goto(`${webOrigin}/`, { waitUntil: "domcontentloaded" });
+await page.goto(`${webOrigin}/`, { waitUntil: "domcontentloaded" });
+recordLifecycle("navigate", "production_app");
           await page.waitForFunction("window.__dockermapBenchHelpers.homeReady()", undefined, {
             timeout: 90_000
           });
@@ -1333,8 +1377,10 @@ async function main(): Promise<void> {
           // The benchmark-mode application page, used only for stages 6 and 7.
           let benchPage: any = null;
           if (needsStageSix) {
-            benchContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-            benchPage = await benchContext.newPage();
+benchContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+recordLifecycle("context_create", "benchmark_app");
+benchPage = await benchContext.newPage();
+recordLifecycle("page_create", "benchmark_app");
             if (process.env.DOCKERMAP_BENCH_DEBUG === "1") {
               benchPage.on("console", (message: any) =>
                 process.stdout.write(`[bench:${message.type()}] ${message.text()}\n`)
@@ -1344,7 +1390,8 @@ async function main(): Promise<void> {
               );
             }
             await benchPage.addInitScript({ path: join(REPO_ROOT, "tests/perf/browserProbe.js") });
-            await benchPage.goto(`${benchAppServer.url}/`, { waitUntil: "domcontentloaded" });
+await benchPage.goto(`${benchAppServer.url}/`, { waitUntil: "domcontentloaded" });
+recordLifecycle("navigate", "benchmark_app");
             await benchPage.waitForFunction("window.__dockermapBenchHelpers.homeReady()", undefined, {
               timeout: 90_000
             });
@@ -1413,10 +1460,11 @@ async function main(): Promise<void> {
                       expectedMetricValue: tracksIndependence ? expectedMetricValue : ""
  });
  }
- if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
+if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
                     // A real published inventory change: the fixture daemon serves a
                     // new generation, so the daemon must publish a new revision.
- await setFixtureGeneration(fixtureSocket, generation);
+await benchPage.evaluate(`window.__dockermapBenchFixtureGeneration = ${generation}`);
+await setFixtureGeneration(fixtureSocket, generation);
                   }
                   // `provider-only-revision-change` and `unavailable-optional-provider`
                   // need no trigger: their revision advance comes from provider state
@@ -1443,7 +1491,8 @@ async function main(): Promise<void> {
                 );
               }
               if (needsStageSix) {
-                const measured = await awaitModelAcceptance(benchPage);
+const measured = await awaitModelAcceptance(benchPage);
+await drainLayerDiagnostics(benchPage);
                 coherentSamples.push(measured.notificationToCoherentModelMs);
                 if (typeof measured.coherentModelToUsefulRenderMs === "number") {
                   usefulSamples.push(measured.coherentModelToUsefulRenderMs);
@@ -1524,8 +1573,9 @@ async function main(): Promise<void> {
  // The checkpoint is immediately before the POST. An acceptance before this
  // point is background churn and cannot be attributed to this control sample.
  const trigger = await markStageSixSevenPublicationTriggered(benchPage);
- if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
- await setFixtureGeneration(fixtureSocket, generation);
+if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
+await benchPage.evaluate(`window.__dockermapBenchFixtureGeneration = ${generation}`);
+await setFixtureGeneration(fixtureSocket, generation);
  const publication = await observeControlPublication({
  fixtureSocket,
  daemonPort,
@@ -1537,7 +1587,8 @@ async function main(): Promise<void> {
  process.stdout.write(
  `[capture] control ${generation}: fixture ${publication.fixtureExited} exited, daemon ${publication.daemonExited}, api ${publication.apiExited}\n`
  );
- const measured = await awaitModelAcceptance(benchPage);
+const measured = await awaitModelAcceptance(benchPage);
+await drainLayerDiagnostics(benchPage);
  independencePair.controlStageSixMs.push(measured.notificationToCoherentModelMs);
  independencePair.controlStageSevenMs.push(measured.coherentModelToUsefulRenderMs as number);
  stageSixSevenAudit.push({
@@ -1606,9 +1657,12 @@ async function main(): Promise<void> {
             const snapshot = await fetchJson(`http://127.0.0.1:${apiPort}/api/snapshot`, 30_000);
             const runtimeMap = await fetchJson(`http://127.0.0.1:${apiPort}/api/runtime/map`, 30_000);
             if (!snapshot || !runtimeMap) throw new Error("could not read the fixture model from the API");
-            probeContext = await browser.newContext();
-            const probePage = await probeContext.newPage();
-            await probePage.goto(`${probeServer.url}/index.html`, { waitUntil: "domcontentloaded" });
+probeContext = await browser.newContext();
+recordLifecycle("context_create", "module_probe");
+const probePage = await probeContext.newPage();
+recordLifecycle("page_create", "module_probe");
+await probePage.goto(`${probeServer.url}/index.html`, { waitUntil: "domcontentloaded" });
+recordLifecycle("navigate", "module_probe");
             await probePage.waitForFunction("Boolean(window.__dockermapProbe)", undefined, {
               timeout: 30_000
             });
@@ -1622,23 +1676,26 @@ async function main(): Promise<void> {
             record(plan.name, "buildModelMs", measured.buildModelMs);
             record(plan.name, "legacyTopologyLayoutMs", measured.legacyTopologyLayoutMs);
           }
-        } finally {
-          if (probeContext) await probeContext.close();
-          if (benchContext) await benchContext.close();
-          if (context) await context.close();
+} finally {
+recordLifecycle("teardown_start", "fixture_run");
+if (probeContext) { await probeContext.close(); recordLifecycle("closure", "module_probe_context_and_page"); }
+if (benchContext) { await benchContext.close(); recordLifecycle("closure", "benchmark_app_context_and_page"); }
+if (context) { await context.close(); recordLifecycle("closure", "production_app_context_and_page"); }
           if (publicationTracker) await publicationTracker.stop();
           stopOwned(apiChild);
           stopOwned(daemonChild);
           stopOwned(fixtureChild);
           if (webServer) await webServer.close();
           if (probeServer) await probeServer.close();
-          if (benchAppServer) await benchAppServer.close();
+if (benchAppServer) await benchAppServer.close();
+recordLifecycle("teardown_end", "fixture_run");
         }
       }
       }
     });
-  } catch (error) {
-    preserveRaw(String(error));
+} catch (error) {
+recordLifecycle("exception", "capture", error);
+preserveRaw(String(error));
     throw error;
  } finally {
  rmSync(workRoot, { recursive: true, force: true });

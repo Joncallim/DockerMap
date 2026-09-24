@@ -264,6 +264,19 @@ token on the document root so a DOM repaint can be attributed to a revision.
 There is no product payload, no network call, no telemetry and no analytics, and
 the seam adds no route, no API field and no public schema.
 
+### Diagnostics-only layer capture
+
+The benchmark-mode application also keeps a bounded, in-page diagnostic record
+for every coherent model it accepts. The capture harness drains those records to
+`layers.jsonl`, alongside `lifecycle.jsonl` for browser, context, page,
+navigation, teardown, exception, and closure events. Set
+`DOCKERMAP_BENCH_DIAG_DIR` to choose the directory; otherwise they are written
+to the capture raw directory (or beside the raw capture output). These JSONL
+files are observational only: they are not artifact fields, inputs to timing,
+warm-up, stationarity, independence, or promotion rules, and an append failure
+cannot change a measurement result. Both the diagnostic identifiers and the
+in-page sink are compiled out of the ordinary production web bundle.
+
 ## Stage 6/7 independence control
 
 A capture may not produce a baseline unless it can show the two clocks are

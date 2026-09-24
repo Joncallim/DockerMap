@@ -5,7 +5,7 @@ import { projectRuntimeMap } from "../lib/atlas/project";
 import type { AtlasEnvelope } from "../lib/atlas/types";
 import type { EvidenceMode, ModelProvenance } from "../lib/evidence";
 import { modelProvenanceForMode } from "../lib/evidence";
-import { recordModelAcceptance, useDeliveredModel } from "../lib/performance/modelAcceptance";
+import { recordModelAcceptance, recordModelLayers, useDeliveredModel } from "../lib/performance/modelAcceptance";
 import { useApiResource } from "./useApiResource";
 
 export interface SystemModelState {
@@ -68,7 +68,10 @@ export function useSystemModel(refreshTick: number, evidenceMode: EvidenceMode |
     // where the benchmark's stage-6 clock starts. It is compile-time gated and
     // carries only an opaque timestamp + revision token; see
     // lib/performance/modelAcceptance.tsx.
-    if (__DOCKERMAP_BENCH_ACCEPTANCE__) recordModelAcceptance(built.modelRevision);
+if (__DOCKERMAP_BENCH_ACCEPTANCE__) {
+recordModelAcceptance(built.modelRevision);
+recordModelLayers(snapshot.data, runtimeMap.data, built);
+}
     return built;
   }, [snapshot.data, snapshot.generation, snapshot.provenance, runtimeMap.data, runtimeMap.generation, runtimeMap.provenance]);
 
