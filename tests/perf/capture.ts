@@ -1668,7 +1668,7 @@ const measured = await awaitModelAcceptance(benchPage);
               }
             }
           }
-          if (independencePair) {
+ if (independencePair && !calibration) {
             // Stage 6/7 independence control. The artificial presentation delay is
             // injected AFTER coherent-model acceptance, so a stage-6 number that
             // moves under it would prove the two stages share a clock, and a
