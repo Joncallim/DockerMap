@@ -66,10 +66,14 @@ and its digest verified before **and** after the capture.
 
 ## Composite Baseline-4 schema
 
-Baseline 4 has distinct general and dedicated Stage-5 raw evidence sections.
+Baseline 4 has distinct general, dedicated Stage-5, and dedicated Stage-6/7
+independence raw evidence sections.
 Every one of the 44 records carries its stage, fixture, measurement protocol,
 source evidence file, checkpoint SHA and methodology version. Stage-5 records
-are `controlled-poll-phase`; all others are `end-to-end`. The assembler rejects
+are `controlled-poll-phase`; Stage-6/7 cells with both seams are
+`controlled-stage6-stage7-independence`; all others are `end-to-end`. The
+independence section contributes only its normal samples: its injected 250 ms
+samples are validity evidence and can never become Baseline-4 observations. The assembler rejects
 missing cells and never merges away that protocol distinction.
 
 ## Historical 44-cell matrix, recomputed from raw

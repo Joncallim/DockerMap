@@ -577,13 +577,19 @@ characterisation. `assertFreeRunningPhaseSamples`, rather than
 
 ## Baseline-4 composite capture
 
-Baseline 4 is a composite artifact with two raw evidence sections. The general
+Baseline 4 is a composite artifact with three raw evidence sections. The general
 capture records only `end-to-end` cells. The dedicated Stage-5 sub-benchmark
 records every `publicationToNodeObservationMs` cell with
 `controlled-poll-phase`; it is the sole owner of the arm → mark → trigger →
 identity-ack protocol. The sections are not pooled: every composite record
 names its fixture, stage, measurement protocol, source evidence file and
-committed checkpoint SHA. Assembly rejects a missing or duplicate declared cell,
+committed checkpoint SHA. The dedicated Stage-6/7 independence protocol is
+`controlled-stage6-stage7-independence`: it uses the same controlled release,
+trigger identity and exact acknowledgement mechanism, observes acceptance at the
+real `useSystemModel` coherent snapshot/runtime-map seam, and applies its 250 ms
+delay only after that acceptance. Its control samples prove Stage 6 remains
+approximately unchanged while Stage 7 grows by the injected delay; they are never
+Baseline-4 timing observations. Assembly rejects a missing or duplicate declared cell,
 a wrong protocol, a mismatched methodology/checkpoint, or an incomplete section.
 
 The Stage-5 metric and phase-normalized authority are unchanged. The phase grid,

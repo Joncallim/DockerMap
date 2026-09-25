@@ -31,8 +31,6 @@ import { chromium } from "playwright";
 import {
   TIME_TO_ANSWER_BASELINE,
   TIME_TO_ANSWER_CONTROLLED_RUNS,
-  TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
-  TIME_TO_ANSWER_INDEPENDENCE_SAMPLES,
   TIME_TO_ANSWER_MATRIX,
   TIME_TO_ANSWER_METHODOLOGY,
   TIME_TO_ANSWER_REFERENCE_FIXTURES,
@@ -43,7 +41,6 @@ import {
  TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES,
  TIME_TO_ANSWER_WARM_UP_METRICS,
   assertDaemonBinaryProvenance,
-  assertStageSixSevenIndependence,
   assertTimeToAnswerEnvironment,
  assertTimeToAnswerPromotion,
  assertWarmUpStationarity,
@@ -239,20 +236,6 @@ const plans = TIME_TO_ANSWER_REFERENCE_FIXTURES.filter(
 }));
 
 const raw: RawSamples = {};
-/**
- * Stage 6/7 independence-control evidence. Harness-only: it is written beside the
- * artifact (never inside it), so the closed evidence schema is unchanged.
- */
-const independencePairs: Array<{
-  fixture: string;
-  run: number;
-  normalStageSixMs: number[];
-  normalStageSevenMs: number[];
-  controlStageSixMs: number[];
-  controlStageSevenMs: number[];
-}> = [];
-/** Per-sample stage 6/7 audit trail: accepted revision, notification, commits. */
-const stageSixSevenAudit: Array<Record<string, unknown>> = [];
 /**
  * Stage-5 poll-phase sweep records (methodology revision 2). Harness-only: they
  * carry the declared and observed phase of every recorded stage-5 sample, and are
@@ -1403,17 +1386,6 @@ daemonPort = startedDaemon.port;
           // only exists in the benchmark-MODE build of the real app. Every other
           // browser stage is measured on the ordinary production build.
           const needsStageSix = hasStage(plan.name, "notificationToCoherentModelMs");
-          const tracksIndependence = needsStageSix && hasStage(plan.name, "coherentModelToUsefulRenderMs");
-          const independencePair = tracksIndependence
-            ? {
-                fixture: plan.name,
-                run: runIndex,
-                normalStageSixMs: [] as number[],
-                normalStageSevenMs: [] as number[],
-                controlStageSixMs: [] as number[],
-                controlStageSevenMs: [] as number[]
-              }
-            : null;
           webServer = await startStaticServer({ directory: join(REPO_ROOT, "apps/web/dist"), port: 0 });
           probeServer = await startStaticServer({
             directory: join(REPO_ROOT, "tests/perf/.bench-dist"),
@@ -1556,8 +1528,8 @@ mode: phaseControlled ? "phase-controlled" : "free-running",
                       // Provider-only fixtures publish a revision with no inventory
                       // change: stage 6 ends at acceptance (no Home repaint exists to
                       // wait for) and stage 7 is not declared for them.
-                      mode: tracksIndependence ? "content" : "acceptance-only",
-                      expectedMetricValue: tracksIndependence ? expectedMetricValue : ""
+mode: hasStage(plan.name, "coherentModelToUsefulRenderMs") ? "content" : "acceptance-only",
+expectedMetricValue: hasStage(plan.name, "coherentModelToUsefulRenderMs") ? expectedMetricValue : ""
  });
  }
 if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
@@ -1624,23 +1596,6 @@ const measured = await awaitModelAcceptance(benchPage);
                       `(api: ${revisions.join(", ") || "none"}; browser fetched it via ${measured.fetchDeliveredBy})\n`
                   );
                 }
- if (independencePair && !calibration) {
-                  independencePair.normalStageSixMs.push(measured.notificationToCoherentModelMs);
-                  independencePair.normalStageSevenMs.push(measured.coherentModelToUsefulRenderMs as number);
-                }
-                stageSixSevenAudit.push({
-                  ...measured,
-                  fixture: plan.name,
-                  run: runIndex,
-                  sample: index,
-                  generation,
-                  delayMs: 0,
-                  apiObservedRevisions: revisions,
-                  acceptedRevisionInApiStream: acceptedInApiStream,
-                  stageFiveDeclaredPhaseMs: sample.declaredPhaseMs,
-                  stageFiveObservedLatencyMs: sample.observedLatencyMs,
-                  stageFivePhaseErrorMs: sample.phaseErrorMs
-                });
               }
             }
             await tracker.stop();
@@ -1667,56 +1622,6 @@ const measured = await awaitModelAcceptance(benchPage);
                 );
               }
             }
-          }
- if (independencePair && !calibration) {
-            // Stage 6/7 independence control. The artificial presentation delay is
-            // injected AFTER coherent-model acceptance, so a stage-6 number that
-            // moves under it would prove the two stages share a clock, and a
-            // stage-7 number that does not move would prove stage 7 is not
-            // measuring presentation of the accepted model.
-            for (let index = 0; index < TIME_TO_ANSWER_INDEPENDENCE_SAMPLES; index += 1) {
- const generation = samples + index + 1;
- const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
- await benchPage.evaluate(`window.__dockermapBenchRenderDelayMs = ${TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS}`);
- try {
- await armStageSixSeven(benchPage, { mode: "content", expectedMetricValue, awaitPublicationTrigger: true });
- // The checkpoint is immediately before the POST. An acceptance before this
- // point is background churn and cannot be attributed to this control sample.
- const trigger = await markStageSixSevenPublicationTriggered(benchPage);
-if (plan.name === "docker-topology-change" || plan.name.startsWith("reference-")) {
- const fixtureState = await setFixtureGeneration(fixtureSocket, generation);
- appendDiagnostic("fixture-identity.jsonl", { fixture: plan.name, run: runIndex, generation, fixtureRevision: FIXTURE_REVISION, fixtureState, expectedExited: Number(expectedMetricValue), monotonicTimestamp: nowMs() });
- const publication = await observeControlPublication({
- fixtureSocket,
- daemonPort,
- apiPort,
- expectedExited: Number(expectedMetricValue),
- generation
- });
- await expectStageSixSevenModelRevision(benchPage, String(publication.apiRevision));
- process.stdout.write(
- `[capture] control ${generation}: fixture ${publication.fixtureExited} exited, daemon ${publication.daemonExited}, api ${publication.apiExited}\n`
- );
-const measured = await awaitModelAcceptance(benchPage);
- await drainLayerDiagnostics(benchPage, plan.name);
- independencePair.controlStageSixMs.push(measured.notificationToCoherentModelMs);
- independencePair.controlStageSevenMs.push(measured.coherentModelToUsefulRenderMs as number);
- stageSixSevenAudit.push({
-                ...measured,
-                fixture: plan.name,
-                run: runIndex,
- sample: `control-${index}`,
- generation,
- delayMs: TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
- trigger,
- publication
- });
- }
- } finally {
- await benchPage.evaluate("window.__dockermapBenchRenderDelayMs = 0");
- }
- }
-            independencePairs.push(independencePair);
           }
           if (hasStage(plan.name, "commandQueryMs")) {
             for (let index = 0; index < samples; index += 1) {
@@ -1934,26 +1839,13 @@ preserveRaw(String(error));
       validity: stageFiveValidity[fixture] ?? null
     };
   }
-  const harnessEvidence: {
-    stageSeam: {
-      delayMs: number;
-      samplesPerFixture: number;
-      fixtures: Record<string, unknown>;
-      audit: Array<Record<string, unknown>>;
-      error?: string;
-    };
+const harnessEvidence: {
     warmUpObservations: Record<string, number[]>;
     warmUpStationarity: Record<string, number>;
     warmUpRetention: typeof warmUpRetention;
     stageFive: Record<string, unknown>;
     daemonBinary: typeof daemonBinaryEvidence;
-  } = {
-    stageSeam: {
-      delayMs: TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
-      samplesPerFixture: TIME_TO_ANSWER_INDEPENDENCE_SAMPLES,
-      fixtures: {},
-      audit: stageSixSevenAudit
-    },
+} = {
     warmUpObservations,
     warmUpStationarity,
     warmUpRetention,
@@ -1963,10 +1855,6 @@ preserveRaw(String(error));
   const writeHarnessEvidence = (): void => {
     writeFileSync(harnessEvidencePath, `${JSON.stringify(harnessEvidence, null, 2)}\n`);
   };
-  const stageSeamByFixture = new Map<string, typeof independencePairs>();
-  for (const pair of independencePairs) {
-    stageSeamByFixture.set(pair.fixture, [...(stageSeamByFixture.get(pair.fixture) ?? []), pair]);
-  }
   try {
     // Warm-up retention, audited structurally rather than by value coincidence:
     // for every daemon-side warmed stage the complete observation window must be
@@ -2067,38 +1955,9 @@ preserveRaw(String(error));
           `${verdict.fastestPhaseMedianMs.toFixed(1)}–${verdict.slowestPhaseMedianMs.toFixed(1)} ms\n`
       );
     }
- const required = calibration ? [] : TIME_TO_ANSWER_REFERENCE_FIXTURES.filter(
-      (fixture) =>
-        hasStage(fixture.name, "notificationToCoherentModelMs") &&
-        hasStage(fixture.name, "coherentModelToUsefulRenderMs")
-    )
-      .map((fixture) => fixture.name)
-      .filter((name) => !onlyFixtures || onlyFixtures.includes(name));
-    const missing = required.filter((name) => !stageSeamByFixture.has(name));
-    if (missing.length > 0) {
-      throw new Error(`the stage-6/7 independence control did not run for ${missing.join(", ")}`);
-    }
-    for (const fixture of required) {
-      const pairs = stageSeamByFixture.get(fixture)!;
-      const verdict = assertStageSixSevenIndependence({
-        fixture,
-        delayMs: TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS,
-        normalStageSixMs: pairs.flatMap((pair) => pair.normalStageSixMs),
-        normalStageSevenMs: pairs.flatMap((pair) => pair.normalStageSevenMs),
-        controlStageSixMs: pairs.flatMap((pair) => pair.controlStageSixMs),
-        controlStageSevenMs: pairs.flatMap((pair) => pair.controlStageSevenMs)
-      });
-      harnessEvidence.stageSeam.fixtures[fixture] = { runs: pairs, verdict };
-      process.stdout.write(
-        `[capture] stage 6/7 control ${fixture}: stage 6 ${verdict.stageSixMedianMs.toFixed(1)} -> ` +
-          `${verdict.stageSixControlMedianMs.toFixed(1)} ms; stage 7 ${verdict.stageSevenMedianMs.toFixed(1)} -> ` +
-          `${verdict.stageSevenControlMedianMs.toFixed(1)} ms for a ${verdict.delayMs} ms injected delay\n`
-      );
-    }
-  } catch (error) {
-    harnessEvidence.stageSeam.error = String(error);
-    writeHarnessEvidence();
-    preserveRaw(harnessEvidence.stageSeam.error);
+} catch (error) {
+writeHarnessEvidence();
+preserveRaw(String(error));
     throw error;
   }
   writeHarnessEvidence();

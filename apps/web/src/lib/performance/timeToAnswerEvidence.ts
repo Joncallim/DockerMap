@@ -251,8 +251,8 @@ export type TimeToAnswerEnvironment = {
 export interface TimeToAnswerRecord {
 fixture: string;
 stage: TimeToAnswerStageId;
-/** Stage 5 is captured only by the controlled sub-benchmark. */
-measurementProtocol: "controlled-poll-phase" | "end-to-end";
+/** Controlled sub-benchmarks own only the cells they explicitly name. */
+measurementProtocol: "controlled-poll-phase" | "controlled-stage6-stage7-independence" | "end-to-end";
 /** Raw evidence section that produced this one cell. */
 sourceEvidenceFile: string;
 /** Committed source/harness checkpoint that produced this cell. */
@@ -425,6 +425,10 @@ throw new Error("Time-to-answer evidence has a duplicate or unsupported fixture/
 }
 const requiredProtocol = raw.stage === "publicationToNodeObservationMs"
 ? "controlled-poll-phase"
+: (raw.stage === "notificationToCoherentModelMs" || raw.stage === "coherentModelToUsefulRenderMs") &&
+TIME_TO_ANSWER_MATRIX.some((cell) => cell.fixture === raw.fixture && cell.stage === "notificationToCoherentModelMs") &&
+TIME_TO_ANSWER_MATRIX.some((cell) => cell.fixture === raw.fixture && cell.stage === "coherentModelToUsefulRenderMs")
+? "controlled-stage6-stage7-independence"
 : "end-to-end";
 if (raw.measurementProtocol !== requiredProtocol) {
 throw new Error(`Time-to-answer record ${raw.fixture}/${raw.stage} has the wrong measurement protocol.`);
