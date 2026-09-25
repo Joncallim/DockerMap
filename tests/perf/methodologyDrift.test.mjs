@@ -30,8 +30,11 @@ test("the metadata emitter's methodology version matches the contract", () => {
 });
 
 test("the warm-up protocol is declared in the contract, not derived at runtime", () => {
- const contract = read("apps/web/src/lib/performance/timeToAnswerEvidence.ts");
- assert.match(contract, /export const TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = 10;/);
+const contract = read("apps/web/src/lib/performance/timeToAnswerEvidence.ts");
+assert.match(contract, /export const TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS = 30;/);
+assert.match(contract, /export const TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN = 2;/);
+assert.match(contract, /export const TIME_TO_ANSWER_FROZEN_WARM_UP_COUNTS/);
+assert.match(contract, /deriveFrozenWarmUpCount/);
   assert.match(contract, /export const TIME_TO_ANSWER_STATIONARITY_MIN_RATIO = [\d.]+;/);
   assert.match(contract, /export const TIME_TO_ANSWER_STATIONARITY_MAX_RATIO = [\d.]+;/);
 });
@@ -39,7 +42,7 @@ test("the warm-up protocol is declared in the contract, not derived at runtime",
 test("a failed stationarity gate retains its complete warmed window before aborting", () => {
  const capture = read("tests/perf/capture.ts");
  const retainedBeforeGate = capture.match(
- /warmUpObservations\[label\] = warmUps;[\s\S]*?warmedObservationWindows\[label\] = benchSamples\[key\]\.slice\(0, required\);[\s\S]*?assertWarmUpStationarity\(\{ label, warmUps, recorded \}\)/
+ /warmUpObservations\[label\] = warmUps;[\s\S]*?warmedObservationWindows\[label\] = benchSamples\[key\]\.slice\(0, requiredForMetric\);[\s\S]*?assertWarmUpStationarity\(\{ label, warmUps, recorded, warmUpCount \}\)/
  );
  assert.ok(retainedBeforeGate, "warm-ups and their complete window must be retained before stationarity can throw");
  assert.match(capture, /warmUpStationarityFailures\[label\] = \{[\s\S]*?fixture: plan\.name,[\s\S]*?stage: key,[\s\S]*?run: runIndex,[\s\S]*?warmUps,[\s\S]*?measuredSamples: recorded,[\s\S]*?calculation: \{[\s\S]*?finalWarmUpMedian:[\s\S]*?measuredMedian:[\s\S]*?ratio: calculation\.ratio,[\s\S]*?bounds:[\s\S]*?reason: String\(error\)/);
