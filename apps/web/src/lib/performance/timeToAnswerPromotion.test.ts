@@ -60,8 +60,8 @@ function samples(base: number): number[] {
 function artifact(overrides: { environment?: Record<string, unknown>; records?: unknown[] } = {}) {
  const provenance = (record: any) => ({
  ...record,
- measurementProtocol: record.measurementProtocol ?? (record.stage === "publicationToNodeObservationMs" ? "controlled-poll-phase" : "end-to-end"),
- sourceEvidenceFile: record.sourceEvidenceFile ?? (record.stage === "publicationToNodeObservationMs" ? "stage-five.raw.json" : "general.raw.json"),
+ measurementProtocol: record.measurementProtocol ?? protocol(record.fixture, record.stage),
+ sourceEvidenceFile: record.sourceEvidenceFile ?? evidenceFile(record.fixture, record.stage),
  checkpointSha: record.checkpointSha ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
  });
  return {
@@ -72,12 +72,23 @@ function artifact(overrides: { environment?: Record<string, unknown>; records?: 
  TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => ({
 fixture,
 stage,
-measurementProtocol: stage === "publicationToNodeObservationMs" ? "controlled-poll-phase" : "end-to-end",
-sourceEvidenceFile: stage === "publicationToNodeObservationMs" ? "stage-five.raw.json" : "general.raw.json",
+ measurementProtocol: protocol(fixture, stage),
+ sourceEvidenceFile: evidenceFile(fixture, stage),
 checkpointSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 runs: [samples(10), samples(11), samples(12)]
  })))
  };
+}
+
+function protocol(fixture: string, stage: string): string {
+ if (stage === "publicationToNodeObservationMs") return "controlled-poll-phase";
+ const hasStage = (candidate: string) => TIME_TO_ANSWER_MATRIX.some((cell) => cell.fixture === fixture && cell.stage === candidate);
+ return (stage === "notificationToCoherentModelMs" || stage === "coherentModelToUsefulRenderMs") && hasStage("notificationToCoherentModelMs") && hasStage("coherentModelToUsefulRenderMs")
+ ? "controlled-stage6-stage7-independence" : "end-to-end";
+}
+
+function evidenceFile(fixture: string, stage: string): string {
+ return protocol(fixture, stage) === "controlled-poll-phase" ? "stage-five.raw.json" : protocol(fixture, stage) === "controlled-stage6-stage7-independence" ? "stage-six-seven.raw.json" : "general.raw.json";
 }
 
 function candidate(overrides: { environment?: Record<string, unknown>; records?: unknown[] } = {}) {
