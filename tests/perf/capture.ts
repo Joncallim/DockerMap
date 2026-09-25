@@ -128,7 +128,7 @@ if (!metadataPath || (!outputPath && !calibrationOutputPath)) {
 }
 // Diagnostics are deliberately outside the closed artifact and all measurement
 // calculations. A failed append must never affect a capture result.
-const diagnosticDirectory = process.env.DOCKERMAP_BENCH_DIAG_DIR || rawDir || dirname(outputPath);
+const diagnosticDirectory = process.env.DOCKERMAP_BENCH_DIAG_DIR || rawDir || dirname(outputPath ?? calibrationOutputPath!);
 function appendDiagnostic(file: "layers.jsonl" | "lifecycle.jsonl" | "fixture-identity.jsonl", record: Record<string, unknown>): void {
  try {
  mkdirSync(diagnosticDirectory, { recursive: true });
