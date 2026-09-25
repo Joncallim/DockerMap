@@ -6,10 +6,14 @@
  * capture path reaches the same arm -> mark -> trigger -> exact-ack mechanism.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { resolve } from "node:path";
 import test from "node:test";
 import { armCaptureStageFivePublication } from "./stageFiveCaptureControl.mjs";
 import { startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
+
+const root = resolve(new URL("../..", import.meta.url).pathname);
 
 async function upstream() {
  let revision = "before";
@@ -50,4 +54,13 @@ test("capture Stage-5 control reaches the shared exact-ack mechanism after its o
  await controller.close();
  await daemon.close();
  }
+});
+
+test("capture cannot bypass its shared Stage-5 control entrypoint", () => {
+ const capture = readFileSync(resolve(root, "tests/perf/capture.ts"), "utf8");
+ assert.match(capture, /import \{ armCaptureStageFivePublication \} from "\.\/stageFiveCaptureControl\.mjs"/);
+ assert.match(capture, /await armCaptureStageFivePublication\(/);
+ assert.doesNotMatch(capture, /import \{ armStageFivePublication/);
+ assert.doesNotMatch(capture, /function (?:postControl|waitForPublicationAcknowledgement)/);
+ assert.doesNotMatch(capture, /__stage-five-control\/(?:arm|mark|ack)/);
 });
