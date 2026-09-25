@@ -39,13 +39,13 @@ import {
   TIME_TO_ANSWER_STAGES,
   TIME_TO_ANSWER_STAGE_KIND,
   TIME_TO_ANSWER_WARMED_SAMPLES,
-  TIME_TO_ANSWER_WARM_UP_OBSERVATIONS,
   assertDaemonBinaryProvenance,
   assertStageSixSevenIndependence,
   assertTimeToAnswerEnvironment,
  assertTimeToAnswerPromotion,
  assertWarmUpStationarity,
  derivedTimeToAnswerPhaseNormalized,
+ frozenWarmUpCount,
  splitWarmedObservations,
  validateTimeToAnswerEvidence,
  warmUpStationarityCalculation,
@@ -1157,6 +1157,11 @@ recordLifecycle("context_create", "production_bundle");
 }
 
 async function main(): Promise<void> {
+ // Fail before any baseline observation is collected. Calibration is a
+ // separate command and every warmed metric must have its own frozen count.
+ for (const stage of TIME_TO_ANSWER_STAGES) {
+ if (TIME_TO_ANSWER_STAGE_KIND[stage.id] === "warmed-repeated") frozenWarmUpCount(stage.id);
+ }
 const startedAt = Date.now();
  // A full artifact is forbidden until both independent controls have cleared:
  // lifecycle longevity and the Stage-5 exact-publication phase mechanism.
@@ -1334,28 +1339,30 @@ daemonPort = startedDaemon.port;
           // Stages 3, 4, 9: bench attribution from the current implementation.
           const needsBench = BENCH_STAGE_KEYS.some((key) => hasStage(plan.name, key));
           if (needsBench) {
-            const required = samples + TIME_TO_ANSWER_WARM_UP_OBSERVATIONS;
-            const benchSamples = await waitForBenchSamples(benchSink, required, 300_000);
+ const required = samples + Math.max(...BENCH_STAGE_KEYS.map(frozenWarmUpCount));
+ const benchSamples = await waitForBenchSamples(benchSink, required, 300_000);
             for (const key of BENCH_STAGE_KEYS) {
               if (!hasStage(plan.name, key)) continue;
-              if (TIME_TO_ANSWER_STAGE_KIND[key] !== "warmed-repeated") {
+ if (TIME_TO_ANSWER_STAGE_KIND[key] !== "warmed-repeated") {
                 record(plan.name, key, benchSamples[key].slice(0, samples));
-                continue;
-              }
+ continue;
+ }
+ const warmUpCount = frozenWarmUpCount(key);
+ const requiredForMetric = samples + warmUpCount;
               // The warm-up count is FIXED by protocol — never chosen from the data
               // — and the whole window is retained, so the discarded observations
               // stay auditable. The stationarity guard then decides whether the
               // window is usable at all: a window whose warm-ups have not settled is
               // INVALID, never trimmed.
- const { warmUps, recorded } = splitWarmedObservations(benchSamples[key], samples);
+ const { warmUps, recorded } = splitWarmedObservations(benchSamples[key], samples, warmUpCount);
  const label = `${plan.name}|${key}|run${runIndex}`;
  // Retain every observation BEFORE the validity check. A failed gate aborts the
  // capture, but must never erase the evidence that explains why it failed.
  warmUpObservations[label] = warmUps;
- warmedObservationWindows[label] = benchSamples[key].slice(0, required);
+ warmedObservationWindows[label] = benchSamples[key].slice(0, requiredForMetric);
  const calculation = warmUpStationarityCalculation(warmUps, recorded);
  try {
- warmUpStationarity[label] = assertWarmUpStationarity({ label, warmUps, recorded });
+ warmUpStationarity[label] = assertWarmUpStationarity({ label, warmUps, recorded, warmUpCount });
  } catch (error) {
  warmUpStationarityFailures[label] = {
  fixture: plan.name,
@@ -1840,11 +1847,11 @@ preserveRaw(String(error));
       `(matches: ${daemonBinaryEvidence.matches})\n`
   );
   const harnessEvidencePath = `${outputPath}.harness-evidence.json`;
-  const warmUpsPerWindow = TIME_TO_ANSWER_WARM_UP_OBSERVATIONS;
-  const warmUpRetention = TIME_TO_ANSWER_MATRIX.flatMap(({ fixture, stage }) => {
+ const warmUpRetention = TIME_TO_ANSWER_MATRIX.flatMap(({ fixture, stage }) => {
     const runs = raw[fixture]?.[stage];
     if (!runs || runs.length === 0) return [];
-    const kind = TIME_TO_ANSWER_STAGE_KIND[stage] ?? "warmed-repeated";
+ const kind = TIME_TO_ANSWER_STAGE_KIND[stage] ?? "warmed-repeated";
+ const warmUpsPerWindow = (BENCH_STAGE_KEYS as readonly string[]).includes(stage) ? frozenWarmUpCount(stage) : 0;
     return runs.map((recorded, run) => {
       const label = `${fixture}|${stage}|run${run}`;
       const window = warmedObservationWindows[label] ?? null;
@@ -1944,18 +1951,13 @@ preserveRaw(String(error));
       if (entry.observationWindow === null) {
         throw new Error(`no observation window was retained for ${entry.fixture}|${entry.stage} run ${entry.run}`);
       }
-      if (entry.observationCount !== samples + TIME_TO_ANSWER_WARM_UP_OBSERVATIONS) {
+ if (entry.observationCount !== samples + entry.declaredWarmUpCount) {
         throw new Error(
           `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run} kept ${entry.observationCount} observations, ` +
-            `expected ${samples + TIME_TO_ANSWER_WARM_UP_OBSERVATIONS}`
+ `expected ${samples + entry.declaredWarmUpCount}`
         );
       }
-      if (entry.declaredWarmUpCount !== TIME_TO_ANSWER_WARM_UP_OBSERVATIONS) {
-        throw new Error(
-          `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run} declares ${entry.declaredWarmUpCount} warm-ups, ` +
-            `expected the protocol's ${TIME_TO_ANSWER_WARM_UP_OBSERVATIONS}`
-        );
-      }
+ if (entry.declaredWarmUpCount !== frozenWarmUpCount(entry.stage)) throw new Error(`warmed stage ${entry.fixture}|${entry.stage} run ${entry.run} does not use its frozen calibrated warm-up count`);
       if (!entry.warmUpsMatchWindow) {
         throw new Error(
           `warmed stage ${entry.fixture}|${entry.stage} run ${entry.run}: the retained warm-ups are not the window's first observations`

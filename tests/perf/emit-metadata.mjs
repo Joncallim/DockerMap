@@ -111,7 +111,7 @@ const DAEMON_BUILD_SLUG = "cargo-build-release-locked-p-dockermap-daemon-manifes
  * cannot import the TypeScript contract, so the value is duplicated and guarded by
  * tests/perf/methodologyDrift.test.mjs, which fails if the two ever diverge.
  */
-const METHODOLOGY_VERSION = "dockermap-v1/time-to-answer-methodology-4";
+const METHODOLOGY_VERSION = "dockermap-v1/time-to-answer-methodology-5";
 const daemonBinaryPath = resolve(REPO_ROOT, "crates/target/release/dockermap-daemon");
 try {
   command("bash", ["-lc", `cd ${JSON.stringify(REPO_ROOT)} && cargo ${DAEMON_BUILD.replace(/^cargo /, "")}`]);

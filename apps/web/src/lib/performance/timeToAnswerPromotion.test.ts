@@ -11,8 +11,10 @@ import {
   TIME_TO_ANSWER_CONTROLLED_RUNS,
   TIME_TO_ANSWER_MATRIX,
   TIME_TO_ANSWER_METHODOLOGY,
-  TIME_TO_ANSWER_WARMED_SAMPLES,
-  TIME_TO_ANSWER_WARM_UP_OBSERVATIONS,
+ TIME_TO_ANSWER_WARMED_SAMPLES,
+ TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS,
+ deriveFrozenWarmUpCount,
+ frozenWarmUpCount,
   assertTimeToAnswerPromotion,
   assertWarmUpStationarity,
   assertDaemonBinaryProvenance,
@@ -85,6 +87,34 @@ function candidate(overrides: { environment?: Record<string, unknown>; records?:
 }
 
 describe("time-to-answer promotion gate", () => {
+ it("fails closed until every warmed metric has a frozen calibration count", () => {
+ expect(() => frozenWarmUpCount("dockerObservationMs")).toThrow("no frozen calibrated warm-up count");
+ });
+
+ it("derives the earliest sustained calibration point, maximum fixture count, and fixed margin", () => {
+ const stable = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
+ // This fixture is unsettled at candidates 2 and 3, then stationary through
+ // every eligible position. The metric result is its earliest stable point +2.
+ stable[0] = 100;
+ stable[1] = 100;
+ stable[2] = 100;
+ stable[3] = 100;
+ const derived = deriveFrozenWarmUpCount([
+ { fixture: "reference-25", metric: "dockerObservationMs", observations: Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10) },
+ { fixture: "reference-100", metric: "dockerObservationMs", observations: stable }
+ ]);
+ expect(derived.fixtureCounts).toEqual({ "reference-25": 2, "reference-100": 6 });
+ expect(derived.frozenWarmUpCount).toBe(8);
+ });
+
+ it("fails rather than extrapolating when the safety margin is not evidence-backed", () => {
+ const observations = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
+ // Only candidate 15 is stationary, so 15 + the fixed margin exceeds the
+ // final eligible position (15) and must not become a frozen count.
+ for (let index = 0; index < 13; index += 1) observations[index] = 100;
+ expect(() => deriveFrozenWarmUpCount([{ fixture: "reference-25", metric: "dockerObservationMs", observations }])).toThrow("calibration conflict");
+ });
+
   it("accepts a compatible candidate inside the reviewed budget", () => {
     expect(() => assertTimeToAnswerPromotion(artifact(), candidate())).not.toThrow();
   });
@@ -252,16 +282,16 @@ describe("time-to-answer promotion gate", () => {
     // before the capture), keeps them all for audit, and never trims further.
  const cold = [99.9, 40.1, 12.2, 8.8, 6.7, 5.4, 4.2, 3.4, 2.9, 2.8];
     const warm = Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, index) => 2 + index * 0.1);
-    const { warmUps, recorded } = splitWarmedObservations([...cold, ...warm]);
+ const { warmUps, recorded } = splitWarmedObservations([...cold, ...warm], TIME_TO_ANSWER_WARMED_SAMPLES, cold.length);
     expect(warmUps).toEqual(cold);
-    expect(warmUps).toHaveLength(TIME_TO_ANSWER_WARM_UP_OBSERVATIONS);
+ expect(warmUps).toHaveLength(cold.length);
     expect(recorded).toEqual(warm);
     const summary = summarizeTimeToAnswerStage([recorded, recorded, recorded]);
     expect(summary.runP95Ms.every((value) => value < 10)).toBe(true);
     expect(summary.medianOfThreeRunP95Ms).toBeLessThan(10);
     // No arbitrary sampling: the whole window is required and a short window FAILS
     // rather than being silently trimmed to the declared count.
-    expect(() => splitWarmedObservations([...cold, ...warm].slice(0, cold.length + warm.length - 1))).toThrow();
+ expect(() => splitWarmedObservations([...cold, ...warm].slice(0, cold.length + warm.length - 1), TIME_TO_ANSWER_WARMED_SAMPLES, cold.length)).toThrow();
   });
 
   it("invalidates a warmed window whose declared stationarity band is violated", () => {
@@ -269,19 +299,19 @@ describe("time-to-answer promotion gate", () => {
     // Warm-ups that never settled: the final pair still sits far above the measured
     // median, which is what the old single-discard policy published as a sample.
  const unsettled = [99.9, 40.1, 12.2, 11.6, 11.3, 11.1, 11, 10.9, 10.8, 10.7];
-    const bad = splitWarmedObservations([...unsettled, ...measured]);
-    expect(() => assertWarmUpStationarity({ label: "reference-100|dockerObservationMs|run0", ...bad })).toThrow(
+ const bad = splitWarmedObservations([...unsettled, ...measured], TIME_TO_ANSWER_WARMED_SAMPLES, unsettled.length);
+ expect(() => assertWarmUpStationarity({ label: "reference-100|dockerObservationMs|run0", ...bad, warmUpCount: unsettled.length })).toThrow(
       /not stationary/
     );
     // A settled window passes and reports its ratio (declared band 0.5x–1.5x).
- const settled = splitWarmedObservations([99.9, 40.1, 12.2, 8.8, 6.7, 5.4, 4.2, 3.4, 2.9, 2.8, ...measured]);
-    const ratio = assertWarmUpStationarity({ label: "reference-100|dockerObservationMs|run0", ...settled });
+ const settled = splitWarmedObservations([99.9, 40.1, 12.2, 8.8, 6.7, 5.4, 4.2, 3.4, 2.9, 2.8, ...measured], TIME_TO_ANSWER_WARMED_SAMPLES, 10);
+ const ratio = assertWarmUpStationarity({ label: "reference-100|dockerObservationMs|run0", ...settled, warmUpCount: 10 });
     expect(ratio).toBeGreaterThanOrEqual(0.5);
     expect(ratio).toBeLessThanOrEqual(1.5);
     // The guard never repairs a window: it rejects, and the sample count must be
     // exactly the declared 15.
     expect(() =>
-      assertWarmUpStationarity({ label: "x", warmUps: settled.warmUps, recorded: settled.recorded.slice(0, 14) })
+ assertWarmUpStationarity({ label: "x", warmUps: settled.warmUps, recorded: settled.recorded.slice(0, 14), warmUpCount: 10 })
     ).toThrow(/exactly 15 measured samples/);
   });
 

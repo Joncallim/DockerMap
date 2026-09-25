@@ -154,7 +154,7 @@ export const TIME_TO_ANSWER_CONTROLLED_RUNS = 3;
  * version, because a different design produces a different number for the same
  * product.
  */
-export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-4";
+export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-5";
 
 /**
  * Fixed, predeclared warm-up observations per warmed daemon cell per run.
@@ -165,7 +165,13 @@ export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodolo
  * retain enough warm-up evidence to claim that ten was statistically derived
  * from Baseline 3.
  */
-export const TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = 10;
+/**
+ * Calibration is a separate, retained evidence exercise.  Its constants are
+ * declared here (rather than in the runner) so a command cannot quietly tune
+ * them after it has seen an observation.
+ */
+export const TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS = 30;
+export const TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN = 2;
 
 /**
  * Declared stationarity band: the median of the final two warm-up observations
@@ -174,6 +180,14 @@ export const TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = 10;
  */
 export const TIME_TO_ANSWER_STATIONARITY_MIN_RATIO = 0.5;
 export const TIME_TO_ANSWER_STATIONARITY_MAX_RATIO = 1.5;
+
+/**
+ * Metric-level warm-up counts produced by the methodology-5 calibration.
+ * This starts empty deliberately: Baseline-4 capture is forbidden until the
+ * separately retained calibration artifact has supplied every warmed metric.
+ * Do not replace a missing key with a global fallback.
+ */
+export const TIME_TO_ANSWER_FROZEN_WARM_UP_COUNTS: Readonly<Record<string, number>> = Object.freeze({});
 
 /** Reference fixtures (25/100/250 containers) plus the four scenario fixtures. */
 export const TIME_TO_ANSWER_REFERENCE_FIXTURES = [
@@ -500,6 +514,71 @@ export function isScenarioCell(fixture: string, stage: string): boolean {
   return declared?.kind === "scenario" && TIME_TO_ANSWER_STAGE_KIND[stage] === "warmed-repeated";
 }
 
+/** Return the pre-calibrated count for one metric, never a global default. */
+export function frozenWarmUpCount(metric: string): number {
+ const count = TIME_TO_ANSWER_FROZEN_WARM_UP_COUNTS[metric];
+ if (!Number.isInteger(count) || count < 0) {
+ throw new Error(`Baseline-4 cannot start: ${metric} has no frozen calibrated warm-up count`);
+ }
+ return count;
+}
+
+export type WarmUpCalibrationCell = {
+ fixture: string;
+ metric: string;
+ observations: readonly number[];
+};
+
+export type WarmUpCalibrationDerivation = {
+ metric: string;
+ fixtureCounts: Readonly<Record<string, number>>;
+ frozenWarmUpCount: number;
+};
+
+/** Median used by the existing stationarity semantics. */
+function median(values: readonly number[]): number {
+ if (values.length === 0) return Number.NaN;
+ const ordered = [...values].sort((left, right) => left - right);
+ const middle = Math.floor(ordered.length / 2);
+ return ordered.length % 2 === 0 ? (ordered[middle - 1]! + ordered[middle]!) / 2 : ordered[middle]!;
+}
+
+/**
+ * Derive one metric's frozen count from its complete 30-observation reference
+ * fixture cells. Candidate `w` compares obs[w-2:w] to obs[w:w+15]. The first
+ * candidate whose ratio stays inside the declared band at every later eligible
+ * position is selected for each fixture; the metric receives their maximum plus
+ * the fixed safety margin. The margin itself must still be evidence-backed.
+ */
+export function deriveFrozenWarmUpCount(cells: readonly WarmUpCalibrationCell[]): WarmUpCalibrationDerivation {
+ if (cells.length === 0) throw new Error("warm-up calibration needs at least one relevant reference fixture");
+ const metric = cells[0]!.metric;
+ if (cells.some((cell) => cell.metric !== metric)) throw new Error("warm-up calibration derives one metric at a time");
+ const fixtureCounts: Record<string, number> = {};
+ const latestEligible = TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS - TIME_TO_ANSWER_WARMED_SAMPLES;
+ for (const cell of cells) {
+ if (!cell.fixture || fixtureCounts[cell.fixture] !== undefined) throw new Error("warm-up calibration fixtures must be unique and named");
+ if (cell.observations.length !== TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS || cell.observations.some((value) => !Number.isFinite(value) || value < 0)) {
+ throw new Error(`${cell.fixture}/${metric} must retain exactly ${TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS} finite non-negative calibration observations`);
+ }
+ const stableAt = (candidate: number) => {
+ for (let position = candidate; position <= latestEligible; position += 1) {
+ const ratio = median(cell.observations.slice(position - 2, position)) / median(cell.observations.slice(position, position + TIME_TO_ANSWER_WARMED_SAMPLES));
+ if (!Number.isFinite(ratio) || ratio <= 0 || ratio < TIME_TO_ANSWER_STATIONARITY_MIN_RATIO || ratio > TIME_TO_ANSWER_STATIONARITY_MAX_RATIO) return false;
+ }
+ return true;
+ };
+ const earliest = Array.from({ length: latestEligible - 1 }, (_, index) => index + 2).find(stableAt);
+ if (earliest === undefined) throw new Error(`${cell.fixture}/${metric} never reaches sustained stationarity in the retained calibration window`);
+ fixtureCounts[cell.fixture] = earliest;
+ }
+ const frozenWarmUpCount = Math.max(...Object.values(fixtureCounts)) + TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN;
+ if (frozenWarmUpCount > latestEligible) {
+ throw new Error(`${metric} calibration conflict: safety margin ${TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN} moves warm-up count ${frozenWarmUpCount} beyond the evidence-backed 30-observation window`);
+ }
+ return { metric, fixtureCounts, frozenWarmUpCount };
+}
+
 /**
  * Split one warmed daemon measurement window into the discarded warm-up
  * observations and the recorded samples.
@@ -513,17 +592,18 @@ export function isScenarioCell(fixture: string, stage: string): boolean {
  * summary.
  */
 export function splitWarmedObservations(
-  observations: readonly number[],
-  count = TIME_TO_ANSWER_WARMED_SAMPLES
+observations: readonly number[],
+count = TIME_TO_ANSWER_WARMED_SAMPLES,
+warmUpCount: number
 ): { warmUps: number[]; recorded: number[] } {
-  const required = count + TIME_TO_ANSWER_WARM_UP_OBSERVATIONS;
+ const required = count + warmUpCount;
   if (observations.length < required) {
     throw new Error(
-      `a warmed stage needs at least ${required} observations: ${TIME_TO_ANSWER_WARM_UP_OBSERVATIONS} declared ` +
+ `a warmed stage needs at least ${required} observations: ${warmUpCount} declared ` +
         `warm-up observations plus ${count} recorded samples`
     );
   }
-  const warmUps = observations.slice(0, TIME_TO_ANSWER_WARM_UP_OBSERVATIONS);
+ const warmUps = observations.slice(0, warmUpCount);
   if (
     [...warmUps, ...observations.slice(0, required)].some(
       (value) => typeof value !== "number" || !Number.isFinite(value) || value < 0
@@ -531,7 +611,7 @@ export function splitWarmedObservations(
   ) {
     throw new Error("warm-up and recorded observations must be finite non-negative numbers");
   }
-  return { warmUps: [...warmUps], recorded: observations.slice(TIME_TO_ANSWER_WARM_UP_OBSERVATIONS, required) as number[] };
+ return { warmUps: [...warmUps], recorded: observations.slice(warmUpCount, required) as number[] };
 }
 
 /**
@@ -544,12 +624,13 @@ export function splitWarmedObservations(
  */
 export function assertWarmUpStationarity(input: {
   label: string;
-  warmUps: readonly number[];
-  recorded: readonly number[];
+warmUps: readonly number[];
+recorded: readonly number[];
+ warmUpCount: number;
 }): number {
-  const { label, warmUps, recorded } = input;
-  if (warmUps.length !== TIME_TO_ANSWER_WARM_UP_OBSERVATIONS) {
-    throw new Error(`${label} must retain exactly ${TIME_TO_ANSWER_WARM_UP_OBSERVATIONS} warm-up observations`);
+ const { label, warmUps, recorded, warmUpCount } = input;
+ if (warmUps.length !== warmUpCount) {
+ throw new Error(`${label} must retain exactly ${warmUpCount} warm-up observations`);
   }
   if (recorded.length !== TIME_TO_ANSWER_WARMED_SAMPLES) {
     throw new Error(`${label} must record exactly ${TIME_TO_ANSWER_WARMED_SAMPLES} measured samples`);
@@ -741,12 +822,6 @@ export interface StageSixSevenIndependence {
   stageSevenControlMedianMs: number;
   stageSixDeltaMs: number;
   stageSevenDeltaMs: number;
-}
-
-function median(values: readonly number[]): number {
-  const ordered = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(ordered.length / 2);
-  return ordered.length % 2 === 1 ? ordered[middle]! : (ordered[middle - 1]! + ordered[middle]!) / 2;
 }
 
 function assertSampleSet(label: string, values: readonly number[]): void {
