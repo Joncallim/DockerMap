@@ -1,27 +1,53 @@
 /**
  * Full-capture Stage-5 plumbing integration guard (#335).
  *
- * The controller protocol is separately exercised with an HTTP fixture. This
- * guard binds that proven client helper to capture's actual Stage-5 function,
- * so a future local arm/mark/ack copy cannot silently put capture back on a
- * different ordering from `perf:phase-control`.
+ * Unlike the phase-control gate, this exercises capture's own Stage-5 control
+ * entrypoint against the controller and a real observer request. It proves the
+ * capture path reaches the same arm -> mark -> trigger -> exact-ack mechanism.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { createServer } from "node:http";
 import test from "node:test";
+import { armCaptureStageFivePublication } from "./stageFiveCaptureControl.mjs";
+import { startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
 
-const root = resolve(new URL("../..", import.meta.url).pathname);
-const read = (path) => readFileSync(resolve(root, path), "utf8");
+async function upstream() {
+ let revision = "before";
+ const server = createServer((_request, response) => response.end(JSON.stringify({ modelRevision: revision })));
+ await new Promise((done) => server.listen(0, "127.0.0.1", done));
+ return {
+ url: `http://127.0.0.1:${server.address().port}`,
+ set: (next) => { revision = next; },
+ close: () => new Promise((done) => server.close(done))
+ };
+}
 
-test("full capture Stage-5 routes arm, release, exact identity, and SSE witness through the phase-control helper", () => {
- const capture = read("tests/perf/capture.ts");
- const gate = read("tests/perf/phaseControl.ts");
- assert.match(capture, /import \{ armStageFivePublication, startStageFivePublicationController \} from "\.\/stageFivePublicationControl\.mjs"/);
- assert.match(gate, /import \{ armStageFivePublication, startStageFivePublicationController \} from "\.\/stageFivePublicationControl\.mjs"/);
- assert.match(capture, /const publication = phaseControlled\s*\? await armStageFivePublication\(/);
- assert.match(capture, /const actualPublication = await publication!\.release\(trigger\)/);
- assert.match(capture, /actualPublication\.revision !== observed\.revisions\[0\]/);
- assert.doesNotMatch(capture, /__stage-five-control\/(?:arm|mark|ack)/);
- assert.doesNotMatch(capture, /function (?:postControl|waitForPublicationAcknowledgement)/);
+test("capture Stage-5 control reaches the shared exact-ack mechanism after its observer connects", async () => {
+ const daemon = await upstream();
+ const controller = await startStageFivePublicationController({ upstream: daemon.url });
+ try {
+ // Capture opens the observer after arming and before its trigger/release.
+ await fetch(`${controller.url}/daemon/health`);
+ const publication = await armCaptureStageFivePublication({
+ controllerUrl: controller.url,
+ triggerId: "capture-stage-five-1",
+ requestedPhaseMs: 20,
+ previousRevision: "before",
+ timeoutMs: 1_000
+ });
+ let observedRevision = "";
+ const ackPromise = publication.release(() => daemon.set("capture-triggered"));
+ // This is the controller-facing equivalent of capture's live API-SSE reader:
+ // it witnesses only the exact revision released by the shared mechanism.
+ await new Promise((done) => setTimeout(done, 5));
+ await fetch(`${controller.url}/daemon/health`);
+ const ack = await ackPromise;
+ observedRevision = (await (await fetch(`${controller.url}/daemon/health`)).json()).modelRevision;
+ assert.equal(ack.triggerId, "capture-stage-five-1");
+ assert.equal(ack.revision, "capture-triggered");
+ assert.equal(observedRevision, ack.revision);
+ } finally {
+ await controller.close();
+ await daemon.close();
+ }
 });

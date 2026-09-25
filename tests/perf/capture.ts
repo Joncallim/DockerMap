@@ -70,7 +70,8 @@ import {
 import { FIXTURE_REVISION, SLOW_COMPOSE_SERVICES, buildSlowComposeProject, expectedExitedCount } from "./dockerFixtureTopology.mjs";
 import { reservePort, startStaticServer } from "./staticServer.mjs";
 import { withFreshBrowserRuns } from "./browserLifecycle.mjs";
-import { armStageFivePublication, startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
+import { startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
+import { armCaptureStageFivePublication } from "./stageFiveCaptureControl.mjs";
 
 const REPO_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -784,7 +785,7 @@ if (phaseControlled) {
 if (!input.controllerUrl) throw new Error("controlled stage-5 sample has no publication controller");
 }
 const publication = phaseControlled
-? await armStageFivePublication({
+? await armCaptureStageFivePublication({
 controllerUrl: input.controllerUrl!,
 triggerId,
 requestedPhaseMs: declaredPhaseMs,
