@@ -33,6 +33,50 @@ function upstreamGet(origin, path) {
   });
 }
 
+/**
+ * The only client protocol for a controlled Stage-5 publication. Keeping this
+ * beside the test-only controller makes the runnable phase gate and the full
+ * capture use the identical arm -> mark -> trigger -> exact-ack mechanism.
+ *
+ * `armStageFivePublication()` intentionally does not release immediately:
+ * capture must connect its real API-SSE observer after arming but before the
+ * trigger. `release()` marks first, so no triggered publication can enter the
+ * controller's forbidden unmarked window.
+ */
+async function postControl(url, body) {
+ const response = await fetch(url, {
+ method: "POST",
+ headers: { "content-type": "application/json" },
+ body: JSON.stringify(body)
+ });
+ const payload = await response.json();
+ if (!response.ok) throw new Error(`stage-5 publication controller rejected ${url}: ${JSON.stringify(payload)}`);
+ return payload;
+}
+
+export async function armStageFivePublication({ controllerUrl, triggerId, requestedPhaseMs, previousRevision, timeoutMs }) {
+ await postControl(`${controllerUrl}/__stage-five-control/arm`, { triggerId, requestedPhaseMs, previousRevision });
+ return {
+ async release(trigger) {
+ await postControl(`${controllerUrl}/__stage-five-control/mark`, { triggerId });
+ await trigger();
+ const deadline = Date.now() + timeoutMs;
+ while (Date.now() < deadline) {
+ const response = await fetch(`${controllerUrl}/__stage-five-control/ack`);
+ if (response.status === 200) {
+ const ack = await response.json();
+ if (ack.triggerId !== triggerId) throw new Error("stage-5 publication acknowledgement has the wrong trigger identity");
+ if (ack.revision === previousRevision) throw new Error("stage-5 publication acknowledgement did not identify a new revision");
+ return ack;
+ }
+ if (response.status >= 400) throw new Error(`stage-5 publication controller rejected ${triggerId}: ${await response.text()}`);
+ await new Promise((done) => setTimeout(done, 2));
+ }
+ throw new Error(`stage-5 publication controller did not acknowledge ${triggerId}`);
+ }
+ };
+}
+
 export function startStageFivePublicationController({ upstream, port = 0, now = () => performance.now() }) {
   let stale = null;
   let armed = null;

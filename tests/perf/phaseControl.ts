@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Runnable Stage-5 publication-control pre-gate (#335). */
 import { createServer } from "node:http";
-import { startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
+import { armStageFivePublication, startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
 import { POLL_PHASE_CONTROL_TOLERANCE_MS, pollPhaseGridMs } from "../../apps/web/src/lib/performance/timeToAnswerPollPhase";
 
 const intervalMs = 2_000;
@@ -18,12 +18,6 @@ async function fixture() {
  };
 }
 
-async function post(url: string, body: Record<string, unknown>) {
- const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
- if (!response.ok) throw new Error(`publication controller rejected ${url}: ${await response.text()}`);
- return response.json();
-}
-
 async function runFixture(name: string) {
  const daemon = await fixture();
  const controller = await startStageFivePublicationController({ upstream: daemon.url });
@@ -33,10 +27,14 @@ async function runFixture(name: string) {
  for (const [index, requestedPhaseMs] of grid.entries()) {
  const previousRevision = index === 0 ? "initial" : `${name}-trigger-${index - 1}`;
  const triggerId = `${name}-trigger-${index}`;
- await fetch(`${controller.url}/daemon/health`);
- await post(`${controller.url}/__stage-five-control/arm`, { triggerId, requestedPhaseMs, previousRevision });
- await post(`${controller.url}/__stage-five-control/mark`, { triggerId });
- daemon.set(`${name}-trigger-${index}`);
+await fetch(`${controller.url}/daemon/health`);
+const publication = await armStageFivePublication({
+controllerUrl: controller.url,
+triggerId,
+requestedPhaseMs,
+previousRevision,
+timeoutMs: intervalMs * 4
+});
  // This is the real cadence under test: a Node-style fixed setInterval poller,
  // not a predicted grid or a random achieved phase distribution.
  const polls: Array<{ at: number; revision: string }> = [];
@@ -45,14 +43,8 @@ async function runFixture(name: string) {
  const payload = await (await fetch(`${controller.url}/daemon/health`)).json() as { modelRevision: string };
  polls.push({ at, revision: payload.modelRevision });
  }, intervalMs);
- let ack: any = null;
- const deadline = Date.now() + intervalMs * 4;
- while (Date.now() < deadline && !ack) {
- const response = await fetch(`${controller.url}/__stage-five-control/ack`);
- if (response.status === 200) ack = await response.json();
- else if (response.status >= 400) throw new Error(await response.text());
- else await sleep(5);
- }
+const ack: any = await publication.release(() => { daemon.set(`${name}-trigger-${index}`); });
+const deadline = Date.now() + intervalMs * 4;
  while (Date.now() < deadline && !polls.some((poll) => poll.revision === ack?.revision)) await sleep(5);
  clearInterval(timer);
  const observed = polls.find((poll) => poll.revision === ack?.revision);

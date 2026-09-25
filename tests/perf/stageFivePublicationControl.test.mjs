@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
-import { startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
+import { armStageFivePublication, startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
 
 async function upstream() {
   let revision = "before";
@@ -11,17 +11,23 @@ async function upstream() {
 }
 async function post(url, body) { return fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); }
 
-test("releases only the armed exact publication after an actual health poll", async () => {
+test("shared release helper marks before it triggers and returns the exact acknowledged publication", async () => {
   const daemon = await upstream();
   const control = await startStageFivePublicationController({ upstream: daemon.url });
   try {
     assert.equal((await fetch(`${control.url}/daemon/health`)).status, 200);
-    await post(`${control.url}/__stage-five-control/arm`, { triggerId: "generation-1", requestedPhaseMs: 20, previousRevision: "before" });
-    await post(`${control.url}/__stage-five-control/mark`, { triggerId: "generation-1" });
-    daemon.set("triggered");
-    assert.equal((await (await fetch(`${control.url}/daemon/health`)).json()).modelRevision, "before");
-    await new Promise((done) => setTimeout(done, 30));
-    const ack = await (await fetch(`${control.url}/__stage-five-control/ack`)).json();
+ const publication = await armStageFivePublication({
+ controllerUrl: control.url,
+ triggerId: "generation-1",
+ requestedPhaseMs: 20,
+ previousRevision: "before",
+ timeoutMs: 1_000
+ });
+ let triggered = false;
+ const ackPromise = publication.release(() => { triggered = true; daemon.set("triggered"); });
+ assert.equal((await (await fetch(`${control.url}/daemon/health`)).json()).modelRevision, "before");
+ const ack = await ackPromise;
+ assert.equal(triggered, true);
     assert.equal(ack.triggerId, "generation-1");
     assert.equal(ack.revision, "triggered");
     assert.equal((await (await fetch(`${control.url}/daemon/health`)).json()).modelRevision, "triggered");

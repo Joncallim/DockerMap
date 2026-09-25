@@ -70,7 +70,7 @@ import {
 import { FIXTURE_REVISION, SLOW_COMPOSE_SERVICES, buildSlowComposeProject, expectedExitedCount } from "./dockerFixtureTopology.mjs";
 import { reservePort, startStaticServer } from "./staticServer.mjs";
 import { withFreshBrowserRuns } from "./browserLifecycle.mjs";
-import { startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
+import { armStageFivePublication, startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
 
 const REPO_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -405,28 +405,6 @@ async function fetchJson(url: string, timeoutMs = 5_000): Promise<any | null> {
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function postControl(url: string, body: Record<string, unknown>): Promise<any> {
- const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
- const payload = await response.json();
- if (!response.ok) throw new Error(`stage-5 publication controller rejected ${url}: ${JSON.stringify(payload)}`);
- return payload;
-}
-
-async function waitForPublicationAcknowledgement(url: string, triggerId: string, timeoutMs: number): Promise<{ at: number; revision: string; releasedAtMs: number; pollAtMs: number }> {
- const deadline = Date.now() + timeoutMs;
- while (Date.now() < deadline) {
- const response = await fetch(`${url}/__stage-five-control/ack`);
- if (response.status === 200) {
- const ack = await response.json();
- if (ack.triggerId !== triggerId) throw new Error("stage 5 publication acknowledgement has the wrong trigger identity");
- return { at: ack.releasedAtMs, revision: ack.revision, releasedAtMs: ack.releasedAtMs, pollAtMs: ack.pollAtMs };
- }
- if (response.status >= 400) throw new Error(`stage 5 publication controller rejected ${triggerId}: ${await response.text()}`);
- await sleep(2);
- }
- throw new Error(`stage 5 publication controller did not acknowledge ${triggerId}`);
 }
 
 async function waitForJson(url: string, predicate: (value: any) => boolean, timeoutMs: number) {
@@ -802,10 +780,18 @@ mode: "phase-controlled" | "free-running";
       } | null
  )?.modelRevision ?? input.tracker.revision();
  const triggerId = `stage-five-r${input.runIndex}-s${input.sampleIndex}-${Date.now()}`;
- if (phaseControlled) {
- if (!input.controllerUrl) throw new Error("controlled stage-5 sample has no publication controller");
- await postControl(`${input.controllerUrl}/__stage-five-control/arm`, { triggerId, requestedPhaseMs: declaredPhaseMs, previousRevision });
- }
+if (phaseControlled) {
+if (!input.controllerUrl) throw new Error("controlled stage-5 sample has no publication controller");
+}
+const publication = phaseControlled
+? await armStageFivePublication({
+controllerUrl: input.controllerUrl!,
+triggerId,
+requestedPhaseMs: declaredPhaseMs,
+previousRevision,
+timeoutMs: input.timeoutMs ?? 45_000
+})
+: null;
   const connectedAtMs = nowMs();
  // Controlled publications are held by the fixture controller until a real API
  // poll has occurred; free-running cells retain their connection-frame guard.
@@ -860,17 +846,75 @@ mode: "phase-controlled" | "free-running";
   })();
 
  try {
- await input.onConnected({
-    declaredPhaseMs,
-    intendedLatencyMs: intended,
-    predictedPublicationAtMs: predicted,
-    connectedAtMs
+const trigger = () => input.onConnected({
+declaredPhaseMs,
+intendedLatencyMs: intended,
+predictedPublicationAtMs: predicted,
+connectedAtMs
 });
- if (phaseControlled) {
- await postControl(`${input.controllerUrl}/__stage-five-control/mark`, { triggerId });
- }
+if (phaseControlled) {
+const actualPublication = await publication!.release(trigger);
+// The exact release acknowledgement is resolved by the fixture controller,
+// while the stream remains the only Stage-5 observation path.
+const deadline = Date.now() + (input.timeoutMs ?? 45_000);
+while (Date.now() < deadline && !observed.at) await sleep(2);
+if (!observed.at) {
+throw new Error(
+`stage 5 did not observe a new revision at declared phase ${declaredPhaseMs.toFixed(1)} ms ` +
+`(predicted publication ${(predicted - connectedAtMs).toFixed(1)} ms after connection)`
+);
+}
+const publicationAtMs = actualPublication.releasedAtMs;
+const observedLatencyMs = Math.max(0, observed.at - publicationAtMs);
+const observedPhaseMs = actualPublication.releasedAtMs - actualPublication.pollAtMs;
+if (actualPublication.revision !== observed.revisions[0]) {
+throw new Error("stage 5 observed a revision other than the triggered publication; the cell is invalidated");
+}
+if (Math.abs(observedPhaseMs - declaredPhaseMs) > POLL_PHASE_CONTROL_TOLERANCE_MS) {
+throw new Error(
+`stage 5 actual publication was ${(observedPhaseMs - declaredPhaseMs).toFixed(1)} ms from its intended phase; ` +
+"phase control could not be established and the cell is invalidated"
+);
+}
+const phaseErrorMs = observedLatencyMs - intended;
+assertControlledPhaseEvidence({
+intendedPhaseMs: declaredPhaseMs,
+observedPhaseMs,
+publicationLatencyMs: observedLatencyMs,
+phaseErrorMs
+});
+const tickCarriedNewerRevision = input.tracker.revisionChanges.some(
+(change) => change.at > publicationAtMs && change.at <= observed.at
+);
+return {
+revisions: observed.revisions,
+tickCarriedNewerRevision,
+sample: {
+runIndex: input.runIndex,
+sampleIndex: input.sampleIndex,
+declaredPhaseMs,
+intendedPhaseMs: declaredPhaseMs,
+observedPhaseMs,
+intendedLatencyMs: intended,
+connectedAtMs,
+predictedPublicationAtMs: predicted,
+observedPublicationAtMs: publicationAtMs,
+observedObservationAtMs: observed.at,
+observedLatencyMs,
+publicationLatencyMs: observedLatencyMs,
+observedPhaseBucketMs: observedPhaseBucketMs(observedLatencyMs, input.intervalMs),
+phaseErrorMs,
+observedVia: "api-sse",
+observedRevision: observed.revisions[0] ?? "",
+previousRevision,
+phaseControlled: true
+}
+};
+}
 
- // The exact release acknowledgement is resolved by the fixture controller, while
+await trigger();
+
+// The exact release acknowledgement is resolved by the fixture controller, while
  // the stream remains the only Stage-5 observation path.
   const deadline = Date.now() + (input.timeoutMs ?? 45_000);
  while (Date.now() < deadline && !observed.at) await sleep(2);
@@ -882,16 +926,13 @@ mode: "phase-controlled" | "free-running";
   }
  // Controlled cells require the exact acknowledged trigger revision; no later or
  // nearest revision may be substituted.
- const actualPublication = phaseControlled
- ? await waitForPublicationAcknowledgement(input.controllerUrl!, triggerId, input.timeoutMs ?? 45_000)
- : null;
- const publicationAt = actualPublication?.at ?? input.tracker.boundaryAtOrBefore(observed.at);
+const publicationAt = input.tracker.boundaryAtOrBefore(observed.at);
  if (publicationAt === null) {
  throw new Error("stage 5 lost the publication instant for this sample");
  }
  const publicationAtMs = publicationAt;
  const observedLatencyMs = Math.max(0, observed.at - publicationAtMs);
- const observedPhaseMs = phaseControlled ? actualPublication!.releasedAtMs - actualPublication!.pollAtMs : publicationAtMs - connectedAtMs;
+const observedPhaseMs = publicationAtMs - connectedAtMs;
   // Recorded for the audit: whether the tick carried a revision published AFTER the
   // boundary (an intra-cycle provider publication). The measurement stays the
   // boundary's, because the declared stage-5 question is the publication the harness
@@ -902,28 +943,9 @@ mode: "phase-controlled" | "free-running";
   // Free-running samples record the phase they ACHIEVED: the declared phase is the
   // bucket the observation landed in, so the sample cannot claim a phase it did not
   // drive. Controlled samples keep the declared phase they were driven to.
- const recordedPhaseMs = phaseControlled
- ? declaredPhaseMs
- : input.intervalMs - observedPhaseBucketMs(observedLatencyMs, input.intervalMs);
- const recordedIntended = phaseControlled ? intended : input.intervalMs - recordedPhaseMs;
- const phaseErrorMs = observedLatencyMs - recordedIntended;
- if (phaseControlled && actualPublication!.revision !== observed.revisions[0]) {
- throw new Error("stage 5 observed a revision other than the triggered publication; the cell is invalidated");
- }
- if (phaseControlled && Math.abs(observedPhaseMs - declaredPhaseMs) > POLL_PHASE_CONTROL_TOLERANCE_MS) {
- throw new Error(
- `stage 5 actual publication was ${(observedPhaseMs - declaredPhaseMs).toFixed(1)} ms from its intended phase; ` +
- "phase control could not be established and the cell is invalidated"
- );
- }
- if (phaseControlled) {
- assertControlledPhaseEvidence({
- intendedPhaseMs: declaredPhaseMs,
- observedPhaseMs,
- publicationLatencyMs: observedLatencyMs,
- phaseErrorMs
- });
- }
+const recordedPhaseMs = input.intervalMs - observedPhaseBucketMs(observedLatencyMs, input.intervalMs);
+const recordedIntended = input.intervalMs - recordedPhaseMs;
+const phaseErrorMs = observedLatencyMs - recordedIntended;
  return {
     revisions: observed.revisions,
     tickCarriedNewerRevision,
@@ -931,11 +953,11 @@ mode: "phase-controlled" | "free-running";
       runIndex: input.runIndex,
       sampleIndex: input.sampleIndex,
  declaredPhaseMs: recordedPhaseMs,
- intendedPhaseMs: phaseControlled ? declaredPhaseMs : recordedPhaseMs,
+intendedPhaseMs: recordedPhaseMs,
  observedPhaseMs,
  intendedLatencyMs: recordedIntended,
       connectedAtMs,
- predictedPublicationAtMs: phaseControlled ? predicted : publicationAtMs,
+predictedPublicationAtMs: publicationAtMs,
  observedPublicationAtMs: publicationAtMs,
       observedObservationAtMs: observed.at,
  observedLatencyMs,
@@ -945,7 +967,7 @@ mode: "phase-controlled" | "free-running";
       observedVia: "api-sse",
       observedRevision: observed.revisions[0] ?? "",
  previousRevision,
- phaseControlled
+phaseControlled: false
  }
  };
  } finally {
