@@ -531,6 +531,22 @@ characterisation. `assertFreeRunningPhaseSamples`, rather than
 
 ## Superseded captures
 
+## Baseline-4 composite capture
+
+Baseline 4 is a composite artifact with two raw evidence sections. The general
+capture records only `end-to-end` cells. The dedicated Stage-5 sub-benchmark
+records every `publicationToNodeObservationMs` cell with
+`controlled-poll-phase`; it is the sole owner of the arm → mark → trigger →
+identity-ack protocol. The sections are not pooled: every composite record
+names its fixture, stage, measurement protocol, source evidence file and
+committed checkpoint SHA. Assembly rejects a missing or duplicate declared cell,
+a wrong protocol, a mismatched methodology/checkpoint, or an incomplete section.
+
+The Stage-5 metric and phase-normalized authority are unchanged. The phase grid,
+90 ms tolerance, measured-sample count, ten warm-ups where applicable,
+stationarity band, Stage-6/7 semantics and the production 2000 ms poller are
+also unchanged.
+
 Baseline 1, baseline 2 **and baseline 3** are **REJECTED historical attempts** and
 are not the authority for anything. Their artifacts are kept outside the repository
 in `/srv/jonas/evidence/dockermap/` (baselines 1 and 2) and
@@ -580,7 +596,7 @@ daemon digest as a compatibility key, and it documented a post-run binary
 verification the code did not perform.
 
 The response is a **methodology revision** (`TIME_TO_ANSWER_METHODOLOGY =
-dockermap-v1/time-to-answer-methodology-3`), not a retry: the deterministic
+dockermap-v1/time-to-answer-methodology-4`), not a retry: the dedicated deterministic
 stage-5 poll-phase sweep with its validity guards and phase-normalized summary, a
 fixed ten-observation warm-up protocol with a declared stationarity check and
 failed-gate retention guarantee, the

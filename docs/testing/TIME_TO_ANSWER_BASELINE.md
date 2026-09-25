@@ -1,6 +1,6 @@
-# Time-to-answer baseline 3
+# Time-to-answer baseline 4
 
-Status: **REJECTED historical capture**. Baselines 1, 2, and 3 are not measurement
+Status: **pending controlled capture**. Baselines 1, 2, and 3 are not measurement
 authority, must not be used for promotion gating, and cannot support product or
 optimization claims. This document is retained only as an audit record explaining
 why methodology revision 2 exists: its free-running jitter did not sweep polling
@@ -64,7 +64,15 @@ The release daemon was built with
 `cargo build --release --locked -p dockermap-daemon --manifest-path crates/Cargo.toml`
 and its digest verified before **and** after the capture.
 
-## The 44-cell matrix, recomputed from raw
+## Composite Baseline-4 schema
+
+Baseline 4 has distinct general and dedicated Stage-5 raw evidence sections.
+Every one of the 44 records carries its stage, fixture, measurement protocol,
+source evidence file, checkpoint SHA and methodology version. Stage-5 records
+are `controlled-poll-phase`; all others are `end-to-end`. The assembler rejects
+missing cells and never merges away that protocol distinction.
+
+## Historical 44-cell matrix, recomputed from raw
 
 | fixture | stage | run p95 (ms) | median (ms) | min | max |
 | --- | --- | --- | --- | --- | --- |

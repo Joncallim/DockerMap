@@ -36,7 +36,7 @@ const environment: Record<string, unknown> = {
   buildMode: "production",
   fixtureRevision: "dockermap-v1/time-to-answer-fixtures-1",
   sourceRevision: "candidate",
- methodologyVersion: "dockermap-v1/time-to-answer-methodology-3"
+methodologyVersion: "dockermap-v1/time-to-answer-methodology-4"
 };
 
 /**
@@ -47,15 +47,18 @@ const environment: Record<string, unknown> = {
 function rawEvidence(): {
   baseline: string;
   environment: Record<string, unknown>;
-  records: { fixture: string; stage: string; runs: number[][] }[];
+records: { fixture: string; stage: string; measurementProtocol: string; sourceEvidenceFile: string; checkpointSha: string; runs: number[][] }[];
 } {
   return {
     baseline: TIME_TO_ANSWER_BASELINE,
     environment,
     records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }, record) => ({
-      fixture,
-      stage,
-      runs: Array.from({ length: TIME_TO_ANSWER_CONTROLLED_RUNS }, (_, run) =>
+fixture,
+stage,
+measurementProtocol: stage === "publicationToNodeObservationMs" ? "controlled-poll-phase" : "end-to-end",
+sourceEvidenceFile: stage === "publicationToNodeObservationMs" ? "stage-five.raw.json" : "general.raw.json",
+checkpointSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+runs: Array.from({ length: TIME_TO_ANSWER_CONTROLLED_RUNS }, (_, run) =>
         Array.from(
           { length: TIME_TO_ANSWER_WARMED_SAMPLES },
           (_, sample) => record * 100 + run * 10 + sample + 1
@@ -170,9 +173,21 @@ describe("time-to-answer evidence contract", () => {
     unknownStage.records[0]!.stage = "vibesMs" as never;
     expect(() => validateTimeToAnswerEvidence(unknownStage)).toThrow("unsafe or incomplete shape");
 
-    const duplicated = rawEvidence();
-    duplicated.records[1] = { ...duplicated.records[0]! };
-    expect(() => validateTimeToAnswerEvidence(duplicated)).toThrow("duplicate or unsupported");
+const duplicated = rawEvidence();
+duplicated.records[1] = { ...duplicated.records[0]! };
+expect(() => validateTimeToAnswerEvidence(duplicated)).toThrow("duplicate or unsupported");
+
+const wrongProtocol = rawEvidence();
+wrongProtocol.records.find((record) => record.stage === "publicationToNodeObservationMs")!.measurementProtocol = "end-to-end";
+expect(() => validateTimeToAnswerEvidence(wrongProtocol)).toThrow("wrong measurement protocol");
+
+const missingProvenance = rawEvidence();
+delete (missingProvenance.records[0] as Partial<(typeof missingProvenance.records)[number]>).checkpointSha;
+expect(() => validateTimeToAnswerEvidence(missingProvenance)).toThrow("unsafe or incomplete shape");
+
+const invalidCheckpoint = rawEvidence();
+invalidCheckpoint.records[0]!.checkpointSha = "not-a-checkpoint";
+expect(() => validateTimeToAnswerEvidence(invalidCheckpoint)).toThrow("provenance");
 
     const undeclaredFixture = rawEvidence();
     undeclaredFixture.records[0]!.fixture = "reference-1000";

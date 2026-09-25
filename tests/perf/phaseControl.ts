@@ -64,7 +64,8 @@ const deadline = Date.now() + intervalMs * 4;
 }
 
 export async function main() {
- const spans = await Promise.all([runFixture("reference-25"), runFixture("reference-100")]);
- process.stdout.write(`[phase-control] PASS: reference-25, reference-100; grid span ${spans.map((span) => span.toFixed(1)).join(", ")} ms; tolerance ${POLL_PHASE_CONTROL_TOLERANCE_MS} ms\n`);
+ const fixtures = ["reference-25", "reference-100", "reference-250", "provider-only-revision-change", "docker-topology-change", "unavailable-optional-provider"];
+ const spans = await Promise.all(fixtures.map(runFixture));
+ process.stdout.write(`[phase-control] PASS: ${fixtures.join(", ")}; grid span ${spans.map((span) => span.toFixed(1)).join(", ")} ms; tolerance ${POLL_PHASE_CONTROL_TOLERANCE_MS} ms\n`);
 }
 if (import.meta.url === new URL(process.argv[1]!, "file:").href) main().catch((error) => { process.stderr.write(`[phase-control] FAIL: ${String(error)}\n`); process.exitCode = 1; });

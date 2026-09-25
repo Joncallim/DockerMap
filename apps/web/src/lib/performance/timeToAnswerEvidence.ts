@@ -1,8 +1,4 @@
-import {
- isPhaseControlledFixture,
- phaseMediansMs,
- phaseNormalizedP95Ms
-} from "./timeToAnswerPollPhase";
+import { phaseMediansMs, phaseNormalizedP95Ms } from "./timeToAnswerPollPhase";
 
 /**
  * DockerMap time-to-answer performance contract (#335).
@@ -145,7 +141,7 @@ export type TimeToAnswerStageId = TimeToAnswerStage["id"];
 export type TimeToAnswerBucket = TimeToAnswerStage["bucket"];
 export type TimeToAnswerFixture = TimeToAnswerStage["fixtures"][number];
 
-export const TIME_TO_ANSWER_BASELINE = "dockermap-v1/time-to-answer-baseline-1";
+export const TIME_TO_ANSWER_BASELINE = "dockermap-v1/time-to-answer-baseline-4";
 export const TIME_TO_ANSWER_WARMED_SAMPLES = 15;
 export const TIME_TO_ANSWER_CONTROLLED_RUNS = 3;
 
@@ -158,7 +154,7 @@ export const TIME_TO_ANSWER_CONTROLLED_RUNS = 3;
  * version, because a different design produces a different number for the same
  * product.
  */
-export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-3";
+export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-4";
 
 /**
  * Fixed, predeclared warm-up observations per warmed daemon cell per run.
@@ -239,10 +235,16 @@ export type TimeToAnswerEnvironment = {
 };
 
 export interface TimeToAnswerRecord {
-  fixture: string;
-  stage: TimeToAnswerStageId;
-  /** Each inner array is one complete controlled run of warmed samples. */
-  runs: readonly (readonly number[])[];
+fixture: string;
+stage: TimeToAnswerStageId;
+/** Stage 5 is captured only by the controlled sub-benchmark. */
+measurementProtocol: "controlled-poll-phase" | "end-to-end";
+/** Raw evidence section that produced this one cell. */
+sourceEvidenceFile: string;
+/** Committed source/harness checkpoint that produced this cell. */
+checkpointSha: string;
+/** Each inner array is one complete controlled run of warmed samples. */
+runs: readonly (readonly number[])[];
 }
 
 export interface TimeToAnswerEvidence {
@@ -282,8 +284,9 @@ const environmentKeys = [
   "methodologyVersion"
 ] as const;
 const evidenceKeys = ["baseline", "environment", "records"] as const;
-const recordKeys = ["fixture", "stage", "runs"] as const;
+const recordKeys = ["fixture", "stage", "measurementProtocol", "sourceEvidenceFile", "checkpointSha", "runs"] as const;
 const safeValue = /^[A-Za-z0-9._/@:+=-]{1,160}$/;
+const checkpointSha = /^[0-9a-f]{7,40}$/;
 const stageIds = new Set<string>(TIME_TO_ANSWER_STAGES.map((stage) => stage.id));
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -390,19 +393,31 @@ export function validateTimeToAnswerEvidence(value: unknown): TimeToAnswerEviden
   }
   const records = value.records.map((raw) => {
     if (
-      !isObject(raw) ||
-      !hasExactKeys(raw, recordKeys) ||
-      typeof raw.fixture !== "string" ||
-      typeof raw.stage !== "string" ||
-      !stageIds.has(raw.stage) ||
-      !Array.isArray(raw.runs)
+!isObject(raw) ||
+!hasExactKeys(raw, recordKeys) ||
+typeof raw.fixture !== "string" ||
+typeof raw.stage !== "string" ||
+!stageIds.has(raw.stage) ||
+typeof raw.measurementProtocol !== "string" ||
+typeof raw.sourceEvidenceFile !== "string" ||
+typeof raw.checkpointSha !== "string" ||
+!Array.isArray(raw.runs)
     ) {
       throw new Error("Time-to-answer record has an unsafe or incomplete shape.");
     }
     const key = `${raw.fixture}\u0000${raw.stage}`;
-    if (!expected.delete(key)) {
-      throw new Error("Time-to-answer evidence has a duplicate or unsupported fixture/stage record.");
-    }
+if (!expected.delete(key)) {
+throw new Error("Time-to-answer evidence has a duplicate or unsupported fixture/stage record.");
+}
+const requiredProtocol = raw.stage === "publicationToNodeObservationMs"
+? "controlled-poll-phase"
+: "end-to-end";
+if (raw.measurementProtocol !== requiredProtocol) {
+throw new Error(`Time-to-answer record ${raw.fixture}/${raw.stage} has the wrong measurement protocol.`);
+}
+if (!safeString(raw.sourceEvidenceFile) || !checkpointSha.test(raw.checkpointSha)) {
+throw new Error("Time-to-answer record provenance must contain safe source evidence and checkpoint identifiers.");
+}
     if (
       raw.runs.length !== TIME_TO_ANSWER_CONTROLLED_RUNS ||
       !raw.runs.every((run) => Array.isArray(run))
@@ -418,7 +433,14 @@ export function validateTimeToAnswerEvidence(value: unknown): TimeToAnswerEviden
     // Executes the finite/non-negative/sample-count checks so summaries cannot
     // be trusted input, and so a fabricated summary field cannot survive.
     summarizeTimeToAnswerStage(runs);
-    return { fixture: raw.fixture, stage: raw.stage as TimeToAnswerStageId, runs };
+return {
+fixture: raw.fixture,
+stage: raw.stage as TimeToAnswerStageId,
+measurementProtocol: raw.measurementProtocol as TimeToAnswerRecord["measurementProtocol"],
+sourceEvidenceFile: raw.sourceEvidenceFile,
+checkpointSha: raw.checkpointSha,
+runs
+};
   });
   if (expected.size !== 0) {
     throw new Error("Time-to-answer evidence is missing a required fixture/stage record.");
@@ -432,7 +454,7 @@ export function derivedTimeToAnswerSummaries(
  return new Map(
  evidence.records.map((record) => {
  const summary = summarizeTimeToAnswerStage(record.runs);
- if (record.stage === "publicationToNodeObservationMs" && isPhaseControlledFixture(record.fixture)) {
+if (record.measurementProtocol === "controlled-poll-phase") {
  const normalized = derivedTimeToAnswerPhaseNormalized(record.runs, evidence.environment.ssePollIntervalMs);
  return [
  `${record.fixture}\u0000${record.stage}`,

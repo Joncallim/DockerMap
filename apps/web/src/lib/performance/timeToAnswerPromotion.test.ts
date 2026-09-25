@@ -55,17 +55,26 @@ function samples(base: number): number[] {
 }
 
 function artifact(overrides: { environment?: Record<string, unknown>; records?: unknown[] } = {}) {
-  return {
+ const provenance = (record: any) => ({
+ ...record,
+ measurementProtocol: record.measurementProtocol ?? (record.stage === "publicationToNodeObservationMs" ? "controlled-poll-phase" : "end-to-end"),
+ sourceEvidenceFile: record.sourceEvidenceFile ?? (record.stage === "publicationToNodeObservationMs" ? "stage-five.raw.json" : "general.raw.json"),
+ checkpointSha: record.checkpointSha ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ });
+ return {
     baseline: TIME_TO_ANSWER_BASELINE,
     environment: { ...environment, ...(overrides.environment ?? {}) },
     records:
-      overrides.records ??
-      TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => ({
-        fixture,
-        stage,
-        runs: [samples(10), samples(11), samples(12)]
-      }))
-  };
+ (overrides.records ? overrides.records.map(provenance) :
+ TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => ({
+fixture,
+stage,
+measurementProtocol: stage === "publicationToNodeObservationMs" ? "controlled-poll-phase" : "end-to-end",
+sourceEvidenceFile: stage === "publicationToNodeObservationMs" ? "stage-five.raw.json" : "general.raw.json",
+checkpointSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+runs: [samples(10), samples(11), samples(12)]
+ })))
+ };
 }
 
 function candidate(overrides: { environment?: Record<string, unknown>; records?: unknown[] } = {}) {
