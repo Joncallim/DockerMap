@@ -313,14 +313,19 @@ observation with the normal acceptance/render evidence.
 ```
 # 1. pin the environment from the runner itself
 npm run perf:metadata -- --output /tmp/time-to-answer-metadata.json
-# 2. capture (3 controlled runs × 15 warmed samples for every declared cell)
+# 2. calibrate first (one retained, ordered 30-observation series per warmed
+#    metric × reference fixture; this is not a baseline capture)
+npm run perf:calibrate-time-to-answer -- \
+  --metadata /tmp/time-to-answer-metadata.json \
+  --calibration-output /srv/jonas/evidence/dockermap/time-to-answer/warm-up-calibration-5.json
+# 3. capture (3 controlled runs × 15 warmed samples for every declared cell)
 npm run perf:time-to-answer -- \
   --metadata /tmp/time-to-answer-metadata.json \
   --output   /tmp/time-to-answer-baseline.json \
   --raw-dir  /tmp/time-to-answer-raw
-# 3. recompute summaries from the raw samples (never trust supplied aggregates)
+# 4. recompute summaries from the raw samples (never trust supplied aggregates)
 npm run perf:summarize -- --artifact /tmp/time-to-answer-baseline.json
-# 4. compare a candidate against a reviewed baseline (fails closed)
+# 5. compare a candidate against a reviewed baseline (fails closed)
 npm run perf:time-to-answer -- \
   --metadata /tmp/time-to-answer-metadata.json \
   --output   /tmp/time-to-answer-candidate.json \
@@ -343,6 +348,45 @@ invalidated precisely because its harness existed only as uncommitted changes �
 run the focused smoke (`DOCKERMAP_BENCH_DEBUG=1` with `--fixtures`, which relaxes
 only the run/sample counts for probing and can never emit an artifact) before
 spending a full capture.
+
+### Warm-up calibration protocol
+
+Calibration is an independent, bounded conditioning collector. It never calls the
+frozen-count lookup, never enters baseline assembly or normal capture's frozen-count
+preflight, and never emits or merges baseline raw evidence. For every
+`warmed-repeated` end-to-end metric and each declared reference fixture
+(`reference-25`, `reference-100`, `reference-250`), it retains exactly **30 ordered
+finite observations** beginning at call zero. This includes daemon-attribution
+metrics, browser/API-path metrics, and the module-probe metrics; the probe's ordinary
+hidden two-call warm-up is disabled for calibration.
+
+For each fixture trace, candidates `w=2..15` compare the median of observations
+`[w-2,w)` with the median of the following 15 observations `[w,w+15)`. A candidate is
+stable only if the ratio is within the frozen **0.5–1.5x** band at that candidate and
+every later eligible candidate. The fixture value is the earliest sustained `w`; the
+metric value is the maximum fixture value plus the frozen safety margin **2**. The
+result must itself be at most 15, so it has an eligible evidence-backed following
+15-observation window within the retained 30. A failure is a calibration conflict:
+the collector does not extrapolate, expand the window, retry toward a preferred point,
+or select a fixture-specific baseline count.
+
+The external calibration artifact stores its raw ordered cells, constants, pinned
+environment, daemon-binary before/after provenance, and the per-fixture derivation
+trace. Its SHA256 and the resulting table below are frozen in this document before a
+baseline may start.
+
+| metric | reference-25 w | reference-100 w | reference-250 w | frozen warm-ups (max + 2) |
+| --- | ---: | ---: | ---: | ---: |
+| dockerObservationMs | pending calibration | pending calibration | pending calibration | pending calibration |
+| composeEnrichmentMs | pending calibration | pending calibration | pending calibration | pending calibration |
+| publicationToNodeObservationMs | pending calibration | pending calibration | pending calibration | pending calibration |
+| notificationToCoherentModelMs | pending calibration | pending calibration | pending calibration | pending calibration |
+| coherentModelToUsefulRenderMs | pending calibration | pending calibration | pending calibration | pending calibration |
+| buildModelMs | pending calibration | pending calibration | pending calibration | pending calibration |
+| findingsDerivationMs | pending calibration | pending calibration | pending calibration | pending calibration |
+| legacyTopologyLayoutMs | pending calibration | pending calibration | pending calibration | pending calibration |
+| commandQueryMs | pending calibration | pending calibration | pending calibration | pending calibration |
+| productionBundleMs | pending calibration | pending calibration | pending calibration | pending calibration |
 
 Procedure notes: stages 8 and 10 run against the benchmark-only module probe
 (`tests/perf/benchVite.config.mjs`, real production modules, real Chromium);

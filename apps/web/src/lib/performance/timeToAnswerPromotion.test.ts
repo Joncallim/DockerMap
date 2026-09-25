@@ -13,6 +13,7 @@ import {
   TIME_TO_ANSWER_METHODOLOGY,
  TIME_TO_ANSWER_WARMED_SAMPLES,
  TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS,
+ TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES,
  deriveFrozenWarmUpCount,
  frozenWarmUpCount,
   assertTimeToAnswerPromotion,
@@ -101,9 +102,10 @@ describe("time-to-answer promotion gate", () => {
  stable[3] = 100;
  const derived = deriveFrozenWarmUpCount([
  { fixture: "reference-25", metric: "dockerObservationMs", observations: Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10) },
- { fixture: "reference-100", metric: "dockerObservationMs", observations: stable }
+ { fixture: "reference-100", metric: "dockerObservationMs", observations: stable },
+ { fixture: "reference-250", metric: "dockerObservationMs", observations: Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10) }
  ]);
- expect(derived.fixtureCounts).toEqual({ "reference-25": 2, "reference-100": 6 });
+ expect(derived.fixtureCounts).toEqual({ "reference-25": 2, "reference-100": 6, "reference-250": 2 });
  expect(derived.frozenWarmUpCount).toBe(8);
  });
 
@@ -112,7 +114,19 @@ describe("time-to-answer promotion gate", () => {
  // Only candidate 15 is stationary, so 15 + the fixed margin exceeds the
  // final eligible position (15) and must not become a frozen count.
  for (let index = 0; index < 13; index += 1) observations[index] = 100;
- expect(() => deriveFrozenWarmUpCount([{ fixture: "reference-25", metric: "dockerObservationMs", observations }])).toThrow("calibration conflict");
+ expect(() => deriveFrozenWarmUpCount(TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({ fixture, metric: "dockerObservationMs", observations })))).toThrow("calibration conflict");
+ });
+
+ it("rejects a calibration that omits or adds a reference fixture", () => {
+ const observations = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
+ expect(() => deriveFrozenWarmUpCount([
+ { fixture: "reference-25", metric: "dockerObservationMs", observations },
+ { fixture: "reference-100", metric: "dockerObservationMs", observations }
+ ])).toThrow("every declared reference fixture");
+ expect(() => deriveFrozenWarmUpCount([
+ ...TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({ fixture, metric: "dockerObservationMs", observations })),
+ { fixture: "docker-topology-change", metric: "dockerObservationMs", observations }
+ ])).toThrow("every declared reference fixture");
  });
 
   it("accepts a compatible candidate inside the reviewed budget", () => {

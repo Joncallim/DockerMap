@@ -39,6 +39,21 @@ assert.match(contract, /deriveFrozenWarmUpCount/);
   assert.match(contract, /export const TIME_TO_ANSWER_STATIONARITY_MAX_RATIO = [\d.]+;/);
 });
 
+test("calibration is a separate retained collector, never a baseline fallback", () => {
+ const capture = read("tests/perf/capture.ts");
+ assert.match(capture, /const calibrationOutputPath = args\["calibration-output"\]/);
+ assert.match(capture, /const calibration = Boolean\(calibrationOutputPath\)/);
+ assert.match(capture, /TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS/);
+ assert.match(capture, /TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES/);
+ assert.match(capture, /if \(!calibration\) for \(const stage of TIME_TO_ANSWER_STAGES\)/);
+ assert.match(capture, /if \(calibration\) \{[\s\S]*?kind: "dockermap-v1\/time-to-answer-warm-up-calibration-1"/);
+ assert.doesNotMatch(capture.match(/if \(calibration\) \{[\s\S]*?const harnessEvidencePath/)?.[0] ?? "", /validateTimeToAnswerEvidence/);
+ const probe = read("tests/perf/probe/entry.ts");
+ assert.match(probe, /async measureModel\(snapshot, runtimeMap, samples, calibration = false\)/);
+ assert.match(probe, /if \(!calibration\) warmed\(2, build\)/);
+ assert.match(probe, /if \(!calibration\) warmed\(2, layout\)/);
+});
+
 test("a failed stationarity gate retains its complete warmed window before aborting", () => {
  const capture = read("tests/perf/capture.ts");
  const retainedBeforeGate = capture.match(

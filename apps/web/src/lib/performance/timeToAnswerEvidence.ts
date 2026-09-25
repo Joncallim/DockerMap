@@ -535,6 +535,20 @@ export type WarmUpCalibrationDerivation = {
  frozenWarmUpCount: number;
 };
 
+/**
+ * The calibration population is closed independently of the baseline matrix:
+ * only the three size reference fixtures determine a warmed metric's count.
+ * Scenario cells are deliberately not a source of conditioning evidence.
+ */
+export const TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES = TIME_TO_ANSWER_REFERENCE_FIXTURES
+ .filter((fixture) => fixture.kind === "reference")
+ .map((fixture) => fixture.name);
+
+/** Every repeated end-to-end stage must be calibrated before baseline capture. */
+export const TIME_TO_ANSWER_WARM_UP_METRICS = TIME_TO_ANSWER_STAGES
+ .filter((stage) => TIME_TO_ANSWER_STAGE_KIND[stage.id] === "warmed-repeated")
+ .map((stage) => stage.id);
+
 /** Median used by the existing stationarity semantics. */
 function median(values: readonly number[]): number {
  if (values.length === 0) return Number.NaN;
@@ -554,10 +568,19 @@ export function deriveFrozenWarmUpCount(cells: readonly WarmUpCalibrationCell[])
  if (cells.length === 0) throw new Error("warm-up calibration needs at least one relevant reference fixture");
  const metric = cells[0]!.metric;
  if (cells.some((cell) => cell.metric !== metric)) throw new Error("warm-up calibration derives one metric at a time");
+ if (!TIME_TO_ANSWER_WARM_UP_METRICS.includes(metric as TimeToAnswerStageId)) {
+ throw new Error(`${metric} is not a warmed end-to-end metric`);
+ }
+ const expectedFixtures = new Set<string>(TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES);
+ if (cells.length !== expectedFixtures.size) {
+ throw new Error(`${metric} calibration must retain every declared reference fixture`);
+ }
  const fixtureCounts: Record<string, number> = {};
  const latestEligible = TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS - TIME_TO_ANSWER_WARMED_SAMPLES;
  for (const cell of cells) {
- if (!cell.fixture || fixtureCounts[cell.fixture] !== undefined) throw new Error("warm-up calibration fixtures must be unique and named");
+ if (!cell.fixture || fixtureCounts[cell.fixture] !== undefined || !expectedFixtures.delete(cell.fixture)) {
+ throw new Error("warm-up calibration fixtures must be the unique declared reference fixtures");
+ }
  if (cell.observations.length !== TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS || cell.observations.some((value) => !Number.isFinite(value) || value < 0)) {
  throw new Error(`${cell.fixture}/${metric} must retain exactly ${TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS} finite non-negative calibration observations`);
  }
@@ -571,6 +594,9 @@ export function deriveFrozenWarmUpCount(cells: readonly WarmUpCalibrationCell[])
  const earliest = Array.from({ length: latestEligible - 1 }, (_, index) => index + 2).find(stableAt);
  if (earliest === undefined) throw new Error(`${cell.fixture}/${metric} never reaches sustained stationarity in the retained calibration window`);
  fixtureCounts[cell.fixture] = earliest;
+ }
+ if (expectedFixtures.size !== 0) {
+ throw new Error(`${metric} calibration is missing declared reference fixtures: ${[...expectedFixtures].join(", ")}`);
  }
  const frozenWarmUpCount = Math.max(...Object.values(fixtureCounts)) + TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN;
  if (frozenWarmUpCount > latestEligible) {

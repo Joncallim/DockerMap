@@ -18,7 +18,7 @@ interface ProbeApi {
     snapshot: unknown,
     runtimeMap: unknown,
     samples: number
-  ): Promise<{ buildModelMs: number[]; legacyTopologyLayoutMs: number[] }>;
+ , calibration?: boolean): Promise<{ buildModelMs: number[]; legacyTopologyLayoutMs: number[] }>;
 }
 
 declare global {
@@ -38,18 +38,18 @@ function warmed(samples: number, run: () => void): number[] {
 }
 
 window.__dockermapProbe = {
-  async measureModel(snapshot, runtimeMap, samples) {
+ async measureModel(snapshot, runtimeMap, samples, calibration = false) {
     const build = () => {
       buildModel(snapshot as never, runtimeMap as never);
     };
-    // Warm-ups use the same real functions; only the returned samples are kept,
-    // so JIT warm-up does not inflate the recorded numbers.
-    warmed(2, build);
+ // Ordinary capture hides its fixed probe warm-ups. Calibration deliberately
+ // does not: all 30 ordered calls are returned as conditioning evidence.
+ if (!calibration) warmed(2, build);
     const model = buildModel(snapshot as never, runtimeMap as never);
     const layout = () => {
       layoutServices(model.services, model.relationships, (service, index) => `${service.id}\u0000${index}`);
     };
-    warmed(2, layout);
+ if (!calibration) warmed(2, layout);
     return {
       buildModelMs: warmed(samples, build),
       legacyTopologyLayoutMs: warmed(samples, layout)

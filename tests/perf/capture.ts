@@ -38,13 +38,17 @@ import {
   TIME_TO_ANSWER_REFERENCE_FIXTURES,
   TIME_TO_ANSWER_STAGES,
   TIME_TO_ANSWER_STAGE_KIND,
-  TIME_TO_ANSWER_WARMED_SAMPLES,
+ TIME_TO_ANSWER_WARMED_SAMPLES,
+ TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS,
+ TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES,
+ TIME_TO_ANSWER_WARM_UP_METRICS,
   assertDaemonBinaryProvenance,
   assertStageSixSevenIndependence,
   assertTimeToAnswerEnvironment,
  assertTimeToAnswerPromotion,
  assertWarmUpStationarity,
  derivedTimeToAnswerPhaseNormalized,
+ deriveFrozenWarmUpCount,
  frozenWarmUpCount,
  splitWarmedObservations,
  validateTimeToAnswerEvidence,
@@ -93,8 +97,10 @@ const metadataPath = args.metadata;
 const outputPath = args.output;
 const baselinePath = args.baseline;
 const rawDir = args["raw-dir"];
-const runs = Number(args.runs ?? TIME_TO_ANSWER_CONTROLLED_RUNS);
-const samples = Number(args.samples ?? TIME_TO_ANSWER_WARMED_SAMPLES);
+const calibrationOutputPath = args["calibration-output"];
+const calibration = Boolean(calibrationOutputPath);
+const runs = Number(args.runs ?? (calibration ? 1 : TIME_TO_ANSWER_CONTROLLED_RUNS));
+const samples = Number(args.samples ?? (calibration ? TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS : TIME_TO_ANSWER_WARMED_SAMPLES));
 const onlyFixtures = args.fixtures ? args.fixtures.split(",").map((name) => name.trim()) : null;
 if (onlyFixtures && process.env.DOCKERMAP_BENCH_DEBUG !== "1") {
   throw new Error(
@@ -115,7 +121,7 @@ const FixtureTopologyQueryToken = "fixture-service-0";
  */
 const HomeMetricLabel = "Offline";
 
-if (!metadataPath || !outputPath) {
+if (!metadataPath || (!outputPath && !calibrationOutputPath)) {
   throw new Error(
     "Usage: npm run perf:time-to-answer -- --metadata <pinned-environment.json> --output <artifact.json>"
   );
@@ -147,10 +153,10 @@ async function drainLayerDiagnostics(page: any, fixture: string): Promise<void> 
  recordLifecycle("exception", "drain_layer_diagnostics", error);
  }
 }
-if (
+if (!calibration && (
   (runs !== TIME_TO_ANSWER_CONTROLLED_RUNS || samples !== TIME_TO_ANSWER_WARMED_SAMPLES) &&
   process.env.DOCKERMAP_BENCH_DEBUG !== "1"
-) {
+)) {
   throw new Error(
     `The contract requires exactly ${TIME_TO_ANSWER_CONTROLLED_RUNS} controlled runs and ${TIME_TO_ANSWER_WARMED_SAMPLES} warmed samples per cell.`
   );
@@ -226,7 +232,7 @@ const launchArgs = (environment.browserFlags as string[]).filter(Boolean);
 
 const plans = TIME_TO_ANSWER_REFERENCE_FIXTURES.filter(
   (fixture) => !onlyFixtures || onlyFixtures.includes(fixture.name)
-).map((fixture) => ({
+).filter((fixture) => !calibration || fixture.kind === "reference").map((fixture) => ({
   name: fixture.name,
   containers: fixture.containers,
   scenario: fixture.kind === "reference" ? "reference" : fixture.name
@@ -1159,14 +1165,14 @@ recordLifecycle("context_create", "production_bundle");
 async function main(): Promise<void> {
  // Fail before any baseline observation is collected. Calibration is a
  // separate command and every warmed metric must have its own frozen count.
- for (const stage of TIME_TO_ANSWER_STAGES) {
+ if (!calibration) for (const stage of TIME_TO_ANSWER_STAGES) {
  if (TIME_TO_ANSWER_STAGE_KIND[stage.id] === "warmed-repeated") frozenWarmUpCount(stage.id);
  }
 const startedAt = Date.now();
  // A full artifact is forbidden until both independent controls have cleared:
  // lifecycle longevity and the Stage-5 exact-publication phase mechanism.
- run("npm", ["run", "perf:preconditioning"]);
- run("npm", ["run", "perf:phase-control"]);
+ if (!calibration) run("npm", ["run", "perf:preconditioning"]);
+ if (!calibration) run("npm", ["run", "perf:phase-control"]);
 // One private API port for the whole capture: the production web build bakes
   // its API origin at build time. It is reserved from the OS, not fixed.
   const apiPort = await reservePort();
@@ -1339,7 +1345,7 @@ daemonPort = startedDaemon.port;
           // Stages 3, 4, 9: bench attribution from the current implementation.
           const needsBench = BENCH_STAGE_KEYS.some((key) => hasStage(plan.name, key));
           if (needsBench) {
- const required = samples + Math.max(...BENCH_STAGE_KEYS.map(frozenWarmUpCount));
+ const required = calibration ? samples : samples + Math.max(...BENCH_STAGE_KEYS.map(frozenWarmUpCount));
  const benchSamples = await waitForBenchSamples(benchSink, required, 300_000);
             for (const key of BENCH_STAGE_KEYS) {
               if (!hasStage(plan.name, key)) continue;
@@ -1347,7 +1353,7 @@ daemonPort = startedDaemon.port;
                 record(plan.name, key, benchSamples[key].slice(0, samples));
  continue;
  }
- const warmUpCount = frozenWarmUpCount(key);
+ const warmUpCount = calibration ? 0 : frozenWarmUpCount(key);
  const requiredForMetric = samples + warmUpCount;
               // The warm-up count is FIXED by protocol — never chosen from the data
               // — and the whole window is retained, so the discarded observations
@@ -1360,6 +1366,7 @@ daemonPort = startedDaemon.port;
  // capture, but must never erase the evidence that explains why it failed.
  warmUpObservations[label] = warmUps;
  warmedObservationWindows[label] = benchSamples[key].slice(0, requiredForMetric);
+ if (calibration) { record(plan.name, key, recorded); continue; }
  const calculation = warmUpStationarityCalculation(warmUps, recorded);
  try {
  warmUpStationarity[label] = assertWarmUpStationarity({ label, warmUps, recorded, warmUpCount });
@@ -1614,7 +1621,7 @@ const measured = await awaitModelAcceptance(benchPage);
                       `(api: ${revisions.join(", ") || "none"}; browser fetched it via ${measured.fetchDeliveredBy})\n`
                   );
                 }
-                if (independencePair) {
+ if (independencePair && !calibration) {
                   independencePair.normalStageSixMs.push(measured.notificationToCoherentModelMs);
                   independencePair.normalStageSevenMs.push(measured.coherentModelToUsefulRenderMs as number);
                 }
@@ -1767,10 +1774,10 @@ recordLifecycle("navigate", "module_probe");
               timeout: 30_000
             });
             await probePage.evaluate(
-              `window.__benchInput = ${JSON.stringify({ snapshot, runtimeMap, samples })}`
+ `window.__benchInput = ${JSON.stringify({ snapshot, runtimeMap, samples, calibration })}`
             );
             const measured = (await probePage.evaluate(
-              "window.__dockermapProbe.measureModel(window.__benchInput.snapshot, window.__benchInput.runtimeMap, window.__benchInput.samples)"
+ "window.__dockermapProbe.measureModel(window.__benchInput.snapshot, window.__benchInput.runtimeMap, window.__benchInput.samples, window.__benchInput.calibration)"
             )) as ProbeMeasurement | undefined;
             if (!measured) throw new Error("module probe returned no measurement");
             record(plan.name, "buildModelMs", measured.buildModelMs);
@@ -1842,11 +1849,35 @@ preserveRaw(String(error));
     cargoRevision: environment.cargoRevision,
     matches: daemonBinarySha256Before === daemonBinarySha256After
   };
-  process.stdout.write(
-    `[capture] daemon binary verified before and after the capture: ${daemonBinarySha256After.slice(0, 16)}… ` +
-      `(matches: ${daemonBinaryEvidence.matches})\n`
-  );
-  const harnessEvidencePath = `${outputPath}.harness-evidence.json`;
+ process.stdout.write(
+ `[capture] daemon binary verified before and after the capture: ${daemonBinarySha256After.slice(0, 16)}… ` +
+ `(matches: ${daemonBinaryEvidence.matches})\n`
+ );
+ if (calibration) {
+ const cells = TIME_TO_ANSWER_WARM_UP_METRICS.flatMap((metric) =>
+ TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({
+ fixture,
+ metric,
+ observations: raw[fixture]?.[metric]?.[0] ?? []
+ }))
+ );
+ const derivations = TIME_TO_ANSWER_WARM_UP_METRICS.map((metric) =>
+ deriveFrozenWarmUpCount(cells.filter((cell) => cell.metric === metric))
+ );
+ const artifact = {
+ kind: "dockermap-v1/time-to-answer-warm-up-calibration-1",
+ methodologyVersion: TIME_TO_ANSWER_METHODOLOGY,
+ constants: { observations: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS, measured: TIME_TO_ANSWER_WARMED_SAMPLES, safetyMargin: 2, band: [TIME_TO_ANSWER_STATIONARITY_MIN_RATIO, TIME_TO_ANSWER_STATIONARITY_MAX_RATIO] },
+ environment,
+ daemonBinary: daemonBinaryEvidence,
+ cells,
+ derivations
+ };
+ writeFileSync(calibrationOutputPath!, `${JSON.stringify(artifact, null, 2)}\n`);
+ process.stdout.write(`[calibration] wrote ordered conditioning evidence to ${calibrationOutputPath}\n`);
+ return;
+ }
+ const harnessEvidencePath = `${outputPath}.harness-evidence.json`;
  const warmUpRetention = TIME_TO_ANSWER_MATRIX.flatMap(({ fixture, stage }) => {
     const runs = raw[fixture]?.[stage];
     if (!runs || runs.length === 0) return [];
@@ -2033,7 +2064,7 @@ preserveRaw(String(error));
           `${verdict.fastestPhaseMedianMs.toFixed(1)}–${verdict.slowestPhaseMedianMs.toFixed(1)} ms\n`
       );
     }
-    const required = TIME_TO_ANSWER_REFERENCE_FIXTURES.filter(
+ const required = calibration ? [] : TIME_TO_ANSWER_REFERENCE_FIXTURES.filter(
       (fixture) =>
         hasStage(fixture.name, "notificationToCoherentModelMs") &&
         hasStage(fixture.name, "coherentModelToUsefulRenderMs")
@@ -2070,7 +2101,7 @@ preserveRaw(String(error));
   writeHarnessEvidence();
   process.stdout.write(`[capture] harness evidence at ${harnessEvidencePath}\n`);
 
-  try {
+ try {
     const records = TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => ({
       fixture,
       stage,
