@@ -297,7 +297,7 @@ for (const plan of plans) {
 function preserveRaw(reason: string): void {
   const destination = rawDir
     ? join(rawDir, "time-to-answer-raw.json")
-    : `${outputPath}.raw.json`;
+ : `${outputPath ?? calibrationOutputPath}.raw.json`;
   try {
     mkdirSync(dirname(destination), { recursive: true });
  writeFileSync(
@@ -1532,7 +1532,10 @@ recordLifecycle("navigate", "benchmark_app");
               // derived from the fixture rather than assumed.
               const generation = index + 1;
               const expectedMetricValue = String(expectedExitedCount(plan.containers, plan.scenario, generation));
-              const phaseControlled = isPhaseControlledFixture(plan.name);
+ // Calibration retains conditioning observations; it does not assert or publish
+ // the baseline phase sweep. It uses the real free-running API path so the
+ // collector is independent of the baseline's controlled-capture validity gate.
+ const phaseControlled = !calibration && isPhaseControlledFixture(plan.name);
               const { sample, revisions, tickCarriedNewerRevision } = await observeStageFiveSample({
                 tracker,
                 daemonPort,
