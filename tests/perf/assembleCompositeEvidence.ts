@@ -14,12 +14,12 @@ for (const record of general.records ?? []) {
  if (controlledFixtures.has(record.fixture) && (record.stage === "notificationToCoherentModelMs" || record.stage === "coherentModelToUsefulRenderMs")) throw new Error(`general evidence is contaminated with controlled Stage-6/7 samples for ${record.fixture}`);
 }
 const generalRecords = (general.records ?? []).filter((record: any) => record.stage !== "publicationToNodeObservationMs").map((record: any) => ({ ...record, measurementProtocol: "end-to-end", sourceEvidenceFile: sources.general, checkpointSha: stageFive.checkpointSha }));
-if (!Array.isArray(stageSixSeven.cells) || !stageSixSeven.independenceEvidence || stageSixSeven.independenceEvidence.verdict !== "PASS") throw new Error("Stage-6/7 independence evidence is missing or invalid; composite authority is incomplete");
+ if (stageSixSeven.measurementProtocol !== "controlled-stage6-stage7-independence" || !Array.isArray(stageSixSeven.cells) || !stageSixSeven.independenceEvidence || stageSixSeven.independenceEvidence.verdict !== "PASS") throw new Error("Stage-6/7 independence evidence is missing or invalid; composite authority is incomplete");
 const expectedFixtures = [...controlledFixtures].sort();
 const receivedFixtures = stageSixSeven.cells.map((cell: any) => cell.fixture).sort();
 if (JSON.stringify(receivedFixtures) !== JSON.stringify(expectedFixtures)) throw new Error("Stage-6/7 independence evidence does not cover the required fixtures exactly once");
 for (const cell of stageSixSeven.cells) {
- if (!Array.isArray(cell.normalStageSixRuns) || !Array.isArray(cell.normalStageSevenRuns) || !cell.controlEvidence || cell.controlEvidence.delayMs !== 250 || cell.controlEvidence.acceptanceSeam !== "observed" || !cell.controlEvidence.triggerRevision || cell.controlEvidence.triggerRevision !== cell.controlEvidence.acceptedRevision) throw new Error(`Stage-6/7 independence evidence is incomplete for ${cell.fixture}`);
+ if (!Array.isArray(cell.normalStageSixRuns) || !Array.isArray(cell.normalStageSevenRuns) || !cell.controlEvidence || cell.controlEvidence.delayMs !== 250 || cell.controlEvidence.acceptanceSeam !== "observed" || !cell.controlEvidence.triggerRevision || cell.controlEvidence.triggerRevision !== cell.controlEvidence.acceptedRevision || !Array.isArray(cell.controlEvidence.samples) || cell.controlEvidence.samples.some((sample: any) => sample.triggerRevision !== sample.acceptedRevision || sample.delayAppliedAfterAcceptance !== true)) throw new Error(`Stage-6/7 independence evidence is incomplete for ${cell.fixture}`);
 }
 const independenceRecords = (stageSixSeven.cells ?? []).flatMap((cell: any) => [
  { fixture: cell.fixture, stage: "notificationToCoherentModelMs", measurementProtocol: "controlled-stage6-stage7-independence", sourceEvidenceFile: sources.stageSixSeven, checkpointSha: stageFive.checkpointSha, runs: cell.normalStageSixRuns },
