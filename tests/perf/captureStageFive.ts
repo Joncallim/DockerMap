@@ -11,7 +11,7 @@ import { writeFileSync } from "node:fs";
 import {
  TIME_TO_ANSWER_CONTROLLED_RUNS,
  TIME_TO_ANSWER_METHODOLOGY,
- TIME_TO_ANSWER_STAGES,
+ TIME_TO_ANSWER_CONTROLLED_POLL_MATRIX,
  TIME_TO_ANSWER_WARMED_SAMPLES
 } from "../../apps/web/src/lib/performance/timeToAnswerEvidence";
 import { POLL_PHASE_CONTROL_TOLERANCE_MS, declaredPhaseForSample } from "../../apps/web/src/lib/performance/timeToAnswerPollPhase";
@@ -19,7 +19,7 @@ import { armStageFivePublication, startStageFivePublicationController } from "./
 
 const intervalMs = 2_000;
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
-const stageFiveFixtures = TIME_TO_ANSWER_STAGES.find((stage) => stage.id === "publicationToNodeObservationMs")!.fixtures;
+const stageFiveFixtures = TIME_TO_ANSWER_CONTROLLED_POLL_MATRIX.map((cell) => cell.fixture);
 
 function argumentsByName(argv: string[]): Record<string, string> {
  return Object.fromEntries(argv.flatMap((value, index, all) => value.startsWith("--") ? [[value.slice(2), all[index + 1] ?? ""]] : []));

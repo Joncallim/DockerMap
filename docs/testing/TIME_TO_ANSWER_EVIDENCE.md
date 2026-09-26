@@ -392,7 +392,6 @@ baseline may start.
 | --- | ---: | ---: | ---: | ---: |
 | dockerObservationMs | pending calibration | pending calibration | pending calibration | pending calibration |
 | composeEnrichmentMs | pending calibration | pending calibration | pending calibration | pending calibration |
-| publicationToNodeObservationMs | pending calibration | pending calibration | pending calibration | pending calibration |
 | notificationToCoherentModelMs | pending calibration | pending calibration | pending calibration | pending calibration |
 | coherentModelToUsefulRenderMs | pending calibration | pending calibration | pending calibration | pending calibration |
 | buildModelMs | pending calibration | pending calibration | pending calibration | pending calibration |
@@ -591,7 +590,8 @@ characterisation. `assertFreeRunningPhaseSamples`, rather than
 ## Baseline-4 composite capture
 
 Baseline 4 is a composite artifact with three raw evidence sections. The general
-capture records only `end-to-end` cells. The dedicated Stage-5 sub-benchmark
+capture records only `end-to-end` cells, including the normal Stage-6 and
+Stage-7 timing rows. The dedicated Stage-5 sub-benchmark
 records every `publicationToNodeObservationMs` cell with
 `controlled-poll-phase`; it is the sole owner of the arm → mark → trigger →
 identity-ack protocol. The sections are not pooled: every composite record
@@ -602,7 +602,8 @@ trigger identity and exact acknowledgement mechanism, observes acceptance at the
 real `useSystemModel` coherent snapshot/runtime-map seam, and applies its 250 ms
 delay only after that acceptance. Its control samples prove Stage 6 remains
 approximately unchanged while Stage 7 grows by the injected delay; they are never
-Baseline-4 timing observations. Assembly rejects a missing or duplicate declared cell,
+Baseline-4 timing observations and cannot replace or contaminate the normal
+end-to-end Stage-6/7 rows. Assembly rejects a missing Stage-5 section or duplicate declared cell,
 a wrong protocol, a mismatched methodology/checkpoint, or an incomplete section.
 
 The Stage-5 metric and phase-normalized authority are unchanged. The phase grid,

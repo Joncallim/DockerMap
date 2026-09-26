@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   TIME_TO_ANSWER_BASELINE,
   TIME_TO_ANSWER_CONTROLLED_RUNS,
-  TIME_TO_ANSWER_MATRIX,
+TIME_TO_ANSWER_MATRIX,
+ TIME_TO_ANSWER_WARM_UP_METRICS,
   TIME_TO_ANSWER_REFERENCE_FIXTURES,
   TIME_TO_ANSWER_STAGES,
   TIME_TO_ANSWER_WARMED_SAMPLES,
@@ -55,13 +56,8 @@ records: { fixture: string; stage: string; measurementProtocol: string; sourceEv
     records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }, record) => ({
 fixture,
 stage,
-measurementProtocol: stage === "publicationToNodeObservationMs" ? "controlled-poll-phase" :
-(stage === "notificationToCoherentModelMs" || stage === "coherentModelToUsefulRenderMs") &&
-TIME_TO_ANSWER_MATRIX.some((cell) => cell.fixture === fixture && cell.stage === "notificationToCoherentModelMs") &&
-TIME_TO_ANSWER_MATRIX.some((cell) => cell.fixture === fixture && cell.stage === "coherentModelToUsefulRenderMs")
-? "controlled-stage6-stage7-independence" : "end-to-end",
-sourceEvidenceFile: stage === "publicationToNodeObservationMs" ? "stage-five.raw.json" :
-(stage === "notificationToCoherentModelMs" || stage === "coherentModelToUsefulRenderMs") ? "stage-six-seven.raw.json" : "general.raw.json",
+ measurementProtocol: stage === "publicationToNodeObservationMs" ? "controlled-poll-phase" : "end-to-end",
+ sourceEvidenceFile: stage === "publicationToNodeObservationMs" ? "stage-five.raw.json" : "general.raw.json",
 checkpointSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 runs: Array.from({ length: TIME_TO_ANSWER_CONTROLLED_RUNS }, (_, run) =>
         Array.from(
@@ -112,7 +108,7 @@ describe("time-to-answer evidence contract", () => {
     }
   });
 
-  it("documents what each stage proves and does not prove", () => {
+it("documents what each stage proves and does not prove", () => {
     for (const stage of TIME_TO_ANSWER_STAGES) {
       expect(stage.measures.length).toBeGreaterThan(20);
       expect(stage.doesNotProve.length).toBeGreaterThan(20);
@@ -184,7 +180,11 @@ expect(() => validateTimeToAnswerEvidence(duplicated)).toThrow("duplicate or uns
 
 const wrongProtocol = rawEvidence();
 wrongProtocol.records.find((record) => record.stage === "publicationToNodeObservationMs")!.measurementProtocol = "end-to-end";
-expect(() => validateTimeToAnswerEvidence(wrongProtocol)).toThrow("wrong measurement protocol");
+ expect(() => validateTimeToAnswerEvidence(wrongProtocol)).toThrow("wrong measurement protocol");
+
+ const stageSixControl = rawEvidence();
+ stageSixControl.records.find((record) => record.stage === "notificationToCoherentModelMs")!.measurementProtocol = "controlled-stage6-stage7-independence";
+ expect(() => validateTimeToAnswerEvidence(stageSixControl)).toThrow("wrong measurement protocol");
 
 const missingProvenance = rawEvidence();
 delete (missingProvenance.records[0] as Partial<(typeof missingProvenance.records)[number]>).checkpointSha;
@@ -267,3 +267,9 @@ expect(() => validateTimeToAnswerEvidence(invalidCheckpoint)).toThrow("provenanc
     );
   });
 });
+
+ it("derives end-to-end calibration ownership from baseline protocol ownership", () => {
+ expect(TIME_TO_ANSWER_WARM_UP_METRICS).not.toContain("publicationToNodeObservationMs");
+ expect(TIME_TO_ANSWER_WARM_UP_METRICS).toContain("notificationToCoherentModelMs");
+ expect(TIME_TO_ANSWER_WARM_UP_METRICS).toContain("coherentModelToUsefulRenderMs");
+ });

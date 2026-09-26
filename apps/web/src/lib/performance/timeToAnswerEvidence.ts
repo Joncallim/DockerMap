@@ -205,7 +205,19 @@ export const TIME_TO_ANSWER_REFERENCE_FIXTURES = [
 
 /** The closed fixture × stage matrix, derived from each stage's fixture list. */
 export const TIME_TO_ANSWER_MATRIX = TIME_TO_ANSWER_STAGES.flatMap((stage) =>
-  stage.fixtures.map((fixture) => ({ fixture, stage: stage.id as TimeToAnswerStageId }))
+stage.fixtures.map((fixture) => ({ fixture, stage: stage.id as TimeToAnswerStageId }))
+);
+
+/** Baseline-cell ownership is the authority for timing evidence producers. */
+export type TimeToAnswerBaselineProtocol = "controlled-poll-phase" | "end-to-end";
+export function timeToAnswerBaselineProtocol(stage: TimeToAnswerStageId): TimeToAnswerBaselineProtocol {
+ return stage === "publicationToNodeObservationMs" ? "controlled-poll-phase" : "end-to-end";
+}
+export const TIME_TO_ANSWER_END_TO_END_MATRIX = TIME_TO_ANSWER_MATRIX.filter(
+ (cell) => timeToAnswerBaselineProtocol(cell.stage) === "end-to-end"
+);
+export const TIME_TO_ANSWER_CONTROLLED_POLL_MATRIX = TIME_TO_ANSWER_MATRIX.filter(
+ (cell) => timeToAnswerBaselineProtocol(cell.stage) === "controlled-poll-phase"
 );
 
 /**
@@ -426,13 +438,7 @@ typeof raw.checkpointSha !== "string" ||
 if (!expected.delete(key)) {
 throw new Error("Time-to-answer evidence has a duplicate or unsupported fixture/stage record.");
 }
-const requiredProtocol = raw.stage === "publicationToNodeObservationMs"
-? "controlled-poll-phase"
-: (raw.stage === "notificationToCoherentModelMs" || raw.stage === "coherentModelToUsefulRenderMs") &&
-TIME_TO_ANSWER_MATRIX.some((cell) => cell.fixture === raw.fixture && cell.stage === "notificationToCoherentModelMs") &&
-TIME_TO_ANSWER_MATRIX.some((cell) => cell.fixture === raw.fixture && cell.stage === "coherentModelToUsefulRenderMs")
-? "controlled-stage6-stage7-independence"
-: "end-to-end";
+ const requiredProtocol = timeToAnswerBaselineProtocol(raw.stage as TimeToAnswerStageId);
 if (raw.measurementProtocol !== requiredProtocol) {
 throw new Error(`Time-to-answer record ${raw.fixture}/${raw.stage} has the wrong measurement protocol.`);
 }
@@ -553,8 +559,11 @@ export const TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES = TIME_TO_ANSWER_REFE
 
 /** Every repeated end-to-end stage must be calibrated before baseline capture. */
 export const TIME_TO_ANSWER_WARM_UP_METRICS = TIME_TO_ANSWER_STAGES
- .filter((stage) => TIME_TO_ANSWER_STAGE_KIND[stage.id] === "warmed-repeated")
- .map((stage) => stage.id);
+.filter((stage) =>
+ TIME_TO_ANSWER_STAGE_KIND[stage.id] === "warmed-repeated" &&
+ TIME_TO_ANSWER_END_TO_END_MATRIX.some((cell) => cell.stage === stage.id)
+)
+.map((stage) => stage.id);
 
 /** Median used by the existing stationarity semantics. */
 function median(values: readonly number[]): number {

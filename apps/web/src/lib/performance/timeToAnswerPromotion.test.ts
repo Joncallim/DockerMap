@@ -81,14 +81,13 @@ runs: [samples(10), samples(11), samples(12)]
 }
 
 function protocol(fixture: string, stage: string): string {
+ void fixture;
  if (stage === "publicationToNodeObservationMs") return "controlled-poll-phase";
- const hasStage = (candidate: string) => TIME_TO_ANSWER_MATRIX.some((cell) => cell.fixture === fixture && cell.stage === candidate);
- return (stage === "notificationToCoherentModelMs" || stage === "coherentModelToUsefulRenderMs") && hasStage("notificationToCoherentModelMs") && hasStage("coherentModelToUsefulRenderMs")
- ? "controlled-stage6-stage7-independence" : "end-to-end";
+ return "end-to-end";
 }
 
 function evidenceFile(fixture: string, stage: string): string {
- return protocol(fixture, stage) === "controlled-poll-phase" ? "stage-five.raw.json" : protocol(fixture, stage) === "controlled-stage6-stage7-independence" ? "stage-six-seven.raw.json" : "general.raw.json";
+ return protocol(fixture, stage) === "controlled-poll-phase" ? "stage-five.raw.json" : "general.raw.json";
 }
 
 function candidate(overrides: { environment?: Record<string, unknown>; records?: unknown[] } = {}) {
@@ -122,9 +121,9 @@ describe("time-to-answer promotion gate", () => {
 
  it("fails rather than extrapolating when the safety margin is not evidence-backed", () => {
  const observations = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
- // Only candidate 15 is stationary, so 15 + the fixed margin exceeds the
- // final eligible position (15) and must not become a frozen count.
- for (let index = 0; index < 13; index += 1) observations[index] = 100;
+ // Only candidate 25 is stationary, so 25 + the fixed margin exceeds the
+ // final eligible position (25) and must not become a frozen count.
+ for (let index = 0; index < 23; index += 1) observations[index] = 100;
  expect(() => deriveFrozenWarmUpCount(TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({ fixture, metric: "dockerObservationMs", observations })))).toThrow("calibration conflict");
  });
 

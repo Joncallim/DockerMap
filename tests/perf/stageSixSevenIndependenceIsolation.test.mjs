@@ -14,6 +14,19 @@ test("normal Stage-6/7 capture and calibration cannot contain injected-delay sam
  assert.doesNotMatch(capture, /controlStage(?:Six|Seven)Ms/);
 });
 
+test("protocol ownership keeps Stage-5 out of normal capture while retaining normal Stage-6/7 rows", () => {
+ const contract = readFileSync(resolve(root, "apps/web/src/lib/performance/timeToAnswerEvidence.ts"), "utf8");
+ const capture = readFileSync(resolve(root, "tests/perf/capture.ts"), "utf8");
+ const assembler = readFileSync(resolve(root, "tests/perf/assembleCompositeEvidence.ts"), "utf8");
+ assert.match(contract, /TIME_TO_ANSWER_END_TO_END_MATRIX/);
+ assert.match(contract, /TIME_TO_ANSWER_CONTROLLED_POLL_MATRIX/);
+ assert.match(contract, /TIME_TO_ANSWER_WARM_UP_METRICS[\s\S]*TIME_TO_ANSWER_END_TO_END_MATRIX/);
+ assert.match(capture, /const MATRIX = new Set\(TIME_TO_ANSWER_END_TO_END_MATRIX/);
+ assert.match(capture, /const records = TIME_TO_ANSWER_END_TO_END_MATRIX\.map/);
+ assert.match(assembler, /general evidence contains a non-end-to-end cell/);
+ assert.doesNotMatch(assembler, /const independenceRecords/);
+});
+
 test("independence is a dedicated protocol, never a silent capture mode", () => {
  const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
  assert.equal(pkg.scripts["perf:independence"], "tsx tests/perf/captureIndependence.ts");

@@ -70,11 +70,12 @@ Baseline 4 has distinct general, dedicated Stage-5, and dedicated Stage-6/7
 independence raw evidence sections.
 Every one of the 44 records carries its stage, fixture, measurement protocol,
 source evidence file, checkpoint SHA and methodology version. Stage-5 records
-are `controlled-poll-phase`; Stage-6/7 cells with both seams are
-`controlled-stage6-stage7-independence`; all others are `end-to-end`. The
-independence section contributes only its normal samples: its injected 250 ms
-samples are validity evidence and can never become Baseline-4 observations. The assembler rejects
-missing cells and never merges away that protocol distinction.
+are `controlled-poll-phase`; every normal Stage-6/7 timing row, like every other
+non-Stage-5 baseline row, is `end-to-end`. The dedicated
+`controlled-stage6-stage7-independence` section is supporting validity evidence
+only: neither its normal nor injected 250 ms samples can become Baseline-4 timing
+observations. The assembler rejects missing Stage-5 evidence, missing cells, and
+protocol contamination.
 
 ## Historical 44-cell matrix, recomputed from raw
 

@@ -31,7 +31,7 @@ import { chromium } from "playwright";
 import {
   TIME_TO_ANSWER_BASELINE,
   TIME_TO_ANSWER_CONTROLLED_RUNS,
-  TIME_TO_ANSWER_MATRIX,
+ TIME_TO_ANSWER_END_TO_END_MATRIX,
   TIME_TO_ANSWER_METHODOLOGY,
   TIME_TO_ANSWER_REFERENCE_FIXTURES,
   TIME_TO_ANSWER_STAGES,
@@ -48,7 +48,6 @@ import {
  deriveFrozenWarmUpCount,
  frozenWarmUpCount,
  splitWarmedObservations,
- validateTimeToAnswerEvidence,
  warmUpStationarityCalculation,
  TIME_TO_ANSWER_STATIONARITY_MAX_RATIO,
  TIME_TO_ANSWER_STATIONARITY_MIN_RATIO
@@ -252,7 +251,7 @@ const stageFiveValidity: Record<string, unknown> = {};
  * the raw series instead of being asserted only by the code that applied it.
  */
 const warmedObservationWindows: Record<string, number[]> = {};
-const MATRIX = new Set(TIME_TO_ANSWER_MATRIX.map((cell) => `${cell.fixture}|${cell.stage}`));
+const MATRIX = new Set(TIME_TO_ANSWER_END_TO_END_MATRIX.map((cell) => `${cell.fixture}|${cell.stage}`));
 /** A cell only exists if the closed contract declares it for this fixture. */
 const hasStage = (fixture: string, stage: string) => MATRIX.has(`${fixture}|${stage}`);
 function record(fixture: string, stage: string, values: number[]): void {
@@ -1273,7 +1272,7 @@ daemonPort = startedDaemon.port;
           // Stage 5's phase control needs the daemon's publication grid, and the
           // tracker needs several publications to fit it. Start it here, with the
           // daemon, so the grid is known long before the browser stages begin.
-          if (hasStage(plan.name, "publicationToNodeObservationMs")) {
+ if (hasStage(plan.name, "notificationToCoherentModelMs")) {
             publicationTracker = await startPublicationTracker(
               daemonPort,
               ((await fetchJson(healthUrl(daemonPort), 5_000))?.modelRevision as string | undefined) ?? "",
@@ -1485,18 +1484,11 @@ recordLifecycle("navigate", "benchmark_app");
           const usefulSamples: number[] = [];
           const querySamples: number[] = [];
           const bundleSamples: number[] = [];
-          const needsRevisionLoop =
-            hasStage(plan.name, "publicationToNodeObservationMs") || needsStageSix;
-          if (needsRevisionLoop) {
-            if (!hasStage(plan.name, "publicationToNodeObservationMs")) {
-              throw new Error(
-                `${plan.name} declares a browser stage without the stage-5 poll-phase sweep; the closed matrix ` +
-                  "does not contain that shape and an uncontrolled phase must not be measured"
-              );
-            }
-            const tracker = publicationTracker;
-            if (!tracker) {
-              throw new Error(`${plan.name} declares stage 5 but its publication tracker was never started`);
+ const needsRevisionLoop = needsStageSix;
+ if (needsRevisionLoop) {
+ const tracker = publicationTracker;
+ if (!tracker) {
+ throw new Error(`${plan.name} declares Stage-6 timing but its revision tracker was never started`);
             }
             for (let index = 0; index < samples; index += 1) {
               // Generation `g` stops the fixture's first `g` containers, so the
@@ -1507,7 +1499,10 @@ recordLifecycle("navigate", "benchmark_app");
  // Calibration retains conditioning observations; it does not assert or publish
  // the baseline phase sweep. It uses the real free-running API path so the
  // collector is independent of the baseline's controlled-capture validity gate.
- const phaseControlled = !calibration && isPhaseControlledFixture(plan.name);
+ // End-to-end Stage-6/7 timing follows the normal real polling path. Stage-5
+ // phase control is owned by captureStageFive.ts and is never calibrated or
+ // emitted from this general section.
+ const phaseControlled = false;
               const { sample, revisions, tickCarriedNewerRevision } = await observeStageFiveSample({
                 tracker,
                 daemonPort,
@@ -1655,7 +1650,6 @@ const measured = await awaitModelAcceptance(benchPage);
               );
             }
           }
-          if (observationSamples.length > 0) record(plan.name, "publicationToNodeObservationMs", observationSamples);
           if (coherentSamples.length > 0) {
             record(plan.name, "notificationToCoherentModelMs", coherentSamples);
             record(plan.name, "coherentModelToUsefulRenderMs", usefulSamples);
@@ -1786,7 +1780,7 @@ preserveRaw(String(error));
  return;
  }
  const harnessEvidencePath = `${outputPath}.harness-evidence.json`;
- const warmUpRetention = TIME_TO_ANSWER_MATRIX.flatMap(({ fixture, stage }) => {
+ const warmUpRetention = TIME_TO_ANSWER_END_TO_END_MATRIX.flatMap(({ fixture, stage }) => {
     const runs = raw[fixture]?.[stage];
     if (!runs || runs.length === 0) return [];
  const kind = TIME_TO_ANSWER_STAGE_KIND[stage] ?? "warmed-repeated";
@@ -1964,20 +1958,13 @@ preserveRaw(String(error));
   process.stdout.write(`[capture] harness evidence at ${harnessEvidencePath}\n`);
 
  try {
-    const records = TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => ({
-      fixture,
-      stage,
-      runs: raw[fixture]?.[stage] ?? []
-    }));
-    const validated = validateTimeToAnswerEvidence({
-      baseline: TIME_TO_ANSWER_BASELINE,
-      environment,
-      records
-    });
-    if (baselinePath) {
-      assertTimeToAnswerPromotion(JSON.parse(readFileSync(baselinePath, "utf8")), validated);
-    }
-    writeFileSync(outputPath, JSON.stringify(validated, null, 2));
+ const records = TIME_TO_ANSWER_END_TO_END_MATRIX.map(({ fixture, stage }) => ({
+fixture,
+stage,
+runs: raw[fixture]?.[stage] ?? []
+}));
+ if (baselinePath) throw new Error("promotion requires the assembled composite evidence, not the incomplete end-to-end section");
+ writeFileSync(outputPath, JSON.stringify({ environment, records }, null, 2));
     process.stdout.write(
       `[capture] wrote ${outputPath} in ${((Date.now() - startedAt) / 60_000).toFixed(1)} min (fixture revision ${FIXTURE_REVISION})\n`
     );
