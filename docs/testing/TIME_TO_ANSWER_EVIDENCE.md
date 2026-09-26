@@ -620,6 +620,10 @@ approximately unchanged while Stage 7 grows by the injected delay; they are neve
 Baseline-4 timing observations and cannot replace or contaminate the normal
 end-to-end Stage-6/7 rows. Assembly rejects a missing Stage-5 section or duplicate declared cell,
 a wrong protocol, a mismatched methodology/checkpoint, or an incomplete section.
+The independence entrypoint is self-orchestrating under the trusted capture
+invocation: it owns a private fixture, real daemon/API/SSE path, benchmark build,
+fresh browser contexts, and `finally` teardown. It retains diagnostics only under
+the dedicated protocol directory and refuses partial output.
 
 The Stage-5 metric and phase-normalized authority are unchanged. The phase grid,
 90 ms tolerance, measured-sample count, ten warm-ups where applicable,

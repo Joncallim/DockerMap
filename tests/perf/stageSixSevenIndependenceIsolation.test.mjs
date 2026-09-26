@@ -35,5 +35,45 @@ test("independence is a dedicated protocol, never a silent capture mode", () => 
  assert.doesNotMatch(protocol, /perf:time-to-answer/);
  for (const flag of ["metadata", "output", "raw-dir", "checkpoint"]) assert.match(protocol, new RegExp(`--${flag.replace("-", "\\-")}`));
  assert.match(protocol, /armStageFivePublication/);
- assert.match(protocol, /assertStageSixSevenIndependence/);
+assert.match(protocol, /assertStageSixSevenIndependence/);
+});
+
+test("the protocol self-orchestrates its private fixture, daemon, API, browser and teardown", () => {
+ const protocol = readFileSync(resolve(root, "tests/perf/captureIndependence.ts"), "utf8");
+ for (const primitive of ["fake-docker-api.mjs", "startStageFivePublicationController", "apps/api/src/index.ts", "chromium.launch", "startStaticServer", "finally", "rmSync(work"]) assert.match(protocol, new RegExp(primitive.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+ assert.match(protocol, /controlled-stage6-stage7-independence/);
+ assert.doesNotMatch(protocol, /Hermes protocol harness/);
+});
+
+test("the controlled release binds exact acknowledgement to browser acceptance", () => {
+ const protocol = readFileSync(resolve(root, "tests/perf/captureIndependence.ts"), "utf8");
+ for (const primitive of ["armStageFivePublication", "markModelPublicationTriggered", "setExpectedModelRevision", "awaitModelAcceptance", "ack.triggerId !== triggerId", "measured.acceptedRevision !== ack.revision"]) assert.match(protocol, new RegExp(primitive.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("only controls carry exactly the fixed post-acceptance delay", () => {
+ const protocol = readFileSync(resolve(root, "tests/perf/captureIndependence.ts"), "utf8");
+ assert.match(protocol, /!input\.control && input\.delayMs !== 0/);
+ assert.match(protocol, /input\.control && input\.delayMs !== TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS/);
+ assert.match(protocol, /delayAppliedAfterAcceptance/);
+});
+
+test("success is withheld until every fixture verdict and daemon provenance check pass", () => {
+ const protocol = readFileSync(resolve(root, "tests/perf/captureIndependence.ts"), "utf8");
+ assert.match(protocol, /assertDaemonBinaryProvenance[\s\S]*before independence capture/);
+ assert.match(protocol, /after independence capture/);
+ assert.ok(protocol.indexOf("writeFileSync(input.output") > protocol.indexOf("assertStageSixSevenIndependence"));
+});
+
+test("failed controlled samples retain dedicated raw evidence without contaminating baseline capture", () => {
+ const protocol = readFileSync(resolve(root, "tests/perf/captureIndependence.ts"), "utf8");
+ assert.match(protocol, /controlled-stage6-stage7-independence/);
+ assert.match(protocol, /verdict: "FAIL"/);
+ assert.doesNotMatch(protocol, /from ["']\.\/capture(?:\.ts)?["']/);
+});
+
+test("the independence runner fails closed without all trusted invocation bindings", () => {
+ const protocol = readFileSync(resolve(root, "tests/perf/captureIndependence.ts"), "utf8");
+ assert.match(protocol, /--metadata, --output, --raw-dir and --checkpoint are required/);
+ assert.match(protocol, /refusing independence protocol from a dirty worktree/);
+ assert.match(protocol, /checkpoint must exactly bind metadata, harness and HEAD/);
 });

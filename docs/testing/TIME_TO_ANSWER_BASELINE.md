@@ -88,6 +88,11 @@ only: neither its normal nor injected 250 ms samples can become Baseline-4 timin
 observations. The assembler rejects missing Stage-5 evidence, missing cells, and
 protocol contamination.
 
+The dedicated Stage-6/7 entrypoint creates and tears down its own private fixture,
+daemon, API, benchmark server and browser contexts. The registered invocation
+supplies provenance arguments only; it does not supply a page, fixture lifecycle,
+or controller endpoint.
+
 ## Historical 44-cell matrix, recomputed from raw
 
 | fixture | stage | run p95 (ms) | median (ms) | min | max |
