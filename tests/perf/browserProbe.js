@@ -337,7 +337,7 @@
         if (arm.mode === "acceptance-only") {
           let accepted = null;
           while (performance.now() < deadline && !accepted) {
- accepted = acceptanceSink().find((entry) => entry.revision && entry.seq > trigger.acceptedSequence) || null;
+ accepted = acceptanceSink().find((entry) => entry.revision && entry.snapshotRevision === entry.revision && entry.runtimeMapRevision === entry.revision && entry.seq > trigger.acceptedSequence) || null;
             if (!accepted) await frame();
           }
           if (!accepted) throw new Error("no accepted coherent model was observed (" + diagnostic() + ")");
@@ -346,7 +346,9 @@
           return {
             notificationToCoherentModelMs: accepted.at - attribution.notifyAt,
             coherentModelToUsefulRenderMs: null,
-            acceptedRevision: accepted.revision,
+ acceptedRevision: accepted.revision,
+ snapshotRevision: accepted.snapshotRevision,
+ runtimeMapRevision: accepted.runtimeMapRevision,
             acceptedSequence: accepted.seq,
             notifiedRevision: attribution.notifiedRevision,
             latestNotifiedRevision: bench.notifyRevision,
@@ -375,7 +377,7 @@
         let commit = null;
         while (performance.now() < deadline && !commit) {
           for (const candidate of acceptanceSink()) {
- if (!candidate.revision || candidate.seq <= trigger.acceptedSequence) continue;
+ if (!candidate.revision || candidate.snapshotRevision !== candidate.revision || candidate.runtimeMapRevision !== candidate.revision || candidate.seq <= trigger.acceptedSequence) continue;
  if (arm.expectedRevision && candidate.revision !== arm.expectedRevision) continue;
             const rendered = bench.commits.find(
               (entry) =>
@@ -442,7 +444,9 @@
         return {
           notificationToCoherentModelMs: acceptedAt - notifyAt,
           coherentModelToUsefulRenderMs: presentedAt - acceptedAt,
-          acceptedRevision: revision,
+ acceptedRevision: revision,
+ snapshotRevision: event.snapshotRevision,
+ runtimeMapRevision: event.runtimeMapRevision,
           acceptedSequence: event.seq,
           notifiedRevision: attribution.notifiedRevision,
           latestNotifiedRevision: bench.notifyRevision,
@@ -487,13 +491,17 @@
   return arm.trigger;
  },
 
- setExpectedModelRevision(revision) {
+ setExpectedModelRevision(revision, delayMs) {
  const arm = bench.arm;
  if (!arm || !arm.task || !arm.armed) throw new Error("model acceptance was not armed");
  if (typeof revision !== "string" || revision.length === 0) {
  throw new Error("the control publication did not supply a non-empty target model revision");
  }
  arm.expectedRevision = revision;
+ // The controller acknowledgement proves causality; the real acceptance seam
+ // still has to observe this exact coherent pair before it can be measured.
+ window.__dockermapBenchRenderDelayTarget = revision;
+ window.__dockermapBenchRenderDelayMs = Number(delayMs) || 0;
  return revision;
  },
 

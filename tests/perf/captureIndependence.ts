@@ -36,7 +36,7 @@ function postUnix(socketPath: string, path: string) { return new Promise<void>((
 function contains(directory: string, needle: string): boolean { for (const entry of readdirSync(directory, { withFileTypes: true })) { const file = join(directory, entry.name); if (entry.isDirectory() ? contains(file, needle) : /\.(js|mjs|html)$/.test(entry.name) && readFileSync(file, "utf8").includes(needle)) return true; } return false; }
 function assertIsolation() { if (contains(join(ROOT, "apps/web/dist"), "__dockermapBenchAcceptanceSink")) throw new Error("production build contains benchmark acceptance seam"); if (!contains(join(ROOT, "tests/perf/.bench-app-dist"), "__dockermapBenchAcceptanceSink")) throw new Error("benchmark build lacks real acceptance seam"); }
 
-type Sample = { stageSixMs: number; stageSevenMs: number; triggerRevision: string; acceptedRevision: string; acceptanceSeam: "observed"; delayAppliedAfterAcceptance: boolean };
+type Sample = { stageSixMs: number; stageSevenMs: number; triggerRevision: string; acceptedRevision: string; snapshotRevision: string; runtimeMapRevision: string; acceptanceSeam: "observed"; delayAppliedAfterAcceptance: boolean };
 /** A full isolated fixture/API/browser lifecycle for one controlled sample. */
 export async function runControlledStageSixSeven(input: { fixture: string; containers: number; scenario?: string; control: boolean; delayMs: number; rawDir: string; generation: number; daemonBinary: string; apiPort: number; pollIntervalMs: number; browserFlags: string[] }): Promise<Sample> {
  if ((!input.control && input.delayMs !== 0) || (input.control && input.delayMs !== TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS)) throw new Error("independence delay contract violated");
@@ -58,20 +58,21 @@ export async function runControlledStageSixSeven(input: { fixture: string; conta
     browser = await chromium.launch({ args: input.browserFlags }); lifecycle.push("browser"); context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const page = await context.newPage(); await page.addInitScript({ path: join(ROOT, "tests/perf/browserProbe.js") }); await page.goto(`${server.url}/`, { waitUntil: "domcontentloaded" }); await page.waitForFunction("window.__dockermapBenchHelpers.homeReady()", undefined, { timeout: 90_000 });
     const previousSeq = await page.evaluate("window.__dockermapBenchHelpers.currentAcceptedSeq()");
-    await page.evaluate(`window.__dockermapBenchRenderDelayMs = ${JSON.stringify(input.delayMs)}`);
     await page.evaluate(`window.__dockermapBenchHelpers.armModelAcceptance(${JSON.stringify({ mode: "content", previousSeq, limit: 60_000, metricLabel: "Offline", expectedMetricValue: String(input.generation), awaitPublicationTrigger: true })})`);
     const triggerId = `${input.fixture}-${input.generation}-${input.control ? "control" : "normal"}`;
     const publication = await armStageFivePublication({ controllerUrl: controller.url, triggerId, requestedPhaseMs: 0, previousRevision: health.modelRevision, timeoutMs: input.pollIntervalMs * 4 });
     await page.evaluate("window.__dockermapBenchHelpers.markModelPublicationTriggered()");
     const ack = await publication.release(async () => { await postUnix(socket, `/__fixture/topology-generation/${input.generation}`); });
-    await page.evaluate(`window.__dockermapBenchHelpers.setExpectedModelRevision(${JSON.stringify(ack.revision)})`);
+ // The acknowledgement is causal proof, not a browser observation. Only now
+ // may the benchmark arm the delay, and only for this exact coherent pair.
+ await page.evaluate(`window.__dockermapBenchHelpers.setExpectedModelRevision(${JSON.stringify(ack.revision)}, ${JSON.stringify(input.delayMs)})`);
     const measured: any = await page.evaluate("window.__dockermapBenchHelpers.awaitModelAcceptance()");
-    if (ack.triggerId !== triggerId || measured.triggerRevision !== String(health.modelRevision) || measured.acceptedRevision !== ack.revision) throw new Error("exact trigger/revision identity was not observed at acceptance");
+ if (ack.triggerId !== triggerId || measured.triggerRevision !== String(health.modelRevision) || measured.acceptedRevision !== ack.revision || measured.snapshotRevision !== ack.revision || measured.runtimeMapRevision !== ack.revision) throw new Error("exact trigger/revision identity was not observed at acceptance");
     const origins: string[] = await page.evaluate("window.__dockermapBenchHelpers.requestOrigins()"); const stream: string = await page.evaluate("window.__dockermapBenchHelpers.streamUrl()");
     if (origins.includes(`http://127.0.0.1:${daemonPort}`) || !origins.includes(`http://127.0.0.1:${input.apiPort}`) || !stream.startsWith(`http://127.0.0.1:${input.apiPort}/api/events/stream`)) throw new Error("benchmark bypassed the real API SSE path");
     // `ack.revision` is the shared controller's exact trigger identity; the
     // browser's `triggerRevision` is intentionally the pre-trigger revision.
-    const result = { stageSixMs: measured.notificationToCoherentModelMs, stageSevenMs: measured.coherentModelToUsefulRenderMs, triggerRevision: ack.revision, acceptedRevision: measured.acceptedRevision, acceptanceSeam: "observed" as const, delayAppliedAfterAcceptance: input.delayMs === 0 || measured.coherentModelToUsefulRenderMs >= input.delayMs };
+ const result = { stageSixMs: measured.notificationToCoherentModelMs, stageSevenMs: measured.coherentModelToUsefulRenderMs, triggerRevision: ack.revision, acceptedRevision: measured.acceptedRevision, snapshotRevision: measured.snapshotRevision, runtimeMapRevision: measured.runtimeMapRevision, acceptanceSeam: "observed" as const, delayAppliedAfterAcceptance: input.delayMs === 0 || measured.coherentModelToUsefulRenderMs >= input.delayMs };
     if (!Number.isFinite(result.stageSixMs) || !Number.isFinite(result.stageSevenMs) || !result.delayAppliedAfterAcceptance) throw new Error("invalid acceptance or post-acceptance delay proof");
     raw(input.rawDir, { fixture: input.fixture, control: input.control, generation: input.generation, lifecycle, ack, measured, result, at: now() });
     return result;

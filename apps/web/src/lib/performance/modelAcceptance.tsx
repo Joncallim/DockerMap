@@ -34,6 +34,9 @@ export interface ModelAcceptanceEvent {
   at: number;
   /** The opaque daemon model revision token the accepted model belongs to. */
   revision: string;
+  /** The exact snapshot/runtime-map pair consumed by useSystemModel. */
+  snapshotRevision: string;
+  runtimeMapRevision: string;
 }
 
 /** Benchmark-only diagnostic payload; it is drained by the capture harness. */
@@ -55,7 +58,9 @@ interface Window {
     /** Benchmark build only. Absent from the production bundle. */
     __dockermapBenchAcceptanceSink?: ModelAcceptanceEvent[];
     /** Benchmark build only: artificial presentation delay in ms (0/absent = off). */
-__dockermapBenchRenderDelayMs?: number;
+    __dockermapBenchRenderDelayMs?: number;
+    /** Causally acknowledged coherent identity eligible for the control delay. */
+    __dockermapBenchRenderDelayTarget?: string;
  /** Benchmark build only. Drained synchronously by the capture harness. */
  __dockermapBenchLayerSink?: ModelLayerDiagnostic[];
  /** Benchmark build only. Set by the harness before it advances a fixture. */
@@ -66,7 +71,7 @@ __dockermapBenchRenderDelayMs?: number;
 const sink: ModelAcceptanceEvent[] = [];
 const layerSink: ModelLayerDiagnostic[] = [];
 let sequence = 0;
-let lastAcceptedRevision: string | null = null;
+let lastAcceptedPair: string | null = null;
 
 /**
  * The acceptance seam. Called from the real model publication path in
@@ -76,12 +81,14 @@ let lastAcceptedRevision: string | null = null;
  * Duplicate calls for the same revision (a re-render recomputing the memo) are
  * ignored, so one accepted revision produces exactly one event.
  */
-export function recordModelAcceptance(revision: string | null): void {
+export function recordModelAcceptance(snapshotRevision: string | null, runtimeMapRevision: string | null): void {
   if (!__DOCKERMAP_BENCH_ACCEPTANCE__) return;
-  if (!revision || revision === lastAcceptedRevision) return;
-  lastAcceptedRevision = revision;
+  if (!snapshotRevision || snapshotRevision !== runtimeMapRevision) return;
+  const pair = `${snapshotRevision}\u0000${runtimeMapRevision}`;
+  if (pair === lastAcceptedPair) return;
+  lastAcceptedPair = pair;
   sequence += 1;
-  sink.push({ seq: sequence, at: performance.now(), revision });
+  sink.push({ seq: sequence, at: performance.now(), revision: snapshotRevision, snapshotRevision, runtimeMapRevision });
   // Bounded: the sink keeps only a recent window on a long-lived page.
   if (sink.length > 256) sink.splice(0, 128);
   window.__dockermapBenchAcceptanceSink = sink;
@@ -124,7 +131,7 @@ export function recordModelLayers(snapshot: DockerSnapshot, runtimeMap: RuntimeM
  */
 export function useDeliveredModel<T>(value: T, revision: string | null): T {
   if (!__DOCKERMAP_BENCH_ACCEPTANCE__) return value;
-  return useDelayedPublication(value, revision);
+ return useDelayedPublication(value, revision, window.__dockermapBenchRenderDelayTarget ?? null);
 }
 
 /**
@@ -157,8 +164,8 @@ else delete root.dataset.dockermapAcceptedRevision;
   return null;
 }
 
-function useDelayedPublication<T>(value: T, revision: string | null): T {
-  const delayMs = armedDelayMs();
+function useDelayedPublication<T>(value: T, revision: string | null, delayTarget: string | null): T {
+ const delayMs = revision === delayTarget ? armedDelayMs() : 0;
   const latest = useRef(value);
   latest.current = value;
   const [delivered, setDelivered] = useState(value);

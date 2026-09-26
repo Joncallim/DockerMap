@@ -60,7 +60,7 @@ test("stage-7 control ignores a revision accepted between arm and trigger", asyn
   // control sample.
   window.__dockermapBench.notifyLog.push({ at: 0.1, revision: "background" });
   window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 0.2, at: 0.3, revision: "background" });
-  window.__dockermapBenchAcceptanceSink.push({ seq: 1, at: 0.4, revision: "background" });
+ window.__dockermapBenchAcceptanceSink.push({ seq: 1, at: 0.4, revision: "background", snapshotRevision: "background", runtimeMapRevision: "background" });
   // It deliberately also has the expected content. Without the trigger fence,
   // content matching alone would select this pre-trigger revision.
   window.__dockermapBench.commits.push({
@@ -78,7 +78,7 @@ test("stage-7 control ignores a revision accepted between arm and trigger", asyn
  // merely any post-trigger content match.
  window.__dockermapBench.notifyLog.push({ at: 1, revision: "other" });
  window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 1.1, at: 1.2, revision: "other" });
- window.__dockermapBenchAcceptanceSink.push({ seq: 2, at: 1.3, revision: "other" });
+ window.__dockermapBenchAcceptanceSink.push({ seq: 2, at: 1.3, revision: "other", snapshotRevision: "other", runtimeMapRevision: "other" });
  window.__dockermapBench.commits.push({
  at: 1.4,
  inHome: true,
@@ -89,7 +89,7 @@ test("stage-7 control ignores a revision accepted between arm and trigger", asyn
  });
  window.__dockermapBench.notifyLog.push({ at: 3, revision: "triggered" });
  window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 4, at: 5, revision: "triggered" });
- window.__dockermapBenchAcceptanceSink.push({ seq: 3, at: 6, revision: "triggered" });
+ window.__dockermapBenchAcceptanceSink.push({ seq: 3, at: 6, revision: "triggered", snapshotRevision: "triggered", runtimeMapRevision: "triggered" });
   // This is the stage-7 proof: the selected acceptance must pair with Home
   // content carrying the same accepted revision and the triggered metric.
   window.__dockermapBench.commits.push({

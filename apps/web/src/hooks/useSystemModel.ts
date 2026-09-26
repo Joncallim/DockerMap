@@ -69,7 +69,7 @@ export function useSystemModel(refreshTick: number, evidenceMode: EvidenceMode |
     // carries only an opaque timestamp + revision token; see
     // lib/performance/modelAcceptance.tsx.
 if (__DOCKERMAP_BENCH_ACCEPTANCE__) {
-recordModelAcceptance(built.modelRevision);
+ recordModelAcceptance(snapshot.data.modelRevision, runtimeMap.data.modelRevision);
 recordModelLayers(snapshot.data, runtimeMap.data, built);
 }
     return built;
