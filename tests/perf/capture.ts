@@ -1285,7 +1285,7 @@ daemonPort = startedDaemon.port;
           if (needsStartup) {
             const starts: number[] = [];
             const models: number[] = [];
- for (let index = 0; index < (calibration ? samples : samples + TIME_TO_ANSWER_END_TO_END_BURN_IN_OBSERVATIONS); index += 1) {
+ for (let index = 0; index < samples; index += 1) {
               let startAt = 0;
               const probe = await startChildOnFreePort({
                 name: "daemon startup probe",
