@@ -60,12 +60,13 @@ export async function runControlledStageSixSeven(input: { fixture: string; conta
     const previousSeq = await page.evaluate("window.__dockermapBenchHelpers.currentAcceptedSeq()");
     await page.evaluate(`window.__dockermapBenchHelpers.armModelAcceptance(${JSON.stringify({ mode: "content", previousSeq, limit: 60_000, metricLabel: "Offline", expectedMetricValue: String(input.generation), awaitPublicationTrigger: true })})`);
     const triggerId = `${input.fixture}-${input.generation}-${input.control ? "control" : "normal"}`;
-    const publication = await armStageFivePublication({ controllerUrl: controller.url, triggerId, requestedPhaseMs: 0, previousRevision: health.modelRevision, timeoutMs: input.pollIntervalMs * 4 });
+ const publication = await armStageFivePublication({ controllerUrl: controller.url, triggerId, requestedPhaseMs: 0, previousRevision: health.modelRevision, timeoutMs: input.pollIntervalMs * 4, withholdUntilOpen: true });
     await page.evaluate("window.__dockermapBenchHelpers.markModelPublicationTriggered()");
     const ack = await publication.release(async () => { await postUnix(socket, `/__fixture/topology-generation/${input.generation}`); });
  // The acknowledgement is causal proof, not a browser observation. Only now
  // may the benchmark arm the delay, and only for this exact coherent pair.
  await page.evaluate(`window.__dockermapBenchHelpers.setExpectedModelRevision(${JSON.stringify(ack.revision)}, ${JSON.stringify(input.delayMs)})`);
+ await publication.open();
     const measured: any = await page.evaluate("window.__dockermapBenchHelpers.awaitModelAcceptance()");
  if (ack.triggerId !== triggerId || measured.triggerRevision !== String(health.modelRevision) || measured.acceptedRevision !== ack.revision || measured.snapshotRevision !== ack.revision || measured.runtimeMapRevision !== ack.revision) throw new Error("exact trigger/revision identity was not observed at acceptance");
     const origins: string[] = await page.evaluate("window.__dockermapBenchHelpers.requestOrigins()"); const stream: string = await page.evaluate("window.__dockermapBenchHelpers.streamUrl()");

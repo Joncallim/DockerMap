@@ -54,8 +54,8 @@ async function postControl(url, body) {
  return payload;
 }
 
-export async function armStageFivePublication({ controllerUrl, triggerId, requestedPhaseMs, previousRevision, timeoutMs }) {
- await postControl(`${controllerUrl}/__stage-five-control/arm`, { triggerId, requestedPhaseMs, previousRevision });
+export async function armStageFivePublication({ controllerUrl, triggerId, requestedPhaseMs, previousRevision, timeoutMs, withholdUntilOpen = false }) {
+ await postControl(`${controllerUrl}/__stage-five-control/arm`, { triggerId, requestedPhaseMs, previousRevision, withholdUntilOpen });
  return {
  async release(trigger) {
  await postControl(`${controllerUrl}/__stage-five-control/mark`, { triggerId });
@@ -73,6 +73,9 @@ export async function armStageFivePublication({ controllerUrl, triggerId, reques
  await new Promise((done) => setTimeout(done, 2));
  }
  throw new Error(`stage-5 publication controller did not acknowledge ${triggerId}`);
+ },
+ async open() {
+ await postControl(`${controllerUrl}/__stage-five-control/open`, { triggerId });
  }
  };
 }
@@ -93,9 +96,14 @@ export function startStageFivePublicationController({ upstream, port = 0, now = 
       throw new Error("arm requires triggerId, requestedPhaseMs and previousRevision");
     }
     failure = null;
-    armed = { triggerId: String(body.triggerId), requestedPhaseMs: Number(body.requestedPhaseMs), previousRevision: String(body.previousRevision), marked: false, exact: null, pollAtMs: 0, releasedAtMs: 0, ack: null, failure: null };
-    return armed;
-  }
+ armed = { triggerId: String(body.triggerId), requestedPhaseMs: Number(body.requestedPhaseMs), previousRevision: String(body.previousRevision), withholdUntilOpen: Boolean(body.withholdUntilOpen), opened: !body.withholdUntilOpen, marked: false, exact: null, pollAtMs: 0, releasedAtMs: 0, ack: null, failure: null };
+ return armed;
+ }
+ function open(body) {
+ if (!armed || armed.triggerId !== body?.triggerId || !armed.ack) throw new Error("the opened trigger has no acknowledged publication");
+ armed.opened = true;
+ return armed;
+ }
   function mark(body) {
     if (!armed || armed.triggerId !== body?.triggerId) throw new Error("the marked trigger is not the armed stage-5 publication");
     if (armed.failure) throw new Error(armed.failure);
@@ -129,7 +137,7 @@ export function startStageFivePublicationController({ upstream, port = 0, now = 
       }, armed.requestedPhaseMs);
       return writeProxy(response, stale);
     }
-    if (armed.ack) return writeProxy(response, armed.exact.response);
+ if (armed.ack && armed.opened) return writeProxy(response, armed.exact.response);
     return writeProxy(response, stale);
   }
   function writeProxy(response, proxied) {
@@ -142,10 +150,14 @@ export function startStageFivePublicationController({ upstream, port = 0, now = 
         let text = "";
         for await (const chunk of request) text += chunk;
         json(response, 200, arm(JSON.parse(text || "{}")));
-      } else if (request.url === "/__stage-five-control/mark" && request.method === "POST") {
+ } else if (request.url === "/__stage-five-control/mark" && request.method === "POST") {
         let text = "";
         for await (const chunk of request) text += chunk;
-        json(response, 200, mark(JSON.parse(text || "{}")));
+ json(response, 200, mark(JSON.parse(text || "{}")));
+ } else if (request.url === "/__stage-five-control/open" && request.method === "POST") {
+ let text = "";
+ for await (const chunk of request) text += chunk;
+ json(response, 200, open(JSON.parse(text || "{}")));
       } else if (request.url === "/__stage-five-control/ack") {
         if (!armed) json(response, 404, { error: "no armed stage-5 publication" });
         else if (armed.failure) json(response, 409, { error: armed.failure });
