@@ -154,7 +154,7 @@ export const TIME_TO_ANSWER_CONTROLLED_RUNS = 3;
  * version, because a different design produces a different number for the same
  * product.
  */
-export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-6";
+export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-7";
 
 /**
  * Fixed, predeclared warm-up observations per warmed daemon cell per run.
@@ -173,7 +173,7 @@ export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodolo
 // Fixed methodology-6 revision.  Forty was selected after the previous
 // protocol could not validate its own late derived count; it is not a
 // statistically optimised or data-dependent window.
-export const TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS = 40;
+export const TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS = 60;
 export const TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN = 2;
 
 /**
@@ -185,7 +185,7 @@ export const TIME_TO_ANSWER_STATIONARITY_MIN_RATIO = 0.5;
 export const TIME_TO_ANSWER_STATIONARITY_MAX_RATIO = 1.5;
 
 /**
- * Metric-level warm-up counts produced by the methodology-6 calibration.
+ * Metric-level warm-up counts produced by the methodology-7 calibration.
  * This starts empty deliberately: Baseline-4 capture is forbidden until the
  * separately retained calibration artifact has supplied every warmed metric.
  * Do not replace a missing key with a global fallback.
@@ -548,6 +548,25 @@ export type WarmUpCalibrationDerivation = {
  frozenWarmUpCount: number;
 };
 
+export type WarmUpCalibrationCandidate = { candidate: number; ratio: number | null; inBand: boolean; sustained: boolean };
+export type WarmUpCalibrationFixtureReport = { fixture: string; stableWarmUpCount: number | null; candidates: readonly WarmUpCalibrationCandidate[]; reason: string | null };
+export type WarmUpCalibrationMetricReport = {
+ metric: string;
+ fixtures: readonly WarmUpCalibrationFixtureReport[];
+ maximumStableWarmUpCount: number | null;
+ proposedWarmUpCount: number | null;
+ requiredEvidenceLength: number | null;
+ evidenceBacked: boolean;
+ verdict: "PASS" | "CONFLICT";
+ reason: string | null;
+};
+export type WarmUpCalibrationReport = {
+ verdict: "PASS" | "CONFLICT";
+ metrics: readonly WarmUpCalibrationMetricReport[];
+ /** Empty unless every metric passes; no partial calibration is authoritative. */
+ authoritativeWarmUpCounts: Readonly<Record<string, number>>;
+};
+
 /**
  * The calibration population is closed independently of the baseline matrix:
  * only the three size reference fixtures determine a warmed metric's count.
@@ -574,7 +593,7 @@ function median(values: readonly number[]): number {
 }
 
 /**
- * Derive one metric's frozen count from its complete 40-observation reference
+ * Derive one metric's frozen count from its complete fixed-window reference
  * fixture cells. Candidate `w` compares obs[w-2:w] to obs[w:w+15]. The first
  * candidate whose ratio stays inside the declared band at every later eligible
  * position is selected for each fixture; the metric receives their maximum plus
@@ -616,9 +635,40 @@ export function deriveFrozenWarmUpCount(cells: readonly WarmUpCalibrationCell[])
  }
  const frozenWarmUpCount = Math.max(...Object.values(fixtureCounts)) + TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN;
  if (frozenWarmUpCount > latestEligible) {
- throw new Error(`${metric} calibration conflict: safety margin ${TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN} moves warm-up count ${frozenWarmUpCount} beyond the evidence-backed 40-observation window`);
+ throw new Error(`${metric} calibration conflict: safety margin ${TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN} moves warm-up count ${frozenWarmUpCount} beyond the evidence-backed ${TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS}-observation window`);
  }
  return { metric, fixtureCounts, frozenWarmUpCount };
+}
+
+/** Derive every metric before returning an atomic overall calibration verdict. */
+export function deriveWarmUpCalibrationReport(cells: readonly WarmUpCalibrationCell[]): WarmUpCalibrationReport {
+ const latest = TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS - TIME_TO_ANSWER_WARMED_SAMPLES;
+ const metrics = TIME_TO_ANSWER_WARM_UP_METRICS.map((metric) => {
+ const metricCells = cells.filter((cell) => cell.metric === metric);
+ const fixtures = TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => {
+ const matches = metricCells.filter((cell) => cell.fixture === fixture);
+ const cell = matches.length === 1 ? matches[0] : undefined;
+ if (!cell || cell.observations.length !== TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS || cell.observations.some((value) => !Number.isFinite(value) || value < 0)) return { fixture, stableWarmUpCount: null, candidates: [], reason: !cell ? "missing reference fixture" : matches.length !== 1 ? "duplicate reference fixture" : `must retain exactly ${TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS} finite non-negative calibration observations` };
+ const candidates = Array.from({ length: latest - 1 }, (_, index) => index + 2).map((candidate) => {
+ const ratio = median(cell.observations.slice(candidate - 2, candidate)) / median(cell.observations.slice(candidate, candidate + TIME_TO_ANSWER_WARMED_SAMPLES));
+ return { candidate, ratio: Number.isFinite(ratio) ? ratio : null, inBand: Number.isFinite(ratio) && ratio > 0 && ratio >= TIME_TO_ANSWER_STATIONARITY_MIN_RATIO && ratio <= TIME_TO_ANSWER_STATIONARITY_MAX_RATIO, sustained: false };
+ });
+ const traced = candidates.map((candidate, index) => ({ ...candidate, sustained: candidate.inBand && candidates.slice(index).every((later) => later.inBand) }));
+ const stableWarmUpCount = traced.find((candidate) => candidate.sustained)?.candidate ?? null;
+ return { fixture, stableWarmUpCount, candidates: traced, reason: stableWarmUpCount === null ? "never reaches sustained stationarity in the retained calibration window" : null };
+ });
+ const expectedFixtures = new Set<string>(TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES);
+ const unsupported = metricCells.some((cell) => !expectedFixtures.has(cell.fixture));
+ const counts = fixtures.map((fixture) => fixture.stableWarmUpCount);
+ const maximumStableWarmUpCount = counts.every((count): count is number => count !== null) ? Math.max(...counts) : null;
+ const proposedWarmUpCount = maximumStableWarmUpCount === null ? null : maximumStableWarmUpCount + TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN;
+ const requiredEvidenceLength = proposedWarmUpCount === null ? null : proposedWarmUpCount + TIME_TO_ANSWER_WARMED_SAMPLES;
+ const evidenceBacked = requiredEvidenceLength !== null && requiredEvidenceLength <= TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS;
+ const reason = unsupported ? "contains unsupported reference fixture" : fixtures.find((fixture) => fixture.reason)?.reason ?? (!evidenceBacked ? `safety margin requires ${requiredEvidenceLength} observations, exceeding the fixed ${TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS}-observation window` : null);
+ return { metric, fixtures, maximumStableWarmUpCount, proposedWarmUpCount, requiredEvidenceLength, evidenceBacked, verdict: reason ? "CONFLICT" as const : "PASS" as const, reason };
+ });
+ const passed = metrics.every((metric) => metric.verdict === "PASS");
+ return { verdict: passed ? "PASS" : "CONFLICT", metrics, authoritativeWarmUpCounts: Object.freeze(passed ? Object.fromEntries(metrics.map((metric) => [metric.metric, metric.proposedWarmUpCount!])) : {}) };
 }
 
 /**

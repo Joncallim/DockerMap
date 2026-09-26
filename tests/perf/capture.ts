@@ -45,7 +45,7 @@ import {
  assertTimeToAnswerPromotion,
  assertWarmUpStationarity,
  derivedTimeToAnswerPhaseNormalized,
- deriveFrozenWarmUpCount,
+ deriveWarmUpCalibrationReport,
  frozenWarmUpCount,
  splitWarmedObservations,
  warmUpStationarityCalculation,
@@ -1763,9 +1763,7 @@ preserveRaw(String(error));
  observations: raw[fixture]?.[metric]?.[0] ?? []
  }))
  );
- const derivations = TIME_TO_ANSWER_WARM_UP_METRICS.map((metric) =>
- deriveFrozenWarmUpCount(cells.filter((cell) => cell.metric === metric))
- );
+ const derivationReport = deriveWarmUpCalibrationReport(cells);
  const artifact = {
  kind: "dockermap-v1/time-to-answer-warm-up-calibration-1",
  methodologyVersion: TIME_TO_ANSWER_METHODOLOGY,
@@ -1773,10 +1771,14 @@ preserveRaw(String(error));
  environment,
  daemonBinary: daemonBinaryEvidence,
  cells,
- derivations
+ derivationReport
  };
- writeFileSync(calibrationOutputPath!, `${JSON.stringify(artifact, null, 2)}\n`);
- process.stdout.write(`[calibration] wrote ordered conditioning evidence to ${calibrationOutputPath}\n`);
+ const serialized = `${JSON.stringify(artifact, null, 2)}\n`;
+ writeFileSync(calibrationOutputPath!, serialized);
+ const derivationReportSha256 = createHash("sha256").update(serialized).digest("hex");
+ writeFileSync(`${calibrationOutputPath!}.sha256`, `${derivationReportSha256}\n`);
+ process.stdout.write(`[calibration] wrote complete derivation report to ${calibrationOutputPath} (sha256 ${derivationReportSha256})\n`);
+ if (derivationReport.verdict === "CONFLICT") throw new Error("warm-up calibration conflict: complete derivation report was persisted; no partial warm-up table is authoritative");
  return;
  }
  const harnessEvidencePath = `${outputPath}.harness-evidence.json`;

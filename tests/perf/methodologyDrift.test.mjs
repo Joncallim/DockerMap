@@ -31,7 +31,7 @@ test("the metadata emitter's methodology version matches the contract", () => {
 
 test("the warm-up protocol is declared in the contract, not derived at runtime", () => {
 const contract = read("apps/web/src/lib/performance/timeToAnswerEvidence.ts");
- assert.match(contract, /export const TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS = 40;/);
+assert.match(contract, /export const TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS = 60;/);
 assert.match(contract, /export const TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN = 2;/);
 assert.match(contract, /export const TIME_TO_ANSWER_FROZEN_WARM_UP_COUNTS/);
 assert.match(contract, /deriveFrozenWarmUpCount/);

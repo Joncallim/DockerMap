@@ -313,11 +313,11 @@ observation with the normal acceptance/render evidence.
 ```
 # 1. pin the environment from the runner itself
 npm run perf:metadata -- --output /tmp/time-to-answer-metadata.json
-# 2. calibrate first (one retained, ordered 40-observation series per warmed
+# 2. calibrate first (one retained, ordered 60-observation series per warmed
 #    metric × reference fixture; this is not a baseline capture)
 npm run perf:calibrate-time-to-answer -- \
   --metadata /tmp/time-to-answer-metadata.json \
---calibration-output /srv/jonas/evidence/dockermap/time-to-answer/warm-up-calibration-6.json
+--calibration-output /srv/jonas/evidence/dockermap/time-to-answer/warm-up-calibration-7.json
 # 3. capture (3 controlled runs × 15 warmed samples for every declared cell)
 npm run perf:time-to-answer -- \
   --metadata /tmp/time-to-answer-metadata.json \
@@ -355,38 +355,46 @@ Calibration is an independent, bounded conditioning collector. It never calls th
 frozen-count lookup, never enters baseline assembly or normal capture's frozen-count
 preflight, and never emits or merges baseline raw evidence. For every
 `warmed-repeated` end-to-end metric and each declared reference fixture
-(`reference-25`, `reference-100`, `reference-250`), it retains exactly **40 ordered
+(`reference-25`, `reference-100`, `reference-250`), it retains exactly **60 ordered
 finite observations** beginning at call zero. This includes daemon-attribution
 metrics, browser/API-path metrics, and the module-probe metrics; the probe's ordinary
 hidden two-call warm-up is disabled for calibration.
 
-For each fixture trace, candidates `w=2..25` compare the median of observations
+For each fixture trace, candidates `w=2..45` compare the median of observations
 `[w-2,w)` with the median of the following 15 observations `[w,w+15)`. A candidate is
 stable only if the ratio is within the frozen **0.5–1.5x** band at that candidate and
 every later eligible candidate. The fixture value is the earliest sustained `w`; the
 metric value is the maximum fixture value plus the frozen safety margin **2**. The
-result must itself be at most 15, so it has an eligible evidence-backed following
-15-observation window within the retained 40. A failure is a calibration conflict:
+result must have a complete following 15-observation window within the retained 60.
+A failure is a calibration conflict:
 the collector does not extrapolate, expand the window, retry toward a preferred point,
 or select a fixture-specific baseline count.
 
-### Superseded calibration attempt
+### Calibration capacity and superseded evidence
 
-The retained 30-observation attempt is rejected evidence, not Baseline-4
-authority: `dockerObservationMs` derived stable w=15; +2 safety margin gives
-warm-up=17; validating that count requires a complete following 15-observation
-window, therefore at least 32 observations - the 30-observation protocol was
-structurally incapable of validating its own derived result.
+Methodology-7 is advanced **before** the 60-observation dataset is collected.
+Sixty is the final automatic window revision: a fixed structural capacity decision,
+not statistical tuning to `buildModelMs`. It is four times the measured
+15-observation Baseline-4 window, twice the original 30-observation calibration
+window, and provides substantial validation headroom beyond the prior protocol.
+With the unchanged +2 margin and complete-following-15 rule it can validate a stable
+point through approximately `w=43`. If a genuine end-to-end metric cannot validate
+under fixed-60, calibration stops: it does not move to 70/80, alter +2, widen the
+band, or change the derivation rule.
 
-Methodology-6 is advanced **before** the 40-observation dataset is collected.
-The 40-observation window is a fixed revised calibration window chosen after the
-previous protocol exposed insufficient validation capacity; it was not
-statistically optimised.
+The rejected 40-observation calibration remains retained evidence, not Baseline-4
+authority: `buildModelMs: stable w=25 -> frozen warm-up=27 -> requires 42
+observations`. That failure demonstrated insufficient protocol capacity; it does not
+itself define the new window.
 
 The external calibration artifact stores its raw ordered cells, constants, pinned
-environment, daemon-binary before/after provenance, and the per-fixture derivation
-trace. Its SHA256 and the resulting table below are frozen in this document before a
-baseline may start.
+environment, daemon-binary before/after provenance, and a complete per-metric
+derivation trace. Every report records every reference fixture, stable `w`, metric
+maximum, proposed `w+2`, required evidence length, evidence-backed status, candidate
+ratios, and PASS/CONFLICT reason. The report is persisted and SHA-256 recorded even
+when one or more metrics conflict. A conflict makes the overall calibration FAIL and
+leaves the frozen warm-up table unchanged/empty: no partial table is authoritative.
+Its SHA256 and resulting table below are frozen before a baseline may start.
 
 | metric | reference-25 w | reference-100 w | reference-250 w | frozen warm-ups (max + 2) |
 | --- | ---: | ---: | ---: | ---: |

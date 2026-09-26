@@ -14,7 +14,9 @@ import {
  TIME_TO_ANSWER_WARMED_SAMPLES,
  TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS,
  TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES,
+ TIME_TO_ANSWER_WARM_UP_METRICS,
  deriveFrozenWarmUpCount,
+ deriveWarmUpCalibrationReport,
  frozenWarmUpCount,
   assertTimeToAnswerPromotion,
   assertWarmUpStationarity,
@@ -121,10 +123,33 @@ describe("time-to-answer promotion gate", () => {
 
  it("fails rather than extrapolating when the safety margin is not evidence-backed", () => {
  const observations = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
- // Only candidate 25 is stationary, so 25 + the fixed margin exceeds the
- // final eligible position (25) and must not become a frozen count.
- for (let index = 0; index < 23; index += 1) observations[index] = 100;
+ // Only candidate 45 is stationary, so 45 + the fixed margin exceeds the
+ // final eligible position (45) and must not become a frozen count.
+ for (let index = 0; index < 43; index += 1) observations[index] = 100;
  expect(() => deriveFrozenWarmUpCount(TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({ fixture, metric: "dockerObservationMs", observations })))).toThrow("calibration conflict");
+ });
+
+ it("reports every metric on conflict and never makes a partial table authoritative", () => {
+ const stable = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
+ const conflicted = [...stable];
+ // Stable only at the final eligible candidate: +2 then lacks a following 15.
+ for (let index = 0; index < 43; index += 1) conflicted[index] = 100;
+ const cells = TIME_TO_ANSWER_WARM_UP_METRICS.flatMap((metric) => TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({ fixture, metric, observations: metric === "dockerObservationMs" && fixture === "reference-25" ? conflicted : stable })));
+ const report = deriveWarmUpCalibrationReport(cells);
+ expect(report.verdict).toBe("CONFLICT");
+ expect(report.metrics).toHaveLength(TIME_TO_ANSWER_WARM_UP_METRICS.length);
+ expect(report.metrics.find((metric) => metric.metric === "dockerObservationMs")).toMatchObject({ verdict: "CONFLICT", proposedWarmUpCount: 47, requiredEvidenceLength: 62, evidenceBacked: false });
+ expect(report.authoritativeWarmUpCounts).toEqual({});
+ expect(report.metrics.find((metric) => metric.metric === "buildModelMs")?.verdict).toBe("PASS");
+ });
+
+ it("records candidate ratios and atomically proposes every count only on complete success", () => {
+ const observations = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
+ const report = deriveWarmUpCalibrationReport(TIME_TO_ANSWER_WARM_UP_METRICS.flatMap((metric) => TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({ fixture, metric, observations }))));
+ expect(report.verdict).toBe("PASS");
+ expect(Object.keys(report.authoritativeWarmUpCounts)).toEqual(TIME_TO_ANSWER_WARM_UP_METRICS);
+ expect(report.metrics[0]?.fixtures[0]?.stableWarmUpCount).toBe(2);
+ expect(report.metrics[0]?.fixtures[0]?.candidates[0]).toMatchObject({ candidate: 2, ratio: 1, inBand: true, sustained: true });
  });
 
  it("rejects a calibration that omits or adds a reference fixture", () => {
