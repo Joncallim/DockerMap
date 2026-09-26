@@ -62,6 +62,8 @@ test("success is withheld until every fixture verdict and daemon provenance chec
  assert.match(protocol, /assertDaemonBinaryProvenance[\s\S]*before independence capture/);
  assert.match(protocol, /after independence capture/);
  assert.ok(protocol.indexOf("writeFileSync(input.output") > protocol.indexOf("assertStageSixSevenIndependence"));
+ assert.match(protocol, /triggerRevision: control\[0\]\?\.triggerRevision/);
+ assert.match(protocol, /acceptedRevision: control\[0\]\?\.acceptedRevision/);
 });
 
 test("failed controlled samples retain dedicated raw evidence without contaminating baseline capture", () => {
@@ -76,4 +78,5 @@ test("the independence runner fails closed without all trusted invocation bindin
  assert.match(protocol, /--metadata, --output, --raw-dir and --checkpoint are required/);
  assert.match(protocol, /refusing independence protocol from a dirty worktree/);
  assert.match(protocol, /checkpoint must exactly bind metadata, harness and HEAD/);
+ assert.match(protocol, /fixture generation must remain within the observable container count/);
 });
