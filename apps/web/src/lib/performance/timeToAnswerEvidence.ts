@@ -148,23 +148,24 @@ export const TIME_TO_ANSWER_CONTROLLED_RUNS = 3;
 /**
  * The measurement design this contract describes. The baseline id names the
  * CLOSED ARTIFACT SHAPE; the methodology version names HOW the numbers are
- * produced — stage-5 deterministic phase control, the fixed warm-up policy, the
- * stationarity guard, and the provenance/compatibility split. A candidate may
+ * produced — stage-5 deterministic phase control, the fixed burn-in policy, and
+ * the provenance/compatibility split. A candidate may
  * only be compared against a baseline captured under the same methodology
  * version, because a different design produces a different number for the same
  * product.
  */
-export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-7";
+export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-8";
 
 /**
- * Fixed, predeclared warm-up observations per warmed daemon cell per run.
+ * Every ordinary warmed end-to-end run executes exactly 60 fixed conditioning
+ * observations followed by 15 measured observations. Observation 61 is always
+ * the first measured sample. The conditioning observations are retained for
+ * audit and never enter timing summaries or promotion comparisons.
  *
- * This is a conservative protocol revision after the fixed-five protocol proved
- * marginal at its stationarity gate. Ten is fixed before capture and is never
- * adjusted afterwards to make data look stationary; historical artifacts do not
- * retain enough warm-up evidence to claim that ten was statistically derived
- * from Baseline 3.
+ * This is deliberately a workload contract, not a steady-state claim: it does
+ * not infer stationarity, adapt to values, or guarantee that a metric settles.
  */
+export const TIME_TO_ANSWER_END_TO_END_BURN_IN_OBSERVATIONS = 60;
 /**
  * Calibration is a separate, retained evidence exercise.  Its constants are
  * declared here (rather than in the runner) so a command cannot quietly tune
@@ -174,6 +175,7 @@ export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodolo
 // protocol could not validate its own late derived count; it is not a
 // statistically optimised or data-dependent window.
 export const TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS = 60;
+/** Historical calibration only; never Baseline-4 authority. */
 export const TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN = 2;
 
 /**
@@ -185,12 +187,10 @@ export const TIME_TO_ANSWER_STATIONARITY_MIN_RATIO = 0.5;
 export const TIME_TO_ANSWER_STATIONARITY_MAX_RATIO = 1.5;
 
 /**
- * Metric-level warm-up counts produced by the methodology-7 calibration.
- * This starts empty deliberately: Baseline-4 capture is forbidden until the
- * separately retained calibration artifact has supplied every warmed metric.
- * Do not replace a missing key with a global fallback.
+ * Historical calibration is retained as a rejected, non-authoritative audit
+ * diagnostic. Its per-metric results cannot select, alter, or invalidate the
+ * Baseline-4 fixed 60-observation burn-in.
  */
-export const TIME_TO_ANSWER_FROZEN_WARM_UP_COUNTS: Readonly<Record<string, number>> = Object.freeze({});
 
 /** Reference fixtures (25/100/250 containers) plus the four scenario fixtures. */
 export const TIME_TO_ANSWER_REFERENCE_FIXTURES = [
@@ -527,15 +527,6 @@ export function isScenarioCell(fixture: string, stage: string): boolean {
   return declared?.kind === "scenario" && TIME_TO_ANSWER_STAGE_KIND[stage] === "warmed-repeated";
 }
 
-/** Return the pre-calibrated count for one metric, never a global default. */
-export function frozenWarmUpCount(metric: string): number {
- const count = TIME_TO_ANSWER_FROZEN_WARM_UP_COUNTS[metric];
- if (!Number.isInteger(count) || count < 0) {
- throw new Error(`Baseline-4 cannot start: ${metric} has no frozen calibrated warm-up count`);
- }
- return count;
-}
-
 export type WarmUpCalibrationCell = {
  fixture: string;
  metric: string;
@@ -563,8 +554,8 @@ export type WarmUpCalibrationMetricReport = {
 export type WarmUpCalibrationReport = {
  verdict: "PASS" | "CONFLICT";
  metrics: readonly WarmUpCalibrationMetricReport[];
- /** Empty unless every metric passes; no partial calibration is authoritative. */
- authoritativeWarmUpCounts: Readonly<Record<string, number>>;
+ /** Historical diagnostic only; never Baseline-4 authority. */
+ nonAuthoritativeProposedWarmUpCounts: Readonly<Record<string, number>>;
 };
 
 /**
@@ -668,16 +659,16 @@ export function deriveWarmUpCalibrationReport(cells: readonly WarmUpCalibrationC
  return { metric, fixtures, maximumStableWarmUpCount, proposedWarmUpCount, requiredEvidenceLength, evidenceBacked, verdict: reason ? "CONFLICT" as const : "PASS" as const, reason };
  });
  const passed = metrics.every((metric) => metric.verdict === "PASS");
- return { verdict: passed ? "PASS" : "CONFLICT", metrics, authoritativeWarmUpCounts: Object.freeze(passed ? Object.fromEntries(metrics.map((metric) => [metric.metric, metric.proposedWarmUpCount!])) : {}) };
+ return { verdict: passed ? "PASS" : "CONFLICT", metrics, nonAuthoritativeProposedWarmUpCounts: Object.freeze(passed ? Object.fromEntries(metrics.map((metric) => [metric.metric, metric.proposedWarmUpCount!])) : {}) };
 }
 
 /**
- * Split one warmed daemon measurement window into the discarded warm-up
+ * Split one warmed measurement window into fixed burn-in
  * observations and the recorded samples.
  *
  * The daemon's first-ever refresh runs before its listener binds, so its first
  * passes through the collection path are cold. The count is FIXED by protocol
- * (`TIME_TO_ANSWER_WARM_UP_OBSERVATIONS`), never chosen by looking at the data:
+ * (`TIME_TO_ANSWER_END_TO_END_BURN_IN_OBSERVATIONS`), never chosen by looking at the data:
  * with 15 recorded samples, nearest-rank p95 is the maximum, so a surviving cold
  * observation would otherwise *become* the published number. Every warm-up
  * observation is returned for the raw audit trail, and none of them enters the
@@ -686,16 +677,16 @@ export function deriveWarmUpCalibrationReport(cells: readonly WarmUpCalibrationC
 export function splitWarmedObservations(
 observations: readonly number[],
 count = TIME_TO_ANSWER_WARMED_SAMPLES,
-warmUpCount: number
+ burnInCount = TIME_TO_ANSWER_END_TO_END_BURN_IN_OBSERVATIONS
 ): { warmUps: number[]; recorded: number[] } {
- const required = count + warmUpCount;
+ const required = count + burnInCount;
   if (observations.length < required) {
     throw new Error(
- `a warmed stage needs at least ${required} observations: ${warmUpCount} declared ` +
-        `warm-up observations plus ${count} recorded samples`
+ `a warmed stage needs at least ${required} observations: ${burnInCount} fixed ` +
+ `burn-in observations plus ${count} recorded samples`
     );
   }
- const warmUps = observations.slice(0, warmUpCount);
+ const warmUps = observations.slice(0, burnInCount);
   if (
     [...warmUps, ...observations.slice(0, required)].some(
       (value) => typeof value !== "number" || !Number.isFinite(value) || value < 0
@@ -703,7 +694,7 @@ warmUpCount: number
   ) {
     throw new Error("warm-up and recorded observations must be finite non-negative numbers");
   }
- return { warmUps: [...warmUps], recorded: observations.slice(warmUpCount, required) as number[] };
+ return { warmUps: [...warmUps], recorded: observations.slice(burnInCount, required) as number[] };
 }
 
 /**

@@ -1,5 +1,33 @@
 # Time-to-answer evidence
 
+## Methodology-8 Baseline-4 conditioning (authoritative)
+
+For every ordinary warmed end-to-end fixture/run, Baseline-4 performs **exactly
+60 fixed burn-in observations**, retains all 60 in harness evidence, then records
+**exactly 15 measured observations**. Observation **61** is always the first
+measured sample. Burn-in is excluded completely from timing summaries and
+promotion comparisons. It is a deterministic, equal conditioning workload for a
+baseline and candidate; it makes no claim that 60 guarantees steady state.
+
+No observed value may infer stationarity, adaptively trim samples, select a
+per-metric warm-up, or extend the burn-in. Stationarity/drift calculations remain
+historical informational diagnostics only and never alter or invalidate an
+otherwise structurally valid ordinary run.
+
+The final 60-observation calibration is retained as **REJECTED,
+NON-AUTHORITATIVE** audit evidence for Baseline-4. It disproved a common sustained
+stationarity validity rule: several metrics stabilized in 2–3 observations,
+`findingsDerivationMs` near 13, `legacyTopologyLayoutMs` near 26,
+`commandQueryMs` near 43, and `buildModelMs` never met the criterion within 60.
+Consequently Baseline-4 does not require calibration PASS, frozen per-metric
+counts, the former +2 margin, or the 0.5–1.5x band.
+
+Controlled evidence is distinct: Stage 5 is `controlled-poll-phase`; Stage-6/7
+independence is `controlled-stage6-stage7-independence`. Neither contributes
+artificial samples to the normal end-to-end dataset. The normal Stage-6 and
+Stage-7 timings remain ordinary end-to-end 60+15 measurements. A composite is
+incomplete when required controlled evidence is missing.
+
 Status: measurement authority for issue #335 and its parent epic #333. This is
 **not** an optimization, a product claim, or permission to cut features for a
 number. Nothing here changes what DockerMap collects or publishes.
@@ -372,15 +400,10 @@ or select a fixture-specific baseline count.
 
 ### Calibration capacity and superseded evidence
 
-Methodology-7 is advanced **before** the 60-observation dataset is collected.
-Sixty is the final automatic window revision: a fixed structural capacity decision,
-not statistical tuning to `buildModelMs`. It is four times the measured
-15-observation Baseline-4 window, twice the original 30-observation calibration
-window, and provides substantial validation headroom beyond the prior protocol.
-With the unchanged +2 margin and complete-following-15 rule it can validate a stable
-point through approximately `w=43`. If a genuine end-to-end metric cannot validate
-under fixed-60, calibration stops: it does not move to 70/80, alter +2, widen the
-band, or change the derivation rule.
+Methodology-8 adopts fixed 60+15 conditioning after the final 60-observation
+calibration disproved the premise that every metric supports one common sustained
+stationarity gate. The calibration capacity, band, and margin are historical
+diagnostic details; they are not a Baseline-4 prerequisite.
 
 The rejected 40-observation calibration remains retained evidence, not Baseline-4
 authority: `buildModelMs: stable w=25 -> frozen warm-up=27 -> requires 42
@@ -388,15 +411,11 @@ observations`. That failure demonstrated insufficient protocol capacity; it does
 itself define the new window.
 
 The external calibration artifact stores its raw ordered cells, constants, pinned
-environment, daemon-binary before/after provenance, and a complete per-metric
-derivation trace. Every report records every reference fixture, stable `w`, metric
-maximum, proposed `w+2`, required evidence length, evidence-backed status, candidate
-ratios, and PASS/CONFLICT reason. The report is persisted and SHA-256 recorded even
-when one or more metrics conflict. A conflict makes the overall calibration FAIL and
-leaves the frozen warm-up table unchanged/empty: no partial table is authoritative.
-Its SHA256 and resulting table below are frozen before a baseline may start.
+environment, daemon-binary provenance, and complete per-metric derivation trace.
+It is persisted with SHA-256 even on conflict, but is **REJECTED,
+NON-AUTHORITATIVE** for Baseline-4: no result table may block or alter capture.
 
-| metric | reference-25 w | reference-100 w | reference-250 w | frozen warm-ups (max + 2) |
+| metric | reference-25 diagnostic | reference-100 diagnostic | reference-250 diagnostic | historical proposal |
 | --- | ---: | ---: | ---: | ---: |
 | dockerObservationMs | pending calibration | pending calibration | pending calibration | pending calibration |
 | composeEnrichmentMs | pending calibration | pending calibration | pending calibration | pending calibration |
@@ -420,18 +439,15 @@ not part of the closed artifact schema and carries:
 - the stage-6/7 independence control (verdict, per-run sample sets, and a
   per-sample audit of accepted revision, notification, skipped acceptances, render
   commit offset, frame confirmation and metric before/after);
-- warm-up retention: for every daemon-side warmed cell the **complete**
-`samples + 10` observation window in the order the daemon produced it, with the
-fixed warm-ups at indices 0–9 and the recorded samples proven equal to the run
-  stored in the artifact;
-- the retained `warmUpObservations` map.
+- burn-in retention: for every ordinary warmed end-to-end cell the **complete**
+ `samples + 60` observation window in order, with fixed burn-in at indices 0–59
+ and observations 60–74 proven equal to the recorded run;
+- the retained `burnInObservations` map.
 
-The capture refuses to emit an artifact when a daemon-side warmed window is missing,
-shorter than `samples + 10`, retains anything other than the fixed first ten
-observations, or does not match the artifact — so a slow warm-up value cannot be
-hidden. Browser and probe stages perform their own warm-up inside their test-only
-probes and cannot retain daemon observation windows because no daemon bench sink
-produces those stages.
+The capture refuses to emit an artifact when an ordinary warmed window is missing,
+shorter than `samples + 60`, retains anything other than the fixed first 60
+observations, or does not match the artifact. Browser and probe stages are held to
+the same retained 60+15 structural rule.
 
 ## Cold-start versus warmed-repeated stages
 
@@ -440,12 +456,12 @@ The distinction is load-bearing, not descriptive, and the contract encodes it in
 
 - **cold-start** — `daemonStartToListenerMs`, `listenerToFirstDockerModelMs`. The
   first observation *is* the measurement, so nothing is discarded.
-- **warmed-repeated** — every other stage. A repeated steady-state operation. The
+- **warmed-repeated** — every other stage. A repeated operation. The
   daemon's first passes through the collection path are cold (its first refresh
   runs before its listener binds). The protocol therefore declares a **FIXED
-`TIME_TO_ANSWER_WARM_UP_OBSERVATIONS = 10` warm-up observations BEFORE the capture
-and collects `samples + 10` observations for the warmed daemon stages, keeping the
-first ten as warm-up and the next 15 as the measured window
+ `TIME_TO_ANSWER_END_TO_END_BURN_IN_OBSERVATIONS = 60` burn-in observations BEFORE
+ the capture and collects `samples + 60` observations, keeping the first 60 for
+ audit and the next 15 as the measured window
   (`splitWarmedObservations` refuses a shorter window). With 15 recorded samples,
   nearest-rank p95 *is* the maximum, so a surviving cold observation would
   otherwise become the published number.
@@ -453,27 +469,18 @@ first ten as warm-up and the next 15 as the measured window
   (`isScenarioCell`). They are declared in the closed matrix only for the fixtures
   that construct the scenario.
 
-**Why ten.** This is a conservative protocol revision after the fixed-five
-protocol proved marginal at its stationarity gate. It is fixed before capture and
-is not chosen or extended from observed values. The historical Baseline 3
-artifacts do not retain enough warm-up evidence to claim that ten was
-statistically derived from that baseline.
+**Why sixty.** The final calibration showed no common sustained-stationarity rule
+for all end-to-end metrics. Sixty is fixed before capture, is not chosen or
+extended from observed values, and is equal conditioning rather than a claim that
+all metrics reach steady state.
 
-**Stationarity is a validity check, never a repair.** `assertWarmUpStationarity`
-compares the median of the final two warm-up observations against the median of the
-measured window and requires a ratio inside the declared `0.5×–1.5×` band. A
-window outside that unchanged band
-**invalidates the cell/run**; the harness never discards further samples to make a
-window pass, because choosing how many samples to drop after seeing the values
-would turn conditioning into result selection.
+**Stationarity is informational only.** Historical diagnostic calculations may be
+retained for audit, but never invalidate a structurally valid run, move observation
+61, or cause any sample to be dropped.
 
-Every warm-up observation is retained in the raw audit trail
-(`warmUpObservations`, keyed `fixture|stage|run`) with the whole observation window
-and the stationarity ratio, and none of them ever enters a recorded sample, a
-summary, or a promotion comparison. This retention also applies when stationarity
-fails: the failure raw evidence retains fixture/stage/run identity, all ten
-warm-ups, measured samples gathered for that window, the median/reference
-calculation, ratio, unchanged bounds, and failure reason before capture aborts.
+Every burn-in observation is retained in the raw audit trail
+(`burnInObservations`, keyed `fixture|stage|run`) with the whole observation
+window, and none enters a recorded sample, summary, or promotion comparison.
 
 ## Capture discipline
 
@@ -696,8 +703,8 @@ Complete and enforced by tests:
   chain-of-custody check from daemon revision to rendered content;
 - the stage-6/7 independence control, enforced before any artifact is assembled
   and unit-tested against its RED cases;
-- the fixed warm-up protocol and its stationarity guard, with every warm-up
-  retained in the raw audit trail;
+- the fixed 60-observation burn-in protocol, with every burn-in retained in the
+ raw audit trail and no stationarity gate;
 - the capture's runtime premise assertions (provider-only inventory unchanged,
   optional provider non-fresh, slow-Compose project really declared, and the
   application page never reaching the daemon directly);

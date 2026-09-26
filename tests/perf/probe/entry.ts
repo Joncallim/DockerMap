@@ -27,7 +27,7 @@ declare global {
   }
 }
 
-function warmed(samples: number, run: () => void): number[] {
+ function timed(samples: number, run: () => void): number[] {
   const measured: number[] = [];
   for (let index = 0; index < samples; index += 1) {
     const start = performance.now();
@@ -42,18 +42,18 @@ window.__dockermapProbe = {
     const build = () => {
       buildModel(snapshot as never, runtimeMap as never);
     };
- // Ordinary capture hides its fixed probe warm-ups. Calibration deliberately
- // does not: all 30 ordered calls are returned as conditioning evidence.
- if (!calibration) warmed(2, build);
-    const model = buildModel(snapshot as never, runtimeMap as never);
+ const model = buildModel(snapshot as never, runtimeMap as never);
     const layout = () => {
       layoutServices(model.services, model.relationships, (service, index) => `${service.id}\u0000${index}`);
     };
- if (!calibration) warmed(2, layout);
-    return {
-      buildModelMs: warmed(samples, build),
-      legacyTopologyLayoutMs: warmed(samples, layout)
-    };
+ // Ordinary capture returns all 75 ordered calls so the harness can retain its
+ // 60-call burn-in and publish only calls 61-75. Calibration remains a
+ // separately requested 60-observation diagnostic series.
+ const count = calibration ? samples : samples + 60;
+ return {
+ buildModelMs: timed(count, build),
+ legacyTopologyLayoutMs: timed(count, layout)
+ };
   }
 };
 

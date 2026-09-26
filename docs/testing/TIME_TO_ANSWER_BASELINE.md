@@ -66,6 +66,17 @@ and its digest verified before **and** after the capture.
 
 ## Composite Baseline-4 schema
 
+### Current methodology-8 protocol
+
+Every ordinary warmed end-to-end fixture/run retains exactly 60 fixed burn-in
+observations and publishes exactly the following 15 observations, beginning at
+observation 61. Burn-in never enters a timing summary. This is equal deterministic
+conditioning for baseline and candidate, not a claim of steady state. Historical
+stationarity calibration remains rejected, non-authoritative audit evidence: it
+does not gate Baseline-4 or supply per-metric counts. Stage 5 and Stage-6/7
+independence remain separate controlled protocols, and their control samples never
+enter the normal end-to-end timing data.
+
 Baseline 4 has distinct general, dedicated Stage-5, and dedicated Stage-6/7
 independence raw evidence sections.
 Every one of the 44 records carries its stage, fixture, measurement protocol,

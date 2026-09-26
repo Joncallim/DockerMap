@@ -12,14 +12,13 @@ import {
   TIME_TO_ANSWER_MATRIX,
   TIME_TO_ANSWER_METHODOLOGY,
  TIME_TO_ANSWER_WARMED_SAMPLES,
+ TIME_TO_ANSWER_END_TO_END_BURN_IN_OBSERVATIONS,
  TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS,
  TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES,
  TIME_TO_ANSWER_WARM_UP_METRICS,
  deriveFrozenWarmUpCount,
  deriveWarmUpCalibrationReport,
- frozenWarmUpCount,
   assertTimeToAnswerPromotion,
-  assertWarmUpStationarity,
   assertDaemonBinaryProvenance,
   compatibleTimeToAnswerEnvironment,
   isScenarioCell,
@@ -100,8 +99,8 @@ function candidate(overrides: { environment?: Record<string, unknown>; records?:
 }
 
 describe("time-to-answer promotion gate", () => {
- it("fails closed until every warmed metric has a frozen calibration count", () => {
- expect(() => frozenWarmUpCount("dockerObservationMs")).toThrow("no frozen calibrated warm-up count");
+ it("uses the declared fixed 60-observation burn-in without a per-metric table", () => {
+ expect(TIME_TO_ANSWER_END_TO_END_BURN_IN_OBSERVATIONS).toBe(60);
  });
 
  it("derives the earliest sustained calibration point, maximum fixture count, and fixed margin", () => {
@@ -139,7 +138,7 @@ describe("time-to-answer promotion gate", () => {
  expect(report.verdict).toBe("CONFLICT");
  expect(report.metrics).toHaveLength(TIME_TO_ANSWER_WARM_UP_METRICS.length);
  expect(report.metrics.find((metric) => metric.metric === "dockerObservationMs")).toMatchObject({ verdict: "CONFLICT", proposedWarmUpCount: 47, requiredEvidenceLength: 62, evidenceBacked: false });
- expect(report.authoritativeWarmUpCounts).toEqual({});
+ expect(report.nonAuthoritativeProposedWarmUpCounts).toEqual({});
  expect(report.metrics.find((metric) => metric.metric === "buildModelMs")?.verdict).toBe("PASS");
  });
 
@@ -147,7 +146,7 @@ describe("time-to-answer promotion gate", () => {
  const observations = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
  const report = deriveWarmUpCalibrationReport(TIME_TO_ANSWER_WARM_UP_METRICS.flatMap((metric) => TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({ fixture, metric, observations }))));
  expect(report.verdict).toBe("PASS");
- expect(Object.keys(report.authoritativeWarmUpCounts)).toEqual(TIME_TO_ANSWER_WARM_UP_METRICS);
+ expect(Object.keys(report.nonAuthoritativeProposedWarmUpCounts)).toEqual(TIME_TO_ANSWER_WARM_UP_METRICS);
  expect(report.metrics[0]?.fixtures[0]?.stableWarmUpCount).toBe(2);
  expect(report.metrics[0]?.fixtures[0]?.candidates[0]).toMatchObject({ candidate: 2, ratio: 1, inBand: true, sustained: true });
  });
@@ -327,11 +326,11 @@ describe("time-to-answer promotion gate", () => {
   it("cannot let a cold first observation enter a warmed stage summary", () => {
     // The daemon's first passes are cold, and with 15 recorded samples nearest-rank
     // p95 IS the maximum — so a surviving cold observation would become the
- // published number. The protocol discards a FIXED ten observations (declared
+ // published number. The protocol discards a FIXED 60 observations (declared
     // before the capture), keeps them all for audit, and never trims further.
- const cold = [99.9, 40.1, 12.2, 8.8, 6.7, 5.4, 4.2, 3.4, 2.9, 2.8];
+ const cold = Array.from({ length: TIME_TO_ANSWER_END_TO_END_BURN_IN_OBSERVATIONS }, (_, index) => 99.9 - index);
     const warm = Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, index) => 2 + index * 0.1);
- const { warmUps, recorded } = splitWarmedObservations([...cold, ...warm], TIME_TO_ANSWER_WARMED_SAMPLES, cold.length);
+ const { warmUps, recorded } = splitWarmedObservations([...cold, ...warm]);
     expect(warmUps).toEqual(cold);
  expect(warmUps).toHaveLength(cold.length);
     expect(recorded).toEqual(warm);
@@ -340,29 +339,15 @@ describe("time-to-answer promotion gate", () => {
     expect(summary.medianOfThreeRunP95Ms).toBeLessThan(10);
     // No arbitrary sampling: the whole window is required and a short window FAILS
     // rather than being silently trimmed to the declared count.
- expect(() => splitWarmedObservations([...cold, ...warm].slice(0, cold.length + warm.length - 1), TIME_TO_ANSWER_WARMED_SAMPLES, cold.length)).toThrow();
+ expect(() => splitWarmedObservations([...cold, ...warm].slice(0, cold.length + warm.length - 1))).toThrow();
   });
 
-  it("invalidates a warmed window whose declared stationarity band is violated", () => {
-    const measured = Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, index) => 2 + index * 0.1);
-    // Warm-ups that never settled: the final pair still sits far above the measured
-    // median, which is what the old single-discard policy published as a sample.
- const unsettled = [99.9, 40.1, 12.2, 11.6, 11.3, 11.1, 11, 10.9, 10.8, 10.7];
- const bad = splitWarmedObservations([...unsettled, ...measured], TIME_TO_ANSWER_WARMED_SAMPLES, unsettled.length);
- expect(() => assertWarmUpStationarity({ label: "reference-100|dockerObservationMs|run0", ...bad, warmUpCount: unsettled.length })).toThrow(
-      /not stationary/
-    );
-    // A settled window passes and reports its ratio (declared band 0.5x–1.5x).
- const settled = splitWarmedObservations([99.9, 40.1, 12.2, 8.8, 6.7, 5.4, 4.2, 3.4, 2.9, 2.8, ...measured], TIME_TO_ANSWER_WARMED_SAMPLES, 10);
- const ratio = assertWarmUpStationarity({ label: "reference-100|dockerObservationMs|run0", ...settled, warmUpCount: 10 });
-    expect(ratio).toBeGreaterThanOrEqual(0.5);
-    expect(ratio).toBeLessThanOrEqual(1.5);
-    // The guard never repairs a window: it rejects, and the sample count must be
-    // exactly the declared 15.
-    expect(() =>
- assertWarmUpStationarity({ label: "x", warmUps: settled.warmUps, recorded: settled.recorded.slice(0, 14), warmUpCount: 10 })
-    ).toThrow(/exactly 15 measured samples/);
-  });
+ it("never adapts the measured window to diagnostics", () => {
+ const observations = Array.from({ length: 75 }, (_, index) => index < 60 ? 100 - index : 2);
+ const { warmUps, recorded } = splitWarmedObservations(observations);
+ expect(warmUps).toHaveLength(60);
+ expect(recorded).toEqual(Array(15).fill(2));
+ });
 
   it("binds the executed daemon binary to the recorded revision", () => {
     const digest = "a".repeat(64);
