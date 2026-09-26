@@ -154,7 +154,7 @@ export const TIME_TO_ANSWER_CONTROLLED_RUNS = 3;
  * version, because a different design produces a different number for the same
  * product.
  */
-export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-5";
+export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodology-6";
 
 /**
  * Fixed, predeclared warm-up observations per warmed daemon cell per run.
@@ -170,7 +170,10 @@ export const TIME_TO_ANSWER_METHODOLOGY = "dockermap-v1/time-to-answer-methodolo
  * declared here (rather than in the runner) so a command cannot quietly tune
  * them after it has seen an observation.
  */
-export const TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS = 30;
+// Fixed methodology-6 revision.  Forty was selected after the previous
+// protocol could not validate its own late derived count; it is not a
+// statistically optimised or data-dependent window.
+export const TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS = 40;
 export const TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN = 2;
 
 /**
@@ -182,7 +185,7 @@ export const TIME_TO_ANSWER_STATIONARITY_MIN_RATIO = 0.5;
 export const TIME_TO_ANSWER_STATIONARITY_MAX_RATIO = 1.5;
 
 /**
- * Metric-level warm-up counts produced by the methodology-5 calibration.
+ * Metric-level warm-up counts produced by the methodology-6 calibration.
  * This starts empty deliberately: Baseline-4 capture is forbidden until the
  * separately retained calibration artifact has supplied every warmed metric.
  * Do not replace a missing key with a global fallback.
@@ -562,7 +565,7 @@ function median(values: readonly number[]): number {
 }
 
 /**
- * Derive one metric's frozen count from its complete 30-observation reference
+ * Derive one metric's frozen count from its complete 40-observation reference
  * fixture cells. Candidate `w` compares obs[w-2:w] to obs[w:w+15]. The first
  * candidate whose ratio stays inside the declared band at every later eligible
  * position is selected for each fixture; the metric receives their maximum plus
@@ -604,7 +607,7 @@ export function deriveFrozenWarmUpCount(cells: readonly WarmUpCalibrationCell[])
  }
  const frozenWarmUpCount = Math.max(...Object.values(fixtureCounts)) + TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN;
  if (frozenWarmUpCount > latestEligible) {
- throw new Error(`${metric} calibration conflict: safety margin ${TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN} moves warm-up count ${frozenWarmUpCount} beyond the evidence-backed 30-observation window`);
+ throw new Error(`${metric} calibration conflict: safety margin ${TIME_TO_ANSWER_WARM_UP_SAFETY_MARGIN} moves warm-up count ${frozenWarmUpCount} beyond the evidence-backed 40-observation window`);
  }
  return { metric, fixtureCounts, frozenWarmUpCount };
 }
