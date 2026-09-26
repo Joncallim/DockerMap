@@ -293,14 +293,15 @@
    */
   window.__dockermapBenchHelpers = {
     /*
-     * Arm the stage-6/7 measurement BEFORE the harness triggers a publication
+ * Arm the stage-6/7 measurement BEFORE the harness triggers a publication
      * change, then await it afterwards. Arming records the pre-change Home
      * metric value, so "the DOM changed" is measured rather than assumed.
      */
  armModelAcceptance(input) {
       const mode = input.mode === "acceptance-only" ? "acceptance-only" : "content";
-      const arm = {
-        mode,
+const arm = {
+mode,
+seamIsolation: Boolean(input.seamIsolation),
         previousSeq: Number(input.previousSeq) || 0,
         limit: Number(input.limit) || 60000,
         metricLabel: String(input.metricLabel || "Offline"),
@@ -378,14 +379,17 @@
         while (performance.now() < deadline && !commit) {
           for (const candidate of acceptanceSink()) {
  if (!candidate.revision || candidate.snapshotRevision !== candidate.revision || candidate.runtimeMapRevision !== candidate.revision || candidate.seq <= trigger.acceptedSequence) continue;
- if (arm.expectedRevision && candidate.revision !== arm.expectedRevision) continue;
-            const rendered = bench.commits.find(
-              (entry) =>
-                entry.at > candidate.at &&
-                entry.textChanged &&
-                entry.inStory &&
-                entry.revision === candidate.revision &&
-                entry.storyValue === arm.expectedMetricValue
+if (arm.expectedRevision && candidate.revision !== arm.expectedRevision) continue;
+const rendered = bench.commits.find(
+(entry) =>
+entry.at > candidate.at &&
+entry.textChanged &&
+entry.inStory &&
+entry.revision === candidate.revision &&
+// The seam-isolation control selects the first coherent acceptance after its
+// boundary and its own rendered revision. It does not infer that this pair was
+// caused by the fixture publication from timing, sequence, or visible content.
+(arm.seamIsolation || entry.storyValue === arm.expectedMetricValue)
             );
             if (rendered) {
               event = candidate;
@@ -491,7 +495,7 @@
   return arm.trigger;
  },
 
- setExpectedModelRevision(revision, delayMs) {
+setExpectedModelRevision(revision, delayMs) {
  const arm = bench.arm;
  if (!arm || !arm.task || !arm.armed) throw new Error("model acceptance was not armed");
  if (typeof revision !== "string" || revision.length === 0) {
@@ -502,8 +506,19 @@
  // still has to observe this exact coherent pair before it can be measured.
  window.__dockermapBenchRenderDelayTarget = revision;
  window.__dockermapBenchRenderDelayMs = Number(delayMs) || 0;
- return revision;
- },
+return revision;
+},
+
+armSeamIsolationDelay(delayMs) {
+const arm = bench.arm;
+if (!arm || !arm.task || !arm.armed || !arm.seamIsolation) throw new Error("seam isolation was not armed");
+if (!Number.isFinite(Number(delayMs)) || Number(delayMs) <= 0) throw new Error("seam isolation requires a positive delay");
+// The application consumes this only after recordModelAcceptance() has
+// recorded the next coherent pair. No publication identity is supplied.
+window.__dockermapBenchRenderDelayMs = Number(delayMs);
+window.__dockermapBenchDelayAfterNextAcceptance = true;
+return true;
+},
 
     async awaitModelAcceptance() {
       const arm = bench.arm;

@@ -23,10 +23,11 @@ Consequently Baseline-4 does not require calibration PASS, frozen per-metric
 counts, the former +2 margin, or the 0.5–1.5x band.
 
 Controlled evidence is distinct: Stage 5 is `controlled-poll-phase`; Stage-6/7
-independence is `controlled-stage6-stage7-independence`. Neither contributes
+seam isolation is `controlled-stage6-stage7-seam-isolation`. Neither contributes
 artificial samples to the normal end-to-end dataset. The normal Stage-6 and
 Stage-7 timings remain ordinary end-to-end 60+15 measurements. A composite is
-incomplete when required controlled evidence is missing.
+incomplete when required Stage-5 controlled evidence is missing; seam-isolation
+evidence is supporting validation rather than a prerequisite for normal timing.
 
 Status: measurement authority for issue #335 and its parent epic #333. This is
 **not** an optimization, a product claim, or permission to cut features for a
@@ -56,7 +57,7 @@ the math. It contains no timings. It defines:
 - **raw-sample validation**: 15 warmed samples in each of 3 complete controlled
   runs, nearest-rank p95 per run, median of the three run p95 values except that
   controlled stage 5 is reviewed and promoted by its phase-normalized p95;
-- the **stage-6/7 independence control** (`assertStageSixSevenIndependence`): a
+- the **stage-6/7 seam-isolation control** (`assertStageSixSevenIndependence`): a
   positive artificial presentation delay injected *after* coherent-model
   acceptance must move stage 7 by at least 70% of that delay and must not move
   stage 6 beyond `max(30 ms, 25%)`;
@@ -305,10 +306,10 @@ warm-up, stationarity, independence, or promotion rules, and an append failure
 cannot change a measurement result. Both the diagnostic identifiers and the
 in-page sink are compiled out of the ordinary production web bundle.
 
-## Stage 6/7 independence control
+## Stage 6/7 controlled seam isolation
 
-A capture may not produce a baseline unless it can show the two clocks are
-independent. After the normal samples for each fixture that declares both stages,
+A capture may retain supporting seam-isolation evidence to show the two clocks are
+separated. After the normal samples for each fixture that declares both stages,
 the harness runs `TIME_TO_ANSWER_INDEPENDENCE_SAMPLES` (3) control samples in
 which `__dockermapBenchRenderDelayMs = TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS`
 (250 ms) withholds a *newly accepted* publication from the render tree — an
@@ -321,20 +322,22 @@ before validation:
   mean the delay never reached the page).
 
 The verdict, the per-run sample sets and a per-sample audit trail (accepted
-revision, notified revision, render commit offset, metric before/after) are
+revision, coherent-pair revisions, render commit offset, metric before/after) are
 written beside the artifact in `<output>.harness-evidence.json`. The closed
 evidence schema is unchanged: the control is harness evidence, not artifact
 content. The same rule is unit-tested (`timeToAnswerIndependence.test.ts`),
 including the RED cases "the delayed render does not move stage 7" and "stage 6
 moves with the delayed presentation".
 
-Each control sample first arms the browser probe, then records an explicit
-publication-trigger checkpoint immediately before advancing the fixture
-generation. The probe excludes all accepted revisions, notifications and paired
-fetches preceding that checkpoint. The harness then uses a bounded observation
-of fixture, daemon and API inventory (including counts and revisions) rather
-than a fixed sleep; its audit records the trigger checkpoint and publication
-observation with the normal acceptance/render evidence.
+Each control sample arms the browser probe and its one-shot delay before advancing
+the fixture generation. The delay is consumed only after the real
+`useSystemModel` acceptance timestamp, and the accepted snapshot/runtime-map pair
+must have one non-empty matching revision. **Limitation:** the current architecture
+cannot reliably observe publication-level causal identity from the benchmark
+trigger to that accepted pair. This protocol therefore makes no daemon-publication
+attribution claim and does not validate daemon-to-browser attribution; it does not
+replace that limitation with timing proximity, sequence proximity, or matching
+visible content.
 
 ## Running the benchmark
 
@@ -611,16 +614,20 @@ records every `publicationToNodeObservationMs` cell with
 `controlled-poll-phase`; it is the sole owner of the arm → mark → trigger →
 identity-ack protocol. The sections are not pooled: every composite record
 names its fixture, stage, measurement protocol, source evidence file and
-committed checkpoint SHA. The dedicated Stage-6/7 independence protocol is
-`controlled-stage6-stage7-independence`: it uses the same controlled release,
-trigger identity and exact acknowledgement mechanism, observes acceptance at the
-real `useSystemModel` coherent snapshot/runtime-map seam, and applies its 250 ms
-delay only after that acceptance. Its control samples prove Stage 6 remains
-approximately unchanged while Stage 7 grows by the injected delay; they are never
-Baseline-4 timing observations and cannot replace or contaminate the normal
-end-to-end Stage-6/7 rows. Assembly rejects a missing Stage-5 section or duplicate declared cell,
-a wrong protocol, a mismatched methodology/checkpoint, or an incomplete section.
-The independence entrypoint is self-orchestrating under the trusted capture
+committed checkpoint SHA. The dedicated Stage-6/7 seam-isolation protocol is
+`controlled-stage6-stage7-seam-isolation`: it observes acceptance at the real
+`useSystemModel` coherent snapshot/runtime-map seam, requires an internally
+coherent accepted pair, and applies its 250 ms delay only after that acceptance.
+Its PASS/FAIL supporting-evidence companion records the exact limitation
+`publication-level causal identity unavailable` and
+`validatesDaemonToBrowserAttribution: false`. The control shows Stage 6 remains
+approximately unchanged while Stage 7 grows by the injected delay; it makes no
+daemon-publication attribution claim. Its samples are never Baseline-4 timing
+observations and cannot replace or contaminate the normal end-to-end Stage-6/7
+rows. Assembly rejects a missing Stage-5 section, duplicate declared cell, wrong
+protocol, mismatched methodology/checkpoint, or invalid supplied seam-isolation
+evidence; absence of this supporting control does not prevent the normal 60
+burn-in + 15 measured Baseline-4 timings from existing. The seam-isolation entrypoint is self-orchestrating under the trusted capture
 invocation: it owns a private fixture, real daemon/API/SSE path, benchmark build,
 fresh browser contexts, and `finally` teardown. It retains diagnostics only under
 the dedicated protocol directory and refuses partial output.

@@ -183,7 +183,7 @@ wrongProtocol.records.find((record) => record.stage === "publicationToNodeObserv
  expect(() => validateTimeToAnswerEvidence(wrongProtocol)).toThrow("wrong measurement protocol");
 
  const stageSixControl = rawEvidence();
- stageSixControl.records.find((record) => record.stage === "notificationToCoherentModelMs")!.measurementProtocol = "controlled-stage6-stage7-independence";
+  stageSixControl.records.find((record) => record.stage === "notificationToCoherentModelMs")!.measurementProtocol = "controlled-stage6-stage7-seam-isolation";
  expect(() => validateTimeToAnswerEvidence(stageSixControl)).toThrow("wrong measurement protocol");
 
 const missingProvenance = rawEvidence();

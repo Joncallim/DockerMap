@@ -83,7 +83,7 @@ Every one of the 44 records carries its stage, fixture, measurement protocol,
 source evidence file, checkpoint SHA and methodology version. Stage-5 records
 are `controlled-poll-phase`; every normal Stage-6/7 timing row, like every other
 non-Stage-5 baseline row, is `end-to-end`. The dedicated
-`controlled-stage6-stage7-independence` section is supporting validity evidence
+`controlled-stage6-stage7-seam-isolation` section is supporting validity evidence
 only: neither its normal nor injected 250 ms samples can become Baseline-4 timing
 observations. The assembler rejects missing Stage-5 evidence, missing cells, and
 protocol contamination.
@@ -188,7 +188,7 @@ has rendered, confirmed by one bounded frame. Medians of the three run p95s:
 | provider-only-revision-change | 44.20 | not declared (no inventory change to present) |
 | unavailable-optional-provider | 51.10 | not declared |
 
-### Independence control (must hold, or no baseline is emitted)
+### Seam-isolation control (supporting evidence)
 
 3 control samples per fixture with a 250 ms presentation delay injected **after**
 acceptance: stage 6 must not move beyond `max(30 ms, 25%)`, stage 7 must absorb at
@@ -202,8 +202,10 @@ least 70% of the delay.
 | docker-topology-change | 32.10 | 33.30 | +1.20 | 40.50 | 284.20 | +243.70 | 9 |
 
 Every control stage-7 sample exceeded the injected delay, stage 6 moved by at most
-4.4 ms, and each fixture's stage 7 absorbed the delay — the two clocks are
-independent, and stage 7 responds to presentation rather than to acceptance.
+4.4 ms, and each fixture's stage 7 absorbed the delay. This is supporting seam
+separation evidence only: publication-level causal identity from a benchmark
+trigger to the accepted pair is unavailable, so it does not validate
+daemon-to-browser attribution and makes no publication-attribution claim.
 
 ### Acceptance audit (all 306 samples)
 

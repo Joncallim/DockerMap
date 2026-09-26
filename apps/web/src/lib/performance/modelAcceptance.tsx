@@ -59,8 +59,10 @@ interface Window {
     __dockermapBenchAcceptanceSink?: ModelAcceptanceEvent[];
     /** Benchmark build only: artificial presentation delay in ms (0/absent = off). */
     __dockermapBenchRenderDelayMs?: number;
-    /** Causally acknowledged coherent identity eligible for the control delay. */
-    __dockermapBenchRenderDelayTarget?: string;
+/** Revision-targeted delay used by the ordinary benchmark capture. */
+__dockermapBenchRenderDelayTarget?: string;
+/** One-shot seam-isolation delay, armed before the next coherent acceptance. */
+__dockermapBenchDelayAfterNextAcceptance?: boolean;
  /** Benchmark build only. Drained synchronously by the capture harness. */
  __dockermapBenchLayerSink?: ModelLayerDiagnostic[];
  /** Benchmark build only. Set by the harness before it advances a fixture. */
@@ -130,8 +132,8 @@ export function recordModelLayers(snapshot: DockerSnapshot, runtimeMap: RuntimeM
  * would reschedule the timer on every render instead of once per publication.
  */
 export function useDeliveredModel<T>(value: T, revision: string | null): T {
-  if (!__DOCKERMAP_BENCH_ACCEPTANCE__) return value;
- return useDelayedPublication(value, revision, window.__dockermapBenchRenderDelayTarget ?? null);
+if (!__DOCKERMAP_BENCH_ACCEPTANCE__) return value;
+return useDelayedPublication(value, revision, window.__dockermapBenchRenderDelayTarget ?? null, window.__dockermapBenchDelayAfterNextAcceptance === true);
 }
 
 /**
@@ -164,17 +166,25 @@ else delete root.dataset.dockermapAcceptedRevision;
   return null;
 }
 
-function useDelayedPublication<T>(value: T, revision: string | null, delayTarget: string | null): T {
- const delayMs = revision === delayTarget ? armedDelayMs() : 0;
-  const latest = useRef(value);
-  latest.current = value;
-  const [delivered, setDelivered] = useState(value);
-  useEffect(() => {
-    if (delayMs <= 0) return undefined;
-    const timer = window.setTimeout(() => setDelivered(latest.current), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [revision, delayMs]);
-  return delayMs > 0 ? delivered : value;
+function useDelayedPublication<T>(value: T, revision: string | null, delayTarget: string | null, delayAfterNextAcceptance: boolean): T {
+const deliveredRevision = useRef(revision);
+const isNextAcceptance = delayAfterNextAcceptance && Boolean(revision) && revision !== deliveredRevision.current;
+const delayMs = revision === delayTarget || isNextAcceptance ? armedDelayMs() : 0;
+const latest = useRef(value);
+latest.current = value;
+const [delivered, setDelivered] = useState(value);
+useEffect(() => {
+if (delayMs <= 0) return undefined;
+// This flag is consumed only after recordModelAcceptance() ran in the same
+// render. It deliberately identifies no daemon publication or trigger.
+if (isNextAcceptance) window.__dockermapBenchDelayAfterNextAcceptance = false;
+const timer = window.setTimeout(() => {
+deliveredRevision.current = revision;
+setDelivered(latest.current);
+}, delayMs);
+return () => window.clearTimeout(timer);
+}, [revision, delayMs, isNextAcceptance]);
+return delayMs > 0 ? delivered : value;
 }
 
 function armedDelayMs(): number {

@@ -1,4 +1,4 @@
-/** Regression coverage for the stage-7 control-trigger ordering (#335). */
+/** Regression coverage for the Stage-6/7 seam-isolation boundary (#335). */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -8,100 +8,33 @@ import vm from "node:vm";
 const probe = readFileSync(resolve(new URL(".", import.meta.url).pathname, "browserProbe.js"), "utf8");
 
 function installProbe() {
-  let clock = 0;
-  const window = {
-    fetch() {},
-    EventSource: function EventSource() {},
-    requestAnimationFrame: (done) => setImmediate(() => done()),
-    performance: { now: () => ++clock }
-  };
-  window.EventSource.prototype = { addEventListener() {} };
-  const document = {
-    documentElement: { dataset: {}, querySelectorAll: () => [] },
-    querySelectorAll: () => [],
-    addEventListener() {}
-  };
-  const context = {
-    window,
-    document,
-    performance: window.performance,
-    requestAnimationFrame: window.requestAnimationFrame,
-    MutationObserver: class { observe() {} },
-    Element: class {},
-    URL,
-    location: { href: "http://probe.test/" },
-    setImmediate,
-    Promise,
-    String,
-    Number,
-    Boolean,
-    Array,
-    JSON,
-    Object,
-    RegExp
-  };
-  vm.runInNewContext(probe, context);
-  window.__dockermapBenchAcceptanceSink = [];
-  return window;
+let clock = 0;
+const window = { fetch() {}, EventSource: function EventSource() {}, requestAnimationFrame: (done) => setImmediate(() => done()), performance: { now: () => ++clock } };
+window.EventSource.prototype = { addEventListener() {} };
+const document = { documentElement: { dataset: {}, querySelectorAll: () => [] }, querySelectorAll: () => [], addEventListener() {} };
+const context = { window, document, performance: window.performance, requestAnimationFrame: window.requestAnimationFrame, MutationObserver: class { observe() {} }, Element: class {}, URL, location: { href: "http://probe.test/" }, setImmediate, Promise, String, Number, Boolean, Array, JSON, Object, RegExp };
+vm.runInNewContext(probe, context);
+window.__dockermapBenchAcceptanceSink = [];
+return window;
 }
 
-test("stage-7 control ignores a revision accepted between arm and trigger", async () => {
-  const window = installProbe();
-  const helpers = window.__dockermapBenchHelpers;
-  helpers.armModelAcceptance({
-    mode: "content",
-    previousSeq: 0,
-    limit: 1_000,
- expectedMetricValue: "16",
- awaitPublicationTrigger: true
-  });
-  // This is the race from the aborted capture: background polling accepts a
-  // revision after arming but before the fixture POST. It must not satisfy the
-  // control sample.
-  window.__dockermapBench.notifyLog.push({ at: 0.1, revision: "background" });
-  window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 0.2, at: 0.3, revision: "background" });
- window.__dockermapBenchAcceptanceSink.push({ seq: 1, at: 0.4, revision: "background", snapshotRevision: "background", runtimeMapRevision: "background" });
-  // It deliberately also has the expected content. Without the trigger fence,
-  // content matching alone would select this pre-trigger revision.
-  window.__dockermapBench.commits.push({
-    at: 0.5,
-    inHome: true,
-    inStory: true,
-    textChanged: true,
-    revision: "background",
-    storyValue: "16"
- });
- helpers.markModelPublicationTriggered();
- helpers.setExpectedModelRevision("triggered");
- // A later, unrelated revision may carry the same Home content. The control
- // must time the coherent publication the fixture/API pair identified, not
- // merely any post-trigger content match.
- window.__dockermapBench.notifyLog.push({ at: 1, revision: "other" });
- window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 1.1, at: 1.2, revision: "other" });
- window.__dockermapBenchAcceptanceSink.push({ seq: 2, at: 1.3, revision: "other", snapshotRevision: "other", runtimeMapRevision: "other" });
- window.__dockermapBench.commits.push({
- at: 1.4,
- inHome: true,
- inStory: true,
- textChanged: true,
- revision: "other",
- storyValue: "16"
- });
- window.__dockermapBench.notifyLog.push({ at: 3, revision: "triggered" });
- window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 4, at: 5, revision: "triggered" });
- window.__dockermapBenchAcceptanceSink.push({ seq: 3, at: 6, revision: "triggered", snapshotRevision: "triggered", runtimeMapRevision: "triggered" });
-  // This is the stage-7 proof: the selected acceptance must pair with Home
-  // content carrying the same accepted revision and the triggered metric.
-  window.__dockermapBench.commits.push({
-    at: 7,
-    inHome: true,
-    inStory: true,
-    textChanged: true,
-    revision: "triggered",
-    storyValue: "16"
-  });
-  const measured = await helpers.awaitModelAcceptance();
-  assert.equal(measured.acceptedRevision, "triggered");
- assert.equal(measured.acceptedSequence, 3);
-  assert.equal(measured.triggerAcceptedSequence, 1);
+test("seam isolation selects the first coherent post-boundary pair without publication identity or content matching", async () => {
+const window = installProbe();
+const helpers = window.__dockermapBenchHelpers;
+helpers.armModelAcceptance({ mode: "content", seamIsolation: true, previousSeq: 0, limit: 1_000, metricLabel: "Offline" });
+helpers.armSeamIsolationDelay(250);
+assert.equal(window.__dockermapBenchDelayAfterNextAcceptance, true);
+window.__dockermapBench.notifyLog.push({ at: 1, revision: "unrelated" });
+window.__dockermapBench.fetchLog.push({ url: "snapshot", startedAt: 2, at: 3, revision: "unrelated" });
+window.__dockermapBenchAcceptanceSink.push({ seq: 1, at: 4, revision: "unrelated", snapshotRevision: "unrelated", runtimeMapRevision: "unrelated" });
+window.__dockermapBench.commits.push({ at: 5, inHome: true, inStory: true, textChanged: true, revision: "unrelated", storyValue: "not-a-fixture-sentinel" });
+const measured = await helpers.awaitModelAcceptance();
+assert.equal(measured.acceptedRevision, "unrelated");
+assert.equal(measured.acceptedSequence, 1);
+assert.equal(measured.triggerRevision, "");
+});
+
+test("the probe source keeps normal trigger identity separate from seam isolation", () => {
+assert.match(probe, /armSeamIsolationDelay/);
+assert.match(probe, /arm\.seamIsolation \|\| entry\.storyValue === arm\.expectedMetricValue/);
 });

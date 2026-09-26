@@ -43,7 +43,8 @@ const HARNESS_IDENTIFIERS = [
  */
 const SEAM_IDENTIFIERS = [
   "__dockermapBenchAcceptanceSink",
-  "__dockermapBenchRenderDelayMs",
+"__dockermapBenchRenderDelayMs",
+"__dockermapBenchDelayAfterNextAcceptance",
   "dockermapAcceptedRevision",
   "recordModelAcceptance",
   "useDeliveredModel",

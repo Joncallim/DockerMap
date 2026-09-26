@@ -267,7 +267,7 @@ export interface TimeToAnswerRecord {
 fixture: string;
 stage: TimeToAnswerStageId;
 /** Controlled sub-benchmarks own only the cells they explicitly name. */
-measurementProtocol: "controlled-poll-phase" | "controlled-stage6-stage7-independence" | "end-to-end";
+  measurementProtocol: "controlled-poll-phase" | "controlled-stage6-stage7-seam-isolation" | "end-to-end";
 /** Raw evidence section that produced this one cell. */
 sourceEvidenceFile: string;
 /** Committed source/harness checkpoint that produced this cell. */

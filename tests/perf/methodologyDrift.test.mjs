@@ -36,5 +36,5 @@ test("controlled protocols remain separate from normal end-to-end timing", () =>
  const assembler = read("tests/perf/assembleCompositeEvidence.ts");
  assert.match(capture, /TIME_TO_ANSWER_END_TO_END_MATRIX/);
  assert.match(assembler, /controlled-poll-phase/);
- assert.match(assembler, /controlled-stage6-stage7-independence/);
+assert.match(assembler, /controlled-stage6-stage7-seam-isolation/);
 });
