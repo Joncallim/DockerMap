@@ -446,9 +446,11 @@ entry.revision === candidate.revision &&
         await frame();
         const presentedAt = performance.now();
         return {
-          notificationToCoherentModelMs: acceptedAt - notifyAt,
-          coherentModelToUsefulRenderMs: presentedAt - acceptedAt,
- acceptedRevision: revision,
+notificationToCoherentModelMs: acceptedAt - notifyAt,
+coherentModelToUsefulRenderMs: presentedAt - acceptedAt,
+acceptanceAt: acceptedAt,
+delayStartedAt: arm.seamIsolation ? Number(window.__dockermapBenchDelayStartedAt ?? NaN) : null,
+acceptedRevision: revision,
  snapshotRevision: event.snapshotRevision,
  runtimeMapRevision: event.runtimeMapRevision,
           acceptedSequence: event.seq,
@@ -517,6 +519,7 @@ if (!Number.isFinite(Number(delayMs)) || Number(delayMs) <= 0) throw new Error("
 // recorded the next coherent pair. No publication identity is supplied.
 window.__dockermapBenchRenderDelayMs = Number(delayMs);
 window.__dockermapBenchDelayAfterNextAcceptance = true;
+window.__dockermapBenchDelayStartedAt = undefined;
 return true;
 },
 

@@ -63,6 +63,8 @@ interface Window {
 __dockermapBenchRenderDelayTarget?: string;
 /** One-shot seam-isolation delay, armed before the next coherent acceptance. */
 __dockermapBenchDelayAfterNextAcceptance?: boolean;
+/** Benchmark-only timestamp at which the post-acceptance delay timer began. */
+__dockermapBenchDelayStartedAt?: number;
  /** Benchmark build only. Drained synchronously by the capture harness. */
  __dockermapBenchLayerSink?: ModelLayerDiagnostic[];
  /** Benchmark build only. Set by the harness before it advances a fixture. */
@@ -178,6 +180,7 @@ if (delayMs <= 0) return undefined;
 // This flag is consumed only after recordModelAcceptance() ran in the same
 // render. It deliberately identifies no daemon publication or trigger.
 if (isNextAcceptance) window.__dockermapBenchDelayAfterNextAcceptance = false;
+if (isNextAcceptance) window.__dockermapBenchDelayStartedAt = performance.now();
 const timer = window.setTimeout(() => {
 deliveredRevision.current = revision;
 setDelivered(latest.current);

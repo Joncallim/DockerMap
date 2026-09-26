@@ -45,6 +45,7 @@ const SEAM_IDENTIFIERS = [
   "__dockermapBenchAcceptanceSink",
 "__dockermapBenchRenderDelayMs",
 "__dockermapBenchDelayAfterNextAcceptance",
+"__dockermapBenchDelayStartedAt",
   "dockermapAcceptedRevision",
   "recordModelAcceptance",
   "useDeliveredModel",
