@@ -358,6 +358,7 @@ npm run perf:time-to-answer -- \
   --checkpoint <commit>
 # 3. dedicated controlled Stage-5 capture; the only owner of the poll-phase protocol
 npm run perf:stage-five -- \
+  --checkpoint <commit> \
   --metadata /tmp/time-to-answer-metadata.json \
   --output   /tmp/time-to-answer-stage5.json \
   --raw-dir  /tmp/time-to-answer-stage5-raw
@@ -375,12 +376,26 @@ npx tsx tests/perf/assembleCompositeEvidence.ts \
   --output /tmp/time-to-answer-baseline.json
 # 6. recompute summaries from the raw samples (never trust supplied aggregates)
 npm run perf:summarize -- --artifact /tmp/time-to-answer-baseline.json
-# 7. assemble the candidate's end-to-end and Stage-5 captures into its composite
+# 7. pin the candidate environment from the candidate checkout
+npm run perf:metadata -- --output /tmp/time-to-answer-candidate-metadata.json
+# 8. capture the candidate's end-to-end section at <candidate-commit>
+npm run perf:time-to-answer -- \
+  --metadata /tmp/time-to-answer-candidate-metadata.json \
+  --output /tmp/time-to-answer-candidate-general.json \
+  --raw-dir /tmp/time-to-answer-candidate-raw \
+  --checkpoint <candidate-commit>
+# 9. capture the candidate's dedicated Stage-5 section at <candidate-commit>
+npm run perf:stage-five -- \
+  --metadata /tmp/time-to-answer-candidate-metadata.json \
+  --output /tmp/time-to-answer-candidate-stage5.json \
+  --raw-dir /tmp/time-to-answer-candidate-stage5-raw \
+  --checkpoint <candidate-commit>
+# 10. assemble the candidate's captures into its composite
 npx tsx tests/perf/assembleCompositeEvidence.ts \
   --general /tmp/time-to-answer-candidate-general.json \
   --stageFive /tmp/time-to-answer-candidate-stage5.json \
   --output /tmp/time-to-answer-candidate.json
-# 8. compare the two composite artifacts (fails closed)
+# 11. compare the two composite artifacts (fails closed)
 npm run perf:promote -- \
   --baseline /tmp/time-to-answer-baseline.json \
   --candidate /tmp/time-to-answer-candidate.json
