@@ -1,0 +1,474 @@
+/**
+ * RED-checks for the time-to-answer promotion gate (#335).
+ *
+ * Every case here must fail for an EVIDENCE reason — a bad comparison — and not
+ * because the fixture happens to be malformed in some unrelated way. The
+ * candidate in each rejection case is otherwise a complete, valid artifact.
+ */
+import { describe, expect, it } from "vitest";
+import {
+  TIME_TO_ANSWER_BASELINE,
+  TIME_TO_ANSWER_CONTROLLED_RUNS,
+  TIME_TO_ANSWER_MATRIX,
+  TIME_TO_ANSWER_METHODOLOGY,
+ TIME_TO_ANSWER_WARMED_SAMPLES,
+ TIME_TO_ANSWER_END_TO_END_BURN_IN_OBSERVATIONS,
+ TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS,
+ TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES,
+ TIME_TO_ANSWER_WARM_UP_METRICS,
+ deriveFrozenWarmUpCount,
+ deriveWarmUpCalibrationReport,
+  assertTimeToAnswerPromotion,
+  assertDaemonBinaryProvenance,
+  compatibleTimeToAnswerEnvironment,
+  isScenarioCell,
+  splitWarmedObservations,
+  summarizeTimeToAnswerStage,
+  TIME_TO_ANSWER_STAGE_KIND,
+  TIME_TO_ANSWER_STAGES,
+  timeToAnswerLimit,
+ validateTimeToAnswerEvidence
+} from "./timeToAnswerEvidence";
+
+const environment = {
+  runnerClass: "linux-x86_64-dedicated",
+  cpuClass: "cpus-16vcpu",
+  osImage: "ubuntu-26.04",
+  osKernel: "7.0.0-31-generic",
+  nodeRevision: "22.23.2",
+  rustRevision: "1.88.0",
+  dockerRevision: "29.8.1",
+  ssePollIntervalMs: "2000",
+  daemonBinarySha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  daemonBinaryBuild: "cargo-build-release-locked-p-dockermap-daemon",
+  cargoRevision: "cargo-1.88.0",
+  harnessRevision: "dddddddddddddddddddddddddddddddddddddddd",
+  browserEngine: "chromium",
+  browserRevision: "1.61.0",
+  browserFlags: ["--disable-background-networking"],
+  fontEnvironment: "system-default",
+  buildMode: "production",
+  fixtureRevision: "dockermap-v1/time-to-answer-fixtures-1",
+  sourceRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  methodologyVersion: TIME_TO_ANSWER_METHODOLOGY
+};
+
+/** 15 finite non-negative warmed samples with a per-run offset. */
+function samples(base: number): number[] {
+  return Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, index) => base + index * 0.1);
+}
+
+function artifact(overrides: { environment?: Record<string, unknown>; records?: unknown[] } = {}) {
+ const provenance = (record: any) => ({
+ ...record,
+ measurementProtocol: record.measurementProtocol ?? protocol(record.fixture, record.stage),
+ sourceEvidenceFile: record.sourceEvidenceFile ?? evidenceFile(record.fixture, record.stage),
+ checkpointSha: record.checkpointSha ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ });
+ return {
+    baseline: TIME_TO_ANSWER_BASELINE,
+    environment: { ...environment, ...(overrides.environment ?? {}) },
+    records:
+ (overrides.records ? overrides.records.map(provenance) :
+ TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => ({
+fixture,
+stage,
+ measurementProtocol: protocol(fixture, stage),
+ sourceEvidenceFile: evidenceFile(fixture, stage),
+checkpointSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+runs: [samples(10), samples(11), samples(12)]
+ })))
+ };
+}
+
+function protocol(fixture: string, stage: string): string {
+ void fixture;
+ if (stage === "publicationToNodeObservationMs") return "controlled-poll-phase";
+ return "end-to-end";
+}
+
+function evidenceFile(fixture: string, stage: string): string {
+ return protocol(fixture, stage) === "controlled-poll-phase" ? "stage-five.raw.json" : "general.raw.json";
+}
+
+function candidate(overrides: { environment?: Record<string, unknown>; records?: unknown[] } = {}) {
+  return artifact({
+    ...overrides,
+    environment: { sourceRevision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ...(overrides.environment ?? {}) }
+  });
+}
+
+describe("time-to-answer promotion gate", () => {
+ it("uses the declared fixed 60-observation burn-in without a per-metric table", () => {
+ expect(TIME_TO_ANSWER_END_TO_END_BURN_IN_OBSERVATIONS).toBe(60);
+ });
+
+ it("derives the earliest sustained calibration point, maximum fixture count, and fixed margin", () => {
+ const stable = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
+ // This fixture is unsettled at candidates 2 and 3, then stationary through
+ // every eligible position. The metric result is its earliest stable point +2.
+ stable[0] = 100;
+ stable[1] = 100;
+ stable[2] = 100;
+ stable[3] = 100;
+ const derived = deriveFrozenWarmUpCount([
+ { fixture: "reference-25", metric: "dockerObservationMs", observations: Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10) },
+ { fixture: "reference-100", metric: "dockerObservationMs", observations: stable },
+ { fixture: "reference-250", metric: "dockerObservationMs", observations: Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10) }
+ ]);
+ expect(derived.fixtureCounts).toEqual({ "reference-25": 2, "reference-100": 6, "reference-250": 2 });
+ expect(derived.frozenWarmUpCount).toBe(8);
+ });
+
+ it("fails rather than extrapolating when the safety margin is not evidence-backed", () => {
+ const observations = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
+ // Only candidate 45 is stationary, so 45 + the fixed margin exceeds the
+ // final eligible position (45) and must not become a frozen count.
+ for (let index = 0; index < 43; index += 1) observations[index] = 100;
+ expect(() => deriveFrozenWarmUpCount(TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({ fixture, metric: "dockerObservationMs", observations })))).toThrow("calibration conflict");
+ });
+
+ it("reports every metric on conflict and never makes a partial table authoritative", () => {
+ const stable = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
+ const conflicted = [...stable];
+ // Stable only at the final eligible candidate: +2 then lacks a following 15.
+ for (let index = 0; index < 43; index += 1) conflicted[index] = 100;
+ const cells = TIME_TO_ANSWER_WARM_UP_METRICS.flatMap((metric) => TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({ fixture, metric, observations: metric === "dockerObservationMs" && fixture === "reference-25" ? conflicted : stable })));
+ const report = deriveWarmUpCalibrationReport(cells);
+ expect(report.verdict).toBe("CONFLICT");
+ expect(report.metrics).toHaveLength(TIME_TO_ANSWER_WARM_UP_METRICS.length);
+ expect(report.metrics.find((metric) => metric.metric === "dockerObservationMs")).toMatchObject({ verdict: "CONFLICT", proposedWarmUpCount: 47, requiredEvidenceLength: 62, evidenceBacked: false });
+ expect(report.nonAuthoritativeProposedWarmUpCounts).toEqual({});
+ expect(report.metrics.find((metric) => metric.metric === "buildModelMs")?.verdict).toBe("PASS");
+ });
+
+ it("records candidate ratios and atomically proposes every count only on complete success", () => {
+ const observations = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
+ const report = deriveWarmUpCalibrationReport(TIME_TO_ANSWER_WARM_UP_METRICS.flatMap((metric) => TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({ fixture, metric, observations }))));
+ expect(report.verdict).toBe("PASS");
+ expect(Object.keys(report.nonAuthoritativeProposedWarmUpCounts)).toEqual(TIME_TO_ANSWER_WARM_UP_METRICS);
+ expect(report.metrics[0]?.fixtures[0]?.stableWarmUpCount).toBe(2);
+ expect(report.metrics[0]?.fixtures[0]?.candidates[0]).toMatchObject({ candidate: 2, ratio: 1, inBand: true, sustained: true });
+ });
+
+ it("rejects a calibration that omits or adds a reference fixture", () => {
+ const observations = Array.from({ length: TIME_TO_ANSWER_CALIBRATION_OBSERVATIONS }, () => 10);
+ expect(() => deriveFrozenWarmUpCount([
+ { fixture: "reference-25", metric: "dockerObservationMs", observations },
+ { fixture: "reference-100", metric: "dockerObservationMs", observations }
+ ])).toThrow("every declared reference fixture");
+ expect(() => deriveFrozenWarmUpCount([
+ ...TIME_TO_ANSWER_CALIBRATION_REFERENCE_FIXTURES.map((fixture) => ({ fixture, metric: "dockerObservationMs", observations })),
+ { fixture: "docker-topology-change", metric: "dockerObservationMs", observations }
+ ])).toThrow("every declared reference fixture");
+ });
+
+  it("accepts a compatible candidate inside the reviewed budget", () => {
+    expect(() => assertTimeToAnswerPromotion(artifact(), candidate())).not.toThrow();
+  });
+
+  it("accepts the provenance differences a candidate may carry: source revision, harness revision, rebuilt digest", () => {
+    // Source and harness revisions differ by construction, and the daemon binary is
+    // REBUILT from the candidate checkout — so a byte-identical digest is not even
+    // reproducible across a changed CARGO_HOME. Requiring any of them to match would
+    // make every candidate that touches the product or the harness uncomparable.
+    const comparable = candidate({
+      environment: {
+        sourceRevision: "cccccccccccccccccccccccccccccccccccccccc",
+        harnessRevision: "ab".repeat(20),
+        daemonBinarySha256: "f".repeat(64)
+      }
+    });
+    expect(() => assertTimeToAnswerPromotion(artifact(), comparable)).not.toThrow();
+    const baseline = validateTimeToAnswerEvidence(artifact());
+    const validated = validateTimeToAnswerEvidence(comparable);
+    expect(compatibleTimeToAnswerEnvironment(baseline.environment, validated.environment)).toBe(true);
+    expect(validated.environment.daemonBinarySha256).toBe("f".repeat(64));
+  });
+
+  it("rejects a candidate measured under a different methodology version", () => {
+    const other = candidate({ environment: { methodologyVersion: "dockermap-v1/time-to-answer-methodology-1" } });
+    expect(
+      compatibleTimeToAnswerEnvironment(
+        validateTimeToAnswerEvidence(artifact()).environment,
+        validateTimeToAnswerEvidence(other).environment
+      )
+    ).toBe(false);
+    expect(() => assertTimeToAnswerPromotion(artifact(), other)).toThrow(
+      "does not match the pinned baseline environment"
+    );
+  });
+
+  it("rejects a candidate above the reviewed budget, naming the cell", () => {
+    const slow = candidate({
+      records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+        fixture === "reference-250" && stage === "dockerObservationMs"
+          ? { fixture, stage, runs: [samples(1_000), samples(1_000), samples(1_000)] }
+          : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+      )
+    });
+    expect(() => assertTimeToAnswerPromotion(artifact(), slow)).toThrow("promotion limit");
+    // The limit itself is the reviewed rule, not an invented constant.
+    expect(timeToAnswerLimit(10)).toBe(12.5);
+    expect(timeToAnswerLimit(1)).toBe(3);
+  });
+
+  it("rejects a slow cell the budget tolerates only just", () => {
+    const limit = timeToAnswerLimit(12);
+    const pass = candidate({
+      records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+        fixture === "reference-100" && stage === "buildModelMs"
+          ? { fixture, stage, runs: [[limit, limit, limit, ...Array(12).fill(limit)], [limit, limit, limit, ...Array(12).fill(limit)], [limit, limit, limit, ...Array(12).fill(limit)]] }
+          : { fixture, stage, runs: [samples(1), samples(1), samples(1)] }
+      )
+    });
+    expect(() => assertTimeToAnswerPromotion(artifact(), pass)).not.toThrow();
+    const fail = candidate({
+      records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+        fixture === "reference-100" && stage === "buildModelMs"
+          ? { fixture, stage, runs: [[limit + 1, ...Array(14).fill(limit + 1)], [limit + 1, ...Array(14).fill(limit + 1)], [limit + 1, ...Array(14).fill(limit + 1)]] }
+          : { fixture, stage, runs: [samples(1), samples(1), samples(1)] }
+      )
+    });
+    expect(() => assertTimeToAnswerPromotion(artifact(), fail)).toThrow("promotion limit");
+  });
+
+  it.each([
+    ["runner class", "runnerClass", "some-other-runner"],
+    ["cpu class", "cpuClass", "cpus-2vcpu"],
+    ["os image", "osImage", "debian-13"],
+    ["os kernel", "osKernel", "6.8.0-31-generic"],
+    ["node revision", "nodeRevision", "20.11.0"],
+    ["rust revision", "rustRevision", "1.80.0"],
+    ["chromium revision", "browserRevision", "1.50.0"],
+    ["fixture revision", "fixtureRevision", "dockermap-v1/other-fixtures"],
+    ["sse poll interval", "ssePollIntervalMs", "1000"],
+    ["font environment", "fontEnvironment", "different-fonts"]
+  ])("rejects a candidate whose %s does not match the pinned baseline", (_label, key, value) => {
+    expect(() => assertTimeToAnswerPromotion(artifact(), candidate({ environment: { [key]: value } }))).toThrow(
+      "does not match the pinned baseline environment"
+    );
+  });
+
+  it("treats dockerRevision as informational: a host engine change must not fail a comparison", () => {
+    // No measured stage exercises the host Docker daemon — the capture runs
+    // against the deterministic fixture daemon — so pinning it as a
+    // compatibility key would reject a candidate for an untouched dimension.
+    expect(() =>
+      assertTimeToAnswerPromotion(artifact(), candidate({ environment: { dockerRevision: "30.1.0" } }))
+    ).not.toThrow();
+  });
+
+ it("pins the median-of-three aggregation, not the first run or the pooled mean", () => {
+    // One slow run and two fast runs: the median must pass, while a first-run
+    // p95 or a pooled mean would exceed the budget.
+    const slowFirst = candidate({
+      records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+        fixture === "reference-250" && stage === "commandQueryMs"
+          ? {
+              fixture,
+              stage,
+              runs: [
+                [...Array(15).fill(500)],
+                [...Array(15).fill(10)],
+                [...Array(15).fill(10)]
+              ]
+            }
+          : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+      )
+ });
+
+ expect(() => assertTimeToAnswerPromotion(artifact(), slowFirst)).not.toThrow();
+
+    // Two slow runs and one fast run: the median is slow, so it must fail.
+    const slowMajority = candidate({
+      records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+        fixture === "reference-250" && stage === "commandQueryMs"
+          ? {
+              fixture,
+              stage,
+              runs: [
+                [...Array(15).fill(10)],
+                [...Array(15).fill(500)],
+                [...Array(15).fill(500)]
+              ]
+            }
+          : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+      )
+    });
+ expect(() => assertTimeToAnswerPromotion(artifact(), slowMajority)).toThrow("promotion limit");
+ });
+
+ it("uses phase-normalized p95 as the controlled stage-5 promotion authority", () => {
+ const stageFiveRuns = (repeatedValue: number) =>
+ Array.from({ length: TIME_TO_ANSWER_CONTROLLED_RUNS }, () =>
+ Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, index) => (index < 10 ? 10 : repeatedValue))
+ );
+ const baseline = artifact({
+ records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+ fixture === "reference-25" && stage === "publicationToNodeObservationMs"
+ ? { fixture, stage, runs: stageFiveRuns(10) }
+ : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+ )
+ });
+ const candidateStageFiveSlow = candidate({
+ records: TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+ fixture === "reference-25" && stage === "publicationToNodeObservationMs"
+ ? { fixture, stage, runs: stageFiveRuns(100) }
+ : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+ )
+ });
+ // Ordinary per-run p95 is 100 in both artifacts, but all-repeat phase medians
+ // make the normalized figure rise from 10 to 55 and reject promotion.
+ expect(() => assertTimeToAnswerPromotion(baseline, candidateStageFiveSlow)).toThrow("promotion limit");
+ });
+
+  it("cannot let a cold first observation enter a warmed stage summary", () => {
+    // The daemon's first passes are cold, and with 15 recorded samples nearest-rank
+    // p95 IS the maximum — so a surviving cold observation would become the
+ // published number. The protocol discards a FIXED 60 observations (declared
+    // before the capture), keeps them all for audit, and never trims further.
+ const cold = Array.from({ length: TIME_TO_ANSWER_END_TO_END_BURN_IN_OBSERVATIONS }, (_, index) => 99.9 - index);
+    const warm = Array.from({ length: TIME_TO_ANSWER_WARMED_SAMPLES }, (_, index) => 2 + index * 0.1);
+ const { warmUps, recorded } = splitWarmedObservations([...cold, ...warm]);
+    expect(warmUps).toEqual(cold);
+ expect(warmUps).toHaveLength(cold.length);
+    expect(recorded).toEqual(warm);
+    const summary = summarizeTimeToAnswerStage([recorded, recorded, recorded]);
+    expect(summary.runP95Ms.every((value) => value < 10)).toBe(true);
+    expect(summary.medianOfThreeRunP95Ms).toBeLessThan(10);
+    // No arbitrary sampling: the whole window is required and a short window FAILS
+    // rather than being silently trimmed to the declared count.
+ expect(() => splitWarmedObservations([...cold, ...warm].slice(0, cold.length + warm.length - 1))).toThrow();
+  });
+
+ it("never adapts the measured window to diagnostics", () => {
+ const observations = Array.from({ length: 75 }, (_, index) => index < 60 ? 100 - index : 2);
+ const { warmUps, recorded } = splitWarmedObservations(observations);
+ expect(warmUps).toHaveLength(60);
+ expect(recorded).toEqual(Array(15).fill(2));
+ });
+
+  it("binds the executed daemon binary to the recorded revision", () => {
+    const digest = "a".repeat(64);
+    expect(() =>
+      assertDaemonBinaryProvenance({ expectedSha256: digest, observedSha256: digest, phase: "before" })
+    ).not.toThrow();
+    expect(() =>
+      assertDaemonBinaryProvenance({
+        expectedSha256: digest,
+        observedSha256: "b".repeat(64),
+        phase: "before capture"
+      })
+    ).toThrow("daemon binary provenance failed");
+    expect(() =>
+      assertDaemonBinaryProvenance({ expectedSha256: "not-a-digest", observedSha256: digest, phase: "before" })
+    ).toThrow("two lowercase sha256 digests");
+  });
+
+  it("classifies every stage as cold-start, warmed-repeated or scenario-specific", () => {
+    for (const stage of TIME_TO_ANSWER_STAGES) {
+      expect(TIME_TO_ANSWER_STAGE_KIND[stage.id]).toBeDefined();
+    }
+    // Process start is genuinely cold: its first observation IS the measurement.
+    expect(TIME_TO_ANSWER_STAGE_KIND.daemonStartToListenerMs).toBe("cold-start");
+    expect(TIME_TO_ANSWER_STAGE_KIND.listenerToFirstDockerModelMs).toBe("cold-start");
+    // The daemon-side attribution stages are warmed repeated operations.
+    expect(TIME_TO_ANSWER_STAGE_KIND.dockerObservationMs).toBe("warmed-repeated");
+    expect(TIME_TO_ANSWER_STAGE_KIND.composeEnrichmentMs).toBe("warmed-repeated");
+    expect(TIME_TO_ANSWER_STAGE_KIND.findingsDerivationMs).toBe("warmed-repeated");
+    // Scenario cells are declared only for scenario fixtures.
+    expect(isScenarioCell("slow-bounded-compose-projection", "composeEnrichmentMs")).toBe(true);
+    expect(isScenarioCell("reference-25", "composeEnrichmentMs")).toBe(false);
+  });
+
+  it("rejects a candidate with different browser flags", () => {
+    expect(() =>
+      assertTimeToAnswerPromotion(
+        artifact(),
+        candidate({ environment: { browserFlags: ["--disable-background-networking", "--enable-gpu"] } })
+      )
+    ).toThrow("does not match the pinned baseline environment");
+  });
+
+  it("rejects a candidate built in a non-production mode", () => {
+    expect(() => validateTimeToAnswerEvidence(candidate({ environment: { buildMode: "development" } }))).toThrow(
+      "closed safe metadata fields"
+    );
+  });
+
+  it("rejects evidence with a missing stage", () => {
+    const records = TIME_TO_ANSWER_MATRIX.slice(1).map(({ fixture, stage }) => ({
+      fixture,
+      stage,
+      runs: [samples(10), samples(11), samples(12)]
+    }));
+    expect(() => validateTimeToAnswerEvidence(artifact({ records }))).toThrow("exact fixture × stage matrix");
+  });
+
+  it("rejects evidence with an undeclared stage", () => {
+    const records = [
+      ...TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) => ({
+        fixture,
+        stage,
+        runs: [samples(10), samples(11), samples(12)]
+      })),
+      { fixture: "reference-25", stage: "inventedStageMs", runs: [samples(1), samples(1), samples(1)] }
+    ];
+    expect(() => validateTimeToAnswerEvidence(artifact({ records }))).toThrow("exact fixture × stage matrix");
+  });
+
+  it("rejects a malformed sample count", () => {
+    const records = TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+      fixture === "reference-25" && stage === "commandQueryMs"
+        ? { fixture, stage, runs: [samples(10).slice(0, 14), samples(11), samples(12)] }
+        : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+    );
+    expect(() => validateTimeToAnswerEvidence(artifact({ records }))).toThrow(
+      `requires exactly ${TIME_TO_ANSWER_WARMED_SAMPLES} finite`
+    );
+  });
+
+  it("rejects a stage with too few controlled runs", () => {
+    const records = TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+      fixture === "reference-100" && stage === "buildModelMs"
+        ? { fixture, stage, runs: [samples(10), samples(11)] }
+        : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+    );
+    expect(() => validateTimeToAnswerEvidence(artifact({ records }))).toThrow(
+      "requires exactly three raw runs per stage"
+    );
+    expect(TIME_TO_ANSWER_CONTROLLED_RUNS).toBe(3);
+  });
+
+  it("rejects a supplied or fabricated summary instead of recomputing it", () => {
+    const records = TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+      fixture === "reference-250" && stage === "composeEnrichmentMs"
+        ? {
+            fixture,
+            stage,
+            runs: [samples(10), samples(11), samples(12)],
+            summary: { runP95Ms: [1, 1, 1], medianOfThreeRunP95Ms: 1 }
+          }
+        : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+    );
+    expect(() => validateTimeToAnswerEvidence(artifact({ records }))).toThrow("unsafe or incomplete shape");
+  });
+
+  it("rejects a negative or non-finite sample", () => {
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, "12" as unknown as number]) {
+      const records = TIME_TO_ANSWER_MATRIX.map(({ fixture, stage }) =>
+        fixture === "reference-25" && stage === "findingsDerivationMs"
+          ? { fixture, stage, runs: [[bad, ...samples(10).slice(1)], samples(11), samples(12)] }
+          : { fixture, stage, runs: [samples(10), samples(11), samples(12)] }
+      );
+      expect(() => validateTimeToAnswerEvidence(artifact({ records }))).toThrow();
+    }
+  });
+
+  it("rejects an unknown baseline identifier", () => {
+    expect(() => validateTimeToAnswerEvidence({ ...artifact(), baseline: "dockermap-v1/other" })).toThrow(
+      "closed baseline/environment/records schema"
+    );
+  });
+});

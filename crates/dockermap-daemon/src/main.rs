@@ -1,4 +1,5 @@
 mod auth;
+mod bench_timing;
 mod cache_refresh;
 mod compose_api;
 mod config;
