@@ -46,6 +46,15 @@ generated schemas rather than defining them. Route, request, and response associ
 derive the OpenAPI 3.1.1 document. The ownership map, drift checks, and remaining #65
 acceptance work are recorded in [`CONTRACT_AUTHORITY.md`](CONTRACT_AUTHORITY.md).
 
+Docker inventory is published as the first authoritative model without waiting for
+Compose filesystem enrichment. Compose correlation is a bounded asynchronous follow-up
+that attaches only to the matching Docker publication, so it cannot spend the Docker
+publication budget or be applied to a newer model. The published performance
+`daemonStartToListenerMs` stage now ends at the real HTTP listener boundary. In the
+Baseline-4 capture, the listener was gated behind first collection, so that historical
+stage folded first collection into its value; the Baseline-4 numbers retain their
+original meaning and this semantic difference must be considered when comparing them.
+
 ## Runtime Map
 
 `GET /daemon/runtime/map` is the backend's provider-neutral JSON graph for visualization. `apps/api` proxies it as `GET /api/runtime/map`.

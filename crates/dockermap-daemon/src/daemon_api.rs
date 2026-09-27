@@ -84,14 +84,14 @@ pub(crate) fn daemon_router(state: AppState, daemon_token: DaemonAuthToken) -> R
 }
 
 async fn publication_cache(state: &AppState) -> Result<RwLockReadGuard<'_, DaemonCache>, ApiError> {
-let cache = state.cache.read().await;
-if !cache.publication_ready {
-return Err(ApiError {
-status: StatusCode::SERVICE_UNAVAILABLE,
-message: "Docker model is still initializing".into(),
-});
-}
-if !state.allow_mock && cache.health.mode == RuntimeMode::Mock {
+    let cache = state.cache.read().await;
+    if !cache.publication_ready {
+        return Err(ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "Docker model is still initializing".into(),
+        });
+    }
+    if !state.allow_mock && cache.health.mode == RuntimeMode::Mock {
         return Err(ApiError {
             status: StatusCode::SERVICE_UNAVAILABLE,
             message: "Live Docker authority is unavailable and mock publication is disabled".into(),
@@ -426,18 +426,18 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-async fn findings_route_stamps_the_actual_cache_mode_after_live_and_mock_resets() {
-let state = AppState::new(true);
-assert_eq!(
-get_findings(State(state.clone())).await.unwrap_err().status,
-StatusCode::SERVICE_UNAVAILABLE,
-"bootstrap mock data must not be published before the first attempt"
-);
+    async fn findings_route_stamps_the_actual_cache_mode_after_live_and_mock_resets() {
+        let state = AppState::new(true);
+        assert_eq!(
+            get_findings(State(state.clone())).await.unwrap_err().status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "bootstrap mock data must not be published before the first attempt"
+        );
 
-{
-let mut cache = state.cache.write().await;
-cache.publication_ready = true;
-cache.health.mode = RuntimeMode::Docker;
+        {
+            let mut cache = state.cache.write().await;
+            cache.publication_ready = true;
+            cache.health.mode = RuntimeMode::Docker;
             // A source marker is publication data, never cache data. This
             // deliberately stale value models a completed live publication
             // followed by an eventual reset.

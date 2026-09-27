@@ -401,6 +401,20 @@ async function fetchJson(url: string, timeoutMs = 5_000): Promise<any | null> {
   }
 }
 
+/** A listener is ready once it answers HTTP; a truthful 503 is not a model. */
+async function httpListenerReady(url: string, timeoutMs = 1_000): Promise<boolean> {
+const controller = new AbortController();
+const timer = setTimeout(() => controller.abort(), timeoutMs);
+try {
+await fetch(url, { signal: controller.signal });
+return true;
+} catch {
+return false;
+} finally {
+clearTimeout(timer);
+}
+}
+
 async function waitForJson(url: string, predicate: (value: any) => boolean, timeoutMs: number) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -1256,7 +1270,7 @@ let publicationTracker: PublicationTracker | null = null;
             ...(plan.name === "unavailable-optional-provider" ? { PATH: emptyPath } : {})
           };
           const healthUrl = (port: number) => `http://127.0.0.1:${port}/daemon/health`;
-          const daemonReady = async (port: number) => Boolean(await fetchJson(healthUrl(port), 1_000));
+const daemonReady = async (port: number) => httpListenerReady(healthUrl(port));
           const startedDaemon = await startChildOnFreePort({
             name: "daemon",
             spawnOn: (port) => spawnOwned(daemonBinary, [], { ...daemonEnv, DOCKERMAP_DAEMON_PORT: String(port) }),
