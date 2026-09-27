@@ -866,8 +866,8 @@ enum DockerReadFailure {
 async fn collect_docker_snapshot_candidate<F>(
     collector: DockerCollector,
     snapshot_timeout: Duration,
-    projection_in_flight: Arc<AtomicBool>,
-    projection: F,
+    _projection_in_flight: Arc<AtomicBool>,
+    _projection: F,
 ) -> Result<DaemonCache, DockerReadFailure>
 where
     F: FnOnce(
@@ -877,7 +877,6 @@ where
         + Send
         + 'static,
 {
-    let started = tokio::time::Instant::now();
     // Test-only stage attribution (#335). Disabled unless the benchmark harness
     // sets an absolute DOCKERMAP_BENCH_STAGE_TIMING_PATH; it records durations
     // only and never changes what is collected or published.
@@ -896,44 +895,10 @@ where
     );
     let mut snapshot = observation.snapshot;
     snapshot.images = derive_images(&snapshot);
-    let collected_at = snapshot.last_updated;
-
-    let compose_runtime_binding =
-        if let Some(flight) = ComposeProjectionFlight::claim(projection_in_flight) {
-            if let Some(remaining) = snapshot_timeout
-                .checked_sub(started.elapsed())
-                .filter(|remaining| !remaining.is_zero())
-            {
-                // The flight token moves into the closure, so timing out this
-                // await cannot release it early or permit queued projections.
-                let projection_task = tokio::task::spawn_blocking(move || {
-                    let _flight = flight;
-                    projection(observation.compose_containers, collected_at)
-                });
-                let projection_started = std::time::Instant::now();
-                let binding = match tokio::time::timeout(remaining, projection_task).await {
-                    Ok(Ok(binding)) => binding,
-                    Ok(Err(_)) | Err(_) => None,
-                };
-                // Attributed separately from the Docker observation so the
-                // baseline can show that this projection currently sits inside
-                // the Docker publication budget. #336 owns moving it off that
-                // path; nothing is decoupled here.
-                crate::bench_timing::record(
-                    bench_sink.as_deref(),
-                    crate::bench_timing::STAGE_COMPOSE_ENRICHMENT,
-                    projection_started,
-                );
-                binding
-            } else {
-                None
-            }
-        } else {
-            // A prior timed-out projection is still unwinding. The Docker
-            // observation is independently truthful, but Compose correlation is
-            // unavailable for this publication and no second task is launched.
-            None
-        };
+    // Compose filesystem projection is intentionally not on the authoritative
+    // Docker collection path. The post-publication worker is attached in the
+    // following enrichment slice; this base candidate never claims a binding.
+    let compose_runtime_binding = None;
 
     let health = HealthResponse {
         status: HealthState::Ok,
@@ -3336,9 +3301,6 @@ mod scheduler_tests {
             )))),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
         };
-        let (projection_started_tx, projection_started_rx) = std::sync::mpsc::channel();
-        let (release_projection_tx, release_projection_rx) = std::sync::mpsc::channel();
-        let (projection_finished_tx, projection_finished_rx) = std::sync::mpsc::channel();
         let projection_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let timeout = Duration::from_millis(150);
         let started = tokio::time::Instant::now();
@@ -3346,30 +3308,17 @@ mod scheduler_tests {
         let first =
             collect_snapshot_with_projection(&state, timeout, move |_containers, _collected_at| {
                 first_runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                projection_started_tx
-                    .send(())
-                    .expect("test observes projection start");
-                release_projection_rx
-                    .recv()
-                    .expect("test releases stalled projection");
-                projection_finished_tx
-                    .send(())
-                    .expect("test observes projection completion");
                 None
             })
             .await;
 
-        assert!(started.elapsed() >= timeout);
+        assert!(started.elapsed() < timeout);
         assert!(started.elapsed() < Duration::from_secs(1));
-        projection_started_rx
-            .try_recv()
-            .expect("Docker reads completed before projection stalled");
         assert_eq!(first.health.mode, RuntimeMode::Docker);
         assert!(first.compose_runtime_binding.is_none());
         assert!(state.docker.read().await.is_some());
 
-        // Repeated refreshes still perform their fresh Docker reads but skip
-        // Compose projection while the first blocking task owns the guard.
+        // Repeated refreshes remain independent of Compose projection.
         for _ in 0..2 {
             let runs = projection_runs.clone();
             let refresh_started = tokio::time::Instant::now();
@@ -3389,26 +3338,12 @@ mod scheduler_tests {
         }
         assert_eq!(
             projection_runs.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "only the original stalled projection may run"
+            0,
+            "base Docker publication must not run filesystem projection"
         );
 
-        // Publishing the Docker result remains an explicit caller action. The late
-        // read-only task owns no state and cannot replace it after release.
+        // Publishing the Docker result remains an explicit caller action.
         publish_docker_snapshot_cache(&state, first).await;
-        release_projection_tx
-            .send(())
-            .expect("release private blocking task");
-        projection_finished_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("late private projection completes");
-        while state
-            .provider_slot_in_flight
-            .compose_projection
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            tokio::task::yield_now().await;
-        }
         assert_eq!(state.cache.read().await.health.mode, RuntimeMode::Docker);
         assert_eq!(gateway.await.expect("gateway stub").len(), 9);
     }
