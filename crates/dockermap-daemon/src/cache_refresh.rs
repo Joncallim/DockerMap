@@ -418,6 +418,23 @@ fn clear_volatile_observation_markers(
     }
 }
 
+/// Compose collection timestamps are observation markers. The projection is
+/// otherwise already sanitized by the core derivation, so it is safe to use
+/// solely for private publication comparison.
+fn compose_mount_finding_projection(
+    scan: &ComposeScan,
+    binding: &ComposeRuntimeBinding,
+) -> Vec<dockermap_core::Finding> {
+    let mut findings = derive_compose_runtime_mount_findings(scan, binding);
+    for finding in &mut findings {
+        for evidence in &mut finding.evidence_refs {
+            evidence.collected_at = 0;
+        }
+    }
+    findings.sort_by(|left, right| left.id.cmp(&right.id));
+    findings
+}
+
 fn boot_instance_component() -> String {
     static BOOT: OnceLock<String> = OnceLock::new();
     BOOT.get_or_init(|| {
@@ -643,7 +660,7 @@ impl DaemonCache {
     fn assign_revision(&mut self) {
         // All three independently routable model envelopes attest the same
         // publication. Provider state is runtime-topology evidence only.
-        let compose_binding_identity = self.compose_binding_identity().map(str::to_owned);
+        let compose_binding_identity = self.compose_binding_identity();
         self.revision.assign(
             &mut self.snapshot,
             &mut self.health,
@@ -680,10 +697,16 @@ impl DaemonCache {
         };
     }
 
-    fn compose_binding_identity(&self) -> Option<&str> {
+    /// The private binding deliberately never contributes raw Compose inputs
+    /// to a publication identity. Only its already-sanitized public finding
+    /// projection is semantic, and observation timestamps are not findings.
+    fn compose_binding_identity(&self) -> Option<String> {
         self.compose_runtime_binding
             .as_ref()
-            .map(|(_, binding)| binding.provider_revision.as_str())
+            .map(|(scan, binding)| {
+                serde_json::to_string(&compose_mount_finding_projection(scan, binding))
+                    .expect("public Compose findings are serializable")
+            })
     }
 
     fn assign_docker_observation_revision(&mut self) {
@@ -807,6 +830,17 @@ fn spawn_compose_projection(
         {
             return;
         }
+        if cache
+            .compose_runtime_binding
+            .as_ref()
+            .map(|(current_scan, current_binding)| {
+                compose_mount_finding_projection(current_scan, current_binding)
+                    == compose_mount_finding_projection(&scan, &binding)
+            })
+            .unwrap_or(false)
+        {
+            return;
+        }
         cache.compose_runtime_binding = Some((scan, binding));
         cache.assign_revision();
     });
@@ -897,6 +931,23 @@ async fn publish_docker_snapshot_cache(
     };
     updated.rebuild_runtime_map();
     updated.revision = cache.revision.clone();
+    // An unchanged Docker observation can keep the prior coherent Compose
+    // projection while a fresh bounded projection confirms it. Retaining it
+    // avoids a transient Docker-only publication, but only when the private
+    // Docker-side binding inputs still exactly match as well.
+    if same_source
+        && updated.health.mode == RuntimeMode::Docker
+        && updated.docker_observation_token() == cache.docker_observation_token()
+        && cache
+            .compose_runtime_binding
+            .as_ref()
+            .map(|(_, binding)| {
+                compose_containers.as_deref() == Some(binding.containers.as_slice())
+            })
+            .unwrap_or(false)
+    {
+        updated.compose_runtime_binding = cache.compose_runtime_binding.clone();
+    }
     updated.assign_revision();
     if updated.health.mode == RuntimeMode::Docker {
         // The input is publication-sanitized before it becomes retained state.
