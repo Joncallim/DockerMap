@@ -96,10 +96,9 @@ examples of the distinction that matter most:
   model is observable. It does **not** prove the model is complete — optional
   provider evidence may still be missing, and a fast number here must never be
   read as "the host is fully described".
-- `composeEnrichmentMs` measures Compose filesystem correlation separately from
-  the Docker observation. While the two remain coupled inside one publication
-  budget, this stage is **measured, not removed**; #336 owns moving it off the
-  critical path.
+- `composeEnrichmentMs` measures asynchronous Compose filesystem correlation
+  separately from Docker publication. Compose enrichment no longer consumes the
+  Docker publication budget; it is measured as a later enrichment path.
 - `dockerObservationMs` is measured against a deterministic local fixture
   daemon. It is **not** a claim about a real Docker daemon's latency, host load,
   or image size.
@@ -201,11 +200,10 @@ newline-delimited JSON records to that file. There is no route, no response
 field, no runtime telemetry, and no behaviour change.
 
 The hook times the Docker inventory read and the Compose filesystem projection
-**separately while both still execute inside the same Docker publication
-budget**. This baseline is therefore expected to show that Compose projection
-currently sits inside the Docker critical path. That is the measurement, not a
-fix: **nothing is decoupled here, and #336 owns moving the projection off that
-path** — these are the numbers it must improve against.
+separately. The Baseline-4 capture measured them while Compose still executed
+inside the Docker publication budget. #336 moves Compose onto an asynchronous
+enrichment path, so it no longer consumes that publication budget; the baseline
+methodology and its recorded numbers remain unchanged comparison authority.
 
 ## Stage 6 and stage 7: two clocks, and why they cannot be one
 

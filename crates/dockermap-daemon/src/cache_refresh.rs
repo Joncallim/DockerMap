@@ -83,11 +83,16 @@ impl AppState {
 
 #[derive(Clone)]
 pub(crate) struct DaemonCache {
+    /// Cache-backed HTTP routes remain unavailable until the first Docker
+    /// collection attempt has completed. This prevents the internal bootstrap
+    /// mock cache from being mistaken for an authoritative publication.
+    pub(crate) publication_ready: bool,
     pub(crate) snapshot: DockerSnapshot,
     pub(crate) health: HealthResponse,
     pub(crate) runtime_map: RuntimeMap,
     pub(crate) findings: FindingsResponse,
     compose_runtime_binding: Option<(dockermap_core::ComposeScan, ComposeRuntimeBinding)>,
+    compose_containers: Option<Vec<ComposeRuntimeContainer>>,
     runtime_providers: RuntimeProviderSlots,
     /// Increments on every Docker/mock source transition. A late worker must
     /// match this generation as well as evidence, so Docker→mock→Docker can
@@ -265,6 +270,7 @@ impl PublicationRevision {
         snapshot: &mut DockerSnapshot,
         health: &mut HealthResponse,
         runtime_map: &mut RuntimeMap,
+        compose_binding_identity: Option<&str>,
     ) {
         // Compare precisely the model that routes can expose. Cache inventory
         // intentionally retains raw identities for correlation, so serializing
@@ -285,6 +291,7 @@ impl PublicationRevision {
             &published_snapshot,
             &published_health,
             &published_runtime_map,
+            compose_binding_identity,
         ))
         .expect("public DockerMap models are serializable");
         if self.last_observable.as_deref() != Some(observable.as_str()) {
@@ -409,6 +416,23 @@ fn clear_volatile_observation_markers(
             evidence.collected_at = 0;
         }
     }
+}
+
+/// Compose collection timestamps are observation markers. The projection is
+/// otherwise already sanitized by the core derivation, so it is safe to use
+/// solely for private publication comparison.
+fn compose_mount_finding_projection(
+    scan: &ComposeScan,
+    binding: &ComposeRuntimeBinding,
+) -> Vec<dockermap_core::Finding> {
+    let mut findings = derive_compose_runtime_mount_findings(scan, binding);
+    for finding in &mut findings {
+        for evidence in &mut finding.evidence_refs {
+            evidence.collected_at = 0;
+        }
+    }
+    findings.sort_by(|left, right| left.id.cmp(&right.id));
+    findings
 }
 
 fn boot_instance_component() -> String {
@@ -607,6 +631,7 @@ impl DaemonCache {
 
         let last_updated = snapshot.last_updated;
         let mut cache = Self {
+            publication_ready: false,
             snapshot,
             health,
             runtime_map: RuntimeMap {
@@ -619,6 +644,7 @@ impl DaemonCache {
             },
             findings: FindingsResponse::default(),
             compose_runtime_binding: None,
+            compose_containers: None,
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
@@ -634,8 +660,13 @@ impl DaemonCache {
     fn assign_revision(&mut self) {
         // All three independently routable model envelopes attest the same
         // publication. Provider state is runtime-topology evidence only.
-        self.revision
-            .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
+        let compose_binding_identity = self.compose_binding_identity();
+        self.revision.assign(
+            &mut self.snapshot,
+            &mut self.health,
+            &mut self.runtime_map,
+            compose_binding_identity.as_deref(),
+        );
         // Findings are a pure projection of the sanitized runtime map, so
         // calculate and cache them only after the publication revision exists.
         let bench_sink = crate::bench_timing::sink();
@@ -664,6 +695,18 @@ impl DaemonCache {
             // the matching runtime mode.
             source: None,
         };
+    }
+
+    /// The private binding deliberately never contributes raw Compose inputs
+    /// to a publication identity. Only its already-sanitized public finding
+    /// projection is semantic, and observation timestamps are not findings.
+    fn compose_binding_identity(&self) -> Option<String> {
+        self.compose_runtime_binding
+            .as_ref()
+            .map(|(scan, binding)| {
+                serde_json::to_string(&compose_mount_finding_projection(scan, binding))
+                    .expect("public Compose findings are serializable")
+            })
     }
 
     fn assign_docker_observation_revision(&mut self) {
@@ -720,7 +763,14 @@ pub(crate) async fn refresh_loop(state: AppState) {
 }
 
 pub(crate) async fn refresh_cache(state: &AppState) {
-    let (snapshot, mode, source_generation) = publish_docker_snapshot_cache(
+    let (
+        snapshot,
+        mode,
+        source_generation,
+        docker_observation_revision,
+        compose_containers,
+        collected_at,
+    ) = publish_docker_snapshot_cache(
         state,
         collect_snapshot(state, DOCKER_SNAPSHOT_COLLECTION_TIMEOUT).await,
     )
@@ -730,9 +780,70 @@ pub(crate) async fn refresh_cache(state: &AppState) {
     // Spawned slot workers use fixed per-slot guards; they have no route,
     // Docker client, or source-fallback authority.
     if mode == RuntimeMode::Docker {
+        spawn_compose_projection(
+            state.clone(),
+            source_generation,
+            docker_observation_revision,
+            compose_containers,
+            collected_at,
+        );
         let due = claim_due_provider_slots(state, monotonic_now()).await;
         spawn_provider_slots(state.clone(), snapshot, mode, source_generation, due);
     }
+}
+
+fn spawn_compose_projection(
+    state: AppState,
+    source_generation: u64,
+    docker_observation_revision: String,
+    compose_containers: Option<Vec<ComposeRuntimeContainer>>,
+    collected_at: u64,
+) {
+    let Some(flight) =
+        ComposeProjectionFlight::claim(state.provider_slot_in_flight.compose_projection.clone())
+    else {
+        return;
+    };
+    tokio::spawn(async move {
+        let task = tokio::task::spawn_blocking(move || {
+            let _flight = flight;
+            bounded_compose_runtime_binding(compose_containers, collected_at)
+        });
+        let projection_started = std::time::Instant::now();
+        let binding = match tokio::time::timeout(DOCKER_SNAPSHOT_COLLECTION_TIMEOUT, task).await {
+            Ok(Ok(binding)) => binding,
+            Ok(Err(_)) | Err(_) => None,
+        };
+        crate::bench_timing::record(
+            crate::bench_timing::sink().as_deref(),
+            crate::bench_timing::STAGE_COMPOSE_ENRICHMENT,
+            projection_started,
+        );
+        let Some((scan, mut binding)) = binding else {
+            return;
+        };
+        binding.provider_revision = docker_observation_revision.clone();
+        let mut cache = state.cache.write().await;
+        if cache.health.mode != RuntimeMode::Docker
+            || cache.source_generation != source_generation
+            || cache.docker_observation_token() != docker_observation_revision
+        {
+            return;
+        }
+        if cache
+            .compose_runtime_binding
+            .as_ref()
+            .map(|(current_scan, current_binding)| {
+                compose_mount_finding_projection(current_scan, current_binding)
+                    == compose_mount_finding_projection(&scan, &binding)
+            })
+            .unwrap_or(false)
+        {
+            return;
+        }
+        cache.compose_runtime_binding = Some((scan, binding));
+        cache.assign_revision();
+    });
 }
 
 fn spawn_provider_slots(
@@ -773,7 +884,14 @@ fn spawn_provider_slots(
 async fn publish_docker_snapshot_cache(
     state: &AppState,
     mut updated: DaemonCache,
-) -> (DockerSnapshot, RuntimeMode, u64) {
+) -> (
+    DockerSnapshot,
+    RuntimeMode,
+    u64,
+    String,
+    Option<Vec<ComposeRuntimeContainer>>,
+    u64,
+) {
     let mut cache = state.cache.write().await;
     // A mock fallback is a distinct source of bytes. Do not retain live host
     // observations and relabel them as sample data (or vice versa).
@@ -786,6 +904,10 @@ async fn publish_docker_snapshot_cache(
             .checked_add(1)
             .expect("source generation overflow")
     };
+    // A completed collection attempt, including an explicit policy-permitted
+    // mock fallback, makes this coherent cache eligible for publication.
+    updated.publication_ready = true;
+    let compose_containers = updated.compose_containers.take();
     updated.runtime_providers = if same_source {
         cache.runtime_providers.clone()
     } else {
@@ -809,6 +931,23 @@ async fn publish_docker_snapshot_cache(
     };
     updated.rebuild_runtime_map();
     updated.revision = cache.revision.clone();
+    // An unchanged Docker observation can keep the prior coherent Compose
+    // projection while a fresh bounded projection confirms it. Retaining it
+    // avoids a transient Docker-only publication, but only when the private
+    // Docker-side binding inputs still exactly match as well.
+    if same_source
+        && updated.health.mode == RuntimeMode::Docker
+        && updated.docker_observation_token() == cache.docker_observation_token()
+        && cache
+            .compose_runtime_binding
+            .as_ref()
+            .map(|(_, binding)| {
+                compose_containers.as_deref() == Some(binding.containers.as_slice())
+            })
+            .unwrap_or(false)
+    {
+        updated.compose_runtime_binding = cache.compose_runtime_binding.clone();
+    }
     updated.assign_revision();
     if updated.health.mode == RuntimeMode::Docker {
         // The input is publication-sanitized before it becomes retained state.
@@ -825,6 +964,9 @@ async fn publish_docker_snapshot_cache(
         cache.snapshot.clone(),
         cache.health.mode.clone(),
         cache.source_generation,
+        cache.docker_observation_token(),
+        compose_containers,
+        cache.snapshot.last_updated,
     )
 }
 
@@ -858,8 +1000,8 @@ enum DockerReadFailure {
 async fn collect_docker_snapshot_candidate<F>(
     collector: DockerCollector,
     snapshot_timeout: Duration,
-    projection_in_flight: Arc<AtomicBool>,
-    projection: F,
+    _projection_in_flight: Arc<AtomicBool>,
+    _projection: F,
 ) -> Result<DaemonCache, DockerReadFailure>
 where
     F: FnOnce(
@@ -869,7 +1011,6 @@ where
         + Send
         + 'static,
 {
-    let started = tokio::time::Instant::now();
     // Test-only stage attribution (#335). Disabled unless the benchmark harness
     // sets an absolute DOCKERMAP_BENCH_STAGE_TIMING_PATH; it records durations
     // only and never changes what is collected or published.
@@ -886,46 +1027,13 @@ where
         crate::bench_timing::STAGE_DOCKER_OBSERVATION,
         bench_docker_started,
     );
+    let compose_containers = observation.compose_containers;
     let mut snapshot = observation.snapshot;
     snapshot.images = derive_images(&snapshot);
-    let collected_at = snapshot.last_updated;
-
-    let compose_runtime_binding =
-        if let Some(flight) = ComposeProjectionFlight::claim(projection_in_flight) {
-            if let Some(remaining) = snapshot_timeout
-                .checked_sub(started.elapsed())
-                .filter(|remaining| !remaining.is_zero())
-            {
-                // The flight token moves into the closure, so timing out this
-                // await cannot release it early or permit queued projections.
-                let projection_task = tokio::task::spawn_blocking(move || {
-                    let _flight = flight;
-                    projection(observation.compose_containers, collected_at)
-                });
-                let projection_started = std::time::Instant::now();
-                let binding = match tokio::time::timeout(remaining, projection_task).await {
-                    Ok(Ok(binding)) => binding,
-                    Ok(Err(_)) | Err(_) => None,
-                };
-                // Attributed separately from the Docker observation so the
-                // baseline can show that this projection currently sits inside
-                // the Docker publication budget. #336 owns moving it off that
-                // path; nothing is decoupled here.
-                crate::bench_timing::record(
-                    bench_sink.as_deref(),
-                    crate::bench_timing::STAGE_COMPOSE_ENRICHMENT,
-                    projection_started,
-                );
-                binding
-            } else {
-                None
-            }
-        } else {
-            // A prior timed-out projection is still unwinding. The Docker
-            // observation is independently truthful, but Compose correlation is
-            // unavailable for this publication and no second task is launched.
-            None
-        };
+    // Compose filesystem projection is intentionally not on the authoritative
+    // Docker collection path. The post-publication worker is attached in the
+    // following enrichment slice; this base candidate never claims a binding.
+    let compose_runtime_binding = None;
 
     let health = HealthResponse {
         status: HealthState::Ok,
@@ -937,11 +1045,13 @@ where
         message: Some("Docker engine connected".into()),
     };
     Ok(DaemonCache {
+        publication_ready: false,
         snapshot,
         health,
         runtime_map: empty_runtime_map(0),
         findings: FindingsResponse::default(),
         compose_runtime_binding,
+        compose_containers,
         runtime_providers: unavailable_provider_slots(),
         source_generation: 0,
         docker_observation_revision: DockerObservationRevision::new(),
@@ -3077,6 +3187,7 @@ mod scheduler_tests {
     fn docker_cache(snapshot: DockerSnapshot) -> DaemonCache {
         let last_updated = snapshot.last_updated;
         let mut cache = DaemonCache {
+            publication_ready: true,
             snapshot,
             health: HealthResponse {
                 status: HealthState::Ok,
@@ -3090,6 +3201,7 @@ mod scheduler_tests {
             runtime_map: empty_runtime_map(last_updated),
             findings: FindingsResponse::default(),
             compose_runtime_binding: None,
+            compose_containers: None,
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
@@ -3099,6 +3211,109 @@ mod scheduler_tests {
         };
         cache.assign_docker_observation_revision();
         cache
+    }
+
+    fn compose_binding_fixture(collected_at: u64) -> (ComposeScan, ComposeRuntimeBinding) {
+        let config_files: BTreeSet<String> =
+            ["/project/compose.yaml".to_owned()].into_iter().collect();
+        let container = ComposeRuntimeContainer {
+            container_id: "a".repeat(64),
+            project: "project".into(),
+            service: "app".into(),
+            config_files: config_files.clone(),
+            mounts: Vec::new(),
+        };
+        (
+            ComposeScan {
+                files: vec!["/project/compose.yaml".into()],
+                project_root: "/project".into(),
+                services: Vec::new(),
+                mounts: vec![dockermap_core::ComposeMount {
+                    id: "mount".into(),
+                    service: "app".into(),
+                    kind: ComposeMountKind::Bind,
+                    source: Some("./data".into()),
+                    resolved_source: Some("/project/data".into()),
+                    target: "/data".into(),
+                    read_only: false,
+                    origin: dockermap_core::ComposeFileOrigin {
+                        file: "/project/compose.yaml".into(),
+                        service: Some("app".into()),
+                        field: "volumes".into(),
+                    },
+                }],
+                correlations: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            ComposeRuntimeBinding {
+                project: "project".into(),
+                config_files,
+                containers: vec![container],
+                collected_at,
+                provider_revision: String::new(),
+                fresh: true,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn unchanged_docker_confirmation_retains_compose_projection_and_revision() {
+        let mut initial = docker_cache(mock_snapshot());
+        initial.rebuild_runtime_map();
+        let (scan, mut binding) = compose_binding_fixture(41);
+        binding.provider_revision = initial.docker_observation_token();
+        initial.compose_runtime_binding = Some((scan, binding.clone()));
+        initial.assign_revision();
+        let revision = initial.snapshot.model_revision.clone();
+        let finding_time = initial.findings.findings[0].evidence_refs[0].collected_at;
+        let state = AppState {
+            allow_mock: true,
+            cache: Arc::new(RwLock::new(initial)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        let mut unchanged = docker_cache(mock_snapshot());
+        unchanged.compose_containers = Some(binding.containers.clone());
+        publish_docker_snapshot_cache(&state, unchanged).await;
+
+        let cache = state.cache.read().await;
+        assert_eq!(cache.snapshot.model_revision, revision);
+        assert_eq!(
+            cache.findings.findings[0].evidence_refs[0].collected_at,
+            finding_time
+        );
+        assert!(cache.compose_runtime_binding.is_some());
+    }
+
+    #[test]
+    fn changed_compose_mount_projection_advances_once_with_matching_docker_token() {
+        let mut cache = docker_cache(mock_snapshot());
+        cache.rebuild_runtime_map();
+        let (scan, mut binding) = compose_binding_fixture(41);
+        binding.provider_revision = cache.docker_observation_token();
+        cache.compose_runtime_binding = Some((scan.clone(), binding.clone()));
+        cache.assign_revision();
+        let revision = cache.snapshot.model_revision.clone();
+
+        let mut changed_scan = scan;
+        changed_scan.mounts.clear();
+        assert_ne!(
+            compose_mount_finding_projection(
+                &cache.compose_runtime_binding.as_ref().unwrap().0,
+                &cache.compose_runtime_binding.as_ref().unwrap().1,
+            ),
+            compose_mount_finding_projection(&changed_scan, &binding),
+        );
+        cache.compose_runtime_binding = Some((changed_scan, binding));
+        cache.assign_revision();
+
+        assert_ne!(cache.snapshot.model_revision, revision);
+        assert_eq!(cache.findings.model_revision, cache.snapshot.model_revision);
+        assert!(cache.findings.findings.iter().all(|finding| {
+            finding.rule_id
+                != dockermap_core::FindingRule::ComposeDeclaredMountMissingAtBoundContainer
+        }));
     }
 
     #[tokio::test]
@@ -3131,48 +3346,62 @@ mod scheduler_tests {
         let listener = UnixListener::bind(&socket).expect("gateway stub should bind");
         let (stalled_tx, mut stalled_rx) = mpsc::unbounded_channel();
         let gateway = tokio::spawn(async move {
-            let (mut stalled, _) = listener
-                .accept()
-                .await
-                .expect("stalled snapshot request should arrive");
-            let first_target = read_request_head(&mut stalled).await;
-            stalled
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n",
-                )
-                .await
-                .expect("gateway should start the stalled response");
+            let mut stalled = Vec::new();
+            let mut initial_targets = Vec::new();
+            for _ in 0..3 {
+                let (mut connection, _) = listener
+                    .accept()
+                    .await
+                    .expect("stalled snapshot request should arrive");
+                let target = read_request_head(&mut connection).await;
+                connection
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n",
+                    )
+                    .await
+                    .expect("gateway should start the stalled response");
+                initial_targets.push(target);
+                stalled.push(connection);
+            }
+            initial_targets.sort();
             stalled_tx
-                .send(first_target.clone())
+                .send(initial_targets)
                 .expect("test should observe the stalled request");
 
-            let mut targets = vec![first_target];
+            let mut responses = Vec::new();
             for _ in 0..3 {
                 let (mut connection, _) = listener
                     .accept()
                     .await
                     .expect("fresh snapshot request should arrive");
-                let target = read_request_head(&mut connection).await;
-                let body = if target.contains("/containers/json") || target.contains("/networks") {
-                    "[]"
-                } else if target.contains("/volumes") {
-                    r#"{"Volumes":[],"Warnings":null}"#
-                } else {
-                    panic!("unexpected snapshot target: {target}");
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                connection
-                    .write_all(response.as_bytes())
-                    .await
-                    .expect("fresh snapshot response should be written");
-                targets.push(target);
+                responses.push(tokio::spawn(async move {
+                    let target = read_request_head(&mut connection).await;
+                    let body = if target.contains("/containers/json") || target.contains("/networks") {
+                        "[]"
+                    } else if target.contains("/volumes") {
+                        r#"{"Volumes":[],"Warnings":null}"#
+                    } else {
+                        panic!("unexpected snapshot target: {target}");
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    connection
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("fresh snapshot response should be written");
+                    target
+                }));
             }
-            // The incomplete response remains owned until replacement-client
-            // collection finishes, proving recovery does not reuse it.
+            let mut targets = Vec::new();
+            for response in responses {
+                targets.push(response.await.expect("fresh response task should finish"));
+            }
+            targets.sort();
+            // The incomplete responses remain owned until replacement-client
+            // collection finishes, proving recovery does not reuse them.
             drop(stalled);
             targets
         });
@@ -3194,8 +3423,14 @@ mod scheduler_tests {
         assert!(started.elapsed() >= test_timeout);
         assert!(started.elapsed() < Duration::from_secs(1));
         assert_eq!(
-            stalled_rx.try_recv().expect("gateway accepted the request"),
-            "GET /containers/json?all=true&size=false HTTP/1.1"
+            stalled_rx
+                .try_recv()
+                .expect("gateway accepted the requests"),
+            vec![
+                "GET /containers/json?all=true&size=false HTTP/1.1",
+                "GET /networks? HTTP/1.1",
+                "GET /volumes? HTTP/1.1",
+            ]
         );
         assert!(
             state.docker.read().await.is_none(),
@@ -3239,7 +3474,6 @@ mod scheduler_tests {
         assert_eq!(
             gateway.await.expect("gateway stub should finish"),
             vec![
-                "GET /containers/json?all=true&size=false HTTP/1.1",
                 "GET /containers/json?all=true&size=false HTTP/1.1",
                 "GET /networks? HTTP/1.1",
                 "GET /volumes? HTTP/1.1",
@@ -3307,9 +3541,6 @@ mod scheduler_tests {
             )))),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
         };
-        let (projection_started_tx, projection_started_rx) = std::sync::mpsc::channel();
-        let (release_projection_tx, release_projection_rx) = std::sync::mpsc::channel();
-        let (projection_finished_tx, projection_finished_rx) = std::sync::mpsc::channel();
         let projection_runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let timeout = Duration::from_millis(150);
         let started = tokio::time::Instant::now();
@@ -3317,30 +3548,17 @@ mod scheduler_tests {
         let first =
             collect_snapshot_with_projection(&state, timeout, move |_containers, _collected_at| {
                 first_runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                projection_started_tx
-                    .send(())
-                    .expect("test observes projection start");
-                release_projection_rx
-                    .recv()
-                    .expect("test releases stalled projection");
-                projection_finished_tx
-                    .send(())
-                    .expect("test observes projection completion");
                 None
             })
             .await;
 
-        assert!(started.elapsed() >= timeout);
+        assert!(started.elapsed() < timeout);
         assert!(started.elapsed() < Duration::from_secs(1));
-        projection_started_rx
-            .try_recv()
-            .expect("Docker reads completed before projection stalled");
         assert_eq!(first.health.mode, RuntimeMode::Docker);
         assert!(first.compose_runtime_binding.is_none());
         assert!(state.docker.read().await.is_some());
 
-        // Repeated refreshes still perform their fresh Docker reads but skip
-        // Compose projection while the first blocking task owns the guard.
+        // Repeated refreshes remain independent of Compose projection.
         for _ in 0..2 {
             let runs = projection_runs.clone();
             let refresh_started = tokio::time::Instant::now();
@@ -3360,26 +3578,12 @@ mod scheduler_tests {
         }
         assert_eq!(
             projection_runs.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "only the original stalled projection may run"
+            0,
+            "base Docker publication must not run filesystem projection"
         );
 
-        // Publishing the Docker result remains an explicit caller action. The late
-        // read-only task owns no state and cannot replace it after release.
+        // Publishing the Docker result remains an explicit caller action.
         publish_docker_snapshot_cache(&state, first).await;
-        release_projection_tx
-            .send(())
-            .expect("release private blocking task");
-        projection_finished_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("late private projection completes");
-        while state
-            .provider_slot_in_flight
-            .compose_projection
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            tokio::task::yield_now().await;
-        }
         assert_eq!(state.cache.read().await.health.mode, RuntimeMode::Docker);
         assert_eq!(gateway.await.expect("gateway stub").len(), 9);
     }
@@ -4267,7 +4471,7 @@ mod scheduler_tests {
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
         };
-        let (observed, mode, generation) =
+        let (observed, mode, generation, ..) =
             publish_docker_snapshot_cache(&state, docker_cache(mock_snapshot())).await;
         publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
         publish_docker_snapshot_cache(&state, docker_cache(mock_snapshot())).await;
@@ -4336,14 +4540,14 @@ mod scheduler_tests {
             message: Some("controlled Docker cache".into()),
         };
         let mut runtime_map = empty_runtime_map(10);
-        revision.assign(&mut snapshot, &mut health, &mut runtime_map);
+        revision.assign(&mut snapshot, &mut health, &mut runtime_map, None);
         let first = snapshot.model_revision.clone();
 
         snapshot.last_updated = 11;
         health.last_updated = 11;
         health.snapshot_version = "11".into();
         runtime_map.last_updated = 11;
-        revision.assign(&mut snapshot, &mut health, &mut runtime_map);
+        revision.assign(&mut snapshot, &mut health, &mut runtime_map, None);
 
         assert_eq!(snapshot.model_revision, first);
         assert_eq!(health.model_revision, first);
@@ -4578,7 +4782,7 @@ mod scheduler_tests {
         };
         let mut old = mock_snapshot();
         old.last_updated = 10;
-        let (observed, mode, generation) =
+        let (observed, mode, generation, ..) =
             publish_docker_snapshot_cache(&state, docker_cache(old)).await;
         let mut newer = mock_snapshot();
         newer.last_updated = 11;

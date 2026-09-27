@@ -18,3 +18,10 @@ test("capture harness entrypoint transforms", async () => {
  throw new Error(`capture.ts failed esbuild transform:\n${details || error.message}`);
  }
 });
+
+test("Docker-model readiness remains a later distinct boundary", async () => {
+const source = await readFile(new URL("./capture.ts", import.meta.url), "utf8");
+if (!source.includes("value.mode === \"docker\" && Boolean(value.modelRevision)")) {
+throw new Error("Docker-model readiness must remain a later distinct boundary");
+}
+});

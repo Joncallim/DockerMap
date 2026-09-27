@@ -70,6 +70,7 @@ import { reservePort, startStaticServer } from "./staticServer.mjs";
 import { withFreshBrowserRuns } from "./browserLifecycle.mjs";
 import { startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
 import { armCaptureStageFivePublication } from "./stageFiveCaptureControl.mjs";
+import { httpListenerReady } from "./listenerReadiness.mjs";
 
 const REPO_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -1256,7 +1257,7 @@ let publicationTracker: PublicationTracker | null = null;
             ...(plan.name === "unavailable-optional-provider" ? { PATH: emptyPath } : {})
           };
           const healthUrl = (port: number) => `http://127.0.0.1:${port}/daemon/health`;
-          const daemonReady = async (port: number) => Boolean(await fetchJson(healthUrl(port), 1_000));
+const daemonReady = async (port: number) => httpListenerReady(healthUrl(port));
           const startedDaemon = await startChildOnFreePort({
             name: "daemon",
             spawnOn: (port) => spawnOwned(daemonBinary, [], { ...daemonEnv, DOCKERMAP_DAEMON_PORT: String(port) }),
