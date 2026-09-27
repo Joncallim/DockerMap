@@ -19,7 +19,7 @@ use bollard::Docker;
 pub(crate) use cache_refresh::AppState;
 #[cfg(test)]
 use cache_refresh::DaemonCache;
-use cache_refresh::{refresh_cache, refresh_loop};
+use cache_refresh::refresh_loop;
 use compose_api::run_cli;
 use config::{
     read_allow_mock_env, read_bind_host_env, read_daemon_token_env, read_port_env, DaemonAuthToken,
@@ -135,16 +135,16 @@ async fn main() {
     let daemon_token = read_daemon_token_env();
     let port = read_port_env("DOCKERMAP_DAEMON_PORT", 4100);
     let host = read_bind_host_env("DOCKERMAP_DAEMON_HOST", daemon_token.0.is_some());
-    let address = SocketAddr::from((host, port));
-    let state = AppState::new(read_allow_mock_env());
+let address = SocketAddr::from((host, port));
+let state = AppState::new(read_allow_mock_env());
+let app = daemon_router(state.clone(), daemon_token);
+let listener = TcpListener::bind(address)
+.await
+.expect("daemon listener should bind");
 
-    refresh_cache(&state).await;
-    tokio::spawn(refresh_loop(state.clone()));
-
-    let app = daemon_router(state, daemon_token);
-    let listener = TcpListener::bind(address)
-        .await
-        .expect("daemon listener should bind");
+// The listener is available while the initial authoritative Docker model is
+// collected. Cache-backed routes truthfully return 503 until publication.
+tokio::spawn(refresh_loop(state));
 
     println!("dockermap-daemon listening on http://{address}");
 
@@ -183,17 +183,19 @@ mod tests {
     };
     use tower::util::ServiceExt;
 
-    fn test_daemon_state() -> AppState {
-        AppState {
-            allow_mock: true,
-            cache: Arc::new(RwLock::new(DaemonCache::mock())),
+fn test_daemon_state() -> AppState {
+let mut cache = DaemonCache::mock();
+cache.publication_ready = true;
+AppState {
+allow_mock: true,
+cache: Arc::new(RwLock::new(cache)),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(crate::cache_refresh::ProviderSlotFlights::default()),
         }
     }
 
-    #[tokio::test]
-    async fn daemon_mock_cache_is_not_published_when_mock_mode_is_disabled() {
+#[tokio::test]
+async fn daemon_mock_cache_is_not_published_when_mock_mode_is_disabled() {
         let state = AppState {
             allow_mock: false,
             cache: Arc::new(RwLock::new(DaemonCache::mock())),
@@ -226,10 +228,27 @@ mod tests {
                 .expect("daemon router should respond");
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
         }
-    }
+}
 
-    #[tokio::test]
-    async fn daemon_bearer_boundary_allows_only_the_exact_configured_token() {
+#[tokio::test]
+async fn initializing_cache_is_not_published_even_when_mock_is_allowed() {
+let state = AppState::new(true);
+for path in ["/daemon/health", "/daemon/snapshot", "/daemon/runtime/map", "/daemon/findings"] {
+let response = daemon_router(state.clone(), DaemonAuthToken(None))
+.oneshot(
+Request::builder()
+.uri(path)
+.body(axum::body::Body::empty())
+.expect("request should build"),
+)
+.await
+.expect("daemon router should respond");
+assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+}
+}
+
+#[tokio::test]
+async fn daemon_bearer_boundary_allows_only_the_exact_configured_token() {
         let allowed = daemon_router(test_daemon_state(), DaemonAuthToken(None))
             .oneshot(
                 Request::builder()
@@ -352,8 +371,9 @@ mod tests {
                 .expect("Docker stub response should be written");
         });
 
-        let mut cache = DaemonCache::mock();
-        cache.health.docker_reachable = true;
+let mut cache = DaemonCache::mock();
+cache.publication_ready = true;
+cache.health.docker_reachable = true;
         let state = AppState {
             allow_mock: true,
             cache: Arc::new(RwLock::new(cache)),

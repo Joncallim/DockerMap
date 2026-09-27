@@ -83,7 +83,11 @@ impl AppState {
 
 #[derive(Clone)]
 pub(crate) struct DaemonCache {
-    pub(crate) snapshot: DockerSnapshot,
+/// Cache-backed HTTP routes remain unavailable until the first Docker
+/// collection attempt has completed. This prevents the internal bootstrap
+/// mock cache from being mistaken for an authoritative publication.
+pub(crate) publication_ready: bool,
+pub(crate) snapshot: DockerSnapshot,
     pub(crate) health: HealthResponse,
     pub(crate) runtime_map: RuntimeMap,
     pub(crate) findings: FindingsResponse,
@@ -606,8 +610,9 @@ impl DaemonCache {
         redact_health_response(&mut health);
 
         let last_updated = snapshot.last_updated;
-        let mut cache = Self {
-            snapshot,
+let mut cache = Self {
+publication_ready: false,
+snapshot,
             health,
             runtime_map: RuntimeMap {
                 nodes: Vec::new(),
@@ -774,18 +779,21 @@ async fn publish_docker_snapshot_cache(
     state: &AppState,
     mut updated: DaemonCache,
 ) -> (DockerSnapshot, RuntimeMode, u64) {
-    let mut cache = state.cache.write().await;
+let mut cache = state.cache.write().await;
     // A mock fallback is a distinct source of bytes. Do not retain live host
     // observations and relabel them as sample data (or vice versa).
     let same_source = cache.health.mode == updated.health.mode;
-    updated.source_generation = if same_source {
+updated.source_generation = if same_source {
         cache.source_generation
     } else {
         cache
             .source_generation
             .checked_add(1)
             .expect("source generation overflow")
-    };
+};
+// A completed collection attempt, including an explicit policy-permitted
+// mock fallback, makes this coherent cache eligible for publication.
+updated.publication_ready = true;
     updated.runtime_providers = if same_source {
         cache.runtime_providers.clone()
     } else {
@@ -936,8 +944,9 @@ where
         model_revision: String::new(),
         message: Some("Docker engine connected".into()),
     };
-    Ok(DaemonCache {
-        snapshot,
+Ok(DaemonCache {
+publication_ready: false,
+snapshot,
         health,
         runtime_map: empty_runtime_map(0),
         findings: FindingsResponse::default(),
@@ -3076,8 +3085,9 @@ mod scheduler_tests {
 
     fn docker_cache(snapshot: DockerSnapshot) -> DaemonCache {
         let last_updated = snapshot.last_updated;
-        let mut cache = DaemonCache {
-            snapshot,
+let mut cache = DaemonCache {
+publication_ready: true,
+snapshot,
             health: HealthResponse {
                 status: HealthState::Ok,
                 mode: RuntimeMode::Docker,
