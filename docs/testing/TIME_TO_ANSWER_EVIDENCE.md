@@ -376,7 +376,6 @@ npm run perf:summarize -- --artifact /tmp/time-to-answer-baseline.json
 # 7. assemble the candidate's end-to-end and Stage-5 captures into its composite
 npx tsx tests/perf/assembleCompositeEvidence.ts \
   --general /tmp/time-to-answer-candidate-general.json \
-  --output   /tmp/time-to-answer-candidate.json \
   --stageFive /tmp/time-to-answer-candidate-stage5.json \
   --output /tmp/time-to-answer-candidate.json
 # 8. compare the two composite artifacts (fails closed)
