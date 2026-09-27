@@ -308,26 +308,31 @@ in-page sink are compiled out of the ordinary production web bundle.
 
 ## Stage 6/7 controlled seam isolation
 
-A capture may retain supporting seam-isolation evidence to show the two clocks are
-separated. After the normal samples for each fixture that declares both stages,
-the harness runs `TIME_TO_ANSWER_INDEPENDENCE_SAMPLES` (3) control samples in
-which `__dockermapBenchRenderDelayMs = TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS`
-(250 ms) withholds a *newly accepted* publication from the render tree — an
-artificial presentation delay injected **after** acceptance. The rule enforced
-before validation:
+Seam isolation is its own dedicated supporting protocol (`npm run perf:independence`,
+`tests/perf/captureIndependence.ts`) and is not part of the general end-to-end capture.
+For each fixture that declares both stages it runs the normal three controlled runs of
+15 measured samples, then `TIME_TO_ANSWER_INDEPENDENCE_SAMPLES` (3) control samples in
+which `__dockermapBenchRenderDelayMs = TIME_TO_ANSWER_INDEPENDENCE_DELAY_MS` (250 ms)
+withholds a *newly accepted* publication from the render tree — an artificial
+presentation delay injected **after** acceptance. It creates and tears down its own
+private fixture, daemon, API, benchmark build and browser contexts and refuses partial
+output. The rule enforced before validation:
 
 - **stage 6 must not move** by more than `max(30 ms, 25% of its median)`;
 - **stage 7 must absorb** at least 70% of the injected delay;
 - no control stage-7 sample may be shorter than the injected delay (which would
   mean the delay never reached the page).
 
-The verdict, the per-run sample sets and a per-sample audit trail (accepted
-revision, coherent-pair revisions, render commit offset, metric before/after) are
-written beside the artifact in `<output>.harness-evidence.json`. The closed
-evidence schema is unchanged: the control is harness evidence, not artifact
-content. The same rule is unit-tested (`timeToAnswerIndependence.test.ts`),
-including the RED cases "the delayed render does not move stage 7" and "stage 6
-moves with the delayed presentation".
+The verdict, the per-run sample sets and the per-sample audit trail are written to the
+protocol's own `--output` artifact and its `--raw-dir` raw record (the raw record is
+retained even when the control fails), and the assembled composite records the verdict in
+`<composite>.supporting-evidence.json`. The closed Baseline-4 evidence schema is
+unchanged: the control never becomes artifact timing content and its samples are never
+Baseline-4 timing rows. At this checkpoint the control's status is **FAIL**
+(`[independence] FAIL: Error: control delay did not begin after the acceptance
+timestamp`). The same rule is unit-tested (`timeToAnswerIndependence.test.ts`), including
+the RED cases "the delayed render does not move stage 7" and "stage 6 moves with the
+delayed presentation".
 
 Each control sample arms the browser probe and its one-shot delay before advancing
 the fixture generation. The delay is consumed only after the real
