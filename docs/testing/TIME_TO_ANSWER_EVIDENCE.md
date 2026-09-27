@@ -344,19 +344,33 @@ visible content.
 ```
 # 1. pin the environment from the runner itself
 npm run perf:metadata -- --output /tmp/time-to-answer-metadata.json
-# 2. calibrate first (one retained, ordered 60-observation series per warmed
-#    metric × reference fixture; this is not a baseline capture)
-npm run perf:calibrate-time-to-answer -- \
-  --metadata /tmp/time-to-answer-metadata.json \
---calibration-output /srv/jonas/evidence/dockermap/time-to-answer/warm-up-calibration-7.json
-# 3. capture (3 controlled runs × 15 warmed samples for every declared cell)
+# 2. end-to-end capture of stages 1-4 and 6-12 (3 controlled runs x 15 measured
+# samples per declared cell, after the fixed 60-observation burn-in)
 npm run perf:time-to-answer -- \
   --metadata /tmp/time-to-answer-metadata.json \
-  --output   /tmp/time-to-answer-baseline.json \
-  --raw-dir  /tmp/time-to-answer-raw
-# 4. recompute summaries from the raw samples (never trust supplied aggregates)
+  --output /tmp/time-to-answer-general.json \
+  --raw-dir /tmp/time-to-answer-raw \
+  --checkpoint <commit>
+# 3. dedicated controlled Stage-5 capture; the only owner of the poll-phase protocol
+npm run perf:stage-five -- \
+  --metadata /tmp/time-to-answer-metadata.json \
+  --output   /tmp/time-to-answer-stage5.json \
+  --raw-dir  /tmp/time-to-answer-stage5-raw
+# 4. dedicated Stage-6/7 seam-isolation control: supporting evidence only, never a
+# Baseline-4 timing row (the companion record states its verdict)
+npm run perf:independence -- \
+  --metadata /tmp/time-to-answer-metadata.json \
+  --output /tmp/stage6-7-seam-isolation.json \
+  --raw-dir /tmp/stage6-7-seam-isolation-raw \
+  --checkpoint <commit>
+# 5. assemble the composite authority from the two raw sections
+npx tsx tests/perf/assembleCompositeEvidence.ts \
+  --general /tmp/time-to-answer-general.json \
+  --stageFive /tmp/time-to-answer-stage5.json \
+  --output /tmp/time-to-answer-baseline.json
+# 6. recompute summaries from the raw samples (never trust supplied aggregates)
 npm run perf:summarize -- --artifact /tmp/time-to-answer-baseline.json
-# 5. compare a candidate against a reviewed baseline (fails closed)
+# 7. compare a candidate against a reviewed baseline (fails closed)
 npm run perf:time-to-answer -- \
   --metadata /tmp/time-to-answer-metadata.json \
   --output   /tmp/time-to-answer-candidate.json \
@@ -366,8 +380,11 @@ npm run perf:time-to-answer -- \
 Prerequisites: a release daemon (`cargo build --release -p dockermap-daemon`),
 Chromium for Playwright, and a built web app — the capture performs the contract,
 production web, benchmark-mode application and module-probe builds itself, and
-pins the artifacts it serves before measuring anything. `npm run
-perf:time-to-answer` is the only command needed; it owns every process it starts.
+pins the artifacts it serves before measuring anything. Each benchmark entrypoint
+owns every process it starts: the general capture owns the fixture Docker daemon,
+the real daemon and API, the production and benchmark builds and real Chromium,
+and the dedicated protocols own their own private fixture, daemon, API, server
+and browser contexts.
 
 **Capture discipline.** The capture refuses to start from a dirty worktree, and
 refuses to run if the metadata's `sourceRevision`, `harnessRevision` or
@@ -380,7 +397,12 @@ run the focused smoke (`DOCKERMAP_BENCH_DEBUG=1` with `--fixtures`, which relaxe
 only the run/sample counts for probing and can never emit an artifact) before
 spending a full capture.
 
-### Warm-up calibration protocol
+### Warm-up calibration protocol (REJECTED — retained as audit evidence only)
+
+This collector is retained as audit evidence. Per-metric stationarity calibration is
+**retired**: it does not gate Baseline-4, it supplies no warm-up count, and it is not a
+step in the sequence above. The procedure below is recorded so that the retirement is
+auditable, not because it is current.
 
 Calibration is an independent, bounded conditioning collector. It never calls the
 frozen-count lookup, never enters baseline assembly or normal capture's frozen-count
@@ -418,17 +440,8 @@ environment, daemon-binary provenance, and complete per-metric derivation trace.
 It is persisted with SHA-256 even on conflict, but is **REJECTED,
 NON-AUTHORITATIVE** for Baseline-4: no result table may block or alter capture.
 
-| metric | reference-25 diagnostic | reference-100 diagnostic | reference-250 diagnostic | historical proposal |
-| --- | ---: | ---: | ---: | ---: |
-| dockerObservationMs | pending calibration | pending calibration | pending calibration | pending calibration |
-| composeEnrichmentMs | pending calibration | pending calibration | pending calibration | pending calibration |
-| notificationToCoherentModelMs | pending calibration | pending calibration | pending calibration | pending calibration |
-| coherentModelToUsefulRenderMs | pending calibration | pending calibration | pending calibration | pending calibration |
-| buildModelMs | pending calibration | pending calibration | pending calibration | pending calibration |
-| findingsDerivationMs | pending calibration | pending calibration | pending calibration | pending calibration |
-| legacyTopologyLayoutMs | pending calibration | pending calibration | pending calibration | pending calibration |
-| commandQueryMs | pending calibration | pending calibration | pending calibration | pending calibration |
-| productionBundleMs | pending calibration | pending calibration | pending calibration | pending calibration |
+No per-metric warm-up count is published. The calibration results were rejected and
+never supplied a Baseline-4 parameter, so there is no result table to carry forward.
 
 Procedure notes: stages 8 and 10 run against the benchmark-only module probe
 (`tests/perf/benchVite.config.mjs`, real production modules, real Chromium);
@@ -439,9 +452,10 @@ before product code. `.bench-dist` and `.bench-app-dist` are generated and
 gitignored. Every capture also writes `<output>.harness-evidence.json`, which is
 not part of the closed artifact schema and carries:
 
-- the stage-6/7 independence control (verdict, per-run sample sets, and a
-  per-sample audit of accepted revision, notification, skipped acceptances, render
-  commit offset, frame confirmation and metric before/after);
+- the general capture's own observation records and its retained burn-in windows;
+ the dedicated Stage-6/7 seam-isolation control is NOT part of this file — it runs
+ as its own protocol with its own raw directory and its own companion record, and
+ its samples never become a Baseline-4 timing row;
 - burn-in retention: for every ordinary warmed end-to-end cell the **complete**
  `samples + 60` observation window in order, with fixed burn-in at indices 0–59
  and observations 60–74 proven equal to the recorded run;
@@ -573,37 +587,26 @@ The reported figures are:
 the production cadence is deliberately unchanged: removing this floor is #337's
 work, not this issue's.
 
-### Free-running provider-driven cells
+### Controlled Stage-5 cells
 
-`provider-only-revision-change` and `unavailable-optional-provider` are the two
-**free-running** stage-5 cells. They are deliberately excluded from
-`POLL_PHASE_CONTROLLED_FIXTURES`; all reference fixtures and
-`docker-topology-change` are phase-controlled.
+The composite sources all six `publicationToNodeObservationMs` rows from
+`time-to-answer-stage5.json` with the `controlled-poll-phase` protocol:
+`reference-25`, `reference-100`, `reference-250`,
+`provider-only-revision-change`, `docker-topology-change`, and
+`unavailable-optional-provider`. Every row has a declared phase and its reviewed
+aggregation is the phase-normalized p95 derived by
+`derivedTimeToAnswerSummaries`.
 
-The exclusion is structural, not a missing harness feature. These fixtures obtain
-their new revision from the daemon's fixed host-provider scheduler, while the API
-SSE poller has the pinned 2000 ms interval. The scheduler's completion-relative
-slots are 10 s, 15 s, or 60 s (`slot_interval` in
-`crates/dockermap-daemon/src/runtime_collection.rs`), each an integer multiple of
-2000 ms. Their observed publication phase is therefore structurally pinned to the
-poller cadence; placing it would require changing production provider polling,
-which this read-only measurement work must not do.
+`POLL_PHASE_CONTROLLED_FIXTURES` and `isPhaseControlledFixture` select the
+reference fixtures plus `docker-topology-change` for the summary's dedicated
+per-phase curve table. That table selection does not exempt the two provider-driven
+fixtures from their controlled-poll-phase composite rows or phase-normalized
+reviewed value.
 
-For these cells, the harness does claim a real observation through the real
-**API-SSE poller path**: it records the new revision and the phase achieved, and
-asserts the fixture premise (unchanged Docker inventory for
-`provider-only-revision-change`; a non-fresh optional provider for
-`unavailable-optional-provider`). Their matrix value is that premise coverage,
-together with their stage-6 acceptance and stage-7 applicability boundary.
-
-They do **not** claim a phase sweep or phase coverage, a phase-normalized scalar,
-a span or direction guarantee, or p95 authority. They are **excluded from the
-phase-normalized scalar** used for #337 comparison. Nor are their values real-user
-latency, random production latency, network latency, or a Stage-5
-characterisation. `assertFreeRunningPhaseSamples`, rather than
-`assertPollPhaseSweep`, enforces this limited contract.
-
-## Superseded captures
+The provider-driven fixtures derive their new revision from the daemon's fixed
+host-provider scheduler while the API SSE poller remains pinned at 2000 ms. This is
+structural context, not a phase-ownership exemption; their values are not real-user
+latency, random production latency, or network latency.
 
 ## Baseline-4 composite capture
 
@@ -618,11 +621,11 @@ committed checkpoint SHA. The dedicated Stage-6/7 seam-isolation protocol is
 `controlled-stage6-stage7-seam-isolation`: it observes acceptance at the real
 `useSystemModel` coherent snapshot/runtime-map seam, requires an internally
 coherent accepted pair, and applies its 250 ms delay only after that acceptance.
-Its PASS/FAIL supporting-evidence companion records the exact limitation
-`publication-level causal identity unavailable` and
-`validatesDaemonToBrowserAttribution: false`. The control shows Stage 6 remains
-approximately unchanged while Stage 7 grows by the injected delay; it makes no
-daemon-publication attribution claim. Its samples are never Baseline-4 timing
+Its supporting-evidence companion is **FAIL** at this checkpoint: `[independence]
+FAIL: Error: control delay did not begin after the acceptance timestamp`. It records
+the exact limitation `publication-level causal identity unavailable` and
+`validatesDaemonToBrowserAttribution: false`; it makes no daemon-publication
+attribution claim. Its samples are never Baseline-4 timing
 observations and cannot replace or contaminate the normal end-to-end Stage-6/7
 rows. Assembly rejects a missing Stage-5 section, duplicate declared cell, wrong
 protocol, mismatched methodology/checkpoint, or invalid supplied seam-isolation
@@ -632,10 +635,10 @@ invocation: it owns a private fixture, real daemon/API/SSE path, benchmark build
 fresh browser contexts, and `finally` teardown. It retains diagnostics only under
 the dedicated protocol directory and refuses partial output.
 
-The Stage-5 metric and phase-normalized authority are unchanged. The phase grid,
-90 ms tolerance, measured-sample count, ten warm-ups where applicable,
-stationarity band, Stage-6/7 semantics and the production 2000 ms poller are
-also unchanged.
+The Stage-5 metric and phase-normalized authority are unchanged. Conditioning is a
+fixed 60-observation burn-in followed by 15 measured observations, with every
+burn-in retained and no stationarity gate. The phase grid, 90 ms tolerance,
+Stage-6/7 semantics and the production 2000 ms poller are also unchanged.
 
 Baseline 1, baseline 2 **and baseline 3** are **REJECTED historical attempts** and
 are not the authority for anything. Their artifacts are kept outside the repository
@@ -653,7 +656,7 @@ digest, and it documented a post-run binary verification the code did not perfor
 Complete and enforced by tests:
 
 - the closed contract, the 12 stages and their buckets, the fixture set, the
-  44-cell fixture × stage matrix, the environment allowlist (including the
+  44-cell fixture-by-stage matrix, the environment allowlist (including the
   effective SSE poll interval), raw-sample validation, the summary math and the
   promotion gate;
 - the deterministic fixture topology (whose generation delta is product-visible,
@@ -665,18 +668,23 @@ Complete and enforced by tests:
   of the production build and compiled into the benchmark-mode application build,
   with the stage-7 expected-content + single-frame end condition and the
   chain-of-custody check from daemon revision to rendered content;
-- the stage-6/7 independence control, enforced before any artifact is assembled
-  and unit-tested against its RED cases;
-- the single documented capture command with its browser probes, the environment
-  emitter and the summarizer;
+- the dedicated controlled Stage-5 protocol, the sole owner of arm → mark →
+  trigger → identity-ack; it has no Stage-5 timing cell in the general capture;
+- the dedicated, self-orchestrating Stage-6/7 seam-isolation control as supporting
+  evidence, unit-tested against its RED cases;
+- the fixed 60-observation burn-in plus 15 measured conditioning, with every
+  burn-in retained and no stationarity gate;
+- the capture's runtime premise assertions, and the documented general capture,
+  Stage-5 capture, assembly, and summary commands with their browser probes and
+  environment emitter;
 - the promotion RED-checks (`timeToAnswerPromotion.test.ts`), the independence
   RED-checks (`timeToAnswerIndependence.test.ts`) and the production isolation
   proof (`productionIsolation.test.mjs`);
+- the phase-sweep RED-checks (`timeToAnswerPollPhase.test.ts`) alongside
+  `npm run perf:phase-control`, which records intended and observed phase, trigger
+  identity, phase error and grid span and fails RED on a substituted or uncontrolled
+  publication; and
 - `npm run test:perf` wired into `npm run check:js`.
-- `npm run perf:phase-control` is a separate pre-gate for `reference-25` and
-  `reference-100`: it exercises the whole declared grid against the actual Node
-  poll cadence, records intended and observed phase, trigger identity, phase error
-  and grid span, and fails RED on a substituted or uncontrolled publication.
 
 `docs/testing/TIME_TO_ANSWER_BASELINE.md` is the baseline record. Baseline 3 (from
 committed revision `cf77e8ba`) was **REJECTED** in round-3 review and is not the
@@ -684,45 +692,3 @@ authority for anything: its stage-5 sweep did not sweep, its warm-up policy left
 cold observation inside the measured window, its promotion gate treated the rebuilt
 daemon digest as a compatibility key, and it documented a post-run binary
 verification the code did not perform.
-
-The response is a **methodology revision** (`TIME_TO_ANSWER_METHODOLOGY =
-dockermap-v1/time-to-answer-methodology-4`), not a retry: the dedicated deterministic
-stage-5 poll-phase sweep with its validity guards and phase-normalized summary, a
-fixed ten-observation warm-up protocol with a declared stationarity check and
-failed-gate retention guarantee, the
-provenance/compatibility split, and the implemented before/after binary
-verification. The revised methodology is pinned in the emitted metadata and the
-capture refuses to run when the metadata names a different design.
-
-Complete and enforced by tests:
-
-- the closed contract, the 12 stages and their buckets, the fixture set, the
-  44-cell fixture × stage matrix, the environment allowlist (including the
-  effective SSE poll interval and the methodology version), raw-sample validation,
-  the summary math and the promotion gate;
-- the deterministic fixture topology (whose generation delta is product-visible,
-  so the stage-7 expected-content check is discriminating) and the fixture Docker
-  daemon, proven against the real daemon build;
-- the inert bench-only stage attribution hook for `dockerObservationMs`,
-  `composeEnrichmentMs` and `findingsDerivationMs`;
-- the stage-5 poll-phase design: the declared grid, the driven phase, the
-  per-sample declaration/observation records and the validity guards
-  (`timeToAnswerPollPhase.test.ts`, including the narrow-band RED case);
-- the stage-6 coherent-model acceptance seam in real product source, compiled out
-  of the production build and compiled into the benchmark-mode application build,
-  with the stage-7 expected-content + bounded-presentation end condition and the
-  chain-of-custody check from daemon revision to rendered content;
-- the stage-6/7 independence control, enforced before any artifact is assembled
-  and unit-tested against its RED cases;
-- the fixed 60-observation burn-in protocol, with every burn-in retained in the
- raw audit trail and no stationarity gate;
-- the capture's runtime premise assertions (provider-only inventory unchanged,
-  optional provider non-fresh, slow-Compose project really declared, and the
-  application page never reaching the daemon directly);
-- the single documented capture command with its browser probes, the environment
-  emitter, the methodology drift guard and the summarizer;
-- the promotion RED-checks (`timeToAnswerPromotion.test.ts`), the independence
-  RED-checks (`timeToAnswerIndependence.test.ts`), the phase-sweep RED-checks
-  (`timeToAnswerPollPhase.test.ts`) and the production isolation proof
-  (`productionIsolation.test.mjs`);
-- `npm run test:perf` wired into `npm run check:js`.
