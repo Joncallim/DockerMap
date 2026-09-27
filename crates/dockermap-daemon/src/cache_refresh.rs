@@ -3213,6 +3213,109 @@ mod scheduler_tests {
         cache
     }
 
+    fn compose_binding_fixture(collected_at: u64) -> (ComposeScan, ComposeRuntimeBinding) {
+        let config_files: BTreeSet<String> =
+            ["/project/compose.yaml".to_owned()].into_iter().collect();
+        let container = ComposeRuntimeContainer {
+            container_id: "a".repeat(64),
+            project: "project".into(),
+            service: "app".into(),
+            config_files: config_files.clone(),
+            mounts: Vec::new(),
+        };
+        (
+            ComposeScan {
+                files: vec!["/project/compose.yaml".into()],
+                project_root: "/project".into(),
+                services: Vec::new(),
+                mounts: vec![dockermap_core::ComposeMount {
+                    id: "mount".into(),
+                    service: "app".into(),
+                    kind: ComposeMountKind::Bind,
+                    source: Some("./data".into()),
+                    resolved_source: Some("/project/data".into()),
+                    target: "/data".into(),
+                    read_only: false,
+                    origin: dockermap_core::ComposeFileOrigin {
+                        file: "/project/compose.yaml".into(),
+                        service: Some("app".into()),
+                        field: "volumes".into(),
+                    },
+                }],
+                correlations: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            ComposeRuntimeBinding {
+                project: "project".into(),
+                config_files,
+                containers: vec![container],
+                collected_at,
+                provider_revision: String::new(),
+                fresh: true,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn unchanged_docker_confirmation_retains_compose_projection_and_revision() {
+        let mut initial = docker_cache(mock_snapshot());
+        initial.rebuild_runtime_map();
+        let (scan, mut binding) = compose_binding_fixture(41);
+        binding.provider_revision = initial.docker_observation_token();
+        initial.compose_runtime_binding = Some((scan, binding.clone()));
+        initial.assign_revision();
+        let revision = initial.snapshot.model_revision.clone();
+        let finding_time = initial.findings.findings[0].evidence_refs[0].collected_at;
+        let state = AppState {
+            allow_mock: true,
+            cache: Arc::new(RwLock::new(initial)),
+            docker: Arc::new(RwLock::new(None)),
+            provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
+        };
+
+        let mut unchanged = docker_cache(mock_snapshot());
+        unchanged.compose_containers = Some(binding.containers.clone());
+        publish_docker_snapshot_cache(&state, unchanged).await;
+
+        let cache = state.cache.read().await;
+        assert_eq!(cache.snapshot.model_revision, revision);
+        assert_eq!(
+            cache.findings.findings[0].evidence_refs[0].collected_at,
+            finding_time
+        );
+        assert!(cache.compose_runtime_binding.is_some());
+    }
+
+    #[test]
+    fn changed_compose_mount_projection_advances_once_with_matching_docker_token() {
+        let mut cache = docker_cache(mock_snapshot());
+        cache.rebuild_runtime_map();
+        let (scan, mut binding) = compose_binding_fixture(41);
+        binding.provider_revision = cache.docker_observation_token();
+        cache.compose_runtime_binding = Some((scan.clone(), binding.clone()));
+        cache.assign_revision();
+        let revision = cache.snapshot.model_revision.clone();
+
+        let mut changed_scan = scan;
+        changed_scan.mounts.clear();
+        assert_ne!(
+            compose_mount_finding_projection(
+                &cache.compose_runtime_binding.as_ref().unwrap().0,
+                &cache.compose_runtime_binding.as_ref().unwrap().1,
+            ),
+            compose_mount_finding_projection(&changed_scan, &binding),
+        );
+        cache.compose_runtime_binding = Some((changed_scan, binding));
+        cache.assign_revision();
+
+        assert_ne!(cache.snapshot.model_revision, revision);
+        assert_eq!(cache.findings.model_revision, cache.snapshot.model_revision);
+        assert!(cache.findings.findings.iter().all(|finding| {
+            finding.rule_id
+                != dockermap_core::FindingRule::ComposeDeclaredMountMissingAtBoundContainer
+        }));
+    }
+
     #[tokio::test]
     async fn snapshot_timeout_invalidates_stalled_client_and_fresh_client_recovers() {
         async fn read_request_head(connection: &mut tokio::net::UnixStream) -> String {
