@@ -16,10 +16,10 @@ mod runtime_collection;
 use axum::{http::StatusCode, response::IntoResponse};
 #[cfg(test)]
 use bollard::Docker;
+use cache_refresh::refresh_loop;
 pub(crate) use cache_refresh::AppState;
 #[cfg(test)]
 use cache_refresh::DaemonCache;
-use cache_refresh::refresh_loop;
 use compose_api::run_cli;
 use config::{
     read_allow_mock_env, read_bind_host_env, read_daemon_token_env, read_port_env, DaemonAuthToken,
@@ -135,16 +135,16 @@ async fn main() {
     let daemon_token = read_daemon_token_env();
     let port = read_port_env("DOCKERMAP_DAEMON_PORT", 4100);
     let host = read_bind_host_env("DOCKERMAP_DAEMON_HOST", daemon_token.0.is_some());
-let address = SocketAddr::from((host, port));
-let state = AppState::new(read_allow_mock_env());
-let app = daemon_router(state.clone(), daemon_token);
-let listener = TcpListener::bind(address)
-.await
-.expect("daemon listener should bind");
+    let address = SocketAddr::from((host, port));
+    let state = AppState::new(read_allow_mock_env());
+    let app = daemon_router(state.clone(), daemon_token);
+    let listener = TcpListener::bind(address)
+        .await
+        .expect("daemon listener should bind");
 
-// The listener is available while the initial authoritative Docker model is
-// collected. Cache-backed routes truthfully return 503 until publication.
-tokio::spawn(refresh_loop(state));
+    // The listener is available while the initial authoritative Docker model is
+    // collected. Cache-backed routes truthfully return 503 until publication.
+    tokio::spawn(refresh_loop(state));
 
     println!("dockermap-daemon listening on http://{address}");
 
@@ -180,22 +180,23 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::UnixListener,
+        sync::Barrier,
     };
     use tower::util::ServiceExt;
 
-fn test_daemon_state() -> AppState {
-let mut cache = DaemonCache::mock();
-cache.publication_ready = true;
-AppState {
-allow_mock: true,
-cache: Arc::new(RwLock::new(cache)),
+    fn test_daemon_state() -> AppState {
+        let mut cache = DaemonCache::mock();
+        cache.publication_ready = true;
+        AppState {
+            allow_mock: true,
+            cache: Arc::new(RwLock::new(cache)),
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(crate::cache_refresh::ProviderSlotFlights::default()),
         }
     }
 
-#[tokio::test]
-async fn daemon_mock_cache_is_not_published_when_mock_mode_is_disabled() {
+    #[tokio::test]
+    async fn daemon_mock_cache_is_not_published_when_mock_mode_is_disabled() {
         let state = AppState {
             allow_mock: false,
             cache: Arc::new(RwLock::new(DaemonCache::mock())),
@@ -228,27 +229,32 @@ async fn daemon_mock_cache_is_not_published_when_mock_mode_is_disabled() {
                 .expect("daemon router should respond");
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
         }
-}
+    }
 
-#[tokio::test]
-async fn initializing_cache_is_not_published_even_when_mock_is_allowed() {
-let state = AppState::new(true);
-for path in ["/daemon/health", "/daemon/snapshot", "/daemon/runtime/map", "/daemon/findings"] {
-let response = daemon_router(state.clone(), DaemonAuthToken(None))
-.oneshot(
-Request::builder()
-.uri(path)
-.body(axum::body::Body::empty())
-.expect("request should build"),
-)
-.await
-.expect("daemon router should respond");
-assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
-}
-}
+    #[tokio::test]
+    async fn initializing_cache_is_not_published_even_when_mock_is_allowed() {
+        let state = AppState::new(true);
+        for path in [
+            "/daemon/health",
+            "/daemon/snapshot",
+            "/daemon/runtime/map",
+            "/daemon/findings",
+        ] {
+            let response = daemon_router(state.clone(), DaemonAuthToken(None))
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .body(axum::body::Body::empty())
+                        .expect("request should build"),
+                )
+                .await
+                .expect("daemon router should respond");
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        }
+    }
 
-#[tokio::test]
-async fn daemon_bearer_boundary_allows_only_the_exact_configured_token() {
+    #[tokio::test]
+    async fn daemon_bearer_boundary_allows_only_the_exact_configured_token() {
         let allowed = daemon_router(test_daemon_state(), DaemonAuthToken(None))
             .oneshot(
                 Request::builder()
@@ -371,9 +377,9 @@ async fn daemon_bearer_boundary_allows_only_the_exact_configured_token() {
                 .expect("Docker stub response should be written");
         });
 
-let mut cache = DaemonCache::mock();
-cache.publication_ready = true;
-cache.health.docker_reachable = true;
+        let mut cache = DaemonCache::mock();
+        cache.publication_ready = true;
+        cache.health.docker_reachable = true;
         let state = AppState {
             allow_mock: true,
             cache: Arc::new(RwLock::new(cache)),
@@ -517,6 +523,84 @@ cache.health.docker_reachable = true;
             "GET /containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=0&timestamps=true&tail=4096 HTTP/1.1",
             "GET /containers/api/logs?follow=false&stdout=true&stderr=true&since=0&until=1706000124&timestamps=true&tail=4096 HTTP/1.1",
         ], "Bollard wire contract changed; update the gateway ADR and policy review before permitting a new request shape");
+    }
+
+    #[tokio::test]
+    async fn docker_inventory_reads_arrive_before_the_gateway_releases_them() {
+        let tempdir = tempfile::tempdir().expect("temporary Docker socket directory");
+        let socket_path = tempdir.path().join("docker.sock");
+        let listener = UnixListener::bind(&socket_path).expect("Docker stub should bind");
+        let release = Arc::new(Barrier::new(4));
+        let stub_release = release.clone();
+        let stub = tokio::spawn(async move {
+            let mut responses = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener
+                    .accept()
+                    .await
+                    .expect("concurrent Docker request should arrive");
+                let release = stub_release.clone();
+                responses.push(tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut chunk = [0_u8; 1024];
+                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let read = stream
+                            .read(&mut chunk)
+                            .await
+                            .expect("Docker request should be readable");
+                        assert!(read > 0, "Docker client should send request headers");
+                        request.extend_from_slice(&chunk[..read]);
+                    }
+                    let target = String::from_utf8(request)
+                        .expect("Docker request should be UTF-8")
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .expect("Docker request should have a target")
+                        .to_string();
+                    release.wait().await;
+                    let (delay, body) = if target.contains("/containers/json") {
+                        (Duration::from_millis(30), "[]")
+                    } else if target.contains("/networks") {
+                        (Duration::from_millis(90), "[]")
+                    } else if target.contains("/volumes") {
+                        (Duration::from_millis(60), r#"{"Volumes":[],"Warnings":null}"#)
+                    } else {
+                        panic!("unexpected Docker target: {target}");
+                    };
+                    tokio::time::sleep(delay).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(), body
+                    );
+                    stream.write_all(response.as_bytes()).await.expect("response should write");
+                }));
+            }
+            for response in responses {
+                response.await.expect("response task should finish");
+            }
+        });
+        let collector = DockerCollector::with_client(
+            Docker::connect_with_unix(
+                socket_path.to_str().expect("socket path should be UTF-8"),
+                2,
+                bollard::API_DEFAULT_VERSION,
+            )
+            .expect("Bollard should connect to the Unix stub"),
+            None,
+        );
+        let started = tokio::time::Instant::now();
+        let collection = tokio::spawn(async move { collector.collect_snapshot().await });
+        release.wait().await;
+        collection
+            .await
+            .expect("collection task should finish")
+            .expect("concurrent inventory reads should succeed");
+        assert!(
+            started.elapsed() < Duration::from_millis(160),
+            "concurrent requests should take the maximum delay, not their sum"
+        );
+        stub.await.expect("Docker stub should finish");
     }
 
     /// Docker label filtering is part of the gateway contract, not a collector

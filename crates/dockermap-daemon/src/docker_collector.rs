@@ -67,31 +67,26 @@ impl DockerCollector {
         if let Some(filters) = filters.as_ref() {
             container_options = container_options.filters(filters);
         }
-        let containers = self
-            .client
-            .list_containers(Some(container_options.build()))
-            .await
-            .map_err(|error| format!("list_containers failed: {error}"))?;
-
         let mut network_options = ListNetworksOptionsBuilder::new();
         if let Some(filters) = filters.as_ref() {
             network_options = network_options.filters(filters);
         }
-        let networks = self
-            .client
-            .list_networks(Some(network_options.build()))
-            .await
-            .map_err(|error| format!("list_networks failed: {error}"))?;
-
         let mut volume_options = ListVolumesOptionsBuilder::new();
         if let Some(filters) = filters.as_ref() {
             volume_options = volume_options.filters(filters);
         }
-        let volumes = self
-            .client
-            .list_volumes(Some(volume_options.build()))
-            .await
-            .map_err(|error| format!("list_volumes failed: {error}"))?;
+        // Bollard's client is cloneable and these inventory endpoints borrow it
+        // immutably, so one bounded caller deadline covers three concurrent,
+        // fixed gateway reads rather than serializing their independent latency.
+        let containers_client = self.client.clone();
+        let networks_client = self.client.clone();
+        let volumes_client = self.client.clone();
+        let (containers, networks, volumes) = tokio::try_join!(
+            containers_client.list_containers(Some(container_options.build())),
+            networks_client.list_networks(Some(network_options.build())),
+            volumes_client.list_volumes(Some(volume_options.build())),
+        )
+        .map_err(|error| format!("Docker inventory read failed: {error}"))?;
 
         let snapshot = build_snapshot(containers.clone(), networks, volumes);
         let mounts_by_id = snapshot

@@ -83,11 +83,11 @@ impl AppState {
 
 #[derive(Clone)]
 pub(crate) struct DaemonCache {
-/// Cache-backed HTTP routes remain unavailable until the first Docker
-/// collection attempt has completed. This prevents the internal bootstrap
-/// mock cache from being mistaken for an authoritative publication.
-pub(crate) publication_ready: bool,
-pub(crate) snapshot: DockerSnapshot,
+    /// Cache-backed HTTP routes remain unavailable until the first Docker
+    /// collection attempt has completed. This prevents the internal bootstrap
+    /// mock cache from being mistaken for an authoritative publication.
+    pub(crate) publication_ready: bool,
+    pub(crate) snapshot: DockerSnapshot,
     pub(crate) health: HealthResponse,
     pub(crate) runtime_map: RuntimeMap,
     pub(crate) findings: FindingsResponse,
@@ -610,9 +610,9 @@ impl DaemonCache {
         redact_health_response(&mut health);
 
         let last_updated = snapshot.last_updated;
-let mut cache = Self {
-publication_ready: false,
-snapshot,
+        let mut cache = Self {
+            publication_ready: false,
+            snapshot,
             health,
             runtime_map: RuntimeMap {
                 nodes: Vec::new(),
@@ -779,21 +779,21 @@ async fn publish_docker_snapshot_cache(
     state: &AppState,
     mut updated: DaemonCache,
 ) -> (DockerSnapshot, RuntimeMode, u64) {
-let mut cache = state.cache.write().await;
+    let mut cache = state.cache.write().await;
     // A mock fallback is a distinct source of bytes. Do not retain live host
     // observations and relabel them as sample data (or vice versa).
     let same_source = cache.health.mode == updated.health.mode;
-updated.source_generation = if same_source {
+    updated.source_generation = if same_source {
         cache.source_generation
     } else {
         cache
             .source_generation
             .checked_add(1)
             .expect("source generation overflow")
-};
-// A completed collection attempt, including an explicit policy-permitted
-// mock fallback, makes this coherent cache eligible for publication.
-updated.publication_ready = true;
+    };
+    // A completed collection attempt, including an explicit policy-permitted
+    // mock fallback, makes this coherent cache eligible for publication.
+    updated.publication_ready = true;
     updated.runtime_providers = if same_source {
         cache.runtime_providers.clone()
     } else {
@@ -944,9 +944,9 @@ where
         model_revision: String::new(),
         message: Some("Docker engine connected".into()),
     };
-Ok(DaemonCache {
-publication_ready: false,
-snapshot,
+    Ok(DaemonCache {
+        publication_ready: false,
+        snapshot,
         health,
         runtime_map: empty_runtime_map(0),
         findings: FindingsResponse::default(),
@@ -3085,9 +3085,9 @@ mod scheduler_tests {
 
     fn docker_cache(snapshot: DockerSnapshot) -> DaemonCache {
         let last_updated = snapshot.last_updated;
-let mut cache = DaemonCache {
-publication_ready: true,
-snapshot,
+        let mut cache = DaemonCache {
+            publication_ready: true,
+            snapshot,
             health: HealthResponse {
                 status: HealthState::Ok,
                 mode: RuntimeMode::Docker,
@@ -3141,48 +3141,62 @@ snapshot,
         let listener = UnixListener::bind(&socket).expect("gateway stub should bind");
         let (stalled_tx, mut stalled_rx) = mpsc::unbounded_channel();
         let gateway = tokio::spawn(async move {
-            let (mut stalled, _) = listener
-                .accept()
-                .await
-                .expect("stalled snapshot request should arrive");
-            let first_target = read_request_head(&mut stalled).await;
-            stalled
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n",
-                )
-                .await
-                .expect("gateway should start the stalled response");
+            let mut stalled = Vec::new();
+            let mut initial_targets = Vec::new();
+            for _ in 0..3 {
+                let (mut connection, _) = listener
+                    .accept()
+                    .await
+                    .expect("stalled snapshot request should arrive");
+                let target = read_request_head(&mut connection).await;
+                connection
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n",
+                    )
+                    .await
+                    .expect("gateway should start the stalled response");
+                initial_targets.push(target);
+                stalled.push(connection);
+            }
+            initial_targets.sort();
             stalled_tx
-                .send(first_target.clone())
+                .send(initial_targets)
                 .expect("test should observe the stalled request");
 
-            let mut targets = vec![first_target];
+            let mut responses = Vec::new();
             for _ in 0..3 {
                 let (mut connection, _) = listener
                     .accept()
                     .await
                     .expect("fresh snapshot request should arrive");
-                let target = read_request_head(&mut connection).await;
-                let body = if target.contains("/containers/json") || target.contains("/networks") {
-                    "[]"
-                } else if target.contains("/volumes") {
-                    r#"{"Volumes":[],"Warnings":null}"#
-                } else {
-                    panic!("unexpected snapshot target: {target}");
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                connection
-                    .write_all(response.as_bytes())
-                    .await
-                    .expect("fresh snapshot response should be written");
-                targets.push(target);
+                responses.push(tokio::spawn(async move {
+                    let target = read_request_head(&mut connection).await;
+                    let body = if target.contains("/containers/json") || target.contains("/networks") {
+                        "[]"
+                    } else if target.contains("/volumes") {
+                        r#"{"Volumes":[],"Warnings":null}"#
+                    } else {
+                        panic!("unexpected snapshot target: {target}");
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    connection
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("fresh snapshot response should be written");
+                    target
+                }));
             }
-            // The incomplete response remains owned until replacement-client
-            // collection finishes, proving recovery does not reuse it.
+            let mut targets = Vec::new();
+            for response in responses {
+                targets.push(response.await.expect("fresh response task should finish"));
+            }
+            targets.sort();
+            // The incomplete responses remain owned until replacement-client
+            // collection finishes, proving recovery does not reuse them.
             drop(stalled);
             targets
         });
@@ -3204,8 +3218,14 @@ snapshot,
         assert!(started.elapsed() >= test_timeout);
         assert!(started.elapsed() < Duration::from_secs(1));
         assert_eq!(
-            stalled_rx.try_recv().expect("gateway accepted the request"),
-            "GET /containers/json?all=true&size=false HTTP/1.1"
+            stalled_rx
+                .try_recv()
+                .expect("gateway accepted the requests"),
+            vec![
+                "GET /containers/json?all=true&size=false HTTP/1.1",
+                "GET /networks? HTTP/1.1",
+                "GET /volumes? HTTP/1.1",
+            ]
         );
         assert!(
             state.docker.read().await.is_none(),
@@ -3249,7 +3269,6 @@ snapshot,
         assert_eq!(
             gateway.await.expect("gateway stub should finish"),
             vec![
-                "GET /containers/json?all=true&size=false HTTP/1.1",
                 "GET /containers/json?all=true&size=false HTTP/1.1",
                 "GET /networks? HTTP/1.1",
                 "GET /volumes? HTTP/1.1",
