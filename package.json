@@ -32,6 +32,7 @@
     "test:version": "node --test scripts/check-version-authority.test.mjs scripts/package-release.test.mjs",
     "test:perf": "node --test tests/perf/*.test.mjs",
  "perf:time-to-answer": "tsx tests/perf/capture.ts",
+ "perf:promote": "tsx tests/perf/promote.ts",
  "perf:calibrate-time-to-answer": "tsx tests/perf/capture.ts",
     "perf:preconditioning": "tsx tests/perf/preconditioning.ts",
 "perf:phase-control": "tsx tests/perf/phaseControl.ts",
