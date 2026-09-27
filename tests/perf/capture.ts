@@ -70,6 +70,7 @@ import { reservePort, startStaticServer } from "./staticServer.mjs";
 import { withFreshBrowserRuns } from "./browserLifecycle.mjs";
 import { startStageFivePublicationController } from "./stageFivePublicationControl.mjs";
 import { armCaptureStageFivePublication } from "./stageFiveCaptureControl.mjs";
+import { httpListenerReady } from "./listenerReadiness.mjs";
 
 const REPO_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -399,20 +400,6 @@ async function fetchJson(url: string, timeoutMs = 5_000): Promise<any | null> {
   } finally {
     clearTimeout(timer);
   }
-}
-
-/** A listener is ready once it answers HTTP; a truthful 503 is not a model. */
-async function httpListenerReady(url: string, timeoutMs = 1_000): Promise<boolean> {
-const controller = new AbortController();
-const timer = setTimeout(() => controller.abort(), timeoutMs);
-try {
-await fetch(url, { signal: controller.signal });
-return true;
-} catch {
-return false;
-} finally {
-clearTimeout(timer);
-}
 }
 
 async function waitForJson(url: string, predicate: (value: any) => boolean, timeoutMs: number) {

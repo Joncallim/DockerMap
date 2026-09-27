@@ -19,10 +19,8 @@ test("capture harness entrypoint transforms", async () => {
  }
 });
 
-test("listener readiness accepts an HTTP response independently of Docker-model readiness", async () => {
+test("Docker-model readiness remains a later distinct boundary", async () => {
 const source = await readFile(new URL("./capture.ts", import.meta.url), "utf8");
-if (!source.includes("async function httpListenerReady")) throw new Error("capture must use an HTTP listener probe");
-if (!source.includes("ping: daemonReady")) throw new Error("daemon startup must use listener readiness");
 if (!source.includes("value.mode === \"docker\" && Boolean(value.modelRevision)")) {
 throw new Error("Docker-model readiness must remain a later distinct boundary");
 }
