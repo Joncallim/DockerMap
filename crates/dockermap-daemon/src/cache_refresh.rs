@@ -92,6 +92,7 @@ pub(crate) struct DaemonCache {
     pub(crate) runtime_map: RuntimeMap,
     pub(crate) findings: FindingsResponse,
     compose_runtime_binding: Option<(dockermap_core::ComposeScan, ComposeRuntimeBinding)>,
+    compose_containers: Option<Vec<ComposeRuntimeContainer>>,
     runtime_providers: RuntimeProviderSlots,
     /// Increments on every Docker/mock source transition. A late worker must
     /// match this generation as well as evidence, so Docker→mock→Docker can
@@ -269,6 +270,7 @@ impl PublicationRevision {
         snapshot: &mut DockerSnapshot,
         health: &mut HealthResponse,
         runtime_map: &mut RuntimeMap,
+        compose_binding_identity: Option<&str>,
     ) {
         // Compare precisely the model that routes can expose. Cache inventory
         // intentionally retains raw identities for correlation, so serializing
@@ -289,6 +291,7 @@ impl PublicationRevision {
             &published_snapshot,
             &published_health,
             &published_runtime_map,
+            compose_binding_identity,
         ))
         .expect("public DockerMap models are serializable");
         if self.last_observable.as_deref() != Some(observable.as_str()) {
@@ -624,6 +627,7 @@ impl DaemonCache {
             },
             findings: FindingsResponse::default(),
             compose_runtime_binding: None,
+            compose_containers: None,
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
@@ -639,8 +643,13 @@ impl DaemonCache {
     fn assign_revision(&mut self) {
         // All three independently routable model envelopes attest the same
         // publication. Provider state is runtime-topology evidence only.
-        self.revision
-            .assign(&mut self.snapshot, &mut self.health, &mut self.runtime_map);
+        let compose_binding_identity = self.compose_binding_identity().map(str::to_owned);
+        self.revision.assign(
+            &mut self.snapshot,
+            &mut self.health,
+            &mut self.runtime_map,
+            compose_binding_identity.as_deref(),
+        );
         // Findings are a pure projection of the sanitized runtime map, so
         // calculate and cache them only after the publication revision exists.
         let bench_sink = crate::bench_timing::sink();
@@ -669,6 +678,12 @@ impl DaemonCache {
             // the matching runtime mode.
             source: None,
         };
+    }
+
+    fn compose_binding_identity(&self) -> Option<&str> {
+        self.compose_runtime_binding
+            .as_ref()
+            .map(|(_, binding)| binding.provider_revision.as_str())
     }
 
     fn assign_docker_observation_revision(&mut self) {
@@ -725,7 +740,14 @@ pub(crate) async fn refresh_loop(state: AppState) {
 }
 
 pub(crate) async fn refresh_cache(state: &AppState) {
-    let (snapshot, mode, source_generation) = publish_docker_snapshot_cache(
+    let (
+        snapshot,
+        mode,
+        source_generation,
+        docker_observation_revision,
+        compose_containers,
+        collected_at,
+    ) = publish_docker_snapshot_cache(
         state,
         collect_snapshot(state, DOCKER_SNAPSHOT_COLLECTION_TIMEOUT).await,
     )
@@ -735,9 +757,59 @@ pub(crate) async fn refresh_cache(state: &AppState) {
     // Spawned slot workers use fixed per-slot guards; they have no route,
     // Docker client, or source-fallback authority.
     if mode == RuntimeMode::Docker {
+        spawn_compose_projection(
+            state.clone(),
+            source_generation,
+            docker_observation_revision,
+            compose_containers,
+            collected_at,
+        );
         let due = claim_due_provider_slots(state, monotonic_now()).await;
         spawn_provider_slots(state.clone(), snapshot, mode, source_generation, due);
     }
+}
+
+fn spawn_compose_projection(
+    state: AppState,
+    source_generation: u64,
+    docker_observation_revision: String,
+    compose_containers: Option<Vec<ComposeRuntimeContainer>>,
+    collected_at: u64,
+) {
+    let Some(flight) =
+        ComposeProjectionFlight::claim(state.provider_slot_in_flight.compose_projection.clone())
+    else {
+        return;
+    };
+    tokio::spawn(async move {
+        let task = tokio::task::spawn_blocking(move || {
+            let _flight = flight;
+            bounded_compose_runtime_binding(compose_containers, collected_at)
+        });
+        let projection_started = std::time::Instant::now();
+        let binding = match tokio::time::timeout(DOCKER_SNAPSHOT_COLLECTION_TIMEOUT, task).await {
+            Ok(Ok(binding)) => binding,
+            Ok(Err(_)) | Err(_) => None,
+        };
+        crate::bench_timing::record(
+            crate::bench_timing::sink().as_deref(),
+            crate::bench_timing::STAGE_COMPOSE_ENRICHMENT,
+            projection_started,
+        );
+        let Some((scan, mut binding)) = binding else {
+            return;
+        };
+        binding.provider_revision = docker_observation_revision.clone();
+        let mut cache = state.cache.write().await;
+        if cache.health.mode != RuntimeMode::Docker
+            || cache.source_generation != source_generation
+            || cache.docker_observation_token() != docker_observation_revision
+        {
+            return;
+        }
+        cache.compose_runtime_binding = Some((scan, binding));
+        cache.assign_revision();
+    });
 }
 
 fn spawn_provider_slots(
@@ -778,7 +850,14 @@ fn spawn_provider_slots(
 async fn publish_docker_snapshot_cache(
     state: &AppState,
     mut updated: DaemonCache,
-) -> (DockerSnapshot, RuntimeMode, u64) {
+) -> (
+    DockerSnapshot,
+    RuntimeMode,
+    u64,
+    String,
+    Option<Vec<ComposeRuntimeContainer>>,
+    u64,
+) {
     let mut cache = state.cache.write().await;
     // A mock fallback is a distinct source of bytes. Do not retain live host
     // observations and relabel them as sample data (or vice versa).
@@ -794,6 +873,7 @@ async fn publish_docker_snapshot_cache(
     // A completed collection attempt, including an explicit policy-permitted
     // mock fallback, makes this coherent cache eligible for publication.
     updated.publication_ready = true;
+    let compose_containers = updated.compose_containers.take();
     updated.runtime_providers = if same_source {
         cache.runtime_providers.clone()
     } else {
@@ -833,6 +913,9 @@ async fn publish_docker_snapshot_cache(
         cache.snapshot.clone(),
         cache.health.mode.clone(),
         cache.source_generation,
+        cache.docker_observation_token(),
+        compose_containers,
+        cache.snapshot.last_updated,
     )
 }
 
@@ -893,6 +976,7 @@ where
         crate::bench_timing::STAGE_DOCKER_OBSERVATION,
         bench_docker_started,
     );
+    let compose_containers = observation.compose_containers;
     let mut snapshot = observation.snapshot;
     snapshot.images = derive_images(&snapshot);
     // Compose filesystem projection is intentionally not on the authoritative
@@ -916,6 +1000,7 @@ where
         runtime_map: empty_runtime_map(0),
         findings: FindingsResponse::default(),
         compose_runtime_binding,
+        compose_containers,
         runtime_providers: unavailable_provider_slots(),
         source_generation: 0,
         docker_observation_revision: DockerObservationRevision::new(),
@@ -3065,6 +3150,7 @@ mod scheduler_tests {
             runtime_map: empty_runtime_map(last_updated),
             findings: FindingsResponse::default(),
             compose_runtime_binding: None,
+            compose_containers: None,
             runtime_providers: unavailable_provider_slots(),
             source_generation: 0,
             docker_observation_revision: DockerObservationRevision::new(),
@@ -4231,7 +4317,7 @@ mod scheduler_tests {
             docker: Arc::new(RwLock::new(None)),
             provider_slot_in_flight: Arc::new(ProviderSlotFlights::default()),
         };
-        let (observed, mode, generation) =
+        let (observed, mode, generation, ..) =
             publish_docker_snapshot_cache(&state, docker_cache(mock_snapshot())).await;
         publish_docker_snapshot_cache(&state, DaemonCache::mock()).await;
         publish_docker_snapshot_cache(&state, docker_cache(mock_snapshot())).await;
@@ -4300,14 +4386,14 @@ mod scheduler_tests {
             message: Some("controlled Docker cache".into()),
         };
         let mut runtime_map = empty_runtime_map(10);
-        revision.assign(&mut snapshot, &mut health, &mut runtime_map);
+        revision.assign(&mut snapshot, &mut health, &mut runtime_map, None);
         let first = snapshot.model_revision.clone();
 
         snapshot.last_updated = 11;
         health.last_updated = 11;
         health.snapshot_version = "11".into();
         runtime_map.last_updated = 11;
-        revision.assign(&mut snapshot, &mut health, &mut runtime_map);
+        revision.assign(&mut snapshot, &mut health, &mut runtime_map, None);
 
         assert_eq!(snapshot.model_revision, first);
         assert_eq!(health.model_revision, first);
@@ -4542,7 +4628,7 @@ mod scheduler_tests {
         };
         let mut old = mock_snapshot();
         old.last_updated = 10;
-        let (observed, mode, generation) =
+        let (observed, mode, generation, ..) =
             publish_docker_snapshot_cache(&state, docker_cache(old)).await;
         let mut newer = mock_snapshot();
         newer.last_updated = 11;
